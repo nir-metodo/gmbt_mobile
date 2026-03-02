@@ -1,30 +1,74 @@
 {
   "expo": {
-    "name": "gmbt_mobile",
-    "slug": "gmbt_mobile",
+    "name": "Gambot",
+    "slug": "gambot-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
+    "scheme": "gambot",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#2e6155"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gambot.mobile",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Gambot needs access to your microphone for call recording.",
+        "NSCameraUsageDescription": "Gambot needs access to your camera to take photos and videos.",
+        "NSPhotoLibraryUsageDescription": "Gambot needs access to your photos to share media."
+      }
     },
     "android": {
+      "package": "com.gambot.mobile",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#2e6155",
+        "foregroundImage": "./assets/icon.png"
       },
-      "predictiveBackGestureEnabled": false
+      "permissions": [
+        "RECORD_AUDIO",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "CALL_PHONE",
+        "VIBRATE",
+        "RECEIVE_BOOT_COMPLETED"
+      ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#2e6155"
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow Gambot to access your microphone for call recording."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Gambot to access your photos to share media.",
+          "cameraPermission": "Allow Gambot to access your camera to take photos."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "gambot-mobile"
+      }
     }
   }
 }
