@@ -12,6 +12,7 @@ import {
   RefreshControl,
   Animated,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import {
@@ -540,10 +541,21 @@ export default function ChatsListScreen() {
         ItemSeparatorComponent={() => (
           <Divider style={{ marginStart: 78 }} />
         )}
-        ListEmptyComponent={renderEmpty}
+        ListEmptyComponent={
+          isLoadingChats && chats.length === 0 ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={theme.colors.primary} />
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 12 }}>
+                {t('common.loading')}
+              </Text>
+            </View>
+          ) : (
+            renderEmpty()
+          )
+        }
         refreshControl={
           <RefreshControl
-            refreshing={refreshing}
+            refreshing={refreshing || isLoadingChats}
             onRefresh={onRefresh}
             colors={[theme.colors.primary]}
             tintColor={theme.colors.primary}
@@ -738,5 +750,11 @@ const styles = StyleSheet.create({
     margin: 24,
     padding: 24,
     borderRadius: 16,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 120,
   },
 });

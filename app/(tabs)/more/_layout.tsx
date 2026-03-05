@@ -14,6 +14,13 @@ export default function MoreLayout() {
       <Stack.Screen name="esignature" />
       <Stack.Screen name="reports" />
       <Stack.Screen name="dashboard" />
+      <Stack.Screen name="campaigns" />
+      <Stack.Screen name="templates" />
+      <Stack.Screen name="botomations" />
+      <Stack.Screen name="gambot-ai" />
+      <Stack.Screen name="form-flows" />
+      <Stack.Screen name="connections" />
+      <Stack.Screen name="integrations" />
     </Stack>
   );
 }

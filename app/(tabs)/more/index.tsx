@@ -1,12 +1,13 @@
 import React, { useMemo } from 'react';
 import { View, StyleSheet, ScrollView, Dimensions } from 'react-native';
-import { Appbar, Surface, Text, useTheme } from 'react-native-paper';
+import { Appbar, Surface, Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { useAuthStore } from '../../../stores/authStore';
+import { hasPermission } from '../../../constants/permissions';
 
 const BRAND_COLOR = '#2e6155';
 const { width } = Dimensions.get('window');
@@ -32,6 +33,13 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'reports', icon: 'chart-box-outline', labelKey: 'more.reports', route: '/(tabs)/more/reports', color: '#6366f1' },
   { key: 'quotes', icon: 'file-document-outline', labelKey: 'more.quotes', route: '/(tabs)/more/quotes', color: '#7B2D8E' },
   { key: 'esignature', icon: 'draw-pen', labelKey: 'more.eSignature', route: '/(tabs)/more/esignature', color: '#00A86B' },
+  { key: 'campaigns', icon: 'bullhorn-outline', labelKey: 'more.campaigns', route: '/(tabs)/more/campaigns', color: '#2e6155', permission: 'campaigns' },
+  { key: 'templates', icon: 'file-document-multiple-outline', labelKey: 'more.templates', route: '/(tabs)/more/templates', color: '#0ea5e9', permission: 'templates' },
+  { key: 'botomations', icon: 'robot-outline', labelKey: 'more.botomations', route: '/(tabs)/more/botomations', color: '#6366f1', permission: 'botomation' },
+  { key: 'gambotAI', icon: 'robot', labelKey: 'more.gambotAI', route: '/(tabs)/more/gambot-ai', color: '#8b5cf6', permission: 'gambotAI' },
+  { key: 'formFlows', icon: 'form-select', labelKey: 'more.formFlows', route: '/(tabs)/more/form-flows', color: '#059669', permission: 'formFlows' },
+  { key: 'connections', icon: 'link-variant', labelKey: 'more.connections', route: '/(tabs)/more/connections', color: '#0d9488', permission: 'connections' },
+  { key: 'integrations', icon: 'puzzle-outline', labelKey: 'more.integrations', route: '/(tabs)/more/integrations', color: '#f59e0b' },
   { key: 'users', icon: 'account-group-outline', labelKey: 'more.users', route: '/(tabs)/more/users', color: '#E63946', adminOnly: true },
   { key: 'settings', icon: 'cog-outline', labelKey: 'more.settings', route: '/(tabs)/more/settings', color: '#6C757D' },
 ];
@@ -46,7 +54,7 @@ export default function MoreScreen() {
   const visibleItems = useMemo(() => {
     return MENU_ITEMS.filter((item) => {
       if (item.adminOnly && user?.SecurityRole?.toLowerCase() !== 'admin') return false;
-      if (item.permission && !user?.Permissions?.[item.permission]) return false;
+      if (item.permission && !hasPermission(user?.Permissions, user?.SecurityRole, item.permission as any)) return false;
       return true;
     });
   }, [user]);

@@ -1,6 +1,9 @@
 export const API_BASE_URL = 'https://gambot.azurewebsites.net';
 export const WS_BASE_URL = 'wss://gambot.azurewebsites.net/FirebaseWebsocketHandler.ashx';
 
+/** Web app URL - for features that open in browser (Campaigns, Templates, Botomations, etc.) */
+export const WEB_APP_BASE_URL = 'https://gambot.co.il';
+
 export const ENDPOINTS = {
   // Auth
   AUTHENTICATE: '/api/Webhooks/authenticate',
