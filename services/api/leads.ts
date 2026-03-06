@@ -85,4 +85,16 @@ export const leadsApi = {
       stages: stages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     };
   },
+
+  async getLeadFormSettings(organization: string): Promise<{ sections: any[]; formLayout: string[] }> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_FORM_SETTINGS, {
+      organization,
+    });
+    const raw = response.data;
+    if (raw?.error) return { sections: [], formLayout: [] };
+    return {
+      sections: Array.isArray(raw?.sections) ? raw.sections : [],
+      formLayout: Array.isArray(raw?.formLayout) ? raw.formLayout : [],
+    };
+  },
 };

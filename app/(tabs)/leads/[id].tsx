@@ -43,6 +43,11 @@ import {
 } from '../../../utils/formatters';
 import { spacing, borderRadius } from '../../../constants/theme';
 import ContactLookup from '../../../components/ContactLookup';
+import {
+  DynamicFieldsSectionView,
+  DynamicFieldsSectionForm,
+  type DynamicSection,
+} from '../../../components/DynamicFieldsSection';
 import type { Lead, LeadStage, TimelineEvent } from '../../../types';
 
 const DEFAULT_STAGE_COLORS: Record<string, string> = {
@@ -151,6 +156,8 @@ export default function LeadDetailScreen() {
   const [noteText, setNoteText] = useState('');
   const [addingNote, setAddingNote] = useState(false);
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
+  const [leadFormSections, setLeadFormSections] = useState<DynamicSection[]>([]);
+  const [leadFormLayout, setLeadFormLayout] = useState<string[]>([]);
   const [form, setForm] = useState<Partial<Lead>>(
     lead ? { ...lead } : { ...EMPTY_LEAD },
   );
@@ -163,6 +170,16 @@ export default function LeadDetailScreen() {
     if (!organization) return;
     leadsApi.getPipelineSettings(organization)
       .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
+      .catch(() => {});
+  }, [organization]);
+
+  useEffect(() => {
+    if (!organization) return;
+    leadsApi.getLeadFormSettings(organization)
+      .then((res) => {
+        setLeadFormSections(res.sections || []);
+        setLeadFormLayout(res.formLayout || []);
+      })
       .catch(() => {});
   }, [organization]);
 
@@ -347,7 +364,7 @@ export default function LeadDetailScreen() {
   }, [organization, form, isNew, lead, createLead, updateLead, t, router]);
 
   const updateField = useCallback(
-    (field: keyof Lead, value: string | number) => {
+    (field: keyof Lead | string, value: string | number | boolean | string[]) => {
       setForm((prev) => ({ ...prev, [field]: value }));
     },
     [],
@@ -625,6 +642,13 @@ export default function LeadDetailScreen() {
             </>
           ) : null}
         </Surface>
+
+        <DynamicFieldsSectionView
+          sections={leadFormSections}
+          data={lead as Record<string, any>}
+          lang={lang}
+          formLayout={leadFormLayout}
+        />
 
         {/* Description */}
         {lead?.description ? (
@@ -1201,6 +1225,18 @@ export default function LeadDetailScreen() {
                 textAlign={textAlign}
                 writingDirection={writingDirection}
                 placeholder={t('leads.tagsPlaceholder', 'tag1, tag2, tag3')}
+              />
+
+              <DynamicFieldsSectionForm
+                sections={leadFormSections}
+                values={form as Record<string, any>}
+                onChange={(k, v) => updateField(k, v)}
+                lang={lang}
+                formLayout={leadFormLayout}
+                theme={theme}
+                textAlign={textAlign}
+                writingDirection={writingDirection}
+                flexDirection={flexDirection}
               />
 
               <Text

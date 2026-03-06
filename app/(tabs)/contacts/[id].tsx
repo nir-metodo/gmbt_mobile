@@ -41,20 +41,14 @@ import {
   formatDate,
 } from '../../../utils/formatters';
 import { spacing, borderRadius } from '../../../constants/theme';
+import {
+  DynamicFieldsSectionView,
+  DynamicFieldsSectionForm,
+  type DynamicSection,
+} from '../../../components/DynamicFieldsSection';
 import type { Contact, TimelineEvent } from '../../../types';
 
 type DetailTab = 'timeline' | 'related';
-
-interface DynamicColumn {
-  fieldName: string;
-  displayName: string;
-  fieldType?: string;
-  isRequired?: boolean;
-  options?: string[];
-  showOnForm?: boolean;
-  order?: number;
-  isMultiple?: boolean;
-}
 
 function extractTags(keys: string[] | string | undefined): string[] {
   if (!keys) return [];
@@ -102,7 +96,8 @@ export default function ContactDetailScreen() {
     contact ? { ...contact } : { ...EMPTY_CONTACT },
   );
   const [saving, setSaving] = useState(false);
-  const [dynamicColumns, setDynamicColumns] = useState<DynamicColumn[]>([]);
+  const [contactFormSections, setContactFormSections] = useState<DynamicSection[]>([]);
+  const [contactFormLayout, setContactFormLayout] = useState<string[]>([]);
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [addingNote, setAddingNote] = useState(false);
@@ -208,13 +203,9 @@ export default function ContactDetailScreen() {
 
   useEffect(() => {
     if (organization) {
-      contactsApi.getDynamicColumns(organization).then((cols) => {
-        if (Array.isArray(cols)) {
-          const sorted = cols
-            .filter((c) => c.showOnForm !== false)
-            .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
-          setDynamicColumns(sorted);
-        }
+      contactsApi.getDynamicContactColumns(organization).then((res) => {
+        setContactFormSections(res.sections || []);
+        setContactFormLayout(res.formLayout || []);
       }).catch(() => {});
     }
   }, [organization]);
@@ -503,33 +494,12 @@ export default function ContactDetailScreen() {
           </Surface>
         ) : null}
 
-        {dynamicColumns.length > 0 && contact ? (
-          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <Text
-              variant="titleSmall"
-              style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 8 }}
-            >
-              {t('contacts.additionalFields')}
-            </Text>
-            {dynamicColumns.map((col, idx) => {
-              const value = (contact as any)[col.fieldName];
-              if (!value && value !== 0) return null;
-              return (
-                <React.Fragment key={col.fieldName}>
-                  {idx > 0 ? <Divider style={styles.cardDivider} /> : null}
-                  <InfoRow
-                    icon="text-box-outline"
-                    label={col.displayName || col.fieldName}
-                    value={String(value)}
-                    theme={theme}
-                    flexDirection={flexDirection}
-                    textAlign={textAlign}
-                  />
-                </React.Fragment>
-              );
-            })}
-          </Surface>
-        ) : null}
+        <DynamicFieldsSectionView
+          sections={contactFormSections}
+          data={contact as Record<string, any>}
+          lang={lang}
+          formLayout={contactFormLayout}
+        />
 
         {!isNew ? (
           <>
@@ -749,107 +719,17 @@ export default function ContactDetailScreen() {
                   </Pressable>
                 </View>
               </View>
-              {dynamicColumns.length > 0 ? (
-                <>
-                  <Divider style={{ marginVertical: 8 }} />
-                  <Text
-                    variant="titleSmall"
-                    style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 4 }}
-                  >
-                    {t('contacts.additionalFields')}
-                  </Text>
-                  {dynamicColumns.map((col) => {
-                    if (col.fieldType === 'select' && col.options && col.options.length > 0) {
-                      const currentVal = (form as any)[col.fieldName] ?? '';
-                      return (
-                        <View key={col.fieldName} style={styles.formField}>
-                          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}>
-                            {col.displayName || col.fieldName}
-                          </Text>
-                          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                            <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
-                              {col.options.map((opt) => (
-                                <Chip
-                                  key={opt}
-                                  selected={currentVal === opt || (Array.isArray(currentVal) && currentVal.includes(opt))}
-                                  onPress={() => {
-                                    if (col.isMultiple) {
-                                      const arr = Array.isArray(currentVal) ? [...currentVal] : [];
-                                      const idx = arr.indexOf(opt);
-                                      if (idx >= 0) arr.splice(idx, 1);
-                                      else arr.push(opt);
-                                      setForm((prev) => ({ ...prev, [col.fieldName]: arr }));
-                                    } else {
-                                      setForm((prev) => ({ ...prev, [col.fieldName]: opt }));
-                                    }
-                                  }}
-                                  compact
-                                  style={{
-                                    backgroundColor: (currentVal === opt || (Array.isArray(currentVal) && currentVal.includes(opt)))
-                                      ? theme.colors.primaryContainer
-                                      : theme.colors.surfaceVariant,
-                                  }}
-                                  textStyle={{
-                                    color: (currentVal === opt || (Array.isArray(currentVal) && currentVal.includes(opt)))
-                                      ? theme.colors.onPrimaryContainer
-                                      : theme.colors.onSurfaceVariant,
-                                    fontSize: 12,
-                                  }}
-                                >
-                                  {opt}
-                                </Chip>
-                              ))}
-                            </View>
-                          </ScrollView>
-                        </View>
-                      );
-                    }
-                    if (col.fieldType === 'boolean') {
-                      const boolVal = (form as any)[col.fieldName];
-                      return (
-                        <View key={col.fieldName} style={styles.formField}>
-                          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}>
-                            {col.displayName || col.fieldName}
-                          </Text>
-                          <View style={{ flexDirection: 'row', gap: 8 }}>
-                            {[true, false].map((v) => (
-                              <Chip
-                                key={String(v)}
-                                selected={boolVal === v}
-                                onPress={() => setForm((prev) => ({ ...prev, [col.fieldName]: v }))}
-                                compact
-                                style={{
-                                  backgroundColor: boolVal === v ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
-                                }}
-                                textStyle={{
-                                  color: boolVal === v ? theme.colors.onPrimaryContainer : theme.colors.onSurfaceVariant,
-                                  fontSize: 12,
-                                }}
-                              >
-                                {v ? t('common.yes') : t('common.no')}
-                              </Chip>
-                            ))}
-                          </View>
-                        </View>
-                      );
-                    }
-                    return (
-                      <FormField
-                        key={col.fieldName}
-                        label={col.displayName || col.fieldName}
-                        value={String((form as any)[col.fieldName] ?? '')}
-                        onChangeText={(v) =>
-                          setForm((prev) => ({ ...prev, [col.fieldName]: v }))
-                        }
-                        theme={theme}
-                        textAlign={textAlign}
-                        writingDirection={writingDirection}
-                        keyboardType={col.fieldType === 'number' ? 'numeric' : undefined}
-                      />
-                    );
-                  })}
-                </>
-              ) : null}
+              <DynamicFieldsSectionForm
+                sections={contactFormSections}
+                values={form as Record<string, any>}
+                onChange={(k, v) => setForm((prev) => ({ ...prev, [k]: v }))}
+                lang={lang}
+                formLayout={contactFormLayout}
+                theme={theme}
+                textAlign={textAlign}
+                writingDirection={writingDirection}
+                flexDirection={flexDirection}
+              />
             </ScrollView>
           </KeyboardAvoidingView>
         </Modal>

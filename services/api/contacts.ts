@@ -109,24 +109,50 @@ export const contactsApi = {
   },
 
   async getDynamicColumns(organization: string): Promise<any[]> {
+    const { sections } = await this.getDynamicContactColumns(organization);
+    if (sections.length === 0) return [];
+    const flat: any[] = [];
+    sections.forEach((s: any) => {
+      const fields = s.fields || {};
+      Object.entries(fields).forEach(([key, f]: [string, any]) => {
+        const field = typeof f === 'object' && f !== null ? f : {};
+        flat.push({
+          fieldName: key,
+          displayName: field.labelEn || field.labelHe || field.label || key,
+          fieldType: field.type || 'text',
+          options: field.options || [],
+          showOnForm: field.showOnForm !== false,
+          order: field.order ?? 999,
+          isMultiple: field.type === 'multi-select',
+        });
+      });
+    });
+    return flat.sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+  },
+
+  async getDynamicContactColumns(organization: string): Promise<{ sections: any[]; formLayout: string[] }> {
     const response = await axiosInstance.post(ENDPOINTS.GET_DYNAMIC_COLUMNS, {
       organization,
     });
     const raw = response.data;
-    if (Array.isArray(raw)) return raw;
-    if (raw?.columns && Array.isArray(raw.columns)) return raw.columns;
-    if (raw?.data && Array.isArray(raw.data)) return raw.data;
-    if (typeof raw === 'object' && raw !== null) {
-      return Object.entries(raw).map(([key, val]: [string, any]) => ({
-        fieldName: key,
-        displayName: val?.label || key,
-        fieldType: val?.type || 'text',
-        options: val?.options || [],
-        showOnForm: val?.showOnForm !== false,
-        order: val?.order ?? 999,
-        isMultiple: val?.multiple || false,
-      }));
+    if (raw?.error) return { sections: [], formLayout: [] };
+    if (Array.isArray(raw?.sections) && raw.sections.length > 0) {
+      return {
+        sections: raw.sections,
+        formLayout: Array.isArray(raw.formLayout) ? raw.formLayout : [],
+      };
     }
-    return [];
+    const keys = Object.keys(raw || {}).filter(
+      (k) => k !== 'sections' && k !== 'formLayout' && typeof raw[k] === 'object' && raw[k] !== null,
+    );
+    if (keys.length === 0) return { sections: [], formLayout: [] };
+    const fields: Record<string, any> = {};
+    keys.forEach((k) => {
+      fields[k] = raw[k];
+    });
+    return {
+      sections: [{ id: 'default', labelEn: 'Details', labelHe: 'פרטים', fields }],
+      formLayout: [],
+    };
   },
 };

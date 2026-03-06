@@ -51,6 +51,7 @@ export const ENDPOINTS = {
   UPDATE_LEAD: '/api/Webhooks/UpdateLead',
   DELETE_LEAD: '/api/Webhooks/DeleteLead',
   GET_PIPELINE_SETTINGS: '/api/Webhooks/GetPipelineSettings',
+  GET_LEAD_FORM_SETTINGS: '/api/Webhooks/GetLeadFormSettings',
 
   // Reactions
   SEND_REACTION: '/api/Webhooks/SendReaction',

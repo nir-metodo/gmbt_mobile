@@ -34,6 +34,11 @@ import { contactsApi } from '../../../../services/api/contacts';
 import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import ContactLookup from '../../../../components/ContactLookup';
+import {
+  DynamicFieldsSectionView,
+  DynamicFieldsSectionForm,
+  type DynamicSection,
+} from '../../../../components/DynamicFieldsSection';
 import type { Case } from '../../../../types';
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -71,7 +76,7 @@ export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
-  const { isRTL, flexDirection, textAlign } = useRTL();
+  const { isRTL, flexDirection, textAlign, writingDirection } = useRTL();
   const { t, i18n } = useTranslation();
   const lang = i18n.language as 'en' | 'he';
 
@@ -79,6 +84,9 @@ export default function CaseDetailScreen() {
 
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [caseSettings, setCaseSettings] = useState<{ sla?: { enabled: boolean; responseTime: number; resolutionTime: number } } | null>(null);
+  const [caseFormSections, setCaseFormSections] = useState<DynamicSection[]>([]);
+  const [caseFormLayout, setCaseFormLayout] = useState<string[]>([]);
+  const [formDynamicFields, setFormDynamicFields] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -117,6 +125,8 @@ export default function CaseDetailScreen() {
         setError(t('common.noResults'));
       }
       if (settings?.sla) setCaseSettings(settings);
+      if (Array.isArray(settings?.formSections)) setCaseFormSections(settings.formSections);
+      if (Array.isArray(settings?.formLayout)) setCaseFormLayout(settings.formLayout);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
@@ -143,6 +153,14 @@ export default function CaseDetailScreen() {
     setFormDueDate((caseData as any).dueDate || (caseData as any).due_date || '');
     setFormTags((caseData as any).tags || '');
     setFormNotes((caseData as any).notes || '');
+    const customFields = (caseData as any).customFields || {};
+    const dynamicVals: Record<string, any> = {};
+    Object.keys(caseData as any).forEach((k) => {
+      if (!['id', 'title', 'subject', 'description', 'status', 'priority', 'category', 'assignedTo', 'source', 'contactName', 'contactPhone', 'contactId', 'dueDate', 'tags', 'notes', 'createdAt', 'updatedAt', 'resolvedAt', 'organization', 'pipelineId', 'stageId', 'stageName'].includes(k)) {
+        dynamicVals[k] = (caseData as any)[k];
+      }
+    });
+    setFormDynamicFields({ ...customFields, ...dynamicVals });
     setEditModalVisible(true);
   }, [caseData]);
 
@@ -164,6 +182,8 @@ export default function CaseDetailScreen() {
         dueDate: formDueDate.trim() || undefined,
         tags: formTags.trim() || undefined,
         notes: formNotes.trim() || undefined,
+        customFields: formDynamicFields,
+        ...formDynamicFields,
       }, user?.fullname);
       setEditModalVisible(false);
       await fetchCase();
@@ -172,7 +192,7 @@ export default function CaseDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [user?.organization, caseData, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formSource, formContactName, formContactPhone, formContactId, formDueDate, formTags, formNotes, fetchCase, t]);
+  }, [user?.organization, caseData, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formSource, formContactName, formContactPhone, formContactId, formDueDate, formTags, formNotes, formDynamicFields, fetchCase, t]);
 
   const handleDelete = useCallback(() => {
     Alert.alert(
@@ -648,6 +668,13 @@ export default function CaseDetailScreen() {
           ) : null}
         </View>
 
+        <DynamicFieldsSectionView
+          sections={caseFormSections}
+          data={{ ...(caseData as any).customFields, ...caseData } as Record<string, any>}
+          lang={lang}
+          formLayout={caseFormLayout}
+        />
+
         <View style={{ height: insets.bottom + 24 }} />
       </ScrollView>
 
@@ -889,6 +916,18 @@ export default function CaseDetailScreen() {
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={theme.colors.primary}
                 left={<TextInput.Icon icon="note-text" />}
+              />
+
+              <DynamicFieldsSectionForm
+                sections={caseFormSections}
+                values={formDynamicFields}
+                onChange={(k, v) => setFormDynamicFields((prev) => ({ ...prev, [k]: v }))}
+                lang={lang}
+                formLayout={caseFormLayout}
+                theme={theme}
+                textAlign={textAlign}
+                writingDirection={writingDirection}
+                flexDirection={flexDirection}
               />
 
               <View style={[styles.modalActions, { flexDirection }]}>
