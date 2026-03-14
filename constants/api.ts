@@ -170,4 +170,11 @@ export const ENDPOINTS = {
   // Push Notifications
   REGISTER_DEVICE: '/api/Webhooks/RegisterDeviceToken',
   UNREGISTER_DEVICE: '/api/Webhooks/UnregisterDeviceToken',
+
+  // Employees / Attendance
+  GET_EMPLOYEES_DASHBOARD: '/api/Webhooks/GetEmployeesDashboard',
+  GET_ATTENDANCE_RECORDS: '/api/Webhooks/GetAttendanceRecords',
+  CLOCK_IN: '/api/Webhooks/ClockIn',
+  CLOCK_OUT: '/api/Webhooks/ClockOut',
+  GET_MY_CLOCK_STATUS: '/api/Webhooks/GetMyClockStatus',
 } as const;

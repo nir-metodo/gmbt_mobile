@@ -40,6 +40,7 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'formFlows', icon: 'form-select', labelKey: 'more.formFlows', route: '/(tabs)/more/form-flows', color: '#059669', permission: 'formFlows' },
   { key: 'connections', icon: 'link-variant', labelKey: 'more.connections', route: '/(tabs)/more/connections', color: '#0d9488', permission: 'connections' },
   { key: 'integrations', icon: 'puzzle-outline', labelKey: 'more.integrations', route: '/(tabs)/more/integrations', color: '#f59e0b' },
+  { key: 'employees', icon: 'badge-account-horizontal-outline', labelKey: 'more.employees', route: '/(tabs)/more/employees', color: '#2A9D8F' },
   { key: 'users', icon: 'account-group-outline', labelKey: 'more.users', route: '/(tabs)/more/users', color: '#E63946', adminOnly: true },
   { key: 'settings', icon: 'cog-outline', labelKey: 'more.settings', route: '/(tabs)/more/settings', color: '#6C757D' },
 ];
