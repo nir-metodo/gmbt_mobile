@@ -6,6 +6,7 @@ import {
   RefreshControl,
   Pressable,
   ScrollView,
+  Alert,
 } from 'react-native';
 import {
   Appbar,
@@ -66,10 +67,21 @@ function formatTime(dt?: string) {
   return new Date(dt).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
 }
 
-function formatHours(h: number) {
-  const hrs = Math.floor(h);
-  const mins = Math.round((h - hrs) * 60);
+function formatHours(h: number | undefined | null) {
+  const n = typeof h === 'number' && isFinite(h) ? h : 0;
+  const hrs = Math.floor(Math.abs(n));
+  const mins = Math.round((Math.abs(n) - hrs) * 60);
   return `${hrs}:${mins.toString().padStart(2, '0')}`;
+}
+
+function computeHours(rec: AttendanceRecord): number {
+  if (typeof rec.totalHours === 'number' && isFinite(rec.totalHours) && rec.totalHours > 0) {
+    return rec.totalHours;
+  }
+  const ci = rec.clockIn ? new Date(rec.clockIn).getTime() : 0;
+  const co = rec.clockOut ? new Date(rec.clockOut).getTime() : 0;
+  if (ci && co && co > ci) return (co - ci) / 3600000;
+  return 0;
 }
 
 function isAdmin(user: any) {
@@ -111,10 +123,36 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await axiosInstance.post(ENDPOINTS.GET_MY_CLOCK_STATUS, { organizationName: org });
-      setStatus(res.data);
+      const now = new Date();
+      const today = now.toISOString().slice(0, 10);
+      // Derive clock status from today's attendance records (GetMyClockStatus endpoint doesn't exist)
+      const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
+        organizationName: org,
+        userId,
+        dateFrom: today,
+        dateTo: today,
+      });
+      const todayRecs: any[] = Array.isArray(res.data) ? res.data : [];
+      const openRec = todayRecs.find((r: any) => r.clockOut === '' || r.clockOut == null);
+      const totalHours = todayRecs.reduce((sum: number, r: any) => {
+        const ci = r.clockIn || '';
+        const co = r.clockOut || '';
+        if (ci && co) {
+          const diff = (new Date(co).getTime() - new Date(ci).getTime()) / 3600000;
+          return sum + Math.max(0, diff);
+        } else if (ci && !co) {
+          const diff = (Date.now() - new Date(ci).getTime()) / 3600000;
+          return sum + Math.max(0, diff);
+        }
+        return sum;
+      }, 0);
+      setStatus({
+        isClockedIn: !!openRec,
+        clockInTime: openRec?.clockIn || undefined,
+        todayHours: Math.round(totalHours * 100) / 100,
+      });
     } catch { setStatus(null); } finally { setLoading(false); }
-  }, [org]);
+  }, [org, userId]);
 
   const fetchMyRecords = useCallback(async () => {
     setLoadingRecords(true);
@@ -123,7 +161,7 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
       const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
       const lastDay  = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
       const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
-        organizationName: org, employeeId: userId, dateFrom: firstDay, dateTo: lastDay,
+        organizationName: org, userId, dateFrom: firstDay, dateTo: lastDay,
       });
       setRecords(Array.isArray(res.data) ? res.data : []);
     } catch { setRecords([]); } finally { setLoadingRecords(false); }
@@ -141,7 +179,11 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
       }
       await fetchStatus();
       await fetchMyRecords();
-    } catch (e) { console.error(e); } finally { setClocking(false); }
+    } catch (e: any) {
+      Alert.alert(t('common.error'), e?.message || t('errors.generic'));
+    } finally {
+      setClocking(false);
+    }
   };
 
   const currentHours = status?.isClockedIn ? liveElapsed : (status?.todayHours || 0);
@@ -215,7 +257,7 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
               </View>
               <Chip compact style={{ backgroundColor: BRAND_COLOR + '15' }}>
                 <Text style={{ color: BRAND_COLOR, fontWeight: '700', fontSize: 13 }}>
-                  {formatHours(rec.totalHours)}
+                  {formatHours(computeHours(rec))}
                 </Text>
               </Chip>
             </View>
@@ -234,16 +276,24 @@ function ManageTab({ org }: { org: string }) {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading]     = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [selected, setSelected]   = useState<Employee | null>(null);
   const [records, setRecords]     = useState<AttendanceRecord[]>([]);
   const [loadingRec, setLoadingRec] = useState(false);
 
   const fetchEmployees = useCallback(async () => {
+    setFetchError(null);
     try {
       const res = await axiosInstance.post(ENDPOINTS.GET_EMPLOYEES_DASHBOARD, { organizationName: org });
       setEmployees(Array.isArray(res.data) ? res.data : []);
-    } catch { setEmployees([]); } finally { setLoading(false); setRefreshing(false); }
-  }, [org]);
+    } catch (e: any) {
+      setEmployees([]);
+      setFetchError(e?.message || t('errors.generic'));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [org, t]);
 
   useEffect(() => { fetchEmployees(); }, [fetchEmployees]);
 
@@ -273,6 +323,13 @@ function ManageTab({ org }: { org: string }) {
 
   return (
     <>
+      {fetchError ? (
+        <View style={{ padding: 16, alignItems: 'center', gap: 8 }}>
+          <MaterialCommunityIcons name="alert-circle-outline" size={40} color="#E63946" style={{ opacity: 0.7 }} />
+          <Text variant="bodyMedium" style={{ color: '#E63946', textAlign: 'center' }}>{fetchError}</Text>
+          <Button mode="text" onPress={fetchEmployees}>{t('common.retry')}</Button>
+        </View>
+      ) : null}
       {/* Stats row */}
       <View style={[s.statsRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
         <Surface style={[s.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
@@ -390,7 +447,7 @@ function ManageTab({ org }: { org: string }) {
                       {formatTime(rec.clockIn)} — {formatTime(rec.clockOut)}
                     </Text>
                     <Text variant="labelMedium" style={{ color: BRAND_COLOR, fontWeight: '700', minWidth: 40, textAlign: 'center' }}>
-                      {formatHours(rec.totalHours)}
+                      {formatHours(computeHours(rec))}
                     </Text>
                   </View>
                 ))
@@ -429,10 +486,10 @@ export default function EmployeesScreen() {
           value={tab}
           onValueChange={(v) => setTab(v as 'my' | 'manage')}
           buttons={[
-            { value: 'my', label: t('employees.myHours'), icon: 'clock-outline' },
-            ...(admin ? [{ value: 'manage' as const, label: t('employees.manage'), icon: 'account-group-outline' }] : []),
+            { value: 'my', label: t('employees.myHours') },
+            ...(admin ? [{ value: 'manage' as const, label: t('employees.manage') }] : []),
           ]}
-          style={{ marginHorizontal: 16 }}
+          style={s.segmentedButtons}
           theme={{ colors: { secondaryContainer: BRAND_COLOR + '20', onSecondaryContainer: BRAND_COLOR } }}
         />
       </View>
@@ -450,7 +507,8 @@ const s = StyleSheet.create({
   container: { flex: 1 },
   center: { alignItems: 'center', justifyContent: 'center', paddingTop: 60 },
   headerTitle: { color: '#FFF', fontWeight: '700', fontSize: 18 },
-  tabsWrapper: { paddingVertical: 12, backgroundColor: 'transparent' },
+  tabsWrapper: { paddingVertical: 12, paddingHorizontal: 16, backgroundColor: 'transparent' },
+  segmentedButtons: { width: '100%' },
   // Clock card
   clockCard: { borderRadius: 20, marginBottom: 20, overflow: 'hidden' },
   clockCardInner: { alignItems: 'center', padding: 32 },

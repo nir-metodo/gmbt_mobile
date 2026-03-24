@@ -237,8 +237,8 @@ export default function DashboardScreen() {
         const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a: number, b: number) => a + b, 0) / durations.length) : 0;
         setPhoneCallStats({ total: calls.length, answered, missed, avgDuration });
       }
-    } catch (err) {
-      console.log('Dashboard fetch error:', err);
+    } catch {
+      // error handled by empty state UI
     } finally {
       setLoading(false);
     }

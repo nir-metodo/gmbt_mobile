@@ -2,22 +2,45 @@ import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { Lead, LeadStage } from '../../types';
 
+export interface LeadFilters {
+  searchTerm?: string;
+  stages?: string[];
+  statuses?: string[];
+  owners?: string[];
+  priorities?: string[];
+  sources?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  dateRangePreset?: string;
+}
+
 export const leadsApi = {
   async getAll(
     organization: string,
-    userId?: string,
-    dataVisibility?: string,
-    page?: number,
-    pageSize?: number,
-    searchTerm?: string,
+    options?: {
+      userId?: string;
+      dataVisibility?: string;
+      page?: number;
+      pageSize?: number;
+      filters?: LeadFilters;
+    },
   ): Promise<{ data: Lead[]; total: number }> {
+    const { userId, dataVisibility, page = 1, pageSize = 30, filters = {} } = options || {};
     const response = await axiosInstance.post(ENDPOINTS.GET_LEADS, {
       organization,
-      pageNumber: page || 1,
-      pageSize: pageSize || 5000,
-      searchTerm: searchTerm || '',
+      pageNumber: page,
+      pageSize,
+      searchTerm: filters.searchTerm || '',
       userId: userId || '',
       dataVisibility: dataVisibility || 'seeAll',
+      stages: filters.stages || [],
+      statuses: filters.statuses || [],
+      owners: filters.owners || [],
+      priorities: filters.priorities || [],
+      sources: filters.sources || [],
+      dateFrom: filters.dateFrom || '',
+      dateTo: filters.dateTo || '',
+      dateRangePreset: filters.dateRangePreset || '',
     });
     const raw = response.data;
     const items = raw?.Leads || raw?.Data || raw?.data || raw?.leads || (Array.isArray(raw) ? raw : []);
@@ -87,9 +110,7 @@ export const leadsApi = {
   },
 
   async getLeadFormSettings(organization: string): Promise<{ sections: any[]; formLayout: string[] }> {
-    const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_FORM_SETTINGS, {
-      organization,
-    });
+    const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_FORM_SETTINGS, { organization });
     const raw = response.data;
     if (raw?.error) return { sections: [], formLayout: [] };
     return {
@@ -97,4 +118,31 @@ export const leadsApi = {
       formLayout: Array.isArray(raw?.formLayout) ? raw.formLayout : [],
     };
   },
+
+  async getViews(organization: string): Promise<LeadView[]> {
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_VIEWS, { organization });
+      return Array.isArray(response.data) ? response.data : [];
+    } catch { return []; }
+  },
+
+  async saveView(organization: string, viewData: LeadView): Promise<LeadView | null> {
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.SAVE_LEAD_VIEW, { organization, viewData });
+      return response.data;
+    } catch { return null; }
+  },
+
+  async deleteView(organization: string, viewId: string): Promise<void> {
+    try {
+      await axiosInstance.post(ENDPOINTS.DELETE_LEAD_VIEW, { organization, viewId });
+    } catch {}
+  },
 };
+
+export interface LeadView {
+  id: string;
+  name: string;
+  filters: Record<string, any>;
+  builtIn?: boolean;
+}

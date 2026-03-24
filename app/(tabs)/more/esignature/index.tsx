@@ -71,7 +71,7 @@ export default function ESignatureListScreen() {
   const searchAnim = useRef(new Animated.Value(0)).current;
 
   const fetchDocuments = useCallback(async () => {
-    if (!user?.organization) return;
+    if (!user?.organization) { setLoading(false); return; }
     try {
       setError(null);
       const result = await esignatureApi.getDocuments(user.organization);
@@ -465,7 +465,7 @@ export default function ESignatureListScreen() {
         onPress={() => router.push('/(tabs)/more/esignature/create' as any)}
         style={[
           styles.fab,
-          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 },
+          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },
         ]}
         color="#FFFFFF"
         label={t('esignature.addDocument')}
@@ -571,7 +571,6 @@ const styles = StyleSheet.create({
   emptyTitle: { fontWeight: '600', marginTop: 8 },
   fab: {
     position: 'absolute',
-    end: 16,
     borderRadius: 16,
   },
   errorBanner: {

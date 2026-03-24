@@ -45,9 +45,11 @@ import {
 } from '../../../utils/formatters';
 import WebSocketService from '../../../services/websocket';
 import { MessageBubble } from '../../../components/chat/MessageBubble';
-import { ChatInput } from '../../../components/chat/ChatInput';
+import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/ChatInput';
 import { chatsApi } from '../../../services/api/chats';
-import type { Message, Template } from '../../../types';
+import { usersApi } from '../../../services/api/users';
+import { tasksApi } from '../../../services/api/tasks';
+import type { Message, Template, QuickMessage } from '../../../types';
 
 type ListItem =
   | {
@@ -114,11 +116,46 @@ export default function ChatConversationScreen() {
   const [scheduleText, setScheduleText] = useState('');
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
+  const [isScheduling, setIsScheduling] = useState(false);
   const [selectedTemplateForVars, setSelectedTemplateForVars] = useState<Template | null>(null);
   const [templateVariableValues, setTemplateVariableValues] = useState<Record<number, string>>({});
   const flatListRef = useRef<FlatList>(null);
+  const chatInputRef = useRef<ChatInputRef>(null);
   const wsRef = useRef<WebSocketService | null>(null);
   const prevMessageCount = useRef(0);
+
+  // Search
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Starred filter
+  const [starredFilter, setStarredFilter] = useState(false);
+
+  // Quick messages
+  const [quickMessages, setQuickMessages] = useState<QuickMessage[]>([]);
+  const [showQuickMessages, setShowQuickMessages] = useState(false);
+  const [isLoadingQuickMessages, setIsLoadingQuickMessages] = useState(false);
+
+  // Reply
+  const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
+
+  // Reactions
+  const [showReactions, setShowReactions] = useState(false);
+
+  // @mentions
+  const [orgUsers, setOrgUsers] = useState<any[]>([]);
+  const [showMentionPicker, setShowMentionPicker] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+
+  // Quick Actions sheet
+  const [showQuickActionsSheet, setShowQuickActionsSheet] = useState(false);
+
+  // Create Task from chat
+  const [showCreateTaskModal, setShowCreateTaskModal] = useState(false);
+  const [createTaskTitle, setCreateTaskTitle] = useState('');
+  const [createTaskDueDate, setCreateTaskDueDate] = useState('');
+  const [createTaskPriority, setCreateTaskPriority] = useState<'low' | 'medium' | 'high'>('medium');
+  const [isCreatingTask, setIsCreatingTask] = useState(false);
 
   const contactName = chat?.contactName || phoneNumber || '';
 
@@ -180,12 +217,15 @@ export default function ChatConversationScreen() {
       if (!user?.organization || !phoneNumber || isSendingTemplate) return;
       const indices = getTemplateVariableIndices(template);
       if (indices.length > 0) {
+        // Close template selector first — two modals open simultaneously blocks the second on iOS
+        setShowTemplateSelector(false);
         setSelectedTemplateForVars(template);
         setTemplateVariableValues(
           Object.fromEntries(indices.map((i) => [i, ''])),
         );
         return;
       }
+      setShowTemplateSelector(false);
       await doSendTemplate(template, []);
     },
     [user, phoneNumber, isSendingTemplate, getTemplateVariableIndices],
@@ -194,22 +234,32 @@ export default function ChatConversationScreen() {
   const doSendTemplate = useCallback(
     async (template: Template, templateVariableQuery: any[]) => {
       if (!user?.organization || !phoneNumber) return;
+      const templateId = template.id || template.templateId || template.Id || '';
+      if (!templateId) {
+        Alert.alert(t('common.error'), t('chats.templateSendError'));
+        return;
+      }
       setIsSendingTemplate(true);
       try {
         await chatsApi.sendTemplateMessage(
           user.organization,
           phoneNumber,
-          template.id || template.templateId || template.Id || '',
+          templateId,
           user.userId,
           templateVariableQuery,
         );
-        Alert.alert(t('common.success'), t('chats.templateSent'));
-        setShowTemplateSelector(false);
         setSelectedTemplateForVars(null);
         setTemplateVariableValues({});
         loadMessages(user.organization, phoneNumber);
-      } catch {
-        Alert.alert(t('common.error'), t('chats.templateSendError'));
+        // After template sent, re-check conversation status (still waiting for reply)
+        chatsApi.getConversationStatus(user.organization, phoneNumber as string).then((res) => {
+          const live = res?.IsConversationLiveByPhoneNumber ?? res?.isConversationLive ?? res?.isLive;
+          setConversationLive(live === true || live === 'true');
+        }).catch(() => {});
+        Alert.alert(t('common.success'), t('chats.templateSent'));
+      } catch (err: any) {
+        const msg = err?.response?.data?.Message || err?.message || t('chats.templateSendError');
+        Alert.alert(t('common.error'), msg);
       } finally {
         setIsSendingTemplate(false);
       }
@@ -244,6 +294,7 @@ export default function ChatConversationScreen() {
       Alert.alert(t('common.error'), t('chats.pickDateTime'));
       return;
     }
+    setIsScheduling(true);
     try {
       await chatsApi.scheduleMessage(
         user.organization,
@@ -255,6 +306,8 @@ export default function ChatConversationScreen() {
       setShowScheduleModal(false);
     } catch {
       Alert.alert(t('common.error'), t('chats.scheduleError'));
+    } finally {
+      setIsScheduling(false);
     }
   }, [user, phoneNumber, scheduleText, scheduleDate, scheduleTime, t]);
 
@@ -298,6 +351,12 @@ export default function ChatConversationScreen() {
         if (msg.messageId) {
           addMessage(msg);
           markAsRead(user.organization, phoneNumber);
+          // When customer replies (inbound message), open the 24h conversation window
+          const dir = (msg.direction || '').toLowerCase();
+          const isInbound = dir === 'inbound' || msg.from === phoneNumber;
+          if (isInbound) {
+            setConversationLive(true);
+          }
         }
       }
     });
@@ -329,6 +388,15 @@ export default function ChatConversationScreen() {
       msgs = msgs.filter((m) => m.type === 'internal' || (m as any).isInternalMessage === true);
     } else {
       msgs = msgs.filter((m) => m.type !== 'internal' && (m as any).isInternalMessage !== true);
+    }
+    if (starredFilter) {
+      msgs = msgs.filter((m) => m.isStarred === true);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      msgs = msgs.filter((m) =>
+        (m.text || m.body || '').toLowerCase().includes(q)
+      );
     }
 
     const sorted = [...msgs].sort(
@@ -382,35 +450,101 @@ export default function ChatConversationScreen() {
     }
 
     return items;
-  }, [currentMessages, lang, messageMode]);
+  }, [currentMessages, lang, messageMode, starredFilter, searchQuery, user, phoneNumber]);
+
+  // Quick Actions sheet
+  const handleQuickActionsPress = useCallback(() => {
+    setShowQuickActionsSheet(true);
+  }, []);
+
+  // Quick messages loader (called from inside the quick actions sheet)
+  const handleQuickMessagePress = useCallback(async () => {
+    if (!user?.organization) return;
+    setIsLoadingQuickMessages(true);
+    setShowQuickMessages(true);
+    try {
+      const data = await chatsApi.getQuickMessages(user.organization);
+      setQuickMessages(data);
+    } catch {
+      setQuickMessages([]);
+    } finally {
+      setIsLoadingQuickMessages(false);
+    }
+  }, [user?.organization]);
+
+  // Create task from chat
+  const handleCreateTaskInChat = useCallback(async () => {
+    if (!user?.organization || !createTaskTitle.trim()) return;
+    setIsCreatingTask(true);
+    try {
+      await tasksApi.create(
+        user.organization,
+        {
+          title: createTaskTitle.trim(),
+          dueDate: createTaskDueDate || undefined,
+          priority: createTaskPriority,
+          relatedTo: {
+            type: 'contact',
+            entityId: phoneNumber as string,
+            entityName: contactName,
+          },
+          assignedToId: user.uID || user.userId || '',
+          assignedTo: user.uID || user.userId || '',
+          assignedToName: user.fullname || '',
+          status: 'open',
+          source: 'chat',
+        } as any,
+        user.uID || user.userId || '',
+        user.fullname || '',
+      );
+      setShowCreateTaskModal(false);
+      setCreateTaskTitle('');
+      setCreateTaskDueDate('');
+      setCreateTaskPriority('medium');
+      Alert.alert(t('common.success'), t('tasks.taskCreated', 'המשימה נוצרה'));
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err.message || t('errors.generic'));
+    } finally {
+      setIsCreatingTask(false);
+    }
+  }, [user, phoneNumber, contactName, createTaskTitle, createTaskDueDate, createTaskPriority, t]);
+
+  const handleSelectQuickMessage = useCallback((msg: QuickMessage) => {
+    setShowQuickMessages(false);
+    const text = (msg as any).text || (msg as any).message || (msg as any).body || '';
+    if (text) {
+      chatInputRef.current?.insertText(text);
+    }
+  }, []);
 
   // Send handler
   const handleSend = useCallback(
     async (text: string) => {
       if (!user?.organization || !phoneNumber) return;
-      if (isInternalNote) {
-        await sendInternalMessage(
-          user.organization,
-          phoneNumber,
-          text,
-          user.fullname,
-        );
-      } else {
-        await sendMessage(
-          user.organization,
-          phoneNumber,
-          text,
-          user.fullname,
-        );
+      try {
+        if (isInternalNote) {
+          await sendInternalMessage(
+            user.organization,
+            phoneNumber,
+            text,
+            user.fullname,
+          );
+        } else {
+          await sendMessage(
+            user.organization,
+            phoneNumber,
+            text,
+            user.fullname,
+            user.uID || user.userId || '',
+            replyToMessage?.messageId,
+          );
+        }
+        setReplyToMessage(null);
+      } catch {
+        Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
       }
     },
-    [
-      user,
-      phoneNumber,
-      isInternalNote,
-      sendMessage,
-      sendInternalMessage,
-    ],
+    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, t],
   );
 
   const sendPickedMedia = useCallback(async (uri: string, fileName: string, mimeType: string, fileSize?: number) => {
@@ -514,6 +648,59 @@ export default function ChatConversationScreen() {
     await Clipboard.setStringAsync(msgText);
     setSelectedMessage(null);
   }, [selectedMessage]);
+
+  const handleReply = useCallback(() => {
+    if (!selectedMessage) return;
+    setReplyToMessage(selectedMessage);
+    setSelectedMessage(null);
+  }, [selectedMessage]);
+
+  const handleSendReaction = useCallback(async (emoji: string) => {
+    if (!user?.organization || !selectedMessage || !phoneNumber) return;
+    setSelectedMessage(null);
+    setShowReactions(false);
+    try {
+      await chatsApi.sendReaction(
+        user.organization,
+        selectedMessage.messageId,
+        phoneNumber,
+        emoji,
+      );
+    } catch {
+      Alert.alert(t('common.error'), t('chats.reactionFailed', 'שליחת הריאקציה נכשלה'));
+    }
+  }, [user?.organization, selectedMessage, phoneNumber, t]);
+
+  // @mention detection
+  const handleTextChange = useCallback((text: string) => {
+    if (!isInternalNote) return;
+    const atIdx = text.lastIndexOf('@');
+    if (atIdx >= 0 && (atIdx === 0 || text[atIdx - 1] === ' ' || text[atIdx - 1] === '\n')) {
+      const query = text.slice(atIdx + 1).toLowerCase();
+      setMentionQuery(query);
+      if (!showMentionPicker) {
+        setShowMentionPicker(true);
+        if (orgUsers.length === 0 && user?.organization) {
+          usersApi.getAll(user.organization).then(setOrgUsers).catch(() => {});
+        }
+      }
+    } else {
+      setShowMentionPicker(false);
+    }
+  }, [isInternalNote, showMentionPicker, orgUsers.length, user?.organization]);
+
+  const filteredMentionUsers = useMemo(() => {
+    if (!mentionQuery) return orgUsers.slice(0, 8);
+    return orgUsers
+      .filter((u: any) => (u.fullname || u.name || '').toLowerCase().includes(mentionQuery))
+      .slice(0, 8);
+  }, [orgUsers, mentionQuery]);
+
+  const handleSelectMention = useCallback((mentionUser: any) => {
+    const name = mentionUser.fullname || mentionUser.name || '';
+    chatInputRef.current?.insertText(`@${name} `);
+    setShowMentionPicker(false);
+  }, []);
 
   const handleScroll = useCallback((e: any) => {
     setShowScrollBtn(
@@ -695,21 +882,32 @@ export default function ChatConversationScreen() {
                 }}
               >
                 <Menu.Item
-                  leadingIcon="star-outline"
-                  onPress={() => setMenuVisible(false)}
-                  title={t('chats.starredMessages')}
+                  leadingIcon={starredFilter ? 'star' : 'star-outline'}
+                  onPress={() => {
+                    setMenuVisible(false);
+                    setStarredFilter((v) => !v);
+                    setSearchVisible(false);
+                    setSearchQuery('');
+                  }}
+                  title={starredFilter ? t('chats.allMessages', 'All Messages') : t('chats.starredMessages')}
                 />
                 <Menu.Item
                   leadingIcon="magnify"
-                  onPress={() => setMenuVisible(false)}
-                  title={t(
-                    'chats.searchPlaceholder',
-                  )}
+                  onPress={() => {
+                    setMenuVisible(false);
+                    setSearchVisible((v) => !v);
+                    if (searchVisible) setSearchQuery('');
+                    setStarredFilter(false);
+                  }}
+                  title={t('chats.searchPlaceholder')}
                 />
                 <Menu.Item
                   leadingIcon="lightning-bolt"
-                  onPress={() => setMenuVisible(false)}
-                  title={t('chats.quickMessages')}
+                  onPress={() => {
+                    setMenuVisible(false);
+                    handleQuickActionsPress();
+                  }}
+                  title={t('chats.quickActions', 'פעולות מהירות')}
                 />
                 <Menu.Item
                   leadingIcon="export-variant"
@@ -737,6 +935,39 @@ export default function ChatConversationScreen() {
             </View>
           </View>
         </View>
+
+        {/* Search bar */}
+        {searchVisible && (
+          <View style={[styles.searchBarContainer, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+            <MaterialCommunityIcons name="magnify" size={20} color={theme.colors.onSurfaceVariant} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder={t('chats.searchPlaceholder')}
+              placeholderTextColor={theme.custom?.placeholder || theme.colors.onSurfaceVariant}
+              style={[styles.searchBarInput, { color: theme.colors.onSurface }]}
+              autoFocus
+              clearButtonMode="while-editing"
+            />
+            <Pressable onPress={() => { setSearchVisible(false); setSearchQuery(''); }} hitSlop={8}>
+              <MaterialCommunityIcons name="close" size={20} color={theme.colors.onSurfaceVariant} />
+            </Pressable>
+          </View>
+        )}
+
+        {/* Starred filter banner */}
+        {starredFilter && !searchVisible && (
+          <Pressable
+            onPress={() => setStarredFilter(false)}
+            style={[styles.modeBanner, { backgroundColor: theme.dark ? '#3a2e00' : '#FFF8E1' }]}
+          >
+            <MaterialCommunityIcons name="star" size={16} color="#FFB300" />
+            <Text style={[styles.modeBannerText, { color: '#FF8F00' }]}>
+              {t('chats.starredMessages')}
+            </Text>
+            <MaterialCommunityIcons name="close" size={16} color="#FF8F00" />
+          </Pressable>
+        )}
 
         {/* Message mode indicator */}
         {messageMode === 'internal' && (
@@ -915,14 +1146,19 @@ export default function ChatConversationScreen() {
           </View>
         ) : (
           <ChatInput
+            ref={chatInputRef}
             onSend={handleSend}
             onAttachmentPress={handleAttachment}
             isInternalNote={isInternalNote}
-            onToggleInternalNote={() =>
-              setIsInternalNote((v) => !v)
-            }
-            onQuickMessagePress={() => {}}
+            onToggleInternalNote={() => setIsInternalNote((v) => !v)}
+            onQuickMessagePress={handleQuickActionsPress}
             isSending={isSending}
+            replyTo={replyToMessage ? {
+              text: replyToMessage.text || replyToMessage.body || '',
+              senderName: replyToMessage.senderName || replyToMessage.sentByName || (replyToMessage.direction?.toLowerCase() === 'outbound' ? (user?.fullname || '') : contactName),
+            } : null}
+            onCancelReply={() => setReplyToMessage(null)}
+            onTextChange={handleTextChange}
           />
         )}
 
@@ -990,8 +1226,8 @@ export default function ChatConversationScreen() {
               ) : (
                 <FlatList
                   data={templates}
-                  keyExtractor={(item) =>
-                    item.id || item.templateId || item.name
+                  keyExtractor={(item, index) =>
+                    item.id || item.templateId || `${item.name}-${index}`
                   }
                   style={{ maxHeight: 400 }}
                   renderItem={({ item }) => (
@@ -1311,28 +1547,20 @@ export default function ChatConversationScreen() {
                   style={({ pressed }) => [
                     styles.scheduleSubmitBtn,
                     {
-                      backgroundColor: pressed
-                        ? '#1a7a5e'
-                        : '#25D366',
+                      backgroundColor: pressed ? '#1a7a5e' : '#25D366',
                       opacity:
-                        !scheduleText.trim() ||
-                        !scheduleDate ||
-                        !scheduleTime
+                        !scheduleText.trim() || !scheduleDate || !scheduleTime || isScheduling
                           ? 0.5
                           : 1,
                     },
                   ]}
-                  disabled={
-                    !scheduleText.trim() ||
-                    !scheduleDate ||
-                    !scheduleTime
-                  }
+                  disabled={!scheduleText.trim() || !scheduleDate || !scheduleTime || isScheduling}
                 >
-                  <MaterialCommunityIcons
-                    name="clock-check-outline"
-                    size={20}
-                    color="#fff"
-                  />
+                  {isScheduling ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <MaterialCommunityIcons name="clock-check-outline" size={20} color="#fff" />
+                  )}
                   <Text style={styles.closedBannerBtnText}>
                     {t('chats.scheduleMessage')}
                   </Text>
@@ -1426,35 +1654,235 @@ export default function ChatConversationScreen() {
               </Pressable>
 
               <Pressable
-                onPress={() =>
-                  setSelectedMessage(null)
-                }
+                onPress={handleReply}
                 style={({ pressed }) => [
                   styles.actionItem,
-                  pressed && {
-                    backgroundColor:
-                      theme.colors.surfaceVariant,
-                  },
+                  pressed && { backgroundColor: theme.colors.surfaceVariant },
                 ]}
               >
-                <MaterialCommunityIcons
-                  name="reply"
-                  size={22}
-                  color={theme.colors.onSurface}
-                />
-                <Text
-                  variant="bodyLarge"
-                  style={{
-                    marginStart: 16,
-                    color: theme.colors.onSurface,
-                  }}
-                >
+                <MaterialCommunityIcons name="reply" size={22} color={theme.colors.onSurface} />
+                <Text variant="bodyLarge" style={{ marginStart: 16, color: theme.colors.onSurface }}>
                   {t('chats.reply', 'Reply')}
                 </Text>
               </Pressable>
+
+              {/* Reactions row */}
+              <View style={styles.reactionsRow}>
+                {['👍', '❤️', '😂', '😮', '😢', '🙏', '✅', '🔥'].map((emoji) => (
+                  <Pressable
+                    key={emoji}
+                    onPress={() => handleSendReaction(emoji)}
+                    style={({ pressed }) => [styles.emojiBtn, pressed && { opacity: 0.6 }]}
+                  >
+                    <Text style={styles.emojiText}>{emoji}</Text>
+                  </Pressable>
+                ))}
+              </View>
             </View>
           </Pressable>
         </Modal>
+
+        {/* Quick Messages Bottom Sheet */}
+        <Modal
+          visible={showQuickMessages}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowQuickMessages(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
+              <View style={styles.actionSheetHandle} />
+              <View style={styles.templateSheetHeader}>
+                <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
+                  {t('chats.quickMessages')}
+                </Text>
+                <IconButton icon="close" size={20} onPress={() => setShowQuickMessages(false)} />
+              </View>
+              {isLoadingQuickMessages ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator size="large" color={theme.colors.primary} />
+                </View>
+              ) : quickMessages.length === 0 ? (
+                <View style={styles.emptyTemplates}>
+                  <MaterialCommunityIcons name="lightning-bolt-outline" size={48} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 12, textAlign: 'center' }}>
+                    {t('chats.noQuickMessages', 'אין הודעות מהירות מוגדרות')}
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                  {quickMessages.map((qm: any, idx: number) => (
+                    <Pressable
+                      key={qm.id || idx}
+                      onPress={() => handleSelectQuickMessage(qm)}
+                      style={({ pressed }) => [
+                        styles.templateItem,
+                        pressed && { backgroundColor: theme.colors.surfaceVariant },
+                      ]}
+                    >
+                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }} numberOfLines={1}>
+                        {qm.title || qm.name || qm.shortcut || ''}
+                      </Text>
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }} numberOfLines={2}>
+                        {qm.text || qm.message || qm.body || ''}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* Quick Actions Bottom Sheet */}
+        <Modal
+          visible={showQuickActionsSheet}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowQuickActionsSheet(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
+              <View style={styles.actionSheetHandle} />
+              <View style={styles.templateSheetHeader}>
+                <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
+                  {t('chats.quickActions', 'פעולות מהירות')}
+                </Text>
+                <IconButton icon="close" size={20} onPress={() => setShowQuickActionsSheet(false)} />
+              </View>
+              {[
+                { icon: 'lightning-bolt', label: t('chats.quickMessages'), color: '#FF9800', action: () => { setShowQuickActionsSheet(false); handleQuickMessagePress(); } },
+                { icon: 'clipboard-check-outline', label: t('tasks.addTask'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setCreateTaskTitle(''); setCreateTaskDueDate(''); setCreateTaskPriority('medium'); setShowCreateTaskModal(true); } },
+                { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
+                { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
+              ].map((item) => (
+                <Pressable
+                  key={item.label}
+                  onPress={item.action}
+                  style={({ pressed }) => [
+                    styles.templateItem,
+                    { flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center' },
+                    pressed && { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                >
+                  <View style={[styles.quickActionIcon, { backgroundColor: `${item.color}20` }]}>
+                    <MaterialCommunityIcons name={item.icon as any} size={22} color={item.color} />
+                  </View>
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginStart: 12 }}>
+                    {item.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        </Modal>
+
+        {/* Create Task Modal */}
+        <Modal
+          visible={showCreateTaskModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowCreateTaskModal(false)}
+        >
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+            <View style={styles.modalOverlay}>
+              <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
+                <View style={styles.actionSheetHandle} />
+                <View style={styles.templateSheetHeader}>
+                  <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
+                    {t('tasks.addTask')}
+                  </Text>
+                  <IconButton icon="close" size={20} onPress={() => setShowCreateTaskModal(false)} />
+                </View>
+                <View style={{ paddingHorizontal: 16, gap: 12 }}>
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {t('tasks.taskTitle', 'כותרת משימה')} *
+                  </Text>
+                  <TextInput
+                    value={createTaskTitle}
+                    onChangeText={setCreateTaskTitle}
+                    placeholder={t('tasks.taskTitle', 'כותרת משימה')}
+                    style={[styles.scheduleInput, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline }]}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    autoFocus
+                  />
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {t('tasks.dueDate', 'תאריך יעד')} (YYYY-MM-DD)
+                  </Text>
+                  <TextInput
+                    value={createTaskDueDate}
+                    onChangeText={setCreateTaskDueDate}
+                    placeholder="YYYY-MM-DD"
+                    style={[styles.scheduleInput, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline }]}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    keyboardType="numbers-and-punctuation"
+                  />
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {t('tasks.priority', 'עדיפות')}
+                  </Text>
+                  <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginBottom: 4 }}>
+                    {(['low', 'medium', 'high'] as const).map((p) => (
+                      <Pressable
+                        key={p}
+                        onPress={() => setCreateTaskPriority(p)}
+                        style={[
+                          styles.priorityChip,
+                          createTaskPriority === p && { backgroundColor: '#2e615520', borderColor: '#2e6155', borderWidth: 1.5 },
+                        ]}
+                      >
+                        <Text style={{ fontSize: 12, color: createTaskPriority === p ? '#2e6155' : theme.colors.onSurfaceVariant, fontWeight: createTaskPriority === p ? '700' : '400' }}>
+                          {t(`tasks.${p}`, p)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  {contactName ? (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {t('tasks.for', 'עבור')}: {contactName}
+                    </Text>
+                  ) : null}
+                </View>
+                <View style={[styles.scheduleActions, { paddingHorizontal: 16, marginTop: 16 }]}>
+                  <Button mode="outlined" onPress={() => setShowCreateTaskModal(false)} style={{ flex: 1 }}>
+                    {t('common.cancel')}
+                  </Button>
+                  <Button
+                    mode="contained"
+                    onPress={handleCreateTaskInChat}
+                    style={{ flex: 1 }}
+                    buttonColor="#2e6155"
+                    textColor="#fff"
+                    loading={isCreatingTask}
+                    disabled={isCreatingTask || !createTaskTitle.trim()}
+                  >
+                    {t('common.save')}
+                  </Button>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* @mention picker */}
+        {showMentionPicker && isInternalNote && filteredMentionUsers.length > 0 && (
+          <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline }]}>
+            {filteredMentionUsers.map((u: any, idx: number) => (
+              <Pressable
+                key={u.userId || u.uID || idx}
+                onPress={() => handleSelectMention(u)}
+                style={({ pressed }) => [
+                  styles.mentionItem,
+                  pressed && { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+              >
+                <MaterialCommunityIcons name="account-circle-outline" size={18} color={theme.colors.primary} />
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginStart: 8 }}>
+                  {u.fullname || u.name || ''}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
       </KeyboardAvoidingView>
     </>
   );
@@ -1630,11 +2058,63 @@ const styles = StyleSheet.create({
     paddingVertical: 40,
   },
   templateItem: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(128,128,128,0.15)',
+  },
+  reactionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(128,128,128,0.2)',
+  },
+  emojiBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+  },
+  emojiText: {
+    fontSize: 24,
+  },
+  searchBarContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  searchBarInput: {
+    flex: 1,
+    fontSize: 15,
+    paddingVertical: 4,
+  },
+  mentionPicker: {
+    position: 'absolute',
+    bottom: 70,
+    left: 0,
+    right: 0,
+    maxHeight: 200,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  mentionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(128,128,128,0.15)',
   },
   scheduleForm: {
     paddingHorizontal: 16,
@@ -1654,5 +2134,21 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 10,
     marginTop: 16,
+  },
+  quickActionIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  priorityChip: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
 });

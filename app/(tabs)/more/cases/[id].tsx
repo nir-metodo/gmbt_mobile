@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -7,7 +7,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Linking,
 } from 'react-native';
 import {
   Text,
@@ -31,9 +30,11 @@ import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
 import { contactsApi } from '../../../../services/api/contacts';
-import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
+import { usersApi } from '../../../../services/api/users';
+import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import ContactLookup from '../../../../components/ContactLookup';
+import type { OrgUser } from '../../../../types';
 import {
   DynamicFieldsSectionView,
   DynamicFieldsSectionForm,
@@ -73,7 +74,11 @@ function getStatusColor(status: string): string {
 
 export default function CaseDetailScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, contactPhone: prefillPhone, prefillContactName } = useLocalSearchParams<{
+    id: string;
+    contactPhone?: string;
+    prefillContactName?: string;
+  }>();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign, writingDirection } = useRTL();
@@ -81,6 +86,8 @@ export default function CaseDetailScreen() {
   const lang = i18n.language as 'en' | 'he';
 
   const user = useAuthStore((s) => s.user);
+
+  const isNew = id === 'new';
 
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [caseSettings, setCaseSettings] = useState<{ sla?: { enabled: boolean; responseTime: number; resolutionTime: number } } | null>(null);
@@ -99,6 +106,10 @@ export default function CaseDetailScreen() {
   const [formPriority, setFormPriority] = useState<string>('medium');
   const [formCategory, setFormCategory] = useState('');
   const [formAssignedTo, setFormAssignedTo] = useState('');
+  const [formAssignedToId, setFormAssignedToId] = useState('');
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
+  const [orgUsersLoading, setOrgUsersLoading] = useState(false);
+  const [userPickerExpanded, setUserPickerExpanded] = useState(false);
   const [formSource, setFormSource] = useState('');
   const [formContactName, setFormContactName] = useState('');
   const [formContactPhone, setFormContactPhone] = useState('');
@@ -110,9 +121,30 @@ export default function CaseDetailScreen() {
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [addingNote, setAddingNote] = useState(false);
+  const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+
+  const fetchTimeline = useCallback(async () => {
+    if (!user?.organization || !id || isNew) return;
+    setTimelineLoading(true);
+    try {
+      const data = await contactsApi.getTimeline(user.organization, `case_${id}`);
+      const arr = Array.isArray(data) ? data : (data as any)?.events || [];
+      setTimelineEvents(arr);
+    } catch {
+      // non-critical
+    } finally {
+      setTimelineLoading(false);
+    }
+  }, [user?.organization, id, isNew]);
 
   const fetchCase = useCallback(async () => {
-    if (!user?.organization || !id) return;
+    if (!user?.organization) return;
+    if (isNew) {
+      setLoading(false);
+      return;
+    }
+    if (!id) return;
     try {
       setError(null);
       const [found, settings] = await Promise.all([
@@ -132,11 +164,30 @@ export default function CaseDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, id, t]);
+  }, [user?.organization, id, isNew, t]);
 
   useEffect(() => {
     fetchCase();
-  }, [fetchCase]);
+    fetchTimeline();
+  }, [fetchCase, fetchTimeline]);
+
+  // Pre-fill form for "new" case from URL params (runs once on mount)
+  useEffect(() => {
+    if (isNew) {
+      setFormContactPhone(prefillPhone || '');
+      setFormContactName(prefillContactName || '');
+      setFormStatus('open');
+      setFormPriority('medium');
+      // Load case settings for dynamic fields
+      if (user?.organization) {
+        casesApi.getSettings(user.organization).then((settings) => {
+          if (settings?.sla) setCaseSettings(settings);
+          if (Array.isArray(settings?.formSections)) setCaseFormSections(settings.formSections);
+          if (Array.isArray(settings?.formLayout)) setCaseFormLayout(settings.formLayout);
+        }).catch(() => {});
+      }
+    }
+  }, [isNew, prefillPhone, prefillContactName, user?.organization]);
 
   const openEditModal = useCallback(() => {
     if (!caseData) return;
@@ -145,7 +196,8 @@ export default function CaseDetailScreen() {
     setFormStatus(caseData.status);
     setFormPriority(caseData.priority);
     setFormCategory(caseData.category || '');
-    setFormAssignedTo(caseData.assignedTo || '');
+    setFormAssignedTo(caseData.assignedToName || caseData.assignedTo || '');
+    setFormAssignedToId(caseData.assignedTo || '');
     setFormSource((caseData as any).source || '');
     setFormContactName(caseData.contactName || '');
     setFormContactPhone(caseData.contactPhone || (caseData as any).contact_phone || '');
@@ -161,8 +213,42 @@ export default function CaseDetailScreen() {
       }
     });
     setFormDynamicFields({ ...customFields, ...dynamicVals });
+    setUserPickerExpanded(false);
     setEditModalVisible(true);
-  }, [caseData]);
+    if (orgUsers.length === 0) {
+      setOrgUsersLoading(true);
+      usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+    }
+  }, [caseData, user?.organization, orgUsers.length]);
+
+  const handleCreate = useCallback(async () => {
+    if (!user?.organization || !formTitle.trim()) return;
+    setSaving(true);
+    try {
+      await casesApi.create(user.organization, {
+        title: formTitle.trim(),
+        description: formDescription.trim() || undefined,
+        status: formStatus as Case['status'],
+        priority: formPriority as Case['priority'],
+        category: formCategory.trim() || undefined,
+        assignedTo: formAssignedToId || formAssignedTo.trim() || undefined,
+        assignedToName: formAssignedTo.trim() || undefined,
+        source: formSource || undefined,
+        contactName: formContactName.trim() || undefined,
+        contactPhone: formContactPhone.trim() || undefined,
+        dueDate: formDueDate.trim() || undefined,
+        tags: formTags.trim() || undefined,
+        notes: formNotes.trim() || undefined,
+        customFields: formDynamicFields,
+        ...formDynamicFields,
+      }, user?.fullname, user?.userId || user?.uID || '');
+      router.back();
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err.message || t('errors.generic'));
+    } finally {
+      setSaving(false);
+    }
+  }, [user, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formSource, formContactName, formContactPhone, formDueDate, formTags, formNotes, formDynamicFields, router, t]);
 
   const handleSave = useCallback(async () => {
     if (!user?.organization || !caseData || !formTitle.trim()) return;
@@ -174,7 +260,8 @@ export default function CaseDetailScreen() {
         status: formStatus,
         priority: formPriority as Case['priority'],
         category: formCategory.trim() || undefined,
-        assignedTo: formAssignedTo.trim() || undefined,
+        assignedTo: formAssignedToId || formAssignedTo.trim() || undefined,
+        assignedToName: formAssignedTo.trim() || undefined,
         source: formSource || undefined,
         contactName: formContactName.trim() || undefined,
         contactPhone: formContactPhone.trim() || undefined,
@@ -184,7 +271,7 @@ export default function CaseDetailScreen() {
         notes: formNotes.trim() || undefined,
         customFields: formDynamicFields,
         ...formDynamicFields,
-      }, user?.fullname);
+      }, user?.fullname, user?.userId || user?.uID || '');
       setEditModalVisible(false);
       await fetchCase();
     } catch (err: any) {
@@ -232,12 +319,13 @@ export default function CaseDetailScreen() {
       );
       setNoteText('');
       setNoteModalVisible(false);
+      fetchTimeline();
     } catch {
       Alert.alert(t('common.error'));
     } finally {
       setAddingNote(false);
     }
-  }, [user, caseData, noteText, t]);
+  }, [user, caseData, noteText, t, fetchTimeline]);
 
   const handleStatusChange = useCallback(
     async (newStatus: string) => {
@@ -259,6 +347,113 @@ export default function CaseDetailScreen() {
     return (
       <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
         <ActivityIndicator size="large" color={theme.colors.primary} />
+      </View>
+    );
+  }
+
+  if (isNew) {
+    return (
+      <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
+        <View style={[styles.header, { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 4 }]}>
+          <View style={[styles.headerRow, { flexDirection }]}>
+            <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} iconColor={theme.custom.headerText} size={24} onPress={() => router.back()} />
+            <Text variant="titleMedium" style={[styles.headerTitleText, { flex: 1, textAlign, color: theme.custom.headerText }]}>
+              {t('cases.createCase', 'פנייה חדשה')}
+            </Text>
+          </View>
+        </View>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }} keyboardShouldPersistTaps="handled">
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.caseTitle')} *</Text>
+            <TextInput
+              value={formTitle}
+              onChangeText={setFormTitle}
+              placeholder={t('cases.caseTitle')}
+              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign, writingDirection }]}
+              placeholderTextColor={theme.colors.onSurfaceVariant}
+            />
+
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.description', 'תיאור')}</Text>
+            <TextInput
+              value={formDescription}
+              onChangeText={setFormDescription}
+              placeholder={t('cases.description', 'תאר את הבעיה...')}
+              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, height: 80, textAlignVertical: 'top', textAlign, writingDirection }]}
+              placeholderTextColor={theme.colors.onSurfaceVariant}
+              multiline
+            />
+
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.priority', 'עדיפות')}</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={[{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8 }]}>
+                {PRIORITIES.map((p) => (
+                  <Pressable
+                    key={p}
+                    onPress={() => setFormPriority(p)}
+                    style={[styles.formChipNew, formPriority === p && { backgroundColor: `${PRIORITY_COLORS[p]}20`, borderColor: PRIORITY_COLORS[p], borderWidth: 1.5 }]}
+                  >
+                    <Text style={{ fontSize: 13, color: formPriority === p ? PRIORITY_COLORS[p] : theme.colors.onSurfaceVariant, fontWeight: formPriority === p ? '700' : '400' }}>{t(`cases.${p}`, p)}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </ScrollView>
+
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.contactName', 'שם איש קשר')}</Text>
+            <TextInput
+              value={formContactName}
+              onChangeText={setFormContactName}
+              placeholder={t('cases.contactName', 'שם')}
+              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign, writingDirection }]}
+              placeholderTextColor={theme.colors.onSurfaceVariant}
+            />
+
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.contactPhone', 'טלפון')}</Text>
+            <TextInput
+              value={formContactPhone}
+              onChangeText={setFormContactPhone}
+              placeholder={t('cases.contactPhone', 'מספר טלפון')}
+              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline }]}
+              placeholderTextColor={theme.colors.onSurfaceVariant}
+              keyboardType="phone-pad"
+            />
+
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.category', 'קטגוריה')}</Text>
+            <TextInput
+              value={formCategory}
+              onChangeText={setFormCategory}
+              placeholder={t('cases.category', 'קטגוריה')}
+              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign, writingDirection }]}
+              placeholderTextColor={theme.colors.onSurfaceVariant}
+            />
+
+            <DynamicFieldsSectionForm
+              sections={caseFormSections}
+              values={formDynamicFields}
+              onChange={(key, val) => setFormDynamicFields((prev) => ({ ...prev, [key]: val }))}
+              lang={lang}
+              formLayout={caseFormLayout}
+              theme={theme}
+              textAlign={textAlign}
+              writingDirection={writingDirection}
+              flexDirection={flexDirection}
+            />
+
+            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 12, marginTop: 8, paddingBottom: insets.bottom + 20 }}>
+              <Button mode="outlined" onPress={() => router.back()} style={{ flex: 1 }}>{t('common.cancel')}</Button>
+              <Button
+                mode="contained"
+                onPress={handleCreate}
+                style={{ flex: 1 }}
+                buttonColor={theme.colors.primary}
+                textColor="#fff"
+                loading={saving}
+                disabled={saving || !formTitle.trim()}
+              >
+                {t('common.save')}
+              </Button>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </View>
     );
   }
@@ -504,12 +699,12 @@ export default function CaseDetailScreen() {
               <Pressable
                 onPress={() => {
                   if (caseData.contactId) {
-                    router.push({ pathname: '/(tabs)/contacts', params: { contactId: caseData.contactId } });
+                    router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: caseData.contactId } });
                   }
                 }}
                 style={styles.detailRow}
               >
-                <View style={[styles.detailIcon, { backgroundColor: `${theme.colors.secondary}18` }]}>
+                <View style={[styles.detailIcon, { backgroundColor: withAlpha(theme.colors.secondary, 0.094) }]}>
                   <MaterialCommunityIcons name="account" size={20} color={theme.colors.secondary} />
                 </View>
                 <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
@@ -675,6 +870,51 @@ export default function CaseDetailScreen() {
           formLayout={caseFormLayout}
         />
 
+        {/* Timeline / Notes */}
+        <View
+          style={[
+            styles.sectionCard,
+            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+          ]}
+        >
+          <View style={[styles.sectionHeader, { flexDirection }]}>
+            <View style={[styles.sectionIconCircle, { backgroundColor: '#2e615518' }]}>
+              <MaterialCommunityIcons name="timeline-text-outline" size={18} color="#2e6155" />
+            </View>
+            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, flex: 1, textAlign }]}>
+              {t('contacts.timeline')}
+            </Text>
+          </View>
+
+          {timelineLoading ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 12 }} />
+          ) : timelineEvents.length === 0 ? (
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', paddingVertical: 12 }}>
+              {t('timeline.noEvents')}
+            </Text>
+          ) : (
+            timelineEvents.slice(0, 15).map((ev: any, idx: number) => (
+              <View key={ev.id || idx} style={[styles.timelineEvent, { borderLeftColor: '#2e615540' }]}>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurface, lineHeight: 20 }}>
+                  {ev.notes || ev.description || ev.text || ev.note || ''}
+                </Text>
+                <View style={[{ flexDirection: 'row', gap: 8, marginTop: 4 }]}>
+                  {ev.createdByName || ev.userName ? (
+                    <Text variant="labelSmall" style={{ color: '#2e6155', fontWeight: '600' }}>
+                      {ev.createdByName || ev.userName}
+                    </Text>
+                  ) : null}
+                  {ev.createdOn || ev.createdAt || ev.timestamp ? (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {formatRelativeTime(ev.createdOn || ev.createdAt || ev.timestamp, lang)}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+
         <View style={{ height: insets.bottom + 24 }} />
       </ScrollView>
 
@@ -836,7 +1076,7 @@ export default function CaseDetailScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="tag" />}
+                right={<TextInput.Icon icon="tag" />}
               />
 
               <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
@@ -870,16 +1110,62 @@ export default function CaseDetailScreen() {
                 </View>
               </ScrollView>
 
-              <TextInput
-                label={t('cases.assignedTo')}
-                value={formAssignedTo}
-                onChangeText={setFormAssignedTo}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="account-check" />}
-              />
+              {/* Assigned to - user picker */}
+              <Pressable
+                onPress={() => {
+                  setUserPickerExpanded((v) => !v);
+                  if (orgUsers.length === 0 && !orgUsersLoading) {
+                    setOrgUsersLoading(true);
+                    usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+                  }
+                }}
+                style={[
+                  styles.formInput,
+                  {
+                    borderWidth: 1,
+                    borderRadius: 4,
+                    borderColor: userPickerExpanded ? theme.colors.primary : theme.colors.outline,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    backgroundColor: theme.colors.surface,
+                  },
+                ]}
+              >
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 2 }}>
+                  {t('cases.assignedTo')}
+                </Text>
+                <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+                  <MaterialCommunityIcons name="account-check" size={16} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="bodyMedium" style={{ flex: 1, color: formAssignedTo ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                    {orgUsersLoading ? t('common.loading') || 'טוען...' : (formAssignedTo || t('cases.selectAssignee') || 'בחר נציג')}
+                  </Text>
+                  <MaterialCommunityIcons name={userPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+                </View>
+              </Pressable>
+              {userPickerExpanded && (
+                <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 4, marginTop: -14, marginBottom: 14, overflow: 'hidden' }}>
+                  <Pressable
+                    style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8 }]}
+                    onPress={() => { setFormAssignedTo(''); setFormAssignedToId(''); setUserPickerExpanded(false); }}
+                  >
+                    <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('common.none') || 'ללא'}</Text>
+                  </Pressable>
+                  <Divider />
+                  {orgUsers.map((u) => (
+                    <Pressable
+                      key={u.uID || u.userId}
+                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId) === formAssignedToId ? `${theme.colors.primary}15` : 'transparent' }]}
+                      onPress={() => { setFormAssignedTo(u.fullname || u.name || ''); setFormAssignedToId(u.uID || u.userId || ''); setUserPickerExpanded(false); }}
+                    >
+                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId) === formAssignedToId ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId) === formAssignedToId ? theme.colors.primary : theme.colors.onSurface, fontWeight: (u.uID || u.userId) === formAssignedToId ? '700' : '400' }}>
+                        {u.fullname || u.name}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
 
               <TextInput
                 label={t('cases.dueDate', 'Due Date')}
@@ -890,7 +1176,7 @@ export default function CaseDetailScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="calendar-clock" />}
+                right={<TextInput.Icon icon="calendar-clock" />}
               />
 
               <TextInput
@@ -902,7 +1188,7 @@ export default function CaseDetailScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="tag-multiple" />}
+                right={<TextInput.Icon icon="tag-multiple" />}
               />
 
               <TextInput
@@ -915,7 +1201,7 @@ export default function CaseDetailScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="note-text" />}
+                right={<TextInput.Icon icon="note-text" />}
               />
 
               <DynamicFieldsSectionForm
@@ -1091,6 +1377,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 16,
   },
+  sectionHeader: {
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  sectionIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectionTitle: {
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  timelineEvent: {
+    borderLeftWidth: 2,
+    paddingLeft: 12,
+    marginBottom: 12,
+  },
   sectionLabel: {
     fontWeight: '600',
     marginBottom: 10,
@@ -1166,5 +1473,21 @@ const styles = StyleSheet.create({
   modalButton: {
     minWidth: 100,
     borderRadius: borderRadius.md,
+  },
+  formInputNew: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    marginBottom: 2,
+  },
+  formChipNew: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
 });

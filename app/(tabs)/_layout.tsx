@@ -160,15 +160,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.08,
     shadowRadius: 8,
-    paddingTop: spacing.xs,
   },
   tabBarLabel: {
     fontSize: fontSize.xs,
     fontWeight: '600',
-    marginTop: 2,
+    marginTop: 1,
   },
   tabBarItem: {
-    paddingTop: spacing.xs,
+    paddingTop: 0,
   },
   iconContainer: {
     alignItems: 'center',
@@ -187,8 +186,8 @@ const styles = StyleSheet.create({
   },
   activeIndicator: {
     position: 'absolute',
-    bottom: -6,
-    width: 20,
+    top: -8,
+    width: 24,
     height: 3,
     borderRadius: 1.5,
   },

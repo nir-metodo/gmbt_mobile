@@ -311,19 +311,14 @@ export default function ContactsListScreen() {
               {tags.length > 0 ? (
                 <View style={[styles.tagsRow, { flexDirection, flexWrap: 'wrap', justifyContent: isRTL ? 'flex-end' : 'flex-start', width: '100%' }]}>
                   {tags.slice(0, 3).map((tag) => (
-                    <Chip
-                      key={tag}
-                      compact
-                      textStyle={[styles.tagText, { color: theme.colors.onPrimaryContainer }]}
-                      style={[styles.tagChip, { backgroundColor: theme.colors.primaryContainer }]}
-                    >
-                      #{tag}
-                    </Chip>
+                    <View key={tag} style={styles.tagBadge}>
+                      <Text style={styles.tagBadgeText} numberOfLines={1}>#{tag}</Text>
+                    </View>
                   ))}
                   {tags.length > 3 ? (
-                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                      +{tags.length - 3}
-                    </Text>
+                    <View style={[styles.tagBadge, { backgroundColor: 'rgba(108,117,125,0.15)', borderColor: 'rgba(108,117,125,0.35)' }]}>
+                      <Text style={[styles.tagBadgeText, { color: '#6c757d' }]}>+{tags.length - 3}</Text>
+                    </View>
                   ) : null}
                 </View>
               ) : null}
@@ -421,7 +416,7 @@ export default function ContactsListScreen() {
             value={searchQuery}
             onChangeText={setSearchQuery}
             style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
+            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left', paddingVertical: 0, alignSelf: 'center' }}
             iconColor={theme.colors.onSurfaceVariant}
             autoFocus
           />
@@ -514,7 +509,7 @@ export default function ContactsListScreen() {
                   ]}
                   textStyle={[
                     styles.filterChipText,
-                    { color: isActive ? theme.colors.onPrimaryContainer : theme.colors.onSurfaceVariant },
+                    { color: isActive ? theme.colors.onPrimaryContainer : theme.colors.onSurfaceVariant, lineHeight: 16 },
                     isActive && { fontWeight: '600' },
                   ]}
                 >
@@ -554,7 +549,7 @@ export default function ContactsListScreen() {
           <FAB
         icon="account-plus"
         onPress={() => router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: 'new' } })}
-        style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 }]}
+        style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFF"
       />
 
@@ -727,7 +722,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingBottom: 8,
   },
-  searchbar: { height: 40, borderRadius: 20, elevation: 0 },
+  searchbar: { height: 44, borderRadius: 22, elevation: 0, justifyContent: 'center' },
   filtersContainer: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 14,
@@ -737,14 +732,15 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 4,
   },
-  filterChip: { height: 28 },
-  filterChipText: { fontSize: 12 },
+  filterChip: { minHeight: 30 },
+  filterChipText: { fontSize: 12, lineHeight: 16 },
   tagFilterChips: {
     gap: 6,
-    paddingBottom: 6,
+    paddingVertical: 6,
     paddingHorizontal: 4,
+    alignItems: 'center',
   },
-  tagFilterChip: { height: 26 },
+  tagFilterChip: { minHeight: 30 },
   listContent: { paddingBottom: 100 },
   contactRow: {
     alignItems: 'center',
@@ -754,9 +750,21 @@ const styles = StyleSheet.create({
   avatarWrap: { position: 'relative' },
   contactBody: { flex: 1, justifyContent: 'center', gap: 2 },
   metaRow: { alignItems: 'center', marginTop: 2 },
-  tagsRow: { alignItems: 'center', gap: 6, marginTop: 4 },
-  tagChip: { height: 24 },
-  tagText: { fontSize: 11 },
+  tagsRow: { alignItems: 'center', gap: 5, marginTop: 5 },
+  tagBadge: {
+    backgroundColor: 'rgba(46,97,85,0.15)',
+    borderColor: 'rgba(46,97,85,0.4)',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    maxWidth: 130,
+  },
+  tagBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#2e6155',
+  },
   swipeActions: { flexDirection: 'row', alignItems: 'stretch' },
   swipeBtn: {
     width: 72,
@@ -771,7 +779,7 @@ const styles = StyleSheet.create({
     paddingTop: 140,
     paddingHorizontal: 40,
   },
-  fab: { position: 'absolute', end: 16, borderRadius: 16 },
+  fab: { position: 'absolute', borderRadius: 16 },
   advancedFilterModal: {
     marginHorizontal: 20,
     borderRadius: 16,

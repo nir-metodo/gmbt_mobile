@@ -105,8 +105,8 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
       (phoneCallsApi as any).createFollowUp?.(org, call.id, { date: followUpDate, note: followUpNote });
       onAction?.('followUpCreated', { date: followUpDate, note: followUpNote });
       setActivePanel(null);
-    } catch (err) {
-      console.error('Failed to create follow-up:', err);
+    } catch {
+      // follow-up creation failed
     } finally {
       setSaving(false);
     }
@@ -119,8 +119,8 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
       (phoneCallsApi as any).updateLeadStage?.(org, call.id, stage);
       onAction?.('stageUpdated', { stage });
       setActivePanel(null);
-    } catch (err) {
-      console.error('Failed to update stage:', err);
+    } catch {
+      // stage update failed
     } finally {
       setSaving(false);
     }
@@ -132,8 +132,8 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
     try {
       (phoneCallsApi as any).updateLeadStage?.(org, call.id, 'contacted');
       onAction?.('markedTalked');
-    } catch (err) {
-      console.error('Failed to mark as talked:', err);
+    } catch {
+      // mark as talked failed
     } finally {
       setSaving(false);
     }
@@ -147,8 +147,8 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
       onAction?.('noteAdded', { note: noteText });
       setNoteText('');
       setActivePanel(null);
-    } catch (err) {
-      console.error('Failed to add note:', err);
+    } catch {
+      // note addition failed
     } finally {
       setSaving(false);
     }

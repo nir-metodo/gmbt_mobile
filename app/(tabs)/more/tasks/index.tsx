@@ -37,6 +37,8 @@ import { tasksApi } from '../../../../services/api/tasks';
 import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 import type { Task } from '../../../../types';
+import { useContactLookup } from '../../../../hooks/useContactLookup';
+import ContactLookupField from '../../../../components/ContactLookupField';
 
 const BRAND_COLOR = '#2e6155';
 const STATUS_FILTERS = ['all', 'open', 'in_progress', 'completed', 'cancelled'] as const;
@@ -73,6 +75,7 @@ export default function TasksMoreScreen() {
   const { t, i18n } = useTranslation();
 
   const user = useAuthStore((s) => s.user);
+  const { contactSearch, contactResults, contactSearching, selectedContact, handleContactSearch, handleSelectContact, resetContactLookup } = useContactLookup();
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,7 +98,7 @@ export default function TasksMoreScreen() {
   const [formRelatedEntityName, setFormRelatedEntityName] = useState('');
 
   const fetchTasks = useCallback(async () => {
-    if (!user?.organization) return;
+    if (!user?.organization) { setLoading(false); return; }
     try {
       setError(null);
       const data = await tasksApi.getAll(
@@ -162,7 +165,8 @@ export default function TasksMoreScreen() {
     setFormAssignedTo('');
     setFormTaskType('general');
     setFormRelatedEntityName('');
-  }, []);
+    resetContactLookup();
+  }, [resetContactLookup]);
 
   const handleCreate = useCallback(async () => {
     if (!user?.organization || !formTitle.trim()) return;
@@ -175,7 +179,11 @@ export default function TasksMoreScreen() {
         taskType: formTaskType as Task['taskType'],
         dueDate: formDueDate.trim() || undefined,
         assignedTo: formAssignedTo.trim() || undefined,
-        relatedEntityName: formRelatedEntityName.trim() || undefined,
+        relatedEntityName: selectedContact
+          ? (selectedContact.fullName || selectedContact.name || formRelatedEntityName.trim())
+          : formRelatedEntityName.trim() || undefined,
+        relatedEntityPhone: selectedContact?.phoneNumber || selectedContact?.phone || undefined,
+        relatedContactId: selectedContact?.id || undefined,
         status: 'open',
       } as any);
       setCreateModalVisible(false);
@@ -235,7 +243,7 @@ export default function TasksMoreScreen() {
                 textStyle={[styles.statusChipText, { color: statusColor }]}
                 style={[styles.statusChip, { backgroundColor: `${statusColor}18` }]}
               >
-                {t(`tasks.${item.status}`)}
+                {item.status ? t(`tasks.${item.status}`) : ''}
               </Chip>
             </View>
 
@@ -448,7 +456,7 @@ export default function TasksMoreScreen() {
       <FlatList
         data={filteredTasks}
         renderItem={renderTaskCard}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item, index) => item.id || item.taskId || `task_${index}`}
         ListEmptyComponent={renderEmpty}
         refreshControl={
           <RefreshControl
@@ -469,7 +477,7 @@ export default function TasksMoreScreen() {
       <FAB
         icon="plus"
         onPress={() => setCreateModalVisible(true)}
-        style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16 }]}
+        style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFFFFF"
         label={t('tasks.addTask')}
       />
@@ -488,6 +496,17 @@ export default function TasksMoreScreen() {
                 </Text>
                 <IconButton icon="close" size={22} onPress={() => { setCreateModalVisible(false); resetForm(); }} />
               </View>
+
+              <ContactLookupField
+                contactSearch={contactSearch}
+                contactResults={contactResults}
+                contactSearching={contactSearching}
+                selectedContact={selectedContact}
+                brandColor={BRAND_COLOR}
+                onSearch={(text) => handleContactSearch(text, user?.organization || '')}
+                onSelect={handleSelectContact}
+                onClear={resetContactLookup}
+              />
 
               <TextInput
                 label={t('tasks.taskTitle')}
@@ -572,7 +591,7 @@ export default function TasksMoreScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={BRAND_COLOR}
-                left={<TextInput.Icon icon="calendar" />}
+                right={<TextInput.Icon icon="calendar" />}
               />
 
               <TextInput
@@ -583,7 +602,7 @@ export default function TasksMoreScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={BRAND_COLOR}
-                left={<TextInput.Icon icon="account" />}
+                right={<TextInput.Icon icon="account" />}
               />
 
               <TextInput
@@ -595,7 +614,7 @@ export default function TasksMoreScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={BRAND_COLOR}
-                left={<TextInput.Icon icon="link-variant" />}
+                right={<TextInput.Icon icon="link-variant" />}
               />
 
               <View style={[styles.modalActions, { flexDirection }]}>
@@ -683,12 +702,13 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   statusChip: {
-    height: 24,
-    borderRadius: 12,
+    minHeight: 28,
+    borderRadius: 14,
   },
   statusChipText: {
     fontSize: 11,
     fontWeight: '600',
+    lineHeight: 16,
   },
   taskDescription: {
     fontSize: 13,
@@ -717,7 +737,6 @@ const styles = StyleSheet.create({
   emptyTitle: { fontWeight: '600', marginTop: 8 },
   fab: {
     position: 'absolute',
-    end: 16,
     borderRadius: 16,
   },
   errorBanner: {

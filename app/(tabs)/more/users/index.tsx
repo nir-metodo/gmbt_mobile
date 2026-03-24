@@ -128,8 +128,8 @@ export default function UsersScreen() {
     try {
       const data = await usersApi.getAll(organization);
       setUsers(data);
-    } catch (err) {
-      console.error('Failed to fetch users:', err);
+    } catch {
+      // error handled by empty state UI
     }
   }, [organization]);
 
@@ -174,8 +174,8 @@ export default function UsersScreen() {
       }
       setModalVisible(false);
       setEditingUser(null);
-    } catch (err) {
-      console.error('Failed to save user:', err);
+    } catch {
+      // save failed — user will see no change
     } finally {
       setSaving(false);
     }
@@ -189,8 +189,8 @@ export default function UsersScreen() {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setUsers((prev) => prev.filter((u) => u.id !== deleteTarget.id));
       setDeleteTarget(null);
-    } catch (err) {
-      console.error('Failed to delete user:', err);
+    } catch {
+      // delete failed
     } finally {
       setSaving(false);
     }

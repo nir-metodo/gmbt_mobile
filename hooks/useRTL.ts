@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { I18nManager } from 'react-native';
 import { useSettingsStore } from '../stores/settingsStore';
 
@@ -5,10 +6,12 @@ export function useRTL() {
   const language = useSettingsStore((s) => s.language);
   const isRTL = language === 'he';
 
-  if (I18nManager.isRTL !== isRTL) {
-    I18nManager.allowRTL(isRTL);
-    I18nManager.forceRTL(isRTL);
-  }
+  useEffect(() => {
+    if (I18nManager.isRTL !== isRTL) {
+      I18nManager.allowRTL(isRTL);
+      I18nManager.forceRTL(isRTL);
+    }
+  }, [isRTL]);
 
   return {
     isRTL,

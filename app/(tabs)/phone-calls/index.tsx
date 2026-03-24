@@ -568,6 +568,7 @@ export default function PhoneCallsTabScreen() {
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [callsError, setCallsError] = useState<string | null>(null);
   const [ruleModalVisible, setRuleModalVisible] = useState(false);
   const [editingRule, setEditingRule] = useState<CallRule | null>(null);
   const [searchVisible, setSearchVisible] = useState(false);
@@ -594,10 +595,11 @@ export default function PhoneCallsTabScreen() {
       }
       const data = await phoneCallsApi.getAppCalls(org, options);
       setCalls(data);
-    } catch {
+    } catch (err: any) {
       setCalls([]);
+      setCallsError(err.message || t('errors.generic'));
     }
-  }, [org, effectiveScope, user?.uID, user?.userId]);
+  }, [org, effectiveScope, user?.uID, user?.userId, t]);
 
   const fetchRules = useCallback(async () => {
     try {
@@ -626,6 +628,7 @@ export default function PhoneCallsTabScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
+    setCallsError(null);
     await Promise.all([fetchCalls(), fetchRules()]);
     setRefreshing(false);
   }, [fetchCalls, fetchRules]);
@@ -656,8 +659,7 @@ export default function PhoneCallsTabScreen() {
     setRules(updated);
     try {
       await phoneCallsApi.updateCallRules(org, updated);
-    } catch (err) {
-      console.error('Failed to toggle rule:', err);
+    } catch {
       setRules((prev) => prev.map((r) => (r.id === id ? { ...r, enabled: !enabled } : r)));
     }
   }, [org, rules]);
@@ -675,10 +677,10 @@ export default function PhoneCallsTabScreen() {
       setRules(newRules);
       setRuleModalVisible(false);
       setEditingRule(null);
-    } catch (err) {
-      console.error('Failed to save rule:', err);
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err.message || t('errors.generic'));
     }
-  }, [org, rules]);
+  }, [org, rules, t]);
 
   const handleDial = useCallback((phone?: string) => {
     if (phone) {
@@ -886,7 +888,11 @@ export default function PhoneCallsTabScreen() {
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />
             }
-            ListEmptyComponent={<EmptyState icon="phone-off" message={t('phoneCalls.noCalls')} />}
+            ListEmptyComponent={
+              callsError
+                ? <EmptyState icon="alert-circle-outline" message={callsError} />
+                : <EmptyState icon="phone-off" message={t('phoneCalls.noCalls')} />
+            }
           />
         </>
       )}

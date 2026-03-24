@@ -572,6 +572,8 @@ export default function ChatsListScreen() {
           {
             backgroundColor: theme.colors.primary,
             bottom: insets.bottom + 16,
+            left: isRTL ? 16 : undefined,
+            right: isRTL ? undefined : 16,
           },
         ]}
         color="#FFFFFF"
@@ -743,7 +745,6 @@ const styles = StyleSheet.create({
   },
   fab: {
     position: 'absolute',
-    end: 16,
     borderRadius: 16,
   },
   newChatModal: {

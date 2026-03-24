@@ -15,26 +15,30 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
+      "buildNumber": "1",
+      "deploymentTarget": "16.0",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Gambot needs access to your microphone for call recording.",
-        "NSCameraUsageDescription": "Gambot needs access to your camera to take photos and videos.",
-        "NSPhotoLibraryUsageDescription": "Gambot needs access to your photos to share media."
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Gambot needs access to your camera to take photos and videos to share in chats.",
+        "NSPhotoLibraryUsageDescription": "Gambot needs access to your photo library to share images and media files in chats.",
+        "LSApplicationQueriesSchemes": ["whatsapp", "tel", "mailto"]
       }
     },
     "android": {
       "package": "com.gambot.mobile",
+      "versionCode": 1,
+      "minSdkVersion": 26,
       "adaptiveIcon": {
         "backgroundColor": "#2e6155",
         "foregroundImage": "./assets/icon.png"
       },
       "permissions": [
-        "RECORD_AUDIO",
         "CAMERA",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE",
-        "CALL_PHONE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
         "VIBRATE",
-        "RECEIVE_BOOT_COMPLETED"
+        "RECEIVE_BOOT_COMPLETED",
+        "POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -52,16 +56,10 @@
         }
       ],
       [
-        "expo-av",
-        {
-          "microphonePermission": "Allow Gambot to access your microphone for call recording."
-        }
-      ],
-      [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Gambot to access your photos to share media.",
-          "cameraPermission": "Allow Gambot to access your camera to take photos."
+          "photosPermission": "Allow Gambot to access your photos to share media in chats.",
+          "cameraPermission": "Allow Gambot to access your camera to take photos and videos."
         }
       ]
     ],

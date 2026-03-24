@@ -8,21 +8,22 @@ import {
   ScrollView,
   Dimensions,
   Alert,
+  Linking,
 } from 'react-native';
-import { FlashList } from '@shopify/flash-list';
-import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator } from 'react-native-paper';
+import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
-import { leadsApi } from '../../../services/api/leads';
+import { leadsApi, type LeadView } from '../../../services/api/leads';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
-import { formatCurrency, formatDate, getInitials } from '../../../utils/formatters';
+import { formatCurrency, formatDate, getInitials, withAlpha } from '../../../utils/formatters';
 import { spacing, borderRadius } from '../../../constants/theme';
 import type { Lead, LeadStage } from '../../../types';
+
 
 const DEFAULT_STAGE_COLORS: Record<string, string> = {
   New: '#2e6155',
@@ -53,66 +54,12 @@ const STATUS_OPTIONS = ['Active', 'Interested', 'Not Interested', 'On Hold', 'Ar
 const PRIORITY_OPTIONS = ['low', 'medium', 'high'] as const;
 const DATE_RANGE_PRESETS = ['Today', 'This Week', 'This Month', 'Last Month', 'This Year'] as const;
 
-function isInDateRange(dateStr: string | undefined, preset: string): boolean {
-  if (!dateStr) return false;
-  const date = new Date(dateStr);
-  if (isNaN(date.getTime())) return false;
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  switch (preset) {
-    case 'Today':
-      return date >= startOfDay;
-    case 'This Week': {
-      const startOfWeek = new Date(startOfDay);
-      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
-      return date >= startOfWeek;
-    }
-    case 'This Month':
-      return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
-    case 'Last Month': {
-      const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lmEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
-      return date >= lm && date <= lmEnd;
-    }
-    case 'This Year':
-      return date.getFullYear() === now.getFullYear();
-    default:
-      return true;
-  }
-}
+const PRIORITY_COLORS: Record<string, string> = {
+  low: '#4CAF50',
+  medium: '#FF9800',
+  high: '#FF5722',
+};
 
-function applyLeadFilters(
-  list: Lead[],
-  source: string,
-  owner: string,
-  status: string,
-  priority: string,
-  dateRange: string,
-): Lead[] {
-  let result = list;
-  if (source.trim()) {
-    result = result.filter((l) =>
-      l.source?.toLowerCase().includes(source.toLowerCase()),
-    );
-  }
-  if (owner.trim()) {
-    result = result.filter(
-      (l) =>
-        l.ownerName?.toLowerCase().includes(owner.toLowerCase()) ||
-        l.owner?.toLowerCase().includes(owner.toLowerCase()),
-    );
-  }
-  if (status) {
-    result = result.filter((l) => l.status === status);
-  }
-  if (priority) {
-    result = result.filter((l) => l.priority === priority);
-  }
-  if (dateRange) {
-    result = result.filter((l) => isInDateRange(l.createdOn, dateRange));
-  }
-  return result;
-}
 
 export default function LeadsListScreen() {
   const router = useRouter();
@@ -124,42 +71,46 @@ export default function LeadsListScreen() {
   const user = useAuthStore((s) => s.user);
   const organization = user?.organization ?? '';
 
-  const leads = useLeadStore((s) => s.leads);
-  const isLoading = useLeadStore((s) => s.isLoading);
-  const searchQuery = useLeadStore((s) => s.searchQuery);
-  const selectedStage = useLeadStore((s) => s.selectedStage);
-  const viewMode = useLeadStore((s) => s.viewMode);
-  const setSearchQuery = useLeadStore((s) => s.setSearchQuery);
-  const setSelectedStage = useLeadStore((s) => s.setSelectedStage);
-  const setViewMode = useLeadStore((s) => s.setViewMode);
-  const loadLeads = useLeadStore((s) => s.loadLeads);
-  const getFilteredLeads = useLeadStore((s) => s.getFilteredLeads);
-  const getLeadsByStage = useLeadStore((s) => s.getLeadsByStage);
+  // Store – used only for create/update/delete to keep detail screen in sync
   const updateLead = useLeadStore((s) => s.updateLead);
+  const setViewMode = useLeadStore((s) => s.setViewMode);
+  const viewMode = useLeadStore((s) => s.viewMode);
+  const setSelectedLead = useLeadStore((s) => s.setSelectedLead);
 
+  // ── Pagination state ────────────────────────────────────────────────────────
+  const PAGE_SIZE = 30;
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [searchVisible, setSearchVisible] = useState(false);
-  const [advancedFilterVisible, setAdvancedFilterVisible] = useState(false);
+
+  // ── Filter state ────────────────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [filterSource, setFilterSource] = useState('');
   const [filterOwner, setFilterOwner] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [filterPriority, setFilterPriority] = useState('');
   const [filterDateRange, setFilterDateRange] = useState('');
+  const [filterMine, setFilterMine] = useState(false);
+
+  // ── UI state ────────────────────────────────────────────────────────────────
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [advancedFilterVisible, setAdvancedFilterVisible] = useState(false);
   const searchAnim = useRef(new Animated.Value(0)).current;
   const [stagePickerLead, setStagePickerLead] = useState<Lead | null>(null);
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
+  const fetchingRef = useRef(false);
 
-  const stageKeys = useMemo(() => {
-    const base = pipelineStages.length > 0
-      ? pipelineStages.map((s) => s.name)
-      : DEFAULT_STAGE_KEYS;
-    const extras = new Set<string>();
-    leads.forEach((l) => {
-      const s = l.stageName || l.stage;
-      if (s && !base.includes(s)) extras.add(s);
-    });
-    return extras.size > 0 ? [...base, ...Array.from(extras)] : base;
-  }, [pipelineStages, leads]);
+  // ── Saved views ─────────────────────────────────────────────────────────────
+  const [savedViews, setSavedViews] = useState<LeadView[]>([]);
+  const [activeViewId, setActiveViewId] = useState('__all');
+  const [viewsMenuVisible, setViewsMenuVisible] = useState(false);
+  const [saveViewVisible, setSaveViewVisible] = useState(false);
+  const [newViewName, setNewViewName] = useState('');
 
   const stageColorMap = useMemo(() => {
     if (pipelineStages.length > 0) {
@@ -170,66 +121,155 @@ export default function LeadsListScreen() {
     return DEFAULT_STAGE_COLORS;
   }, [pipelineStages]);
 
+  const stageKeys = useMemo(() => {
+    const base = pipelineStages.length > 0 ? pipelineStages.map((s) => s.name) : DEFAULT_STAGE_KEYS;
+    return base;
+  }, [pipelineStages]);
+
+  // ── Build filter object for API ─────────────────────────────────────────────
+  const buildFilters = useCallback(() => ({
+    searchTerm: searchQuery.trim(),
+    stages: selectedStage ? [selectedStage] : [],
+    sources: filterSource.trim() ? [filterSource.trim()] : [],
+    owners: filterOwner.trim() ? [filterOwner.trim()] : [],
+    statuses: filterStatus ? [filterStatus] : [],
+    priorities: filterPriority ? [filterPriority] : [],
+    dateRangePreset: filterDateRange || '',
+  }), [searchQuery, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange]);
+
+  // ── Fetch a page ────────────────────────────────────────────────────────────
+  const fetchPage = useCallback(async (pageNum: number, reset: boolean) => {
+    if (!organization || fetchingRef.current) return;
+    fetchingRef.current = true;
+    if (reset) setIsLoading(true); else setLoadingMore(true);
+    try {
+      const result = await leadsApi.getAll(organization, {
+        page: pageNum,
+        pageSize: PAGE_SIZE,
+        filters: buildFilters(),
+        dataVisibility: filterMine ? 'mineOnly' : 'seeAll',
+        userId: filterMine ? (user?.uID || user?.userId || '') : '',
+      });
+      const newItems = result.data ?? [];
+      const total = result.total ?? 0;
+      setTotalCount(total);
+      setLeads((prev) => (reset ? newItems : [...prev, ...newItems]));
+      setPage(pageNum);
+      setHasMore(newItems.length === PAGE_SIZE && (reset ? newItems.length : leads.length + newItems.length) < total);
+    } catch {
+      /* keep existing data on error */
+    } finally {
+      fetchingRef.current = false;
+      if (reset) setIsLoading(false); else setLoadingMore(false);
+    }
+  }, [organization, buildFilters, leads.length]);
+
+  // ── Initial load & filter change → reset ───────────────────────────────────
   useEffect(() => {
     if (!organization) return;
-    loadLeads(organization);
+    fetchPage(1, true);
     leadsApi.getPipelineSettings(organization)
       .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
       .catch(() => {});
-  }, [organization, loadLeads]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organization, searchQuery, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine]);
 
-  const filteredLeads = useMemo(() => {
-    const result = getFilteredLeads();
-    return applyLeadFilters(result, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange);
-  }, [leads, searchQuery, selectedStage, getFilteredLeads, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange]);
+  // ── Load saved views ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!organization) return;
+    leadsApi.getViews(organization).then(setSavedViews).catch(() => {});
+  }, [organization]);
 
+  const applyView = useCallback((view: LeadView) => {
+    setActiveViewId(view.id);
+    setViewsMenuVisible(false);
+    setFilterMine(false);
+    const f = view.filters || {};
+    setSelectedStage(f.stage ?? null);
+    setFilterSource(f.source ?? '');
+    setFilterOwner(f.owner ?? '');
+    setFilterStatus(f.status ?? '');
+    setFilterPriority(f.priority ?? '');
+    setFilterDateRange(f.dateRange ?? '');
+    if (f.search) setSearchQuery(f.search);
+  }, []);
+
+  const handleSaveView = useCallback(async () => {
+    if (!newViewName.trim() || !organization) return;
+    const viewData: LeadView = {
+      id: `view_${Date.now()}`,
+      name: newViewName.trim(),
+      filters: {
+        stage: selectedStage,
+        source: filterSource,
+        owner: filterOwner,
+        status: filterStatus,
+        priority: filterPriority,
+        dateRange: filterDateRange,
+        search: searchQuery,
+      },
+    };
+    const saved = await leadsApi.saveView(organization, viewData);
+    if (saved) setSavedViews((prev) => [...prev, saved]);
+    else setSavedViews((prev) => [...prev, viewData]);
+    setNewViewName('');
+    setSaveViewVisible(false);
+  }, [newViewName, organization, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, searchQuery]);
+
+  const handleDeleteView = useCallback(async (viewId: string) => {
+    await leadsApi.deleteView(organization, viewId);
+    setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
+    if (activeViewId === viewId) setActiveViewId('__all');
+  }, [organization, activeViewId]);
+
+
+  // ── Infinite scroll ─────────────────────────────────────────────────────────
+  const onEndReached = useCallback(() => {
+    if (!hasMore || loadingMore || isLoading) return;
+    fetchPage(page + 1, false);
+  }, [hasMore, loadingMore, isLoading, page, fetchPage]);
+
+  // ── Pipeline view grouping (uses loaded leads) ──────────────────────────────
   const leadsByStage = useMemo(() => {
-    const grouped = getLeadsByStage();
-    const hasFilters = filterSource.trim() || filterOwner.trim() || filterStatus || filterPriority || filterDateRange;
-    if (!hasFilters) return grouped;
-    const filteredGrouped = new Map<string, Lead[]>();
-    grouped.forEach((stageLeads, stage) => {
-      const filtered = applyLeadFilters(stageLeads, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange);
-      if (filtered.length > 0) filteredGrouped.set(stage, filtered);
+    const grouped = new Map<string, Lead[]>();
+    leads.forEach((lead) => {
+      const stage = lead.stageName || lead.stage || 'New';
+      if (!grouped.has(stage)) grouped.set(stage, []);
+      grouped.get(stage)!.push(lead);
     });
-    return filteredGrouped;
-  }, [leads, getLeadsByStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange]);
+    return grouped;
+  }, [leads]);
+
+  const filteredLeads = leads; // already filtered server-side
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
     if (willShow) {
       setSearchVisible(true);
-      Animated.timing(searchAnim, {
-        toValue: 1,
-        duration: 220,
-        useNativeDriver: false,
-      }).start();
+      Animated.timing(searchAnim, { toValue: 1, duration: 220, useNativeDriver: false }).start();
     } else {
-      Animated.timing(searchAnim, {
-        toValue: 0,
-        duration: 180,
-        useNativeDriver: false,
-      }).start(() => {
+      Animated.timing(searchAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(() => {
         setSearchVisible(false);
         setSearchQuery('');
       });
     }
-  }, [searchVisible, searchAnim, setSearchQuery]);
+  }, [searchVisible, searchAnim]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    if (organization) await loadLeads(organization);
+    await fetchPage(1, true);
     setRefreshing(false);
-  }, [organization, loadLeads]);
+  }, [fetchPage]);
 
   const openLead = useCallback(
     (lead: Lead) => {
+      setSelectedLead(lead);
       router.push({
         pathname: '/(tabs)/leads/[id]',
         params: { id: lead.id },
       });
     },
-    [router],
+    [router, setSelectedLead],
   );
 
   const stageColor = useCallback(
@@ -250,7 +290,7 @@ export default function LeadsListScreen() {
   );
 
   const renderLeadItem = useCallback(
-    ({ item }: { item: Lead }) => (
+    ({ item }: { item: Lead; index?: number }) => (
       <Pressable
         onPress={() => openLead(item)}
         onLongPress={() => setStagePickerLead(item)}
@@ -268,6 +308,20 @@ export default function LeadsListScreen() {
 
         <View style={styles.leadBody}>
           <View style={[styles.leadTop, { flexDirection }]}>
+            {/* Priority dot */}
+            {item.priority ? (
+              <View
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: PRIORITY_COLORS[(item.priority as string)?.toLowerCase()] ?? '#9E9E9E',
+                  alignSelf: 'center',
+                  marginEnd: 6,
+                  flexShrink: 0,
+                }}
+              />
+            ) : null}
             <Text
               variant="titleMedium"
               numberOfLines={1}
@@ -288,23 +342,23 @@ export default function LeadsListScreen() {
           <View style={[styles.leadMeta, { flexDirection }]}>
             {item.contactName ? (
               <View style={[styles.metaChip, { flexDirection }]}>
-                <MaterialCommunityIcons
-                  name="account-outline"
-                  size={14}
-                  color={theme.colors.onSurfaceVariant}
-                />
+                <MaterialCommunityIcons name="account-outline" size={14} color={theme.colors.onSurfaceVariant} />
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
                   {item.contactName}
                 </Text>
               </View>
             ) : null}
+            {(item as any).companyName ? (
+              <View style={[styles.metaChip, { flexDirection }]}>
+                <MaterialCommunityIcons name="office-building-outline" size={14} color={theme.colors.onSurfaceVariant} />
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
+                  {(item as any).companyName}
+                </Text>
+              </View>
+            ) : null}
             {(item.createdOn || item.createdAt) ? (
               <View style={[styles.metaChip, { flexDirection }]}>
-                <MaterialCommunityIcons
-                  name="calendar-outline"
-                  size={14}
-                  color={theme.colors.onSurfaceVariant}
-                />
+                <MaterialCommunityIcons name="calendar-outline" size={14} color={theme.colors.onSurfaceVariant} />
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
                   {formatDate(item.createdOn || item.createdAt || '')}
                 </Text>
@@ -315,24 +369,52 @@ export default function LeadsListScreen() {
           <View style={[styles.leadBottom, { flexDirection }]}>
             <Chip
               compact
-              textStyle={{
-                fontSize: 11,
-                color: stageColor(item.stageName || item.stage || 'New'),
-                fontWeight: '600',
-              }}
-              style={{
-                backgroundColor: `${stageColor(item.stageName || item.stage || 'New')}35`,
-                height: 26,
-              }}
+              textStyle={{ fontSize: 11, color: stageColor(item.stageName || item.stage || 'New'), fontWeight: '600', lineHeight: 16 }}
+              style={{ backgroundColor: withAlpha(stageColor(item.stageName || item.stage || 'New'), 0.21), minHeight: 28 }}
             >
               {t(STAGE_I18N[item.stageName || item.stage || 'New'] ?? item.stageName ?? item.stage ?? 'New')}
             </Chip>
+            {(item as any).status ? (
+              <Chip
+                compact
+                textStyle={{ fontSize: 10, color: theme.colors.onSurfaceVariant, lineHeight: 14 }}
+                style={{ backgroundColor: theme.colors.surfaceVariant, minHeight: 24 }}
+              >
+                {(item as any).status}
+              </Chip>
+            ) : null}
             {item.source ? (
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {item.source}
               </Text>
             ) : null}
+            {(item as any).ownerName ? (
+              <View style={[{ flexDirection, alignItems: 'center', gap: 2 }]}>
+                <MaterialCommunityIcons name="account-tie-outline" size={12} color={theme.colors.onSurfaceVariant} />
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                  {(item as any).ownerName}
+                </Text>
+              </View>
+            ) : null}
           </View>
+
+          {/* Quick dialer */}
+          {(item.contactPhone || item.phoneNumber) ? (
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation?.();
+                const phone = item.contactPhone || item.phoneNumber || '';
+                Linking.openURL(`tel:${phone}`);
+              }}
+              style={[styles.quickDialRow, { flexDirection }]}
+              hitSlop={4}
+            >
+              <MaterialCommunityIcons name="phone-outline" size={13} color={theme.colors.primary} />
+              <Text variant="labelSmall" style={{ color: theme.colors.primary, marginStart: 4 }}>
+                {item.contactPhone || item.phoneNumber}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
 
         <MaterialCommunityIcons
@@ -420,7 +502,7 @@ export default function LeadsListScreen() {
   });
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.screen, { backgroundColor: theme.colors.background, flexDirection: 'column' }]}>
       {/* Header */}
       <View
         style={[
@@ -439,6 +521,17 @@ export default function LeadsListScreen() {
               name={viewMode === 'list' ? 'view-column-outline' : 'format-list-bulleted'}
               size={24}
               color={theme.custom.headerText}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() => setViewsMenuVisible(true)}
+            hitSlop={8}
+            style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
+          >
+            <MaterialCommunityIcons
+              name="bookmark-multiple-outline"
+              size={24}
+              color={activeViewId !== '__all' ? '#FFD54F' : theme.custom.headerText}
             />
           </Pressable>
           <Pressable
@@ -492,14 +585,15 @@ export default function LeadsListScreen() {
 
       {/* Stage filter chips */}
       {viewMode === 'list' ? (
+        <View style={{ height: 40, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={[
             styles.stageFilters,
-            { flexDirection, paddingStart: 14, paddingEnd: 14 },
+            { paddingStart: 14, paddingEnd: 14 },
           ]}
-          style={{ backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}
+          style={{ flex: 1 }}
         >
           <Chip
             selected={selectedStage === null}
@@ -532,7 +626,7 @@ export default function LeadsListScreen() {
                 style={[
                   styles.stageChip,
                   isSelected
-                    ? { backgroundColor: `${color}20` }
+                    ? { backgroundColor: withAlpha(color, 0.12) }
                     : { backgroundColor: theme.colors.surfaceVariant },
                 ]}
                 textStyle={[
@@ -545,22 +639,18 @@ export default function LeadsListScreen() {
             );
           })}
         </ScrollView>
+        </View>
       ) : null}
 
       {/* Content */}
-      <View style={{ flex: 1 }}>
       {isLoading && leads.length === 0 ? (
         <View style={[styles.centered, { flex: 1 }]}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
         </View>
       ) : viewMode === 'list' ? (
-        <FlashList
-          data={filteredLeads}
-          renderItem={renderLeadItem}
-          keyExtractor={(item, idx) => item.id || `lead_${idx}`}
-          estimatedItemSize={90}
-          ItemSeparatorComponent={() => <Divider />}
-          ListEmptyComponent={renderEmpty}
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -569,8 +659,28 @@ export default function LeadsListScreen() {
               tintColor={theme.colors.primary}
             />
           }
-          contentContainerStyle={styles.listContent}
-        />
+          onScroll={({ nativeEvent }) => {
+            const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
+            const isNearBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 80;
+            if (isNearBottom) onEndReached();
+          }}
+          scrollEventThrottle={400}
+          showsVerticalScrollIndicator={false}
+        >
+          {filteredLeads.length === 0 ? renderEmpty() : filteredLeads.map((item, idx) => (
+            <React.Fragment key={item.id || `lead_${idx}`}>
+              {idx > 0 && <Divider />}
+              {renderLeadItem({ item, index: idx })}
+            </React.Fragment>
+          ))}
+          {loadingMore ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
+          ) : totalCount > 0 ? (
+            <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
+              {leads.length} / {totalCount}
+            </Text>
+          ) : null}
+        </ScrollView>
       ) : (
         <ScrollView
           horizontal
@@ -601,7 +711,7 @@ export default function LeadsListScreen() {
                     {t(STAGE_I18N[stage] ?? stage)}
                   </Text>
                   <View
-                    style={[styles.pipelineCount, { backgroundColor: `${color}20` }]}
+                    style={[styles.pipelineCount, { backgroundColor: withAlpha(color, 0.12) }]}
                   >
                     <Text variant="labelSmall" style={{ color, fontWeight: '700' }}>
                       {stageLeads.length}
@@ -627,12 +737,11 @@ export default function LeadsListScreen() {
           })}
         </ScrollView>
       )}
-      </View>
 
       <FAB
         icon="plus"
         onPress={() => router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new' } })}
-        style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 }]}
+        style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFF"
       />
 
@@ -687,7 +796,7 @@ export default function LeadsListScreen() {
                     style={[
                       styles.filterChip,
                       isSelected
-                        ? { backgroundColor: `${theme.colors.primary}25`, borderColor: theme.colors.primary, borderWidth: 1 }
+                        ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
                         : { backgroundColor: theme.colors.surfaceVariant },
                     ]}
                     textStyle={{
@@ -717,7 +826,7 @@ export default function LeadsListScreen() {
                     style={[
                       styles.filterChip,
                       isSelected
-                        ? { backgroundColor: `${theme.colors.primary}25`, borderColor: theme.colors.primary, borderWidth: 1 }
+                        ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
                         : { backgroundColor: theme.colors.surfaceVariant },
                     ]}
                     textStyle={{
@@ -747,7 +856,7 @@ export default function LeadsListScreen() {
                     style={[
                       styles.filterChip,
                       isSelected
-                        ? { backgroundColor: `${theme.colors.primary}25`, borderColor: theme.colors.primary, borderWidth: 1 }
+                        ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
                         : { backgroundColor: theme.colors.surfaceVariant },
                     ]}
                     textStyle={{
@@ -815,7 +924,7 @@ export default function LeadsListScreen() {
                   styles.stageOption,
                   {
                     backgroundColor: isCurrent
-                      ? `${color}20`
+                      ? withAlpha(color, 0.12)
                       : pressed
                         ? theme.colors.surfaceVariant
                         : 'transparent',
@@ -849,6 +958,100 @@ export default function LeadsListScreen() {
           </Button>
         </Modal>
       </Portal>
+
+      {/* Saved Views Modal */}
+      <Portal>
+        <Modal
+          visible={viewsMenuVisible}
+          onDismiss={() => setViewsMenuVisible(false)}
+          contentContainerStyle={[styles.stageModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12, textAlign }}>
+            {t('leads.savedViews', 'תצוגות שמורות')}
+          </Text>
+
+          {/* Built-in views */}
+          {[
+            { id: '__all', name: t('leads.viewAll', 'כל הלידים'), icon: 'view-list-outline' },
+            { id: '__mine', name: t('leads.viewMine', 'הלידים שלי'), icon: 'account-outline' },
+          ].map((v) => (
+            <Pressable
+              key={v.id}
+              onPress={() => {
+                setActiveViewId(v.id);
+                setViewsMenuVisible(false);
+                if (v.id === '__all') {
+                  setSelectedStage(null);
+                  setFilterSource('');
+                  setFilterOwner('');
+                  setFilterStatus('');
+                  setFilterPriority('');
+                  setFilterDateRange('');
+                  setFilterMine(false);
+                } else if (v.id === '__mine') {
+                  setFilterMine(true);
+                }
+              }}
+              style={[styles.stageOption, { backgroundColor: activeViewId === v.id ? withAlpha(theme.colors.primary, 0.1) : 'transparent', flexDirection }]}
+            >
+              <MaterialCommunityIcons name={v.icon as any} size={18} color={activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface} style={{ marginEnd: 10 }} />
+              <Text style={{ flex: 1, color: activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface, fontWeight: activeViewId === v.id ? '700' : '400', textAlign }}>
+                {v.name}
+              </Text>
+              {activeViewId === v.id && <MaterialCommunityIcons name="check" size={18} color={theme.colors.primary} />}
+            </Pressable>
+          ))}
+
+          {/* Custom saved views */}
+          {savedViews.length > 0 && <Divider style={{ marginVertical: 8 }} />}
+          {savedViews.map((v) => (
+            <Pressable
+              key={v.id}
+              onPress={() => applyView(v)}
+              style={[styles.stageOption, { backgroundColor: activeViewId === v.id ? withAlpha(theme.colors.primary, 0.1) : 'transparent', flexDirection }]}
+            >
+              <MaterialCommunityIcons name="bookmark-outline" size={18} color={activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface} style={{ marginEnd: 10 }} />
+              <Text style={{ flex: 1, color: activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface, fontWeight: activeViewId === v.id ? '700' : '400', textAlign }}>
+                {v.name}
+              </Text>
+              <Pressable onPress={() => handleDeleteView(v.id)} hitSlop={8}>
+                <MaterialCommunityIcons name="delete-outline" size={18} color={theme.colors.error} />
+              </Pressable>
+            </Pressable>
+          ))}
+
+          <Divider style={{ marginVertical: 8 }} />
+          {saveViewVisible ? (
+            <View style={{ gap: 8 }}>
+              <PaperInput
+                label={t('leads.viewName', 'שם התצוגה')}
+                value={newViewName}
+                onChangeText={setNewViewName}
+                mode="outlined"
+                dense
+                autoFocus
+                style={{ textAlign }}
+              />
+              <View style={[{ flexDirection, gap: 8, justifyContent: 'flex-end' }]}>
+                <Button mode="text" onPress={() => setSaveViewVisible(false)}>{t('common.cancel')}</Button>
+                <Button mode="contained" onPress={handleSaveView} disabled={!newViewName.trim()}>{t('common.save', 'שמור')}</Button>
+              </View>
+            </View>
+          ) : (
+            <Button
+              mode="outlined"
+              icon="bookmark-plus-outline"
+              onPress={() => setSaveViewVisible(true)}
+            >
+              {t('leads.saveCurrentView', 'שמור תצוגה נוכחית')}
+            </Button>
+          )}
+
+          <Button mode="text" onPress={() => setViewsMenuVisible(false)} style={{ marginTop: 4 }} textColor={theme.colors.onSurfaceVariant}>
+            {t('common.close', 'סגור')}
+          </Button>
+        </Modal>
+      </Portal>
     </View>
   );
 }
@@ -874,15 +1077,24 @@ const styles = StyleSheet.create({
   searchbar: { height: 40, borderRadius: 20, elevation: 0 },
   stageFilters: {
     gap: 6,
+    alignItems: 'center',
     paddingVertical: 4,
   },
-  stageChip: { height: 26 },
-  stageChipText: { fontSize: 11 },
+  stageChip: { height: 28 },
+  stageChipText: { fontSize: 11, lineHeight: 16, marginVertical: 0 },
   listContent: { paddingTop: 4, paddingBottom: 100 },
   leadRow: {
     alignItems: 'stretch',
-    paddingVertical: 10,
+    paddingTop: 10,
+    paddingBottom: 10,
     paddingEnd: 14,
+  },
+  quickDialRow: {
+    alignItems: 'center',
+    marginTop: 6,
+    gap: 2,
+    paddingVertical: 2,
+    alignSelf: 'flex-start',
   },
   stageStripe: {
     width: 4,
@@ -894,7 +1106,7 @@ const styles = StyleSheet.create({
   leadTop: { alignItems: 'center', justifyContent: 'space-between' },
   leadMeta: { alignItems: 'center', gap: 12, marginTop: 2 },
   metaChip: { alignItems: 'center' },
-  leadBottom: { alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
+  leadBottom: { alignItems: 'center', justifyContent: 'space-between', marginTop: 6 },
   pipelineContainer: {
     paddingHorizontal: 8,
     paddingTop: 0,
@@ -978,5 +1190,5 @@ const styles = StyleSheet.create({
     paddingTop: 80,
     paddingHorizontal: 40,
   },
-  fab: { position: 'absolute', end: 16, borderRadius: 16 },
+  fab: { position: 'absolute', borderRadius: 16 },
 });

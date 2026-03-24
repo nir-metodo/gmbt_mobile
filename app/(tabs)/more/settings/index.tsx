@@ -93,8 +93,8 @@ export default function SettingsScreen() {
     try {
       await settings.setLanguage(lang as 'en' | 'he');
       await settingsApi.updateSettings(user?.organization || '', { language: lang });
-    } catch (err) {
-      console.error('Failed to change language:', err);
+    } catch {
+      // language update failed — settings already applied locally
     }
     setLanguageDialogVisible(false);
   }, [settings, user]);
@@ -103,8 +103,8 @@ export default function SettingsScreen() {
     try {
       await settings.setTheme(mode as 'light' | 'dark' | 'system');
       await settingsApi.updateSettings(user?.organization || '', { themeMode: mode });
-    } catch (err) {
-      console.error('Failed to change theme:', err);
+    } catch {
+      // theme update failed — settings already applied locally
     }
     setThemeDialogVisible(false);
   }, [settings, user]);
@@ -116,8 +116,8 @@ export default function SettingsScreen() {
       else if (key === 'messageNotifications') settings.setMessageNotifications(value);
       else if (key === 'callNotifications') settings.setCallNotifications(value);
       await settingsApi.updateSettings(user?.organization || '', { [key]: value });
-    } catch (err) {
-      console.error(`Failed to update ${key}:`, err);
+    } catch {
+      // setting update failed — toggle already applied locally
     }
   }, [settings, user]);
 
@@ -126,8 +126,8 @@ export default function SettingsScreen() {
     try {
       await logout();
       router.replace('/');
-    } catch (err) {
-      console.error('Failed to logout:', err);
+    } catch {
+      // logout failed
     } finally {
       setLoggingOut(false);
       setLogoutDialogVisible(false);
@@ -300,6 +300,16 @@ export default function SettingsScreen() {
             description={`v${appVersion}`}
             isRTL={isRTL}
             themeColors={theme.colors}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="shield-lock-outline"
+            iconColor="#6C757D"
+            label={t('settings.privacyPolicy')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            onPress={() => Linking.openURL('https://gambot.co.il/privacy/en')}
+            right={<MaterialCommunityIcons name="open-in-new" size={18} color={theme.colors.onSurfaceVariant} />}
           />
           <Divider style={s.divider} />
           <SettingRow

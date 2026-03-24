@@ -99,10 +99,20 @@ function getItemDate(item: any): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+/** Safely extract a string from a value that might be a stage object {stageId, stageName, ...} */
+function asString(val: any): string {
+  if (!val) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number') return String(val);
+  if (typeof val === 'object') return val.stageName || val.name || val.stage || val.label || val.title || '';
+  return '';
+}
+
 function groupBy(items: any[], fieldExtractor: (item: any) => string): Record<string, number> {
   const grouped: Record<string, number> = {};
   items.forEach((item) => {
-    const key = fieldExtractor(item) || 'Other';
+    const raw = fieldExtractor(item);
+    const key = asString(raw) || 'Other';
     grouped[key] = (grouped[key] || 0) + 1;
   });
   return grouped;
@@ -134,7 +144,7 @@ function getItemTitle(item: any, category: ReportCategory): string {
 function getItemSubtitle(item: any, category: ReportCategory): string {
   switch (category) {
     case 'leads':
-      return [item.stageName || item.stage, item.ownerName].filter(Boolean).join(' · ');
+      return [asString(item.stageName || item.stage), item.ownerName].filter(Boolean).join(' · ');
     case 'cases':
       return [item.status || item.Status, item.priority || item.Priority].filter(Boolean).join(' · ');
     case 'tasks':
@@ -244,8 +254,7 @@ export default function ReportsScreen() {
         raw?.Calls || raw?.calls || raw?.Breaches || raw?.breaches ||
         (Array.isArray(raw) ? raw : []);
       setRawData(Array.isArray(items) ? items : []);
-    } catch (err) {
-      console.log('Reports fetch error:', err);
+    } catch {
       setRawData([]);
     } finally {
       setLoading(false);
@@ -297,8 +306,8 @@ export default function ReportsScreen() {
         return items.sort((a, b) => getItemTitle(a, category).localeCompare(getItemTitle(b, category)));
       case 'status':
         return items.sort((a, b) => {
-          const sa = a.status || a.Status || a.stageName || '';
-          const sb = b.status || b.Status || b.stageName || '';
+          const sa = asString(a.status || a.Status) || asString(a.stageName || a.stage) || '';
+          const sb = asString(b.status || b.Status) || asString(b.stageName || b.stage) || '';
           return sa.localeCompare(sb);
         });
       default:
@@ -375,9 +384,9 @@ export default function ReportsScreen() {
 
     switch (category) {
       case 'leads': {
-        const won = items.filter(i => ['closed_won', 'won'].includes((i.stageName || i.stage || '').toLowerCase())).length;
+        const won = items.filter(i => ['closed_won', 'won'].includes(asString(i.stageName || i.stage).toLowerCase())).length;
         const convRate = items.length > 0 ? ((won / items.length) * 100).toFixed(0) : '0';
-        const newCount = items.filter(i => ['new', 'new lead'].includes((i.stageName || i.stage || '').toLowerCase())).length;
+        const newCount = items.filter(i => ['new', 'new lead'].includes(asString(i.stageName || i.stage).toLowerCase())).length;
         return [
           { label: t('reports.kpiWonRate'), value: `${convRate}%`, color: '#10b981', icon: 'trophy-outline' },
           { label: t('reports.kpiNew'), value: newCount, color: '#3b82f6', icon: 'plus-circle-outline' },
@@ -472,7 +481,7 @@ export default function ReportsScreen() {
         switch (category) {
           case 'leads': return [
             getItemTitle(item, category),
-            item.stageName || item.stage || '',
+            asString(item.stageName || item.stage) || '',
             item.source || '',
             item.ownerName || '',
             item.channel || item.Channel || '',
@@ -536,8 +545,8 @@ export default function ReportsScreen() {
         message: csvContent,
         title: `${t(`reports.${category}`)} Report`,
       });
-    } catch (err) {
-      console.log('Export error:', err);
+    } catch {
+      // export failed silently
     }
   }, [sortedData, category, t]);
 
@@ -734,7 +743,7 @@ export default function ReportsScreen() {
     const subtitle = getItemSubtitle(item, category);
     const dateRaw = item.createdOn || item.createdAt || item.date;
     const dateStr = dateRaw ? new Date(dateRaw).toLocaleDateString() : '';
-    const status = item.status || item.Status || item.stageName || item.stage || '';
+    const status = asString(item.status || item.Status) || asString(item.stageName || item.stage) || '';
 
     return (
       <Surface style={[styles.listItem, { backgroundColor: theme.colors.surface }]} elevation={0}>

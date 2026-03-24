@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -7,6 +7,8 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  FlatList,
+  TouchableOpacity,
 } from 'react-native';
 import {
   Text,
@@ -19,6 +21,7 @@ import {
   Button,
   IconButton,
   Divider,
+  Searchbar,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -28,10 +31,12 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { tasksApi } from '../../../../services/api/tasks';
-import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
+import { usersApi } from '../../../../services/api/users';
+import { leadsApi } from '../../../../services/api/leads';
+import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import ContactLookup from '../../../../components/ContactLookup';
-import type { Task } from '../../../../types';
+import type { Task, OrgUser } from '../../../../types';
 
 const BRAND_COLOR = '#2e6155';
 const PRIORITY_COLORS: Record<string, string> = {
@@ -134,13 +139,25 @@ export default function TaskDetailScreen() {
   const [formTaskType, setFormTaskType] = useState<string>('general');
   const [formDueDate, setFormDueDate] = useState('');
   const [formAssignedTo, setFormAssignedTo] = useState('');
+  const [formAssignedToId, setFormAssignedToId] = useState('');
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
+  const [orgUsersLoading, setOrgUsersLoading] = useState(false);
+  const [userPickerExpanded, setUserPickerExpanded] = useState(false);
+  const [formRelatedEntityType, setFormRelatedEntityType] = useState<'' | 'contact' | 'lead'>('');
   const [formRelatedContactName, setFormRelatedContactName] = useState('');
   const [formRelatedContactPhone, setFormRelatedContactPhone] = useState('');
   const [formRelatedContactId, setFormRelatedContactId] = useState('');
   const [contactLookupVisible, setContactLookupVisible] = useState(false);
+  const [formRelatedLeadName, setFormRelatedLeadName] = useState('');
+  const [formRelatedLeadId, setFormRelatedLeadId] = useState('');
+  const [leadPickerVisible, setLeadPickerVisible] = useState(false);
+  const [leadSearch, setLeadSearch] = useState('');
+  const [leadResults, setLeadResults] = useState<any[]>([]);
+  const [leadSearching, setLeadSearching] = useState(false);
+  const leadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchTask = useCallback(async () => {
-    if (!user?.organization || !id) return;
+    if (!user?.organization || !id) { setLoading(false); return; }
     try {
       setError(null);
       const tasks = await tasksApi.getAll(
@@ -173,19 +190,39 @@ export default function TaskDetailScreen() {
     setFormPriority((task as any).priority || task.priority || 'medium');
     setFormTaskType(task.taskType || 'general');
     setFormDueDate(task.dueDate || '');
-    setFormAssignedTo((task as any).assignedTo || task.assignedToId || '');
+    setFormAssignedTo((task as any).assignedToName || task.assignedToId || '');
+    setFormAssignedToId(task.assignedToId || '');
     const related = getRelatedEntityDisplay(task);
     if (related?.type === 'contact') {
+      setFormRelatedEntityType('contact');
       setFormRelatedContactName(related.name);
       setFormRelatedContactId(related.entityId || '');
       setFormRelatedContactPhone((task as any).relatedContactPhone || '');
-    } else {
+      setFormRelatedLeadName('');
+      setFormRelatedLeadId('');
+    } else if (related?.type === 'lead') {
+      setFormRelatedEntityType('lead');
+      setFormRelatedLeadName(related.name);
+      setFormRelatedLeadId(related.entityId || '');
       setFormRelatedContactName('');
       setFormRelatedContactId('');
       setFormRelatedContactPhone('');
+    } else {
+      setFormRelatedEntityType('');
+      setFormRelatedContactName('');
+      setFormRelatedContactId('');
+      setFormRelatedContactPhone('');
+      setFormRelatedLeadName('');
+      setFormRelatedLeadId('');
     }
+    setUserPickerExpanded(false);
     setEditModalVisible(true);
-  }, [task]);
+    // Load users when edit modal opens
+    if (orgUsers.length === 0) {
+      setOrgUsersLoading(true);
+      usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+    }
+  }, [task, user?.organization, orgUsers.length]);
 
   const handleSave = useCallback(async () => {
     if (!user?.organization || !task || !formTitle.trim()) return;
@@ -193,22 +230,38 @@ export default function TaskDetailScreen() {
     try {
       const payload: any = {
         id: task.id,
+        taskId: task.taskId || task.id,
         title: formTitle.trim(),
         description: formDescription.trim() || undefined,
         status: formStatus as Task['status'],
         priority: formPriority as any,
         taskType: formTaskType as Task['taskType'],
         dueDate: formDueDate.trim() || undefined,
-        assignedTo: formAssignedTo.trim() || undefined,
+        assignedToId: formAssignedToId || undefined,
+        assignedTo: formAssignedToId || formAssignedTo.trim() || undefined,
+        assignedToName: formAssignedTo.trim() || undefined,
       };
-      if (formRelatedContactId) {
+      if (formRelatedEntityType === 'contact' && formRelatedContactId) {
         payload.relatedTo = {
           type: 'contact',
           entityId: formRelatedContactId,
           entityName: formRelatedContactName,
         };
+      } else if (formRelatedEntityType === 'lead' && formRelatedLeadId) {
+        payload.relatedTo = {
+          type: 'lead',
+          entityId: formRelatedLeadId,
+          entityName: formRelatedLeadName,
+        };
+      } else {
+        payload.relatedTo = null;
       }
-      await tasksApi.update(user.organization, payload);
+      await tasksApi.update(
+        user.organization,
+        payload,
+        user.userId || user.uID || '',
+        user.fullname || '',
+      );
       setEditModalVisible(false);
       await fetchTask();
     } catch (err: any) {
@@ -216,7 +269,31 @@ export default function TaskDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [user?.organization, task, formTitle, formDescription, formStatus, formPriority, formTaskType, formDueDate, formAssignedTo, formRelatedContactId, formRelatedContactName, fetchTask, t]);
+  }, [user?.organization, task, formTitle, formDescription, formStatus, formPriority, formTaskType, formDueDate, formAssignedTo, formAssignedToId, formRelatedEntityType, formRelatedContactId, formRelatedContactName, formRelatedLeadId, formRelatedLeadName, fetchTask, t]);
+
+  const handleLeadSearch = useCallback((text: string) => {
+    setLeadSearch(text);
+    if (leadDebounceRef.current) clearTimeout(leadDebounceRef.current);
+    setLeadSearching(true);
+    leadDebounceRef.current = setTimeout(async () => {
+      try {
+        const result = await leadsApi.getAll(user?.organization || '', { filters: { searchTerm: text.trim() || undefined }, pageSize: 30 });
+        setLeadResults(result.data || []);
+      } catch { setLeadResults([]); }
+      finally { setLeadSearching(false); }
+    }, 300);
+  }, [user?.organization]);
+
+  const openLeadPicker = useCallback(() => {
+    setLeadSearch('');
+    setLeadResults([]);
+    setLeadSearching(true);
+    setLeadPickerVisible(true);
+    leadsApi.getAll(user?.organization || '', { pageSize: 30 })
+      .then((r) => setLeadResults(r.data || []))
+      .catch(() => setLeadResults([]))
+      .finally(() => setLeadSearching(false));
+  }, [user?.organization]);
 
   const handleDelete = useCallback(() => {
     Alert.alert(
@@ -249,9 +326,10 @@ export default function TaskDetailScreen() {
       try {
         await tasksApi.update(user.organization, {
           id: task.id,
+          taskId: task.taskId || task.id,
           status: newStatus as Task['status'],
           ...(newStatus === 'completed' ? { completedAt: new Date().toISOString() } : {}),
-        } as any);
+        } as any, user.userId || user.uID || '', user.fullname || '');
         await fetchTask();
       } catch (err: any) {
         Alert.alert(t('common.error'), err.message || t('errors.generic'));
@@ -268,7 +346,7 @@ export default function TaskDetailScreen() {
     (entityType: string, entityId?: string) => {
       if (!entityId) return;
       if (entityType === 'contact') {
-        router.push({ pathname: '/(tabs)/contacts', params: { contactId: entityId } });
+        router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: entityId } });
       } else if (entityType === 'lead') {
         router.push({ pathname: '/(tabs)/leads', params: { leadId: entityId } });
       } else if (entityType === 'case') {
@@ -493,7 +571,7 @@ export default function TaskDetailScreen() {
           {/* Due date */}
           {task.dueDate ? (
             <View style={styles.detailRow}>
-              <View style={[styles.detailIcon, { backgroundColor: overdue ? '#F4433618' : `${theme.colors.primary}18` }]}>
+              <View style={[styles.detailIcon, { backgroundColor: overdue ? withAlpha('#F44336', 0.094) : withAlpha(theme.colors.primary, 0.094) }]}>
                 <MaterialCommunityIcons
                   name="calendar-clock"
                   size={20}
@@ -551,7 +629,7 @@ export default function TaskDetailScreen() {
               onPress={() => relatedEntity.entityId && navigateToRelated(relatedEntity.type || '', relatedEntity.entityId)}
               style={styles.detailRow}
             >
-              <View style={[styles.detailIcon, { backgroundColor: `${theme.colors.secondary}18` }]}>
+              <View style={[styles.detailIcon, { backgroundColor: withAlpha(theme.colors.secondary, 0.094) }]}>
                 <MaterialCommunityIcons
                   name={
                     relatedEntity.type === 'contact'
@@ -651,6 +729,69 @@ export default function TaskDetailScreen() {
         }}
         onDismiss={() => setContactLookupVisible(false)}
       />
+
+      {/* Lead picker Modal */}
+      <Portal>
+        <Modal
+          visible={leadPickerVisible}
+          onDismiss={() => { setLeadPickerVisible(false); setLeadSearch(''); }}
+          contentContainerStyle={[
+            { margin: 16, borderRadius: 12, backgroundColor: theme.colors.surface, maxHeight: '80%' },
+          ]}
+        >
+          <View style={[{ flexDirection, alignItems: 'center', padding: 12, paddingBottom: 4 }]}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+              {t('tasks.selectLead', 'בחר ליד')}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => { setLeadPickerVisible(false); setLeadSearch(''); }} />
+          </View>
+          <Searchbar
+            placeholder={t('common.search')}
+            value={leadSearch}
+            onChangeText={handleLeadSearch}
+            style={{ marginHorizontal: 12, marginBottom: 8 }}
+            autoFocus
+          />
+          {leadSearching ? (
+            <ActivityIndicator size="large" color={BRAND_COLOR} style={{ marginVertical: 32 }} />
+          ) : (
+            <FlatList
+              data={leadResults}
+              keyExtractor={(item) => item.id || String(Math.random())}
+              style={{ maxHeight: 380 }}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[{ flexDirection, alignItems: 'center', gap: 10, padding: 12, borderBottomWidth: 1, borderBottomColor: theme.colors.outlineVariant }]}
+                  onPress={() => {
+                    setFormRelatedLeadId(item.id);
+                    setFormRelatedLeadName(item.title || item.contactName || item.id);
+                    setLeadPickerVisible(false);
+                    setLeadSearch('');
+                  }}
+                >
+                  <MaterialCommunityIcons name="chart-line" size={20} color={BRAND_COLOR} />
+                  <View style={{ flex: 1 }}>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
+                      {item.title || item.contactName || item.id}
+                    </Text>
+                    {item.contactName && item.title && (
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                        {item.contactName}
+                      </Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
+                  {t('common.noResults')}
+                </Text>
+              }
+            />
+          )}
+        </Modal>
+      </Portal>
 
       {/* Edit Modal */}
       <Portal>
@@ -793,54 +934,146 @@ export default function TaskDetailScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={BRAND_COLOR}
-                left={<TextInput.Icon icon="calendar" />}
+                right={<TextInput.Icon icon="calendar" />}
               />
 
-              <TextInput
-                label={t('tasks.assignedTo')}
-                value={formAssignedTo}
-                onChangeText={setFormAssignedTo}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-                left={<TextInput.Icon icon="account" />}
-              />
-
-              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('tasks.relatedContact')}
-              </Text>
+              {/* Assigned to - user picker */}
               <Pressable
-                onPress={() => setContactLookupVisible(true)}
+                onPress={() => setUserPickerExpanded((v) => !v)}
                 style={[
-                  styles.contactLookupField,
+                  styles.formInput,
                   {
-                    backgroundColor: theme.colors.surfaceVariant,
-                    borderColor: theme.colors.outline,
-                    flexDirection,
+                    borderWidth: 1,
+                    borderRadius: 4,
+                    borderColor: userPickerExpanded ? BRAND_COLOR : theme.colors.outline,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    backgroundColor: theme.colors.surface,
                   },
                 ]}
               >
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={{
-                      color: formRelatedContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant,
-                      fontSize: 15,
-                      textAlign,
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 2 }}>
+                  {t('tasks.assignedTo')}
+                </Text>
+                <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+                  <MaterialCommunityIcons name="account" size={16} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="bodyMedium" style={{ flex: 1, color: formAssignedTo ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                    {orgUsersLoading ? t('common.loading') || 'טוען...' : (formAssignedTo || t('tasks.selectUser') || 'בחר משתמש')}
+                  </Text>
+                  <MaterialCommunityIcons name={userPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+                </View>
+              </Pressable>
+              {userPickerExpanded && (
+                <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 4, marginTop: -14, marginBottom: 14, overflow: 'hidden' }}>
+                  <Pressable
+                    style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8 }]}
+                    onPress={() => { setFormAssignedTo(''); setFormAssignedToId(''); setUserPickerExpanded(false); }}
+                  >
+                    <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {t('common.none') || 'ללא'}
+                    </Text>
+                  </Pressable>
+                  <Divider />
+                  {orgUsers.map((u) => (
+                    <Pressable
+                      key={u.uID || u.userId}
+                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId) === formAssignedToId ? `${BRAND_COLOR}15` : 'transparent' }]}
+                      onPress={() => { setFormAssignedTo(u.fullname || u.name || ''); setFormAssignedToId(u.uID || u.userId || ''); setUserPickerExpanded(false); }}
+                    >
+                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId) === formAssignedToId ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId) === formAssignedToId ? BRAND_COLOR : theme.colors.onSurface, fontWeight: (u.uID || u.userId) === formAssignedToId ? '700' : '400' }}>
+                        {u.fullname || u.name}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+
+              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
+                {t('tasks.relatedTo', 'משויך ל')}
+              </Text>
+
+              {/* Entity type chips */}
+              <View style={{ flexDirection, gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+                {[
+                  { key: '', label: t('common.none', 'ללא'), icon: 'close-circle-outline' },
+                  { key: 'contact', label: t('tasks.relatedContact', 'איש קשר'), icon: 'account' },
+                  { key: 'lead', label: t('tasks.relatedLead', 'ליד'), icon: 'chart-line' },
+                ].map(({ key, label, icon }) => (
+                  <Chip
+                    key={key}
+                    selected={formRelatedEntityType === key}
+                    onPress={() => {
+                      setFormRelatedEntityType(key as '' | 'contact' | 'lead');
+                      if (key !== 'contact') {
+                        setFormRelatedContactName('');
+                        setFormRelatedContactId('');
+                        setFormRelatedContactPhone('');
+                      }
+                      if (key !== 'lead') {
+                        setFormRelatedLeadName('');
+                        setFormRelatedLeadId('');
+                      }
                     }}
+                    icon={icon}
+                    style={formRelatedEntityType === key ? { backgroundColor: `${BRAND_COLOR}20` } : undefined}
+                    selectedColor={BRAND_COLOR}
+                  >
+                    {label}
+                  </Chip>
+                ))}
+              </View>
+
+              {/* Contact picker */}
+              {formRelatedEntityType === 'contact' && (
+                <Pressable
+                  onPress={() => setContactLookupVisible(true)}
+                  style={[
+                    styles.contactLookupField,
+                    { backgroundColor: theme.colors.surfaceVariant, borderColor: formRelatedContactId ? BRAND_COLOR : theme.colors.outline, flexDirection },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="account-search" size={20} color={formRelatedContactId ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                  <Text
+                    style={{ color: formRelatedContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 15, textAlign, flex: 1, marginStart: 8 }}
                     numberOfLines={1}
                   >
                     {formRelatedContactName
                       ? `${formRelatedContactName}${formRelatedContactPhone ? `  •  ${formRelatedContactPhone}` : ''}`
                       : t('common.selectContact')}
                   </Text>
-                </View>
-                <MaterialCommunityIcons
-                  name="account-search"
-                  size={20}
-                  color={theme.colors.onSurfaceVariant}
-                />
-              </Pressable>
+                  {formRelatedContactId ? (
+                    <Pressable onPress={() => { setFormRelatedContactName(''); setFormRelatedContactId(''); setFormRelatedContactPhone(''); }} hitSlop={8}>
+                      <MaterialCommunityIcons name="close-circle" size={18} color={BRAND_COLOR} />
+                    </Pressable>
+                  ) : null}
+                </Pressable>
+              )}
+
+              {/* Lead picker */}
+              {formRelatedEntityType === 'lead' && (
+                <Pressable
+                  onPress={openLeadPicker}
+                  style={[
+                    styles.contactLookupField,
+                    { backgroundColor: theme.colors.surfaceVariant, borderColor: formRelatedLeadId ? BRAND_COLOR : theme.colors.outline, flexDirection },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="chart-line" size={20} color={formRelatedLeadId ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                  <Text
+                    style={{ color: formRelatedLeadName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 15, textAlign, flex: 1, marginStart: 8 }}
+                    numberOfLines={1}
+                  >
+                    {formRelatedLeadName || t('tasks.selectLead', 'בחר ליד')}
+                  </Text>
+                  {formRelatedLeadId ? (
+                    <Pressable onPress={() => { setFormRelatedLeadName(''); setFormRelatedLeadId(''); }} hitSlop={8}>
+                      <MaterialCommunityIcons name="close-circle" size={18} color={BRAND_COLOR} />
+                    </Pressable>
+                  ) : null}
+                </Pressable>
+              )}
 
               <View style={[styles.modalActions, { flexDirection }]}>
                 <Button

@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import * as Device from 'expo-constants';
+import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import { appStorage } from './storage';
 import axiosInstance from './api/axiosInstance';
@@ -17,8 +17,7 @@ Notifications.setNotificationHandler({
 
 export const notificationService = {
   async registerForPushNotifications(): Promise<string | null> {
-    if (!Device.default.isDevice) {
-      console.warn('Push notifications only work on physical devices');
+    if (!Device.isDevice) {
       return null;
     }
 
@@ -75,8 +74,8 @@ export const notificationService = {
         deviceToken: token,
         platform: Platform.OS,
       });
-    } catch (error) {
-      console.error('Failed to register device token:', error);
+    } catch {
+      // non-critical — push will still work, server just won't know this device
     }
   },
 

@@ -1,4 +1,10 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, {
+  useState,
+  useRef,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import {
   View,
   StyleSheet,
@@ -12,6 +18,17 @@ import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRTL } from '../../hooks/useRTL';
 
+export interface ChatInputRef {
+  insertText: (text: string) => void;
+  focus: () => void;
+  clear: () => void;
+}
+
+export interface ReplyPreview {
+  text: string;
+  senderName: string;
+}
+
 interface ChatInputProps {
   onSend: (text: string) => void;
   onAttachmentPress: () => void;
@@ -20,9 +37,12 @@ interface ChatInputProps {
   onQuickMessagePress?: () => void;
   isSending?: boolean;
   disabled?: boolean;
+  replyTo?: ReplyPreview | null;
+  onCancelReply?: () => void;
+  onTextChange?: (text: string) => void;
 }
 
-export function ChatInput({
+export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   onSend,
   onAttachmentPress,
   isInternalNote,
@@ -30,14 +50,31 @@ export function ChatInput({
   onQuickMessagePress,
   isSending,
   disabled,
-}: ChatInputProps) {
+  replyTo,
+  onCancelReply,
+  onTextChange,
+}, ref) => {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
   const theme = useAppTheme();
   const { isRTL, writingDirection } = useRTL();
   const { t } = useTranslation();
 
+  useImperativeHandle(ref, () => ({
+    insertText: (t: string) => {
+      setText(t);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    },
+    focus: () => inputRef.current?.focus(),
+    clear: () => setText(''),
+  }));
+
   const hasText = text.trim().length > 0;
+
+  const handleChangeText = useCallback((val: string) => {
+    setText(val);
+    onTextChange?.(val);
+  }, [onTextChange]);
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
@@ -47,61 +84,46 @@ export function ChatInput({
   }, [text, isSending, onSend]);
 
   const containerBg = isInternalNote
-    ? theme.dark
-      ? '#3E3500'
-      : '#FFF9C4'
-    : theme.dark
-      ? theme.custom.inputBackground
-      : '#F0F2F5';
+    ? theme.dark ? '#3E3500' : '#FFF9C4'
+    : theme.dark ? theme.custom.inputBackground : '#F0F2F5';
 
   const containerBorder = isInternalNote
-    ? theme.dark
-      ? '#FFE082'
-      : '#FFB300'
+    ? theme.dark ? '#FFE082' : '#FFB300'
     : 'transparent';
 
   return (
     <View
       style={[
         styles.outerContainer,
-        {
-          backgroundColor: theme.colors.surface,
-          borderTopColor: theme.colors.outline,
-        },
+        { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outline },
       ]}
     >
+      {/* Reply preview */}
+      {replyTo ? (
+        <View style={[styles.replyPreview, { backgroundColor: theme.dark ? '#1e3a2a' : '#e8f5e9', borderLeftColor: '#2e6155' }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.replyName, { color: '#2e6155' }]} numberOfLines={1}>
+              {replyTo.senderName}
+            </Text>
+            <Text style={[styles.replyText, { color: theme.colors.onSurfaceVariant }]} numberOfLines={2}>
+              {replyTo.text}
+            </Text>
+          </View>
+          <Pressable onPress={onCancelReply} hitSlop={8}>
+            <MaterialCommunityIcons name="close" size={18} color={theme.colors.onSurfaceVariant} />
+          </Pressable>
+        </View>
+      ) : null}
+
+      {/* Internal note banner */}
       {isInternalNote && (
-        <View
-          style={[
-            styles.noteBanner,
-            {
-              backgroundColor: theme.dark ? '#3E3500' : '#FFF3E0',
-            },
-          ]}
-        >
-          <MaterialCommunityIcons
-            name="note-text"
-            size={14}
-            color={theme.dark ? '#FFE082' : '#E65100'}
-          />
-          <Text
-            style={[
-              styles.noteBannerText,
-              { color: theme.dark ? '#FFE082' : '#E65100' },
-            ]}
-          >
+        <View style={[styles.noteBanner, { backgroundColor: theme.dark ? '#3E3500' : '#FFF3E0' }]}>
+          <MaterialCommunityIcons name="note-text" size={14} color={theme.dark ? '#FFE082' : '#E65100'} />
+          <Text style={[styles.noteBannerText, { color: theme.dark ? '#FFE082' : '#E65100' }]}>
             {t('chats.internalNote')}
           </Text>
-          <Pressable
-            onPress={onToggleInternalNote}
-            hitSlop={8}
-            style={styles.noteBannerClose}
-          >
-            <MaterialCommunityIcons
-              name="close"
-              size={16}
-              color={theme.dark ? '#FFE082' : '#E65100'}
-            />
+          <Pressable onPress={onToggleInternalNote} hitSlop={8} style={styles.noteBannerClose}>
+            <MaterialCommunityIcons name="close" size={16} color={theme.dark ? '#FFE082' : '#E65100'} />
           </Pressable>
         </View>
       )}
@@ -112,38 +134,28 @@ export function ChatInput({
           hitSlop={6}
           style={({ pressed }) => [
             styles.noteToggle,
-            isInternalNote && {
-              backgroundColor: theme.dark ? '#5C4800' : '#FFE0B2',
-            },
+            isInternalNote && { backgroundColor: theme.dark ? '#5C4800' : '#FFE0B2' },
             pressed && { opacity: 0.7 },
           ]}
         >
           <MaterialCommunityIcons
             name={isInternalNote ? 'note-text' : 'note-text-outline'}
             size={20}
-            color={
-              isInternalNote ? '#FF8F00' : theme.colors.onSurfaceVariant
-            }
+            color={isInternalNote ? '#FF8F00' : theme.colors.onSurfaceVariant}
           />
         </Pressable>
 
         <View
           style={[
             styles.inputContainer,
-            {
-              backgroundColor: containerBg,
-              borderColor: containerBorder,
-            },
+            { backgroundColor: containerBg, borderColor: containerBorder },
           ]}
         >
           <Pressable
             onPress={onAttachmentPress}
             disabled={disabled}
             hitSlop={4}
-            style={({ pressed }) => [
-              styles.iconBtn,
-              pressed && { opacity: 0.6 },
-            ]}
+            style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.6 }]}
           >
             <MaterialCommunityIcons
               name="attachment"
@@ -156,12 +168,8 @@ export function ChatInput({
           <TextInput
             ref={inputRef}
             value={text}
-            onChangeText={setText}
-            placeholder={
-              isInternalNote
-                ? t('chats.internalNote')
-                : t('chats.typeMessage')
-            }
+            onChangeText={handleChangeText}
+            placeholder={isInternalNote ? t('chats.internalNote') : t('chats.typeMessage')}
             placeholderTextColor={theme.custom.placeholder}
             multiline
             maxLength={4096}
@@ -177,20 +185,13 @@ export function ChatInput({
             textAlignVertical="center"
           />
 
-          {onQuickMessagePress && (
+          {onQuickMessagePress && !hasText && (
             <Pressable
               onPress={onQuickMessagePress}
               hitSlop={4}
-              style={({ pressed }) => [
-                styles.iconBtn,
-                pressed && { opacity: 0.6 },
-              ]}
+              style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.6 }]}
             >
-              <MaterialCommunityIcons
-                name="lightning-bolt"
-                size={20}
-                color={theme.colors.onSurfaceVariant}
-              />
+              <MaterialCommunityIcons name="lightning-bolt" size={20} color={theme.colors.onSurfaceVariant} />
             </Pressable>
           )}
         </View>
@@ -201,9 +202,7 @@ export function ChatInput({
           style={({ pressed }) => [
             styles.sendBtn,
             {
-              backgroundColor: hasText
-                ? theme.colors.primary
-                : theme.colors.surfaceVariant,
+              backgroundColor: hasText ? theme.colors.primary : theme.colors.surfaceVariant,
               opacity: pressed && hasText ? 0.8 : 1,
             },
           ]}
@@ -217,13 +216,25 @@ export function ChatInput({
       </View>
     </View>
   );
-}
+});
+
+ChatInput.displayName = 'ChatInput';
 
 const styles = StyleSheet.create({
   outerContainer: {
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingBottom: Platform.OS === 'ios' ? 4 : 6,
   },
+  replyPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderLeftWidth: 3,
+    gap: 10,
+  },
+  replyName: { fontSize: 12, fontWeight: '700', marginBottom: 2 },
+  replyText: { fontSize: 13, lineHeight: 17 },
   noteBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -236,9 +247,7 @@ const styles = StyleSheet.create({
     marginStart: 6,
     flex: 1,
   },
-  noteBannerClose: {
-    padding: 2,
-  },
+  noteBannerClose: { padding: 2 },
   row: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -284,6 +293,5 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 0,
   },
 });

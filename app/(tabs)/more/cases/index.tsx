@@ -33,12 +33,15 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
-import { formatDate, getInitials } from '../../../../utils/formatters';
+import { formatDate, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 import type { Case } from '../../../../types';
+import { useContactLookup } from '../../../../hooks/useContactLookup';
+import ContactLookupField from '../../../../components/ContactLookupField';
 
 const STATUS_FILTERS = ['all', 'open', 'in_progress', 'resolved', 'closed'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
+const DATE_RANGE_PRESETS = ['Today', 'This Week', 'This Month', 'Last Month', 'This Year'] as const;
 
 const PRIORITY_COLORS: Record<string, string> = {
   low: '#4CAF50',
@@ -70,20 +73,34 @@ export default function CasesListScreen() {
   const { t } = useTranslation();
 
   const user = useAuthStore((s) => s.user);
+  const { contactSearch, contactResults, contactSearching, selectedContact, handleContactSearch, handleSelectContact, resetContactLookup } = useContactLookup();
 
+  // ── Pagination state ────────────────────────────────────────────────────────
+  const PAGE_SIZE = 30;
   const [cases, setCases] = useState<Case[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const fetchingRef = useRef(false);
+
+  // ── Filter state ─────────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [createModalVisible, setCreateModalVisible] = useState(false);
-  const [creating, setCreating] = useState(false);
   const [advancedFilterVisible, setAdvancedFilterVisible] = useState(false);
   const [filterCategory, setFilterCategory] = useState('');
   const [filterAssignee, setFilterAssignee] = useState('');
+  const [filterPriority, setFilterPriority] = useState('');
+  const [filterDateRange, setFilterDateRange] = useState('');
+  const [filterMine, setFilterMine] = useState(false);
 
+  // ── Create form state ────────────────────────────────────────────────────────
+  const [createModalVisible, setCreateModalVisible] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [formTitle, setFormTitle] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formPriority, setFormPriority] = useState<string>('medium');
@@ -94,88 +111,75 @@ export default function CasesListScreen() {
 
   const searchAnim = useRef(new Animated.Value(0)).current;
 
-  const fetchCases = useCallback(async () => {
-    if (!user?.organization) return;
+  // ── Build filters for API ─────────────────────────────────────────────────
+  const buildFilters = useCallback(() => ({
+    searchTerm: searchQuery.trim(),
+    statuses: statusFilter !== 'all' ? [statusFilter] : [],
+    categories: filterCategory.trim() ? [filterCategory.trim()] : [],
+    owners: filterAssignee.trim() ? [filterAssignee.trim()] : [],
+    priorities: filterPriority ? [filterPriority] : [],
+    dateRangePreset: filterDateRange || '',
+  }), [searchQuery, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange]);
+
+  // ── Fetch a page ─────────────────────────────────────────────────────────
+  const fetchPage = useCallback(async (pageNum: number, reset: boolean) => {
+    if (!user?.organization || fetchingRef.current) return;
+    fetchingRef.current = true;
+    if (reset) { setLoading(true); setError(null); } else setLoadingMore(true);
     try {
-      setError(null);
-      const result = await casesApi.getAll(user.organization);
-      setCases(result.data);
+      const result = await casesApi.getAll(user.organization, {
+        page: pageNum,
+        pageSize: PAGE_SIZE,
+        filters: buildFilters(),
+        dataVisibility: filterMine ? 'mineOnly' : 'seeAll',
+        userId: filterMine ? (user.userId || user.uID || '') : '',
+      });
+      const newItems = result.data ?? [];
+      const total = result.total ?? 0;
+      setTotalCount(total);
+      setCases((prev) => (reset ? newItems : [...prev, ...newItems]));
+      setPage(pageNum);
+      setHasMore(newItems.length === PAGE_SIZE);
     } catch (err: any) {
-      setError(err.message || t('errors.generic'));
+      if (reset) setError(err.message || t('errors.generic'));
     } finally {
-      setLoading(false);
+      fetchingRef.current = false;
+      if (reset) setLoading(false); else setLoadingMore(false);
     }
-  }, [user?.organization, t]);
+  }, [user?.organization, buildFilters, t]);
 
   useEffect(() => {
-    fetchCases();
-  }, [fetchCases]);
+    fetchPage(1, true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.organization, searchQuery, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange, filterMine]);
+
+  const onEndReached = useCallback(() => {
+    if (!hasMore || loadingMore || loading) return;
+    fetchPage(page + 1, false);
+  }, [hasMore, loadingMore, loading, page, fetchPage]);
+
+  const fetchCases = useCallback(() => fetchPage(1, true), [fetchPage]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchCases();
+    await fetchPage(1, true);
     setRefreshing(false);
-  }, [fetchCases]);
+  }, [fetchPage]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
     if (willShow) {
       setSearchVisible(true);
-      Animated.timing(searchAnim, {
-        toValue: 1,
-        duration: 220,
-        useNativeDriver: false,
-      }).start();
+      Animated.timing(searchAnim, { toValue: 1, duration: 220, useNativeDriver: false }).start();
     } else {
-      Animated.timing(searchAnim, {
-        toValue: 0,
-        duration: 180,
-        useNativeDriver: false,
-      }).start(() => {
+      Animated.timing(searchAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(() => {
         setSearchVisible(false);
         setSearchQuery('');
       });
     }
   }, [searchVisible, searchAnim]);
 
-  const filteredCases = useMemo(() => {
-    let result = cases;
-
-    if (statusFilter !== 'all') {
-      result = result.filter((c) => {
-        const normalized = c.status.toLowerCase().replace(/\s+/g, '_');
-        return normalized === statusFilter;
-      });
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (c) =>
-          (c.subject || c.title || '').toLowerCase().includes(q) ||
-          (c.description || '').toLowerCase().includes(q) ||
-          (c.contactName || '').toLowerCase().includes(q) ||
-          (c.category || '').toLowerCase().includes(q),
-      );
-    }
-
-    if (filterCategory.trim()) {
-      const cat = filterCategory.toLowerCase().trim();
-      result = result.filter((c) => (c.category || '').toLowerCase().includes(cat));
-    }
-
-    if (filterAssignee.trim()) {
-      const assignee = filterAssignee.toLowerCase().trim();
-      result = result.filter((c) =>
-        (c.assignedToName || c.assignedTo || '').toLowerCase().includes(assignee),
-      );
-    }
-
-    return result.sort((a, b) => {
-      const priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
-      return (priorityOrder[a.priority] ?? 2) - (priorityOrder[b.priority] ?? 2);
-    });
-  }, [cases, statusFilter, searchQuery, filterCategory, filterAssignee]);
+  const filteredCases = cases; // server-side filtered
 
   const resetForm = useCallback(() => {
     setFormTitle('');
@@ -184,7 +188,8 @@ export default function CasesListScreen() {
     setFormCategory('');
     setFormContactName('');
     setFormAssignedTo('');
-  }, []);
+    resetContactLookup();
+  }, [resetContactLookup]);
 
   const handleCreate = useCallback(async () => {
     if (!user?.organization || !formTitle.trim()) return;
@@ -195,7 +200,11 @@ export default function CasesListScreen() {
         description: formDescription.trim() || undefined,
         priority: formPriority as Case['priority'],
         category: formCategory.trim() || undefined,
-        contactName: formContactName.trim() || undefined,
+        contactName: selectedContact
+          ? (selectedContact.fullName || selectedContact.name || formContactName.trim())
+          : formContactName.trim() || undefined,
+        contactPhone: selectedContact?.phoneNumber || selectedContact?.phone || undefined,
+        contactId: selectedContact?.id || undefined,
         assignedTo: formAssignedTo.trim() || undefined,
         status: 'open',
       } as any, user.fullname);
@@ -296,31 +305,25 @@ export default function CasesListScreen() {
 
               {item.category ? (
                 <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="tag"
-                    size={14}
-                    color={theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelSmall"
-                    numberOfLines={1}
-                    style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}
-                  >
+                  <MaterialCommunityIcons name="tag" size={14} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="labelSmall" numberOfLines={1} style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}>
                     {item.category}
                   </Text>
                 </View>
               ) : null}
 
+              {(item as any).ownerName || (item as any).assignedToName ? (
+                <View style={[styles.metaItem, { flexDirection }]}>
+                  <MaterialCommunityIcons name="account-tie-outline" size={14} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="labelSmall" numberOfLines={1} style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}>
+                    {(item as any).ownerName || (item as any).assignedToName}
+                  </Text>
+                </View>
+              ) : null}
+
               <View style={[styles.metaItem, { flexDirection }]}>
-                <MaterialCommunityIcons
-                  name="calendar"
-                  size={14}
-                  color={theme.colors.onSurfaceVariant}
-                />
-                <Text
-                  variant="labelSmall"
-                  style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}
-                >
+                <MaterialCommunityIcons name="calendar" size={14} color={theme.colors.onSurfaceVariant} />
+                <Text variant="labelSmall" style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}>
                   {formatDate(item.createdOn || '')}
                 </Text>
               </View>
@@ -445,6 +448,26 @@ export default function CasesListScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
         >
+          {/* Mine quick filter */}
+          <Chip
+            selected={filterMine}
+            onPress={() => setFilterMine((v) => !v)}
+            showSelectedOverlay
+            compact
+            icon="account"
+            style={[
+              styles.filterChip,
+              filterMine
+                ? { backgroundColor: theme.colors.primaryContainer }
+                : { backgroundColor: theme.colors.surfaceVariant },
+            ]}
+            textStyle={[
+              styles.filterChipText,
+              filterMine && { color: theme.colors.primary, fontWeight: '600' },
+            ]}
+          >
+            {t('leads.viewMine', 'שלי')}
+          </Chip>
           {STATUS_FILTERS.map((f) => (
             <Chip
               key={f}
@@ -497,6 +520,19 @@ export default function CasesListScreen() {
         renderItem={renderCaseCard}
         keyExtractor={(item) => item.id}
         ListEmptyComponent={renderEmpty}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={
+          loadingMore
+            ? () => <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
+            : totalCount > 0
+              ? () => (
+                  <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
+                    {cases.length} / {totalCount}
+                  </Text>
+                )
+              : null
+        }
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -519,7 +555,7 @@ export default function CasesListScreen() {
         onPress={() => setCreateModalVisible(true)}
         style={[
           styles.fab,
-          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 },
+          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },
         ]}
         color="#FFFFFF"
         label={t('cases.addCase')}
@@ -604,18 +640,18 @@ export default function CasesListScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="tag" />}
+                right={<TextInput.Icon icon="tag" />}
               />
 
-              <TextInput
-                label={t('cases.contact')}
-                value={formContactName}
-                onChangeText={setFormContactName}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="account" />}
+              <ContactLookupField
+                contactSearch={contactSearch}
+                contactResults={contactResults}
+                contactSearching={contactSearching}
+                selectedContact={selectedContact}
+                brandColor={theme.colors.primary}
+                onSearch={(text) => handleContactSearch(text, user?.organization || '')}
+                onSelect={(c) => { handleSelectContact(c); setFormContactName(c.fullName || c.name || ''); }}
+                onClear={() => { resetContactLookup(); setFormContactName(''); }}
               />
 
               <TextInput
@@ -626,7 +662,7 @@ export default function CasesListScreen() {
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="account-check" />}
+                right={<TextInput.Icon icon="account-check" />}
               />
 
               <View style={[styles.modalActions, { flexDirection }]}>
@@ -678,7 +714,7 @@ export default function CasesListScreen() {
                   styles.statusPickerOption,
                   {
                     backgroundColor: isCurrent
-                      ? `${color}20`
+                      ? withAlpha(color, 0.12)
                       : pressed
                         ? theme.colors.surfaceVariant
                         : 'transparent',
@@ -723,32 +759,89 @@ export default function CasesListScreen() {
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 16 }}>
             {t('cases.advancedFilter')}
           </Text>
-          <TextInput
-            label={t('cases.category')}
-            value={filterCategory}
-            onChangeText={setFilterCategory}
-            mode="outlined"
-            style={[styles.formInput, { textAlign }]}
-            outlineColor={theme.colors.outline}
-            activeOutlineColor={theme.colors.primary}
-            left={<TextInput.Icon icon="tag" />}
-          />
-          <TextInput
-            label={t('cases.assignedTo')}
-            value={filterAssignee}
-            onChangeText={setFilterAssignee}
-            mode="outlined"
-            style={[styles.formInput, { textAlign }]}
-            outlineColor={theme.colors.outline}
-            activeOutlineColor={theme.colors.primary}
-            left={<TextInput.Icon icon="account-check" />}
-          />
+          <ScrollView showsVerticalScrollIndicator={false} style={{ flexShrink: 1 }}>
+            <TextInput
+              label={t('cases.category')}
+              value={filterCategory}
+              onChangeText={setFilterCategory}
+              mode="outlined"
+              style={[styles.formInput, { textAlign }]}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={theme.colors.primary}
+              right={<TextInput.Icon icon="tag" />}
+            />
+            <TextInput
+              label={t('cases.assignedTo')}
+              value={filterAssignee}
+              onChangeText={setFilterAssignee}
+              mode="outlined"
+              style={[styles.formInput, { textAlign }]}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={theme.colors.primary}
+              right={<TextInput.Icon icon="account-check" />}
+            />
+
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, marginTop: 8 }}>
+              {t('tasks.priority', 'Priority')}
+            </Text>
+            <View style={[styles.chipRow, { flexDirection }]}>
+              {PRIORITIES.map((p) => (
+                <Chip
+                  key={p}
+                  selected={filterPriority === p}
+                  onPress={() => setFilterPriority(filterPriority === p ? '' : p)}
+                  compact
+                  style={[
+                    styles.filterChip,
+                    filterPriority === p
+                      ? { backgroundColor: `${PRIORITY_COLORS[p]}20`, borderColor: PRIORITY_COLORS[p], borderWidth: 1 }
+                      : { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    filterPriority === p && { color: PRIORITY_COLORS[p], fontWeight: '600' },
+                  ]}
+                >
+                  {t(`tasks.${p}`, p)}
+                </Chip>
+              ))}
+            </View>
+
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, marginTop: 12 }}>
+              {t('leads.dateRange', 'Date Range')}
+            </Text>
+            <View style={[styles.chipRow, { flexWrap: 'wrap', flexDirection }]}>
+              {DATE_RANGE_PRESETS.map((dr) => (
+                <Chip
+                  key={dr}
+                  selected={filterDateRange === dr}
+                  onPress={() => setFilterDateRange(filterDateRange === dr ? '' : dr)}
+                  compact
+                  style={[
+                    styles.filterChip,
+                    filterDateRange === dr
+                      ? { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary, borderWidth: 1 }
+                      : { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    filterDateRange === dr && { color: theme.colors.primary, fontWeight: '600' },
+                  ]}
+                >
+                  {dr}
+                </Chip>
+              ))}
+            </View>
+          </ScrollView>
+
           <View style={[styles.modalActions, { flexDirection }]}>
             <Button
               mode="outlined"
               onPress={() => {
                 setFilterCategory('');
                 setFilterAssignee('');
+                setFilterPriority('');
+                setFilterDateRange('');
                 setAdvancedFilterVisible(false);
               }}
               style={styles.modalButton}
@@ -786,6 +879,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   headerIcon: { padding: 4, marginRight: 8 },
+  chipRow: { flexWrap: 'wrap', gap: 6, marginBottom: 4 },
   searchWrap: {
     paddingHorizontal: 14,
     overflow: 'hidden',
@@ -838,12 +932,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   statusChip: {
-    height: 24,
-    borderRadius: 12,
+    minHeight: 28,
+    borderRadius: 14,
   },
   statusChipText: {
     fontSize: 11,
     fontWeight: '600',
+    lineHeight: 16,
   },
   caseMeta: {
     alignItems: 'center',
@@ -868,7 +963,6 @@ const styles = StyleSheet.create({
   emptyTitle: { fontWeight: '600', marginTop: 8 },
   fab: {
     position: 'absolute',
-    end: 16,
     borderRadius: 16,
   },
   errorBanner: {

@@ -21,6 +21,11 @@ export default function MoreLayout() {
       <Stack.Screen name="form-flows" />
       <Stack.Screen name="connections" />
       <Stack.Screen name="integrations" />
+      <Stack.Screen name="employees" />
+      <Stack.Screen name="orders" />
+      <Stack.Screen name="inventory" />
+      <Stack.Screen name="purchasing" />
+      <Stack.Screen name="catalog" />
     </Stack>
   );
 }

@@ -4,6 +4,7 @@ import {
   FlatList,
   StyleSheet,
   Linking,
+  Alert,
   LayoutAnimation,
   Platform,
   UIManager,
@@ -570,8 +571,8 @@ export default function PhoneCallsScreen() {
     try {
       const data = await phoneCallsApi.getCallLogs(org);
       setCalls(data);
-    } catch (err) {
-      console.error('Failed to fetch calls:', err);
+    } catch {
+      // error handled by empty state UI
     }
   }, [org]);
 
@@ -579,8 +580,8 @@ export default function PhoneCallsScreen() {
     try {
       const data = await phoneCallsApi.getCallRules(org);
       setRules(data);
-    } catch (err) {
-      console.error('Failed to fetch rules:', err);
+    } catch {
+      // error handled by empty state UI
     }
   }, [org]);
 
@@ -616,8 +617,7 @@ export default function PhoneCallsScreen() {
     setRules(updated);
     try {
       await phoneCallsApi.updateCallRules(org, updated);
-    } catch (err) {
-      console.error('Failed to toggle rule:', err);
+    } catch {
       setRules((prev) => prev.map((r) => (r.id === id ? { ...r, enabled: !enabled } : r)));
     }
   }, [org, rules]);
@@ -635,8 +635,8 @@ export default function PhoneCallsScreen() {
       setRules(newRules);
       setRuleModalVisible(false);
       setEditingRule(null);
-    } catch (err) {
-      console.error('Failed to save rule:', err);
+    } catch {
+      // save failed — UI not updated
     }
   }, [org, rules]);
 
@@ -654,8 +654,26 @@ export default function PhoneCallsScreen() {
   }, []);
 
   const handleDial = useCallback(() => {
-    Linking.openURL('tel:');
-  }, []);
+    if (Platform.OS === 'ios') {
+      Alert.prompt(
+        t('phoneCalls.makeCall'),
+        t('phoneCalls.enterNumber'),
+        (number) => {
+          const cleaned = number?.replace(/\D/g, '');
+          if (cleaned) Linking.openURL(`tel:${cleaned}`);
+        },
+        'plain-text',
+        '',
+        'phone-pad',
+      );
+    } else {
+      Alert.alert(
+        t('phoneCalls.makeCall'),
+        t('phoneCalls.enterNumber'),
+        [{ text: t('common.cancel'), style: 'cancel' }],
+      );
+    }
+  }, [t]);
 
   const openAddRule = useCallback(() => {
     setEditingRule(null);

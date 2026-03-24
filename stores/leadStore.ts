@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Lead } from '../types';
 import { leadsApi } from '../services/api/leads';
+import { appCache } from '../services/cache';
 
 interface LeadState {
   leads: Lead[];
@@ -8,6 +9,7 @@ interface LeadState {
   searchQuery: string;
   selectedStage: string | null;
   viewMode: 'list' | 'pipeline';
+  selectedLead: Lead | null;
 
   loadLeads: (organization: string) => Promise<void>;
   createLead: (organization: string, lead: Partial<Lead>) => Promise<void>;
@@ -16,6 +18,7 @@ interface LeadState {
   setSearchQuery: (query: string) => void;
   setSelectedStage: (stage: string | null) => void;
   setViewMode: (mode: 'list' | 'pipeline') => void;
+  setSelectedLead: (lead: Lead | null) => void;
 
   getFilteredLeads: () => Lead[];
   getLeadsByStage: () => Map<string, Lead[]>;
@@ -27,16 +30,23 @@ export const useLeadStore = create<LeadState>((set, get) => ({
   searchQuery: '',
   selectedStage: null,
   viewMode: 'list',
+  selectedLead: null,
 
   loadLeads: async (organization) => {
-    set({ isLoading: true });
+    const cacheKey = `leads_${organization}`;
+    const cached = appCache.get<Lead[]>(cacheKey);
+    if (cached && get().leads.length === 0) {
+      set({ leads: cached, isLoading: false });
+    } else {
+      set({ isLoading: true });
+    }
     try {
-      const result = await leadsApi.getAll(organization);
+      const result = await leadsApi.getAll(organization, { pageSize: 5000 });
       const arr = Array.isArray(result?.data) ? result.data : (Array.isArray(result) ? result : []);
+      appCache.set(cacheKey, arr);
       set({ leads: arr, isLoading: false });
-    } catch (err) {
-      console.log('loadLeads error:', err);
-      set({ leads: [], isLoading: false });
+    } catch {
+      set({ isLoading: false });
     }
   },
 
@@ -47,7 +57,6 @@ export const useLeadStore = create<LeadState>((set, get) => ({
         set((state) => ({ leads: [result, ...state.leads] }));
       }
     } catch (err) {
-      console.error('createLead error:', err);
       throw err;
     }
   },
@@ -61,7 +70,6 @@ export const useLeadStore = create<LeadState>((set, get) => ({
         ),
       }));
     } catch (err) {
-      console.error('updateLead error:', err);
       throw err;
     }
   },
@@ -73,7 +81,6 @@ export const useLeadStore = create<LeadState>((set, get) => ({
         leads: state.leads.filter((l) => l.id !== leadId),
       }));
     } catch (err) {
-      console.error('deleteLead error:', err);
       throw err;
     }
   },
@@ -81,6 +88,7 @@ export const useLeadStore = create<LeadState>((set, get) => ({
   setSearchQuery: (query) => set({ searchQuery: query }),
   setSelectedStage: (stage) => set({ selectedStage: stage }),
   setViewMode: (mode) => set({ viewMode: mode }),
+  setSelectedLead: (lead) => set({ selectedLead: lead }),
 
   getFilteredLeads: () => {
     const { leads, searchQuery, selectedStage } = get();

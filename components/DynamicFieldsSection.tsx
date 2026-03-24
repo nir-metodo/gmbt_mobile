@@ -248,7 +248,7 @@ export function DynamicFieldsSectionForm({
           <View key={section.id} style={styles.formSection}>
             <Text
               variant="titleSmall"
-              style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 12 }}
+              style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 12, textAlign }}
             >
               {sectionLabel}
             </Text>
@@ -264,7 +264,7 @@ export function DynamicFieldsSectionForm({
                   <View key={fieldKey} style={styles.formField}>
                     <Text
                       variant="labelMedium"
-                      style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                      style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
                     >
                       {label}
                     </Text>
@@ -324,7 +324,7 @@ export function DynamicFieldsSectionForm({
                   <View key={fieldKey} style={styles.formField}>
                     <Text
                       variant="labelMedium"
-                      style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                      style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
                     >
                       {label}
                     </Text>
@@ -363,14 +363,20 @@ export function DynamicFieldsSectionForm({
                 <View key={fieldKey} style={styles.formField}>
                   <Text
                     variant="labelMedium"
-                    style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                    style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
                   >
                     {label}
                   </Text>
                   <TextInput
                     value={String(value ?? '')}
                     onChangeText={(v) => onChange(fieldKey, v)}
-                    placeholder=""
+                    placeholder={
+                      field.type === 'date'
+                        ? 'YYYY-MM-DD'
+                        : field.type === 'datetime'
+                        ? 'YYYY-MM-DD HH:MM'
+                        : ''
+                    }
                     style={[
                       styles.formInput,
                       {
@@ -385,7 +391,11 @@ export function DynamicFieldsSectionForm({
                     placeholderTextColor={theme.custom?.placeholder}
                     multiline={field.textMultiline}
                     keyboardType={
-                      field.type === 'number' ? 'numeric' : field.type === 'date' ? 'numbers-and-punctuation' : 'default'
+                      field.type === 'number'
+                        ? 'numeric'
+                        : field.type === 'date' || field.type === 'datetime'
+                        ? 'numbers-and-punctuation'
+                        : 'default'
                     }
                   />
                 </View>

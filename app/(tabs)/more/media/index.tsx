@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   FlatList,
@@ -10,6 +10,11 @@ import {
   Alert,
   Dimensions,
   Linking,
+  Modal as RNModal,
+  StatusBar,
+  Share,
+  TouchableOpacity,
+  Platform,
 } from 'react-native';
 import {
   Appbar,
@@ -25,7 +30,6 @@ import {
   ActivityIndicator,
   Searchbar,
   Menu,
-  Divider,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -65,12 +69,25 @@ function formatFileSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const IMAGE_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|bmp|svg|heic|heif)(\?|$)/i;
+const VIDEO_EXTENSIONS = /\.(mp4|mov|avi|mkv|webm|m4v)(\?|$)/i;
+const AUDIO_EXTENSIONS = /\.(mp3|wav|ogg|aac|m4a|flac)(\?|$)/i;
+
 function getFileTypeFromMime(mimeType?: string): string {
   if (!mimeType) return 'document';
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType.startsWith('video/')) return 'video';
   if (mimeType.startsWith('audio/')) return 'audio';
   return 'document';
+}
+
+function resolveFileType(item: MediaFile): string {
+  if (item.type && item.type !== 'document') return item.type;
+  if (item.mimeType) return getFileTypeFromMime(item.mimeType);
+  if (IMAGE_EXTENSIONS.test(item.url || '')) return 'image';
+  if (VIDEO_EXTENSIONS.test(item.url || '')) return 'video';
+  if (AUDIO_EXTENSIONS.test(item.url || '')) return 'audio';
+  return item.type || 'document';
 }
 
 export default function MediaScreen() {
@@ -87,6 +104,8 @@ export default function MediaScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [currentFolderId, setCurrentFolderId] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -97,8 +116,12 @@ export default function MediaScreen() {
   const [folderColor, setFolderColor] = useState(FOLDER_COLORS[0]);
   const [fabOpen, setFabOpen] = useState(false);
   const [fileMenuVisible, setFileMenuVisible] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<MediaFile | null>(null);
+  const imageScrollRef = useRef<ScrollView>(null);
 
   const fetchData = useCallback(async () => {
+    if (!org) { setLoading(false); return; }
+    setFetchError(null);
     try {
       const [foldersData, filesData] = await Promise.all([
         mediaApi.getFolders(org),
@@ -115,12 +138,12 @@ export default function MediaScreen() {
       ]);
       setFolders(foldersData);
       setFiles(filesData);
-    } catch (err) {
-      console.error('Failed to fetch media:', err);
+    } catch (err: any) {
+      setFetchError(err.message || t('errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [org, currentFolderId, typeFilter, user]);
+  }, [org, currentFolderId, typeFilter, user, t]);
 
   useEffect(() => {
     fetchData();
@@ -170,15 +193,16 @@ export default function MediaScreen() {
         });
       }
       await fetchData();
-    } catch (err) {
-      console.error('Upload failed:', err);
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err.message || t('media.uploadFailed', 'ההעלאה נכשלה'));
     } finally {
       setUploading(false);
     }
-  }, [org, currentFolderId, user, fetchData]);
+  }, [org, currentFolderId, user, fetchData, t]);
 
   const handleCreateFolder = useCallback(async () => {
     if (!folderName.trim()) return;
+    setCreatingFolder(true);
     try {
       await mediaApi.createFolder(org, {
         name: folderName.trim(),
@@ -188,10 +212,12 @@ export default function MediaScreen() {
       setFolderName('');
       setFolderColor(FOLDER_COLORS[0]);
       await fetchData();
-    } catch (err) {
-      console.error('Failed to create folder:', err);
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err.message || t('media.createFolderFailed', 'יצירת התיקייה נכשלה'));
+    } finally {
+      setCreatingFolder(false);
     }
-  }, [org, folderName, folderColor, fetchData]);
+  }, [org, folderName, folderColor, fetchData, t]);
 
   const handleDeleteFile = useCallback(async (fileId: string) => {
     Alert.alert(
@@ -206,14 +232,35 @@ export default function MediaScreen() {
             try {
               await mediaApi.deleteFile(org, fileId);
               await fetchData();
-            } catch (err) {
-              console.error('Failed to delete file:', err);
+            } catch (err: any) {
+              Alert.alert(t('common.error'), err.message || t('media.deleteFailed', 'המחיקה נכשלה'));
             }
           },
         },
       ]
     );
   }, [org, fetchData, t]);
+
+  const openFile = useCallback((item: MediaFile) => {
+    if (!item.url) return;
+    const resolvedType = resolveFileType(item);
+    if (resolvedType === 'image') {
+      setPreviewFile(item);
+    } else {
+      Linking.openURL(item.url).catch(() =>
+        Alert.alert(t('common.error'), t('media.cannotOpen') || 'לא ניתן לפתוח קובץ זה'),
+      );
+    }
+  }, [t]);
+
+  const handleShare = useCallback(async (item: MediaFile) => {
+    if (!item.url) return;
+    try {
+      await Share.share({ url: item.url, message: item.url, title: item.name });
+    } catch {
+      // cancelled
+    }
+  }, []);
 
   const handleCopyLink = useCallback(async (url: string) => {
     await Clipboard.setStringAsync(url);
@@ -252,21 +299,27 @@ export default function MediaScreen() {
   ), [theme, t]);
 
   const renderGridItem = useCallback(({ item }: { item: MediaFile }) => {
-    const fileInfo = FILE_ICONS[item.type] || FILE_ICONS.document;
-    const isImage = item.type === 'image';
+    const resolvedType = resolveFileType(item);
+    const fileInfo = FILE_ICONS[resolvedType] || FILE_ICONS.document;
+    const isImage = resolvedType === 'image';
 
     return (
       <Pressable
-        onPress={() => item.url && Linking.openURL(item.url)}
+        onPress={() => openFile(item)}
         onLongPress={() => setFileMenuVisible(item.id)}
         style={[styles.gridItem, { backgroundColor: theme.colors.surface }]}
       >
         {isImage && item.url ? (
-          <Image
-            source={{ uri: item.thumbnailUrl || item.url }}
-            style={styles.gridImage}
-            resizeMode="cover"
-          />
+          <View>
+            <Image
+              source={{ uri: item.thumbnailUrl || item.url }}
+              style={styles.gridImage}
+              resizeMode="cover"
+            />
+            <View style={styles.imageViewOverlay}>
+              <MaterialCommunityIcons name="magnify-plus-outline" size={18} color="#fff" />
+            </View>
+          </View>
         ) : (
           <View style={[styles.gridPlaceholder, { backgroundColor: fileInfo.color + '15' }]}>
             <MaterialCommunityIcons name={fileInfo.icon as any} size={32} color={fileInfo.color} />
@@ -283,13 +336,23 @@ export default function MediaScreen() {
 
         {fileMenuVisible === item.id && (
           <View style={[styles.fileMenu, { backgroundColor: theme.colors.surface }]}>
+            {isImage && (
+              <Pressable style={styles.fileMenuItem} onPress={() => { openFile(item); setFileMenuVisible(null); }}>
+                <MaterialCommunityIcons name="eye-outline" size={16} color={theme.colors.onSurface} />
+                <Text variant="bodySmall" style={{ marginStart: 8, color: theme.colors.onSurface }}>{t('common.view') || 'צפייה'}</Text>
+              </Pressable>
+            )}
+            <Pressable style={styles.fileMenuItem} onPress={() => { handleShare(item); setFileMenuVisible(null); }}>
+              <MaterialCommunityIcons name="share-variant" size={16} color={theme.colors.onSurface} />
+              <Text variant="bodySmall" style={{ marginStart: 8, color: theme.colors.onSurface }}>{t('media.share') || 'שתף'}</Text>
+            </Pressable>
             <Pressable style={styles.fileMenuItem} onPress={() => { handleCopyLink(item.url); setFileMenuVisible(null); }}>
               <MaterialCommunityIcons name="link" size={16} color={theme.colors.onSurface} />
               <Text variant="bodySmall" style={{ marginStart: 8, color: theme.colors.onSurface }}>{t('media.copyLink')}</Text>
             </Pressable>
             <Pressable style={styles.fileMenuItem} onPress={() => { item.url && Linking.openURL(item.url); setFileMenuVisible(null); }}>
-              <MaterialCommunityIcons name="download" size={16} color={theme.colors.onSurface} />
-              <Text variant="bodySmall" style={{ marginStart: 8, color: theme.colors.onSurface }}>{t('media.download')}</Text>
+              <MaterialCommunityIcons name="open-in-new" size={16} color={theme.colors.onSurface} />
+              <Text variant="bodySmall" style={{ marginStart: 8, color: theme.colors.onSurface }}>{t('media.openInBrowser') || 'פתח בדפדפן'}</Text>
             </Pressable>
             <Pressable style={styles.fileMenuItem} onPress={() => { handleDeleteFile(item.id); setFileMenuVisible(null); }}>
               <MaterialCommunityIcons name="delete" size={16} color="#E63946" />
@@ -299,19 +362,25 @@ export default function MediaScreen() {
         )}
       </Pressable>
     );
-  }, [theme, fileMenuVisible, handleCopyLink, handleDeleteFile, t]);
+  }, [theme, fileMenuVisible, openFile, handleShare, handleCopyLink, handleDeleteFile, t]);
 
   const renderListItem = useCallback(({ item }: { item: MediaFile }) => {
-    const fileInfo = FILE_ICONS[item.type] || FILE_ICONS.document;
+    const resolvedType = resolveFileType(item);
+    const fileInfo = FILE_ICONS[resolvedType] || FILE_ICONS.document;
 
     return (
       <Surface style={[styles.listItem, { backgroundColor: theme.colors.surface }]} elevation={1}>
         <Pressable
-          onPress={() => item.url && Linking.openURL(item.url)}
+          onPress={() => openFile(item)}
           style={[styles.listItemRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
         >
           {item.type === 'image' && item.url ? (
-            <Image source={{ uri: item.thumbnailUrl || item.url }} style={styles.listThumbnail} resizeMode="cover" />
+            <View>
+              <Image source={{ uri: item.thumbnailUrl || item.url }} style={styles.listThumbnail} resizeMode="cover" />
+              <View style={styles.listImageBadge}>
+                <MaterialCommunityIcons name="magnify-plus-outline" size={12} color="#fff" />
+              </View>
+            </View>
           ) : (
             <View style={[styles.listIcon, { backgroundColor: fileInfo.color + '15' }]}>
               <MaterialCommunityIcons name={fileInfo.icon as any} size={24} color={fileInfo.color} />
@@ -329,18 +398,33 @@ export default function MediaScreen() {
           </View>
 
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <IconButton icon="share-variant" size={18} onPress={() => handleShare(item)} />
             <IconButton icon="link" size={18} onPress={() => handleCopyLink(item.url)} />
             <IconButton icon="delete-outline" size={18} iconColor="#E63946" onPress={() => handleDeleteFile(item.id)} />
           </View>
         </Pressable>
       </Surface>
     );
-  }, [theme, isRTL, handleCopyLink, handleDeleteFile]);
+  }, [theme, isRTL, openFile, handleShare, handleCopyLink, handleDeleteFile]);
 
   if (loading) {
     return (
       <View style={[styles.container, styles.center, { backgroundColor: theme.colors.background }]}>
         <ActivityIndicator size="large" color={BRAND_COLOR} />
+      </View>
+    );
+  }
+
+  if (fetchError && folders.length === 0 && files.length === 0) {
+    return (
+      <View style={[styles.container, styles.center, { backgroundColor: theme.colors.background }]}>
+        <MaterialCommunityIcons name="alert-circle-outline" size={56} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
+        <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 12, textAlign: 'center', paddingHorizontal: 32 }}>
+          {fetchError}
+        </Text>
+        <Button mode="text" onPress={fetchData} style={{ marginTop: 8 }}>
+          {t('common.retry')}
+        </Button>
       </View>
     );
   }
@@ -405,7 +489,7 @@ export default function MediaScreen() {
             textStyle={typeFilter === f ? { color: BRAND_COLOR, fontWeight: '600' } : undefined}
             showSelectedOverlay={false}
           >
-            {f === 'all' ? t('media.allFiles') : t(`media.${f === 'image' ? 'images' : f === 'video' ? 'videos' : f}` as any)}
+            {f === 'all' ? t('media.allFiles') : t(`media.${f === 'image' ? 'images' : f === 'video' ? 'videos' : f === 'document' ? 'documents' : f}` as any)}
           </Chip>
         ))}
       </ScrollView>
@@ -499,6 +583,79 @@ export default function MediaScreen() {
         color="#FFF"
       />
 
+      {/* ─── Full-screen Image Lightbox ─── */}
+      <RNModal
+        visible={!!previewFile}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewFile(null)}
+        statusBarTranslucent
+      >
+        <View style={styles.lightboxBg}>
+          <StatusBar hidden />
+
+          {/* Top bar */}
+          <View style={styles.lightboxTopBar}>
+            <TouchableOpacity onPress={() => setPreviewFile(null)} style={styles.lightboxCloseBtn} hitSlop={12}>
+              <MaterialCommunityIcons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.lightboxTitle} numberOfLines={1}>{previewFile?.name}</Text>
+            <View style={{ flexDirection: 'row' }}>
+              <TouchableOpacity
+                onPress={() => previewFile && handleShare(previewFile)}
+                style={styles.lightboxActionBtn}
+                hitSlop={12}
+              >
+                <MaterialCommunityIcons name="share-variant" size={22} color="#fff" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => previewFile?.url && Linking.openURL(previewFile.url)}
+                style={styles.lightboxActionBtn}
+                hitSlop={12}
+              >
+                <MaterialCommunityIcons name="open-in-new" size={22} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Zoomable image */}
+          <ScrollView
+            ref={imageScrollRef}
+            style={{ flex: 1 }}
+            contentContainerStyle={styles.lightboxImageWrap}
+            maximumZoomScale={5}
+            minimumZoomScale={1}
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+            centerContent
+            bouncesZoom
+          >
+            {previewFile?.url ? (
+              <Image
+                source={{ uri: previewFile.url }}
+                style={styles.lightboxImage}
+                resizeMode="contain"
+              />
+            ) : null}
+          </ScrollView>
+
+          {/* Bottom info */}
+          <View style={styles.lightboxBottomBar}>
+            <Text style={styles.lightboxMeta}>
+              {previewFile ? formatFileSize(previewFile.size) : ''}
+              {previewFile?.uploadedByName ? `  ·  ${previewFile.uploadedByName}` : ''}
+            </Text>
+            <TouchableOpacity
+              onPress={() => previewFile?.url && handleCopyLink(previewFile.url)}
+              style={styles.lightboxCopyBtn}
+            >
+              <MaterialCommunityIcons name="link" size={16} color="#fff" />
+              <Text style={{ color: '#fff', fontSize: 13, marginStart: 6 }}>{t('media.copyLink') || 'העתק קישור'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </RNModal>
+
       <Portal>
         <Modal
           visible={folderModalVisible}
@@ -544,7 +701,7 @@ export default function MediaScreen() {
             <Button mode="outlined" onPress={() => setFolderModalVisible(false)} style={styles.modalBtn} textColor={theme.colors.onSurfaceVariant}>
               {t('common.cancel')}
             </Button>
-            <Button mode="contained" onPress={handleCreateFolder} style={styles.modalBtn} buttonColor={BRAND_COLOR} disabled={!folderName.trim()}>
+            <Button mode="contained" onPress={handleCreateFolder} style={styles.modalBtn} buttonColor={BRAND_COLOR} disabled={!folderName.trim() || creatingFolder} loading={creatingFolder}>
               {t('common.create')}
             </Button>
           </View>
@@ -692,5 +849,81 @@ const styles = StyleSheet.create({
   modalBtn: {
     flex: 1,
     borderRadius: 12,
+  },
+  // Image overlay hint
+  imageViewOverlay: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 10,
+    padding: 3,
+  },
+  listImageBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 8,
+    padding: 2,
+  },
+  // Lightbox
+  lightboxBg: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  lightboxTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: Platform.OS === 'ios' ? 54 : (StatusBar.currentHeight || 0) + 8,
+    paddingBottom: 10,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  lightboxCloseBtn: {
+    padding: 4,
+  },
+  lightboxTitle: {
+    flex: 1,
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+    marginHorizontal: 10,
+  },
+  lightboxActionBtn: {
+    padding: 6,
+    marginStart: 4,
+  },
+  lightboxImageWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lightboxImage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_WIDTH * 1.4,
+    maxWidth: SCREEN_WIDTH,
+  },
+  lightboxBottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 14,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  lightboxMeta: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 13,
+    flex: 1,
+  },
+  lightboxCopyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
   },
 });

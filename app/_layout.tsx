@@ -12,6 +12,8 @@ import { useAppTheme } from '../hooks/useAppTheme';
 import { secureStorage } from '../services/storage';
 import axiosInstance from '../services/api/axiosInstance';
 import { ENDPOINTS } from '../constants/api';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { notificationService } from '../services/notifications';
 import '../i18n';
 
 SplashScreen.preventAutoHideAsync();
@@ -54,8 +56,8 @@ export default function RootLayout() {
             await secureStorage.setToken(newToken);
             useAuthStore.getState().updateUser({ authToken: newToken });
           }
-        } catch (err) {
-          console.log('Proactive token refresh failed:', err);
+        } catch {
+          // Non-critical — token refresh on foreground failed; user will get 401 on next request
         }
       }
       appStateRef.current = nextState;
@@ -81,6 +83,19 @@ export default function RootLayout() {
     }
   }, [user, isInitialized, segments, navigationState?.key]);
 
+  // Register for push notifications when user logs in
+  useEffect(() => {
+    if (!user?.organization) return;
+    notificationService.registerForPushNotifications().then((token) => {
+      if (token && user.organization) {
+        notificationService.registerDeviceWithServer(
+          user.organization,
+          user.uID || user.userId || '',
+        );
+      }
+    }).catch(() => {});
+  }, [user?.organization, user?.uID, user?.userId]);
+
   const isDark =
     themeSetting === 'dark' ||
     (themeSetting === 'system' && theme.dark);
@@ -89,8 +104,10 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <PaperProvider theme={theme}>
-          <StatusBar style={isDark ? 'light' : 'dark'} />
-          <Slot />
+          <ErrorBoundary>
+            <StatusBar style={isDark ? 'light' : 'dark'} />
+            <Slot />
+          </ErrorBoundary>
         </PaperProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

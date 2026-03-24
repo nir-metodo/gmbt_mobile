@@ -84,10 +84,13 @@ export default function ContactDetailScreen() {
   const setSelectedContact = useContactStore((s) => s.setSelectedContact);
 
   const isNew = id === 'new';
-  const contact = useMemo(
+  const contactFromStore = useMemo(
     () => (isNew ? null : contacts.find((c) => c.id === id) ?? null),
     [contacts, id, isNew],
   );
+  const [fetchedContact, setFetchedContact] = useState<Contact | null>(null);
+  const [loadingContact, setLoadingContact] = useState(false);
+  const contact = contactFromStore ?? fetchedContact;
 
   const [activeTab, setActiveTab] = useState<DetailTab>('timeline');
   const [editVisible, setEditVisible] = useState(isNew);
@@ -108,6 +111,19 @@ export default function ContactDetailScreen() {
   const [relatedRecords, setRelatedRecords] = useState<any>({ tables: [], leads: [], quotes: [], tasks: [] });
   const [relatedLoading, setRelatedLoading] = useState(false);
   const tabIndicator = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!isNew && !contactFromStore && id && organization) {
+      setLoadingContact(true);
+      contactsApi.getById(organization, id).then((c) => {
+        if (c) {
+          setFetchedContact(c);
+          setForm({ ...c });
+          setFormTags(extractTags(c.keys));
+        }
+      }).catch(() => {}).finally(() => setLoadingContact(false));
+    }
+  }, [isNew, contactFromStore, id, organization]);
 
   useEffect(() => {
     if (contact) {
@@ -275,11 +291,41 @@ export default function ContactDetailScreen() {
     setSaving(true);
     try {
       const formData = { ...form, keys: formTags.length > 0 ? formTags.join('#') : '' };
+      const userId = user?.userId || user?.uID || '';
+      const userName = user?.fullname || user?.name || 'Gambot';
       if (isNew) {
-        await createContact(organization, { ...formData, id: form.phoneNumber || '' });
+        // Check if contact with this phone number already exists
+        const cleanedPhone = (form.phoneNumber || '').replace(/\D/g, '');
+        if (cleanedPhone) {
+          const existing = contacts.find((c) => {
+            const cp = (c.phoneNumber || c.id || '').replace(/\D/g, '');
+            return cp === cleanedPhone;
+          });
+          if (existing) {
+            setSaving(false);
+            Alert.alert(
+              t('contacts.alreadyExistsTitle', 'איש קשר קיים'),
+              t('contacts.alreadyExistsMsg', `איש קשר עם מספר זה כבר קיים: ${existing.name || existing.phoneNumber}`),
+              [
+                { text: t('common.cancel'), style: 'cancel' },
+                {
+                  text: t('contacts.goToContact', 'עבור לאיש קשר'),
+                  onPress: () => {
+                    router.replace({
+                      pathname: '/(tabs)/contacts/[id]',
+                      params: { id: existing.id || existing.phoneNumber || cleanedPhone },
+                    });
+                  },
+                },
+              ],
+            );
+            return;
+          }
+        }
+        await createContact(organization, { ...formData, id: form.phoneNumber || '' }, userId, userName);
         router.back();
       } else {
-        await updateContact(organization, { ...formData, id: contact?.id ?? '' });
+        await updateContact(organization, { ...formData, id: contact?.id ?? '' }, userId, userName);
         setEditVisible(false);
       }
     } catch {
@@ -300,7 +346,14 @@ export default function ContactDetailScreen() {
     return (
       <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
         <Stack.Screen options={{ headerShown: false }} />
-        <ActivityIndicator size="large" color={theme.colors.primary} />
+        {loadingContact ? (
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        ) : (
+          <>
+            <Text style={{ color: theme.colors.onSurface, marginBottom: 12 }}>{t('contacts.notFound', 'איש קשר לא נמצא')}</Text>
+            <Button onPress={() => router.back()}>{t('common.back')}</Button>
+          </>
+        )}
       </View>
     );
   }
@@ -1084,14 +1137,28 @@ function RelatedRecordsSection({
               style={[styles.relatedCard, { backgroundColor: theme.colors.surfaceVariant, flexDirection }]}
             >
               <View style={{ flex: 1 }}>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign: isRTL ? 'right' : 'left' }}>
                   {quote.title || quote.quoteNumber || quote.id}
                 </Text>
-                {(quote.status || quote.total) ? (
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-                    {[quote.status, quote.total != null ? `${quote.total} ${quote.currency || ''}` : ''].filter(Boolean).join(' · ')}
-                  </Text>
-                ) : null}
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginTop: 3, flexWrap: 'wrap' }}>
+                  {quote.status ? (
+                    <View style={{ backgroundColor: '#8b5cf620', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 }}>
+                      <Text variant="labelSmall" style={{ color: '#8b5cf6', fontWeight: '600' }}>
+                        {quote.status}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {quote.total != null ? (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {quote.total} {quote.currency || '₪'}
+                    </Text>
+                  ) : null}
+                  {quote.createdOn ? (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {formatDate(quote.createdOn)}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
               <MaterialCommunityIcons
                 name={isRTL ? 'chevron-left' : 'chevron-right'}
@@ -1118,14 +1185,28 @@ function RelatedRecordsSection({
               style={[styles.relatedCard, { backgroundColor: theme.colors.surfaceVariant, flexDirection }]}
             >
               <View style={{ flex: 1 }}>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                  {lead.title || lead.leadTitle || ''}
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign: isRTL ? 'right' : 'left' }}>
+                  {lead.title || lead.leadTitle || t('leads.lead')}
                 </Text>
-                {lead.stageName || lead.stage ? (
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-                    {lead.stageName || lead.stage}
-                  </Text>
-                ) : null}
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginTop: 3, flexWrap: 'wrap' }}>
+                  {(lead.stageName || lead.stage) ? (
+                    <View style={{ backgroundColor: '#2e615520', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 }}>
+                      <Text variant="labelSmall" style={{ color: '#2e6155', fontWeight: '600' }}>
+                        {lead.stageName || lead.stage}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {lead.value ? (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {lead.currency || '₪'}{lead.value}
+                    </Text>
+                  ) : null}
+                  {lead.status ? (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {lead.status}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
               <MaterialCommunityIcons
                 name={isRTL ? 'chevron-left' : 'chevron-right'}
@@ -1137,33 +1218,77 @@ function RelatedRecordsSection({
         </View>
       ) : null}
 
-      {data.tables.map((table: any) => (
-        <View key={table.tableId || table.tableName} style={{ marginBottom: 16 }}>
-          <View style={[styles.relatedHeader, { flexDirection }]}>
-            <MaterialCommunityIcons name="table" size={18} color="#6366f1" />
-            <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-              {table.tableName} ({table.recordCount || table.records?.length || 0})
-            </Text>
-          </View>
-          {(table.records || []).map((record: any) => (
-            <View
-              key={record.id}
-              style={[styles.relatedCard, { backgroundColor: theme.colors.surfaceVariant, flexDirection }]}
-            >
-              <View style={{ flex: 1 }}>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '500' }}>
-                  {record.recordName || record.name || record.id}
-                </Text>
-                {record.createdOn ? (
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-                    {formatDate(record.createdOn)}
-                  </Text>
-                ) : null}
-              </View>
+      {data.tables.map((table: any) => {
+        const records: any[] = table.records || [];
+        // Collect all column keys across records to display as fields
+        const columnKeys = table.columns
+          ? (table.columns as any[]).map((c: any) => c.key || c.name || c.fieldName).filter(Boolean)
+          : [];
+        return (
+          <View key={table.tableId || table.tableName} style={{ marginBottom: 16 }}>
+            <View style={[styles.relatedHeader, { flexDirection }]}>
+              <MaterialCommunityIcons name="table-large" size={18} color="#6366f1" />
+              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                {table.tableName} ({table.recordCount ?? records.length})
+              </Text>
             </View>
-          ))}
-        </View>
-      ))}
+            {records.length === 0 ? (
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, paddingHorizontal: 4, paddingVertical: 6 }}>
+                {t('common.noResults')}
+              </Text>
+            ) : records.map((record: any, rIdx: number) => {
+              // Try to find all meaningful field values in the record
+              const rawFields: Record<string, any> =
+                record.fields || record.Fields || record.data || record.Data || {};
+              // Also include top-level string/number props (excluding meta fields)
+              const META_KEYS = new Set(['id', 'Id', 'createdOn', 'createdAt', 'updatedAt', 'updatedOn', 'organization', 'contactId', 'tableId']);
+              const topLevelFields: Record<string, any> = {};
+              Object.entries(record).forEach(([k, v]) => {
+                if (!META_KEYS.has(k) && (typeof v === 'string' || typeof v === 'number') && v !== '') {
+                  topLevelFields[k] = v;
+                }
+              });
+              const allFields = { ...topLevelFields, ...rawFields };
+              const fieldEntries = Object.entries(allFields)
+                .filter(([, v]) => v != null && v !== '' && typeof v !== 'object')
+                .slice(0, 6);
+              const displayKeys = columnKeys.length > 0 ? columnKeys : fieldEntries.map(([k]) => k);
+              const createdOn = record.createdOn || record.createdAt;
+              return (
+                <View
+                  key={record.id || rIdx}
+                  style={[
+                    styles.relatedCard,
+                    { backgroundColor: theme.colors.surfaceVariant, flexDirection: 'column', alignItems: 'stretch' },
+                  ]}
+                >
+                  {fieldEntries.length > 0 ? (
+                    fieldEntries.map(([key, val]) => (
+                      <View key={key} style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 6, marginBottom: 2 }}>
+                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, minWidth: 60 }}>
+                          {String(key)}:
+                        </Text>
+                        <Text variant="labelSmall" style={{ color: theme.colors.onSurface, fontWeight: '600', flex: 1, textAlign: isRTL ? 'right' : 'left' }} numberOfLines={1}>
+                          {String(val)}
+                        </Text>
+                      </View>
+                    ))
+                  ) : (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {record.id || t('common.noData', 'אין מידע')}
+                    </Text>
+                  )}
+                  {createdOn ? (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, textAlign: isRTL ? 'right' : 'left' }}>
+                      {formatDate(createdOn)}
+                    </Text>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
+        );
+      })}
     </View>
   );
 }

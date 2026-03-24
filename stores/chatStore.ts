@@ -25,7 +25,7 @@ interface ChatState {
   setOwnerFilter: (owner: string) => void;
 
   loadMessages: (organization: string, phoneNumber: string) => Promise<void>;
-  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string) => Promise<void>;
+  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string) => Promise<void>;
   sendInternalMessage: (organization: string, phoneNumber: string, message: string, senderName: string) => Promise<void>;
   markAsRead: (organization: string, phoneNumber: string) => Promise<void>;
   toggleStarred: (organization: string, messageId: string, phoneNumber: string, isStarred: boolean) => Promise<void>;
@@ -77,8 +77,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
       const totalUnread = chatList.filter((c) => c.isRead === false).length;
       set({ chats: chatList, isLoadingChats: false, unreadCount: totalUnread });
-    } catch (err) {
-      console.log('loadChats error:', err);
+    } catch {
       set({ isLoadingChats: false });
     }
   },
@@ -112,7 +111,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setOwnerFilter: (owner) => set({ ownerFilter: owner }),
 
   loadMessages: async (organization, phoneNumber) => {
-    set({ isLoadingMessages: true, currentPhoneNumber: phoneNumber });
+    set({ isLoadingMessages: true, currentPhoneNumber: phoneNumber, currentMessages: [] });
     try {
       const raw = await chatsApi.getMessages(organization, phoneNumber);
       const messages = (Array.isArray(raw) ? raw : []).map((m: any) => ({
@@ -125,11 +124,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
       set({ currentMessages: messages, isLoadingMessages: false });
     } catch {
-      set({ isLoadingMessages: false });
+      set({ isLoadingMessages: false, currentMessages: [] });
     }
   },
 
-  sendMessage: async (organization, to, message, senderName, userId) => {
+  sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?) => {
     set({ isSending: true });
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const optimisticMsg: Message = {
@@ -143,12 +142,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sentByName: senderName || '',
       sentFromApp: true,
       type: 'text',
+      contextMessageId: replyToMessageId,
     } as Message;
     set((state) => ({
       currentMessages: [...state.currentMessages, optimisticMsg],
     }));
     try {
-      await chatsApi.sendMessage(organization, to, message, senderName, userId);
+      await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId);
     } catch (err) {
       set((state) => ({
         currentMessages: state.currentMessages.map((m) =>
@@ -163,8 +163,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendInternalMessage: async (organization, phoneNumber, message, senderName) => {
     set({ isSending: true });
+    const tempId = `temp_internal_${Date.now()}`;
+    const optimisticMsg: Message = {
+      messageId: tempId,
+      text: message,
+      body: message,
+      direction: 'Outbound',
+      timestamp: new Date().toISOString(),
+      createdOn: new Date().toISOString(),
+      status: 'sent',
+      sentByName: senderName || '',
+      sentFromApp: true,
+      type: 'internal',
+      isInternal: true,
+    } as Message;
+    set((state) => ({
+      currentMessages: [...state.currentMessages, optimisticMsg],
+      isSending: true,
+    }));
     try {
       await chatsApi.sendInternalMessage(organization, phoneNumber, message, senderName);
+    } catch (err) {
+      set((state) => ({
+        currentMessages: state.currentMessages.filter((m) => m.messageId !== tempId),
+      }));
+      throw err;
     } finally {
       set({ isSending: false });
     }

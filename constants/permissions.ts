@@ -22,6 +22,9 @@ export const PERMISSION_FEATURES = {
   quotes: 'quotes',
   esignature: 'esignature',
   mediaManager: 'mediaManager',
+  orders: 'orders',
+  inventory: 'inventory',
+  purchasing: 'purchasing',
 } as const;
 
 export type PermissionFeature = keyof typeof PERMISSION_FEATURES;

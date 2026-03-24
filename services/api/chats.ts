@@ -22,6 +22,7 @@ export const chatsApi = {
     message: string,
     senderName?: string,
     userId?: string,
+    contextMessageId?: string,
   ): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.CREATE_OUTBOUND_MESSAGE, {
       organizationiD: organization,
@@ -29,6 +30,7 @@ export const chatsApi = {
       message,
       senderName: senderName || '',
       userId: userId || '',
+      ...(contextMessageId ? { ContextMessageId: contextMessageId } : {}),
     });
     return response.data;
   },

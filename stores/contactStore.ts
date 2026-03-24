@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Contact } from '../types';
 import { contactsApi } from '../services/api/contacts';
+import { appCache } from '../services/cache';
 
 interface ContactState {
   contacts: Contact[];
@@ -15,8 +16,8 @@ interface ContactState {
   setSelectedContact: (contact: Contact | null) => void;
   setTagFilter: (tags: string[]) => void;
   setOwnerFilter: (owners: string[]) => void;
-  createContact: (organization: string, contact: Partial<Contact>) => Promise<Contact>;
-  updateContact: (organization: string, contact: Partial<Contact>) => Promise<void>;
+  createContact: (organization: string, contact: Partial<Contact>, userId?: string, userName?: string) => Promise<Contact>;
+  updateContact: (organization: string, contact: Partial<Contact>, userId?: string, userName?: string) => Promise<void>;
   deleteContact: (organization: string, contactId: string) => Promise<void>;
   addOrUpdateContact: (contact: Contact) => void;
 
@@ -41,12 +42,19 @@ export const useContactStore = create<ContactState>((set, get) => ({
   ownerFilter: [],
 
   loadContacts: async (organization) => {
-    set({ isLoading: true });
+    const cacheKey = `contacts_${organization}`;
+    const cached = appCache.get<Contact[]>(cacheKey);
+    if (cached && get().contacts.length === 0) {
+      set({ contacts: cached, isLoading: false });
+    } else {
+      set({ isLoading: true });
+    }
     try {
       const contacts = await contactsApi.getAll(organization);
-      set({ contacts: Array.isArray(contacts) ? contacts : [], isLoading: false });
-    } catch (err) {
-      console.log('loadContacts error:', err);
+      const arr = Array.isArray(contacts) ? contacts : [];
+      appCache.set(cacheKey, arr);
+      set({ contacts: arr, isLoading: false });
+    } catch {
       set({ isLoading: false });
     }
   },
@@ -56,23 +64,22 @@ export const useContactStore = create<ContactState>((set, get) => ({
   setTagFilter: (tags) => set({ tagFilter: tags }),
   setOwnerFilter: (owners) => set({ ownerFilter: owners }),
 
-  createContact: async (organization: string, contact: Partial<Contact>) => {
+  createContact: async (organization: string, contact: Partial<Contact>, userId?: string, userName?: string) => {
     try {
-      const result = await contactsApi.update(organization, contact);
+      const result = await contactsApi.create(organization, contact, userId, userName);
       const newContact = { ...contact, ...(result || {}), id: result?.id || contact.phoneNumber || '' } as Contact;
       set((state) => ({
         contacts: [newContact, ...state.contacts],
       }));
       return newContact;
     } catch (err) {
-      console.error('createContact error:', err);
       throw err;
     }
   },
 
-  updateContact: async (organization, contact) => {
+  updateContact: async (organization, contact, userId?: string, userName?: string) => {
     try {
-      await contactsApi.update(organization, contact);
+      await contactsApi.update(organization, contact, userId, userName);
       set((state) => {
         const exists = state.contacts.some((c) => c.id === contact.id);
         if (exists) {
@@ -85,7 +92,6 @@ export const useContactStore = create<ContactState>((set, get) => ({
         return { contacts: [contact as Contact, ...state.contacts] };
       });
     } catch (err) {
-      console.error('updateContact error:', err);
       throw err;
     }
   },
@@ -97,7 +103,6 @@ export const useContactStore = create<ContactState>((set, get) => ({
         contacts: state.contacts.filter((c) => c.id !== contactId),
       }));
     } catch (err) {
-      console.error('deleteContact error:', err);
       throw err;
     }
   },

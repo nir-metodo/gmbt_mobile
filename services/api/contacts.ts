@@ -12,6 +12,15 @@ export const contactsApi = {
     return Array.isArray(items) ? items : [];
   },
 
+  async getById(organization: string, contactId: string): Promise<Contact | null> {
+    try {
+      const results = await this.search(organization, contactId, 5);
+      return results.find((c) => c.id === contactId || c.phoneNumber === contactId) ?? results[0] ?? null;
+    } catch {
+      return null;
+    }
+  },
+
   async search(organization: string, searchTerm: string, limit = 30): Promise<Contact[]> {
     const response = await axiosInstance.post(ENDPOINTS.SEARCH_CONTACTS, {
       organization,
@@ -22,10 +31,55 @@ export const contactsApi = {
     return Array.isArray(raw) ? raw : (raw?.Contacts || raw?.Data || raw?.data || []);
   },
 
-  async update(organization: string, contact: Partial<Contact>): Promise<any> {
-    const response = await axiosInstance.post(ENDPOINTS.UPDATE_CONTACT, {
+  async create(
+    organization: string,
+    contact: Partial<Contact>,
+    userId?: string,
+    userName?: string,
+  ): Promise<any> {
+    const now = new Date().toISOString();
+    const cleanedNumber = (contact.phoneNumber || contact.id || '').replace(/\D/g, '');
+    const response = await axiosInstance.post(ENDPOINTS.CREATE_CONTACT, {
       organization,
-      ...contact,
+      contactData: {
+        organization,
+        email: contact.email || '',
+        name: contact.name || '',
+        photoURL: '',
+        lastMessage: 'New Contact Created',
+        createdOn: now,
+        modifiedOn: now,
+        from: contact.from || '',
+        to: cleanedNumber,
+        phoneNumber: cleanedNumber,
+        id: cleanedNumber,
+        keys: contact.keys || '',
+        ...contact,
+      },
+      user: {
+        userId: userId || '',
+        userName: userName || 'Gambot',
+      },
+    });
+    return response.data;
+  },
+
+  async update(
+    organization: string,
+    contact: Partial<Contact>,
+    userId?: string,
+    userName?: string,
+  ): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_CONTACT_BY_ID, {
+      organization,
+      contactData: {
+        organization,
+        ...contact,
+      },
+      user: {
+        userId: userId || '',
+        userName: userName || 'Gambot',
+      },
     });
     return response.data;
   },

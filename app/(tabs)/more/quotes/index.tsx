@@ -7,8 +7,6 @@ import {
   RefreshControl,
   Animated,
   ScrollView,
-  KeyboardAvoidingView,
-  Platform,
   Dimensions,
 } from 'react-native';
 import {
@@ -19,7 +17,6 @@ import {
   ActivityIndicator,
   Portal,
   Modal,
-  TextInput,
   Button,
   IconButton,
   Divider,
@@ -33,7 +30,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { quotesApi } from '../../../../services/api/quotes';
-import { formatDate, formatCurrency } from '../../../../utils/formatters';
+import { formatDate, formatCurrency, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import type { Quote } from '../../../../types';
 
@@ -98,22 +95,17 @@ export default function QuotesListScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [createModalVisible, setCreateModalVisible] = useState(false);
-  const [creating, setCreating] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
 
-  const [formTitle, setFormTitle] = useState('');
-  const [formContactName, setFormContactName] = useState('');
-  const [formNotes, setFormNotes] = useState('');
   const [statusPickerQuote, setStatusPickerQuote] = useState<Quote | null>(null);
 
   const searchAnim = useRef(new Animated.Value(0)).current;
 
   const fetchQuotes = useCallback(async () => {
-    if (!user?.organization) return;
+    if (!user?.organization) { setLoading(false); return; }
     try {
       setError(null);
       const result = await quotesApi.getAll(user.organization);
@@ -216,43 +208,6 @@ export default function QuotesListScreen() {
     return grouped;
   }, [quotes, searchQuery]);
 
-  const resetForm = useCallback(() => {
-    setFormTitle('');
-    setFormContactName('');
-    setFormNotes('');
-  }, []);
-
-  const handleCreate = useCallback(async () => {
-    if (!user?.organization || !formTitle.trim()) return;
-    setCreating(true);
-    try {
-      await quotesApi.create(
-        user.organization,
-        {
-          title: formTitle.trim(),
-          contactName: formContactName.trim() || undefined,
-          notes: formNotes.trim() || undefined,
-          status: 'draft',
-          items: [],
-          subtotal: 0,
-          tax: 17,
-          discount: 0,
-          total: 0,
-          currency: 'ILS',
-        },
-        user.uID || user.userId,
-        user.fullname,
-      );
-      setCreateModalVisible(false);
-      resetForm();
-      await fetchQuotes();
-    } catch (err: any) {
-      setError(err.message || t('errors.generic'));
-    } finally {
-      setCreating(false);
-    }
-  }, [user?.organization, formTitle, formContactName, formNotes, resetForm, fetchQuotes, t]);
-
   const openQuote = useCallback(
     (quote: Quote) => {
       router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: quote.id } });
@@ -274,11 +229,15 @@ export default function QuotesListScreen() {
         setQuotes((prev) =>
           prev.map((q) => (q.id === quote.id ? { ...q, status: newStatus as any } : q)),
         );
-      } catch {
-        // silently fail
+      } catch (err: any) {
+        Alert.alert(t('common.error'), err.message || t('errors.generic'));
+        // rollback optimistic update
+        setQuotes((prev) =>
+          prev.map((q) => (q.id === quote.id ? { ...q, status: quote.status } : q)),
+        );
       }
     },
-    [user],
+    [user, t],
   );
 
   const searchHeightInterp = searchAnim.interpolate({
@@ -767,95 +726,16 @@ export default function QuotesListScreen() {
       {/* FAB */}
       <FAB
         icon="plus"
-        onPress={() => setCreateModalVisible(true)}
+        onPress={() => router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: 'new' } })}
         style={[
           styles.fab,
-          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16 },
+          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },
         ]}
         color="#FFFFFF"
         label={t('quotes.addQuote')}
       />
 
-      {/* Create Modal */}
       <Portal>
-        <Modal
-          visible={createModalVisible}
-          onDismiss={() => { setCreateModalVisible(false); resetForm(); }}
-          contentContainerStyle={[
-            styles.modalContainer,
-            { backgroundColor: theme.colors.surface },
-          ]}
-        >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={[styles.modalHeader, { flexDirection }]}>
-                <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-                  {t('quotes.addQuote')}
-                </Text>
-                <IconButton
-                  icon="close"
-                  size={22}
-                  onPress={() => { setCreateModalVisible(false); resetForm(); }}
-                />
-              </View>
-
-              <TextInput
-                label={t('quotes.quoteTitle')}
-                value={formTitle}
-                onChangeText={setFormTitle}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-
-              <TextInput
-                label={t('quotes.contact')}
-                value={formContactName}
-                onChangeText={setFormContactName}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                left={<TextInput.Icon icon="account" />}
-              />
-
-              <TextInput
-                label={t('quotes.notes')}
-                value={formNotes}
-                onChangeText={setFormNotes}
-                mode="outlined"
-                multiline
-                numberOfLines={3}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-
-              <View style={[styles.modalActions, { flexDirection }]}>
-                <Button
-                  mode="outlined"
-                  onPress={() => { setCreateModalVisible(false); resetForm(); }}
-                  style={styles.modalButton}
-                  textColor={theme.colors.onSurface}
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={handleCreate}
-                  loading={creating}
-                  disabled={!formTitle.trim() || creating}
-                  style={[styles.modalButton, { backgroundColor: theme.colors.primary }]}
-                  textColor="#FFFFFF"
-                >
-                  {t('common.create')}
-                </Button>
-              </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </Modal>
-
         <Modal
           visible={!!statusPickerQuote}
           onDismiss={() => setStatusPickerQuote(null)}
@@ -881,7 +761,7 @@ export default function QuotesListScreen() {
                   styles.statusPickerOption,
                   {
                     backgroundColor: isCurrent
-                      ? `${color}20`
+                      ? withAlpha(color, 0.12)
                       : pressed
                         ? theme.colors.surfaceVariant
                         : 'transparent',
@@ -1027,7 +907,6 @@ const styles = StyleSheet.create({
   emptyTitle: { fontWeight: '600', marginTop: 8 },
   fab: {
     position: 'absolute',
-    end: 16,
     borderRadius: 16,
   },
   errorBanner: {

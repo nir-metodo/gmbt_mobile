@@ -15,7 +15,9 @@ export const ENDPOINTS = {
   // Contacts
   GET_CONTACTS: '/api/Webhooks/GetAllContactsByOrg',
   SEARCH_CONTACTS: '/api/Webhooks/SearchContacts',
+  CREATE_CONTACT: '/api/Webhooks/CreateNewContact',
   UPDATE_CONTACT: '/api/Webhooks/UpdateContact',
+  UPDATE_CONTACT_BY_ID: '/api/Webhooks/UpdateContactById',
   DELETE_CONTACT: '/api/Webhooks/DeleteContact',
   UPDATE_CONTACT_OWNER: '/api/Webhooks/UpdateContactOwner',
   IMPORT_CONTACTS: '/api/Webhooks/ImportContacts',
@@ -52,6 +54,10 @@ export const ENDPOINTS = {
   DELETE_LEAD: '/api/Webhooks/DeleteLead',
   GET_PIPELINE_SETTINGS: '/api/Webhooks/GetPipelineSettings',
   GET_LEAD_FORM_SETTINGS: '/api/Webhooks/GetLeadFormSettings',
+  GET_LEAD_VIEWS: '/api/Webhooks/GetLeadViews',
+  SAVE_LEAD_VIEW: '/api/Webhooks/SaveLeadView',
+  DELETE_LEAD_VIEW: '/api/Webhooks/DeleteLeadView',
+  GET_ORDER_FORM_SETTINGS: '/api/Webhooks/GetOrderFormSettings',
 
   // Reactions
   SEND_REACTION: '/api/Webhooks/SendReaction',
@@ -176,5 +182,42 @@ export const ENDPOINTS = {
   GET_ATTENDANCE_RECORDS: '/api/Webhooks/GetAttendanceRecords',
   CLOCK_IN: '/api/Webhooks/ClockIn',
   CLOCK_OUT: '/api/Webhooks/ClockOut',
-  GET_MY_CLOCK_STATUS: '/api/Webhooks/GetMyClockStatus',
+
+  // Orders
+  GET_ORDERS: '/api/Orders/GetOrders',
+  GET_ORDER: '/api/Orders/GetOrder',
+  CREATE_ORDER: '/api/Orders/CreateOrder',
+  UPDATE_ORDER: '/api/Orders/UpdateOrder',
+  UPDATE_ORDER_STATUS: '/api/Orders/UpdateOrderStatus',
+  DELETE_ORDER: '/api/Orders/DeleteOrder',
+  ADD_ORDER_NOTE: '/api/Orders/AddOrderNote',
+
+  // Inventory
+  GET_INVENTORY: '/api/Inventory/GetInventory',
+  GET_INVENTORY_ITEM: '/api/Inventory/GetInventoryItem',
+  SAVE_INVENTORY_ITEM: '/api/Inventory/SaveInventoryItem',
+  ADJUST_STOCK: '/api/Inventory/AdjustStock',
+  GET_INVENTORY_MOVEMENTS: '/api/Inventory/GetMovements',
+  ADD_INVENTORY_ACTIVITY: '/api/Inventory/AddInventoryActivity',
+
+  // Purchase Orders
+  GET_PURCHASE_ORDERS: '/api/PurchaseOrders/GetPurchaseOrders',
+  GET_PURCHASE_ORDER: '/api/PurchaseOrders/GetPurchaseOrder',
+  CREATE_PURCHASE_ORDER: '/api/PurchaseOrders/CreatePurchaseOrder',
+  UPDATE_PURCHASE_ORDER: '/api/PurchaseOrders/UpdatePurchaseOrder',
+  DELETE_PURCHASE_ORDER: '/api/PurchaseOrders/DeletePurchaseOrder',
+
+  // Suppliers
+  GET_SUPPLIERS: '/api/Suppliers/GetSuppliers',
+  CREATE_SUPPLIER: '/api/Suppliers/CreateSupplier',
+  UPDATE_SUPPLIER: '/api/Suppliers/UpdateSupplier',
+  DELETE_SUPPLIER: '/api/Suppliers/DeleteSupplier',
+
+  // Invoices
+  GET_INVOICES_PAGINATED: '/api/Webhooks/GetInvoicesPaginated',
+  GET_INVOICE_BY_ID: '/api/Webhooks/GetInvoiceById',
+  CREATE_INVOICE: '/api/Webhooks/CreateInvoice',
+  UPDATE_INVOICE: '/api/Webhooks/UpdateInvoice',
+  DELETE_INVOICE: '/api/Webhooks/DeleteInvoice',
+  GET_INVOICE_BRANDING: '/api/Webhooks/GetInvoiceBranding',
 } as const;

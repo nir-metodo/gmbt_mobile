@@ -26,7 +26,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { esignatureApi } from '../../../../services/api/esignature';
-import { formatDate } from '../../../../utils/formatters';
+import { formatDate, withAlpha } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import type { ESignatureDocument, ESignatureSigner } from '../../../../types';
 
@@ -66,7 +66,7 @@ export default function ESignatureDetailScreen() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const fetchDocument = useCallback(async () => {
-    if (!user?.organization || !id) return;
+    if (!user?.organization || !id) { setLoading(false); return; }
     try {
       setError(null);
       const result = await esignatureApi.getDocumentById(user.organization, id);
@@ -539,7 +539,7 @@ export default function ESignatureDetailScreen() {
             ]}
           >
             <View style={[styles.previewInner, { flexDirection }]}>
-              <View style={[styles.previewIcon, { backgroundColor: `${theme.colors.primary}15` }]}>
+              <View style={[styles.previewIcon, { backgroundColor: withAlpha(theme.colors.primary, 0.082) }]}>
                 <MaterialCommunityIcons name="file-document-outline" size={28} color={theme.colors.primary} />
               </View>
               <View style={{ flex: 1, gap: 2 }}>

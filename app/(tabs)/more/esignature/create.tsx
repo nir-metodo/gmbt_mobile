@@ -32,6 +32,7 @@ import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { esignatureApi } from '../../../../services/api/esignature';
 import { borderRadius } from '../../../../constants/theme';
+import { withAlpha } from '../../../../utils/formatters';
 
 interface Signer {
   signerRole: string;
@@ -288,7 +289,7 @@ export default function CreateESignatureScreen() {
         style={[styles.formInput, { textAlign }]}
         outlineColor={theme.colors.outline}
         activeOutlineColor={theme.colors.primary}
-        left={<TextInput.Icon icon="account" />}
+        right={<TextInput.Icon icon="account" />}
       />
 
       {/* File upload */}
@@ -353,7 +354,7 @@ export default function CreateESignatureScreen() {
         style={[styles.formInput, { textAlign }]}
         outlineColor={theme.colors.outline}
         activeOutlineColor={theme.colors.primary}
-        left={<TextInput.Icon icon="calendar-clock" />}
+        right={<TextInput.Icon icon="calendar-clock" />}
       />
 
       <Button
@@ -416,7 +417,7 @@ export default function CreateESignatureScreen() {
             style={[styles.formInputSmall, { textAlign }]}
             outlineColor={theme.colors.outline}
             activeOutlineColor={theme.colors.primary}
-            left={<TextInput.Icon icon="email-outline" />}
+            right={<TextInput.Icon icon="email-outline" />}
             dense
           />
 
@@ -429,7 +430,7 @@ export default function CreateESignatureScreen() {
             style={[styles.formInputSmall, { textAlign }]}
             outlineColor={theme.colors.outline}
             activeOutlineColor={theme.colors.primary}
-            left={<TextInput.Icon icon="phone-outline" />}
+            right={<TextInput.Icon icon="phone-outline" />}
             dense
           />
         </View>
@@ -460,7 +461,7 @@ export default function CreateESignatureScreen() {
         <Switch
           value={sequentialSigning}
           onValueChange={setSequentialSigning}
-          trackColor={{ false: theme.colors.surfaceVariant, true: `${theme.colors.primary}80` }}
+          trackColor={{ false: theme.colors.surfaceVariant, true: withAlpha(theme.colors.primary, 0.5) }}
           thumbColor={sequentialSigning ? theme.colors.primary : '#f4f3f4'}
         />
       </View>

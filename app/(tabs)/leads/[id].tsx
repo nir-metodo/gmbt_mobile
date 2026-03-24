@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -32,6 +32,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { makeAppCall } from '../../../utils/phoneCall';
 import { tasksApi } from '../../../services/api/tasks';
 import { contactsApi } from '../../../services/api/contacts';
+import { usersApi } from '../../../services/api/users';
 import { leadsApi } from '../../../services/api/leads';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
@@ -40,6 +41,7 @@ import {
   formatDate,
   formatRelativeTime,
   getInitials,
+  withAlpha,
 } from '../../../utils/formatters';
 import { spacing, borderRadius } from '../../../constants/theme';
 import ContactLookup from '../../../components/ContactLookup';
@@ -48,7 +50,7 @@ import {
   DynamicFieldsSectionForm,
   type DynamicSection,
 } from '../../../components/DynamicFieldsSection';
-import type { Lead, LeadStage, TimelineEvent } from '../../../types';
+import type { Lead, LeadStage, TimelineEvent, OrgUser } from '../../../types';
 
 const DEFAULT_STAGE_COLORS: Record<string, string> = {
   New: '#2e6155',
@@ -122,7 +124,11 @@ const EMPTY_LEAD: Partial<Lead> = {
 
 export default function LeadDetailScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, contactPhone: prefillPhone, prefillContactName } = useLocalSearchParams<{
+    id: string;
+    contactPhone?: string;
+    prefillContactName?: string;
+  }>();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign, writingDirection } = useRTL();
@@ -133,14 +139,18 @@ export default function LeadDetailScreen() {
   const organization = user?.organization ?? '';
 
   const leads = useLeadStore((s) => s.leads);
+  const selectedLead = useLeadStore((s) => s.selectedLead);
   const updateLead = useLeadStore((s) => s.updateLead);
   const createLead = useLeadStore((s) => s.createLead);
   const deleteLead = useLeadStore((s) => s.deleteLead);
 
   const isNew = id === 'new';
   const lead = useMemo(
-    () => (isNew ? null : leads.find((l) => l.id === id) ?? null),
-    [leads, id, isNew],
+    () => {
+      if (isNew) return null;
+      return leads.find((l) => l.id === id) ?? (selectedLead?.id === id ? selectedLead : null);
+    },
+    [leads, selectedLead, id, isNew],
   );
 
   const [menuVisible, setMenuVisible] = useState(false);
@@ -152,6 +162,9 @@ export default function LeadDetailScreen() {
   const [taskDueDate, setTaskDueDate] = useState('');
   const [creatingTask, setCreatingTask] = useState(false);
   const [contactLookupVisible, setContactLookupVisible] = useState(false);
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
+  const [orgUsersLoading, setOrgUsersLoading] = useState(false);
+  const [ownerPickerExpanded, setOwnerPickerExpanded] = useState(false);
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [addingNote, setAddingNote] = useState(false);
@@ -159,7 +172,13 @@ export default function LeadDetailScreen() {
   const [leadFormSections, setLeadFormSections] = useState<DynamicSection[]>([]);
   const [leadFormLayout, setLeadFormLayout] = useState<string[]>([]);
   const [form, setForm] = useState<Partial<Lead>>(
-    lead ? { ...lead } : { ...EMPTY_LEAD },
+    lead
+      ? { ...lead }
+      : {
+          ...EMPTY_LEAD,
+          contactPhone: prefillPhone || '',
+          contactName: prefillContactName || '',
+        },
   );
 
   useEffect(() => {
@@ -421,7 +440,12 @@ export default function LeadDetailScreen() {
               leadingIcon="pencil-outline"
               onPress={() => {
                 setMenuVisible(false);
+                setOwnerPickerExpanded(false);
                 setEditVisible(true);
+                if (orgUsers.length === 0) {
+                  setOrgUsersLoading(true);
+                  usersApi.getAll(organization).then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+                }
               }}
               title={t('common.edit')}
             />
@@ -446,7 +470,7 @@ export default function LeadDetailScreen() {
         {!isNew && lead ? (
           <Pressable
             onPress={() => setStagePickerVisible(true)}
-            style={[styles.stageBanner, { backgroundColor: `${stageColor}15` }]}
+            style={[styles.stageBanner, { backgroundColor: withAlpha(stageColor, 0.082) }]}
           >
             <View style={[styles.stageIndicator, { flexDirection }]}>
               <View style={[styles.stageDot, { backgroundColor: stageColor }]} />
@@ -734,6 +758,22 @@ export default function LeadDetailScreen() {
               bg="#F3E5F5"
               onPress={() => setNoteModalVisible(true)}
             />
+            <ActionButton
+              icon="file-document-outline"
+              label={t('quotes.addQuote', 'הצעת מחיר')}
+              color="#2196F3"
+              bg="#E3F2FD"
+              onPress={() => router.push({
+                pathname: '/(tabs)/more/quotes/[id]',
+                params: {
+                  id: 'new',
+                  prefillContactName: lead?.contactName || '',
+                  prefillContactPhone: lead?.contactPhone || lead?.phoneNumber || '',
+                  prefillTitle: lead?.title || '',
+                  prefillLeadId: lead?.id || '',
+                },
+              })}
+            />
           </View>
         ) : null}
 
@@ -786,7 +826,7 @@ export default function LeadDetailScreen() {
                     onPress={() => handleStageChange(stage)}
                     style={[
                       styles.stagePickerItem,
-                      isActive && { backgroundColor: `${color}15` },
+                      isActive && { backgroundColor: withAlpha(color, 0.082) },
                       { flexDirection },
                     ]}
                   >
@@ -879,7 +919,7 @@ export default function LeadDetailScreen() {
 
               <Text
                 variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
                 {t('leads.stage')}
               </Text>
@@ -900,7 +940,7 @@ export default function LeadDetailScreen() {
                       style={[
                         styles.formStageChip,
                         isSelected
-                          ? { backgroundColor: `${color}25`, borderColor: color, borderWidth: 1 }
+                          ? { backgroundColor: withAlpha(color, 0.145), borderColor: color, borderWidth: 1 }
                           : { backgroundColor: theme.colors.surfaceVariant },
                       ]}
                       textStyle={{
@@ -927,7 +967,7 @@ export default function LeadDetailScreen() {
 
               <Text
                 variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
                 {t('leads.currency', 'Currency')}
               </Text>
@@ -947,7 +987,7 @@ export default function LeadDetailScreen() {
                       style={[
                         styles.formStageChip,
                         isSelected
-                          ? { backgroundColor: `${theme.colors.primary}25`, borderColor: theme.colors.primary, borderWidth: 1 }
+                          ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
                           : { backgroundColor: theme.colors.surfaceVariant },
                       ]}
                       textStyle={{
@@ -964,7 +1004,7 @@ export default function LeadDetailScreen() {
 
               <Text
                 variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
                 {t('leads.source')}
               </Text>
@@ -984,7 +1024,7 @@ export default function LeadDetailScreen() {
                       style={[
                         styles.formStageChip,
                         isSelected
-                          ? { backgroundColor: `${theme.colors.primary}25`, borderColor: theme.colors.primary, borderWidth: 1 }
+                          ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
                           : { backgroundColor: theme.colors.surfaceVariant },
                       ]}
                       textStyle={{
@@ -1001,7 +1041,7 @@ export default function LeadDetailScreen() {
 
               <Text
                 variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
                 {t('leads.channel')}
               </Text>
@@ -1038,7 +1078,7 @@ export default function LeadDetailScreen() {
 
               <Text
                 variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
                 {t('leads.status')}
               </Text>
@@ -1058,7 +1098,7 @@ export default function LeadDetailScreen() {
                       style={[
                         styles.formStageChip,
                         isSelected
-                          ? { backgroundColor: `${theme.colors.tertiary || '#FF9800'}25`, borderColor: theme.colors.tertiary || '#FF9800', borderWidth: 1 }
+                          ? { backgroundColor: withAlpha(theme.colors.tertiary || '#FF9800', 0.145), borderColor: theme.colors.tertiary || '#FF9800', borderWidth: 1 }
                           : { backgroundColor: theme.colors.surfaceVariant },
                       ]}
                       textStyle={{
@@ -1076,7 +1116,7 @@ export default function LeadDetailScreen() {
               <View style={styles.formField}>
                 <Text
                   variant="labelMedium"
-                  style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                  style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
                 >
                   {t('leads.contact')}
                 </Text>
@@ -1131,7 +1171,7 @@ export default function LeadDetailScreen() {
               />
               <Text
                 variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
                 {t('tasks.priority')}
               </Text>
@@ -1151,7 +1191,7 @@ export default function LeadDetailScreen() {
                       style={[
                         styles.formStageChip,
                         isSelected
-                          ? { backgroundColor: `${theme.colors.primary}25`, borderColor: theme.colors.primary, borderWidth: 1 }
+                          ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
                           : { backgroundColor: theme.colors.surfaceVariant },
                       ]}
                       textStyle={{
@@ -1201,16 +1241,60 @@ export default function LeadDetailScreen() {
                 writingDirection={writingDirection}
                 multiline
               />
-              <FormField
-                label={t('leads.owner')}
-                value={form.ownerName ?? form.ownerId ?? ''}
-                onChangeText={(v) => {
-                  setForm((prev) => ({ ...prev, ownerId: v, ownerName: v }));
+              {/* Owner - user picker */}
+              <Pressable
+                onPress={() => {
+                  setOwnerPickerExpanded((v) => !v);
+                  if (orgUsers.length === 0 && !orgUsersLoading) {
+                    setOrgUsersLoading(true);
+                    usersApi.getAll(organization).then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+                  }
                 }}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-              />
+                style={{
+                  borderWidth: 1,
+                  borderRadius: 4,
+                  borderColor: ownerPickerExpanded ? theme.colors.primary : theme.colors.outline,
+                  paddingHorizontal: 12,
+                  paddingVertical: 10,
+                  backgroundColor: theme.colors.surface,
+                  marginBottom: 14,
+                }}
+              >
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 2 }}>
+                  {t('leads.owner')}
+                </Text>
+                <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+                  <MaterialCommunityIcons name="account-tie" size={16} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="bodyMedium" style={{ flex: 1, color: form.ownerName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                    {orgUsersLoading ? t('common.loading') || 'טוען...' : (form.ownerName || form.ownerId || t('leads.selectOwner') || 'בחר בעל ליד')}
+                  </Text>
+                  <MaterialCommunityIcons name={ownerPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+                </View>
+              </Pressable>
+              {ownerPickerExpanded && (
+                <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 4, marginTop: -14, marginBottom: 14, overflow: 'hidden' }}>
+                  <Pressable
+                    style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8 }]}
+                    onPress={() => { setForm((prev) => ({ ...prev, ownerId: '', ownerName: '' })); setOwnerPickerExpanded(false); }}
+                  >
+                    <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('common.none') || 'ללא'}</Text>
+                  </Pressable>
+                  <Divider />
+                  {orgUsers.map((u) => (
+                    <Pressable
+                      key={u.uID || u.userId}
+                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId) === form.ownerId ? `${theme.colors.primary}15` : 'transparent' }]}
+                      onPress={() => { setForm((prev) => ({ ...prev, ownerId: u.uID || u.userId || '', ownerName: u.fullname || u.name || '' })); setOwnerPickerExpanded(false); }}
+                    >
+                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId) === form.ownerId ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId) === form.ownerId ? theme.colors.primary : theme.colors.onSurface, fontWeight: (u.uID || u.userId) === form.ownerId ? '700' : '400' }}>
+                        {u.fullname || u.name}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
 
               <FormField
                 label={t('leads.tags', 'Tags')}
@@ -1241,7 +1325,7 @@ export default function LeadDetailScreen() {
 
               <Text
                 variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
                 {t('leads.score', 'Score')}
               </Text>
@@ -1272,7 +1356,7 @@ export default function LeadDetailScreen() {
                 <>
                   <Text
                     variant="labelMedium"
-                    style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                    style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
                   >
                     {t('leads.lostReason', 'Lost Reason')}
                   </Text>
@@ -1292,7 +1376,7 @@ export default function LeadDetailScreen() {
                           style={[
                             styles.formStageChip,
                             isSelected
-                              ? { backgroundColor: `${theme.colors.error}25`, borderColor: theme.colors.error, borderWidth: 1 }
+                              ? { backgroundColor: withAlpha(theme.colors.error, 0.145), borderColor: theme.colors.error, borderWidth: 1 }
                               : { backgroundColor: theme.colors.surfaceVariant },
                           ]}
                           textStyle={{
@@ -1564,7 +1648,7 @@ function FormField({
 }) {
   return (
     <View style={styles.formField}>
-      <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}>
+      <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
         {label}
       </Text>
       <TextInput
@@ -1635,20 +1719,28 @@ function TimelineSection({
     <View>
       {events.map((event, idx) => {
         const id = event.TimelineId || event.timelineId || event.id || `${idx}`;
-        const note = event.Notes || event.notes || event.description || '';
         const creator = event.CreatedByName || event.createdByName || '';
-        const ts = event.CreateDateTimeUTC || event.createDateTimeUTC || event.timestamp || '';
+        const ts = event.CreateDateTimeUTC || event.createDateTimeUTC || event.timestamp || event.createdOn || '';
+        const { icon, color, label, detail } = buildTimelineItem(event, lang);
         return (
           <View key={id} style={[styles.timelineItem, { flexDirection }]}>
-            <View style={[styles.timelineDot, { backgroundColor: theme.colors.primary }]} />
+            <View style={[styles.timelineDot, { backgroundColor: color }]} />
             <View style={[styles.timelineBody, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
-              {note ? (
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left', width: '100%' }}>
-                  {note}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                {icon ? <Text style={{ fontSize: 14 }}>{icon}</Text> : null}
+                {label ? (
+                  <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                    {label}
+                  </Text>
+                ) : null}
+              </View>
+              {detail ? (
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', width: '100%' }}>
+                  {detail}
                 </Text>
               ) : null}
               <View style={{ flexDirection, alignItems: 'center', gap: 6, marginTop: 2 }}>
-                {creator ? (
+                {creator && creator.toLowerCase() !== 'system' ? (
                   <Text variant="labelSmall" style={{ color: theme.colors.primary }}>
                     {creator}
                   </Text>
@@ -1665,6 +1757,111 @@ function TimelineSection({
       })}
     </View>
   );
+}
+
+function buildTimelineItem(event: any, lang: 'en' | 'he'): {
+  icon: string; color: string; label: string; detail: string;
+} {
+  const type = (
+    event.TimelineType || event.timelineType ||
+    event.Type       || event.type         ||
+    event.EventType  || event.eventType    ||
+    'system'
+  ).toLowerCase().trim();
+
+  const note = (
+    event.note        || event.Note        ||
+    event.Notes       || event.notes       ||
+    event.activityText || event.ActivityText ||
+    event.description || event.Description ||
+    event.message     || event.Message     ||
+    event.content     || event.Content     ||
+    ''
+  );
+  const he = lang === 'he';
+
+  switch (type) {
+    case 'lead_created':
+      return { icon: '🆕', color: '#2e6155', label: he ? 'ליד נוצר' : 'Lead Created', detail: note };
+    case 'lead_updated':
+      const changed = event.changedFields ? event.changedFields.split(',').filter(Boolean).join(', ') : '';
+      return { icon: '✏️', color: '#d97706', label: he ? 'ליד עודכן' : 'Lead Updated', detail: changed || note };
+    case 'stage_change':
+      const from = event.fromStageName || event.fromStage || '?';
+      const to = event.toStageName || event.toStage || '?';
+      return { icon: '🔄', color: '#8b5cf6', label: he ? 'שלב שונה' : 'Stage Changed', detail: `${from} → ${to}` };
+    case 'lead_won':
+      const wonVal = event.leadValue ? `${event.leadCurrency || '₪'}${parseFloat(event.leadValue).toLocaleString()}` : '';
+      return { icon: '🏆', color: '#059669', label: he ? 'ליד נסגר (זכייה)' : 'Lead Won', detail: wonVal || note };
+    case 'lead_lost':
+      return { icon: '❌', color: '#ef4444', label: he ? 'ליד אבוד' : 'Lead Lost', detail: event.fromStageName || note };
+    case 'lead_owner_change':
+      const fromOwner = event.fromOwner || '';
+      const toOwner = event.toOwner || '';
+      return { icon: '👤', color: '#3b82f6', label: he ? 'בעלים שונה' : 'Owner Changed', detail: fromOwner && toOwner ? `${fromOwner} → ${toOwner}` : note };
+    case 'lead_value_change':
+      const cur = event.currency || '₪';
+      const fromV = event.fromValue ? `${cur}${parseFloat(event.fromValue).toLocaleString()}` : '';
+      const toV = event.toValue ? `${cur}${parseFloat(event.toValue).toLocaleString()}` : '';
+      return { icon: '💰', color: '#059669', label: he ? 'ערך שונה' : 'Value Changed', detail: fromV && toV ? `${fromV} → ${toV}` : note };
+    case 'lead_contact_change':
+      return { icon: '📋', color: '#6366f1', label: he ? 'איש קשר שונה' : 'Contact Changed', detail: note };
+    case 'task_created':
+      const taskTitle = event.taskTitle || event.title || '';
+      return { icon: '✅', color: '#f59e0b', label: he ? 'משימה נוצרה' : 'Task Created', detail: taskTitle || note };
+    case 'task_completed':
+      return { icon: '✔️', color: '#10b981', label: he ? 'משימה הושלמה' : 'Task Completed', detail: event.taskTitle || note };
+    case 'task_status_change':
+    case 'task_assigned':
+    case 'task_priority_change':
+    case 'task_due_date_change':
+    case 'task_title_change':
+    case 'task_type_change':
+    case 'task_description_change':
+      return { icon: '📝', color: '#f59e0b', label: he ? 'משימה עודכנה' : 'Task Updated', detail: event.activityText || event.taskTitle || note };
+    case 'email sent':
+      return { icon: '📧', color: '#6366f1', label: he ? 'מייל נשלח' : 'Email Sent', detail: event.subject || note };
+    case 'event created':
+      return { icon: '📅', color: '#3b82f6', label: he ? 'אירוע נוצר' : 'Event Created', detail: event.eventTitle || note };
+    case 'note':
+      return { icon: '💬', color: '#6b7280', label: he ? 'הערה' : 'Note', detail: note };
+    case 'assign':
+      return { icon: '👋', color: '#3b82f6', label: he ? 'הוקצה' : 'Assigned', detail: event.assignToName || note };
+    case 'open conversation':
+    case 'open conversation (incoming)':
+      return { icon: '💬', color: '#2e6155', label: he ? 'שיחה נפתחה' : 'Conversation Opened', detail: note };
+    case 'close':
+      return { icon: '🔒', color: '#6b7280', label: he ? 'שיחה נסגרה' : 'Conversation Closed', detail: note };
+    case 'status change':
+      return { icon: '🔁', color: '#8b5cf6', label: he ? 'סטטוס שונה' : 'Status Changed', detail: note };
+    case 'botomation send message':
+      return { icon: '🤖', color: '#2e6155', label: he ? 'הודעת בוט' : 'Bot Message', detail: note };
+    case 'campaign message sent':
+      return { icon: '📣', color: '#f59e0b', label: he ? 'הודעת קמפיין' : 'Campaign Message', detail: note };
+    case 'internal_mention':
+      return { icon: '💬', color: '#f59e0b', label: he ? 'אזכור פנימי' : 'Internal Mention', detail: note };
+    case 'whatsapp':
+    case 'whatsapp_message':
+    case 'message':
+    case 'incoming message':
+    case 'outgoing message':
+      return { icon: '💬', color: '#25D366', label: he ? 'הודעת וואטסאפ' : 'WhatsApp Message', detail: note };
+    case 'call':
+    case 'phone_call':
+    case 'phone call':
+      return { icon: '📞', color: '#3b82f6', label: he ? 'שיחת טלפון' : 'Phone Call', detail: note };
+    case 'system':
+    case 'system_event':
+    case 'automation':
+      return { icon: '⚙️', color: '#6b7280', label: he ? 'פעולת מערכת' : 'System Action', detail: note };
+    default:
+      return {
+        icon: note ? '📝' : '⚙️',
+        color: '#6b7280',
+        label: note ? (he ? 'פעילות' : 'Activity') : (he ? 'פעולת מערכת' : 'System'),
+        detail: note,
+      };
+  }
 }
 
 const styles = StyleSheet.create({

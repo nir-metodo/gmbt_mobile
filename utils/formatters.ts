@@ -1,4 +1,22 @@
 import { format, formatDistanceToNow, isToday, isYesterday, parseISO } from 'date-fns';
+
+/**
+ * Safely adds alpha transparency to any color string (hex OR rgb/rgba).
+ * Hex appending like `${rgbaColor}20` is invalid — use this instead.
+ * @param color - hex (#RRGGBB) or rgb(...) or rgba(...) string
+ * @param opacity - 0 (transparent) to 1 (opaque)
+ */
+export function withAlpha(color: string, opacity: number): string {
+  if (!color || typeof color !== 'string') return color;
+  if (color.startsWith('rgba(')) {
+    return color.replace(/,\s*[\d.]+\s*\)$/, `, ${opacity})`);
+  }
+  if (color.startsWith('rgb(')) {
+    return color.replace('rgb(', 'rgba(').replace(')', `, ${opacity})`);
+  }
+  const hex = Math.round(opacity * 255).toString(16).padStart(2, '0');
+  return `${color}${hex}`;
+}
 import { he, enUS } from 'date-fns/locale';
 
 export function formatPhoneNumber(phone: string): string {
