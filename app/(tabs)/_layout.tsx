@@ -138,6 +138,12 @@ export default function TabsLayout() {
               </View>
             ),
           }}
+          listeners={({ navigation }) => ({
+            tabPress: () => {
+              // Reset tab stack to root on press (prevents stale sub-routes after cross-tab navigation)
+              navigation.navigate(tab.name, { screen: 'index' });
+            },
+          })}
         />
       ))}
 

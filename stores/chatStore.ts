@@ -26,10 +26,11 @@ interface ChatState {
 
   loadMessages: (organization: string, phoneNumber: string) => Promise<void>;
   sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string) => Promise<void>;
-  sendInternalMessage: (organization: string, phoneNumber: string, message: string, senderName: string) => Promise<void>;
+  sendInternalMessage: (organization: string, phoneNumber: string, message: string, senderName: string, sentById?: string, mentionedUsers?: { userId: string; userName: string }[]) => Promise<void>;
   markAsRead: (organization: string, phoneNumber: string) => Promise<void>;
   toggleStarred: (organization: string, messageId: string, phoneNumber: string, isStarred: boolean) => Promise<void>;
   addMessage: (message: Message) => void;
+  updateMessage: (messageId: string, updates: Partial<Message>) => void;
   updateMessageStatus: (messageId: string, status: Message['status']) => void;
   clearCurrentChat: () => void;
   updateUnreadCount: (count: number) => void;
@@ -149,6 +150,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
     try {
       await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId);
+      set((state) => ({
+        currentMessages: state.currentMessages.map((m) =>
+          m.messageId === tempId ? { ...m, status: 'sent' as const } : m
+        ),
+      }));
     } catch (err) {
       set((state) => ({
         currentMessages: state.currentMessages.map((m) =>
@@ -161,7 +167,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendInternalMessage: async (organization, phoneNumber, message, senderName) => {
+  sendInternalMessage: async (organization, phoneNumber, message, senderName, sentById?, mentionedUsers?) => {
     set({ isSending: true });
     const tempId = `temp_internal_${Date.now()}`;
     const optimisticMsg: Message = {
@@ -182,7 +188,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isSending: true,
     }));
     try {
-      await chatsApi.sendInternalMessage(organization, phoneNumber, message, senderName);
+      await chatsApi.sendInternalMessage(organization, phoneNumber, message, senderName, sentById, mentionedUsers);
     } catch (err) {
       set((state) => ({
         currentMessages: state.currentMessages.filter((m) => m.messageId !== tempId),
@@ -223,6 +229,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (exists) return state;
       return { currentMessages: [...state.currentMessages, message] };
     });
+  },
+
+  updateMessage: (messageId, updates) => {
+    set((state) => ({
+      currentMessages: state.currentMessages.map((m) =>
+        m.messageId === messageId ? { ...m, ...updates } : m
+      ),
+    }));
   },
 
   updateMessageStatus: (messageId, status) => {

@@ -38,6 +38,7 @@ import {
   INVOICE_STATUSES,
 } from '../../../../services/api/invoices';
 import { contactsApi } from '../../../../services/api/contacts';
+import { quotesApi } from '../../../../services/api/quotes';
 import type { Contact } from '../../../../types';
 import { borderRadius } from '../../../../constants/theme';
 import { formatDate } from '../../../../utils/formatters';
@@ -181,14 +182,19 @@ export default function InvoiceDetailScreen() {
       setCatalogLoading(true);
       try {
         const branding = await invoicesApi.getBranding(user?.organization || '');
-        setCatalogItems(Array.isArray(branding?.catalogItems) ? branding.catalogItems : []);
+        let items = Array.isArray(branding?.catalogItems) ? branding.catalogItems : [];
+        if (items.length === 0) {
+          const quoteBranding = await quotesApi.getBranding(user?.organization || '');
+          items = Array.isArray(quoteBranding?.catalogItems) ? quoteBranding.catalogItems : [];
+        }
+        setCatalogItems(items);
       } catch { setCatalogItems([]); }
       finally { setCatalogLoading(false); }
     }
   }, [user?.organization, catalogItems.length]);
 
   const filteredCatalog = useMemo(() => {
-    if (!catalogSearch.trim()) return catalogItems;
+    if (!catalogSearch.trim()) return catalogItems.slice(0, 3);
     const q = catalogSearch.toLowerCase();
     return catalogItems.filter(
       (p) => (p.name || p.description || '').toLowerCase().includes(q),
@@ -271,7 +277,7 @@ export default function InvoiceDetailScreen() {
     return (
       <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
         <Appbar.Header style={{ backgroundColor: BRAND_COLOR, width: '100%', position: 'absolute', top: 0 }}>
-          <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
+          <Appbar.Action icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} color="#FFF" />
           <Appbar.Content title="חשבוניות" titleStyle={{ color: '#FFF' }} />
         </Appbar.Header>
         <MaterialCommunityIcons name="alert-circle-outline" size={48} color={theme.colors.error} style={{ opacity: 0.7 }} />
@@ -287,7 +293,7 @@ export default function InvoiceDetailScreen() {
     return (
       <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
         <Appbar.Header style={{ backgroundColor: docColor }} mode="center-aligned">
-          <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
+          <Appbar.Action icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} color="#FFF" />
           <Appbar.Content title="חשבונית חדשה" titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }} />
           <Appbar.Action icon="content-save-outline" color="#FFF" onPress={handleSave} disabled={saving} />
         </Appbar.Header>
@@ -608,43 +614,54 @@ export default function InvoiceDetailScreen() {
               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>בחר מקטלוג</Text>
               <IconButton icon="close" size={20} onPress={() => { setCatalogVisible(false); setCatalogSearch(''); }} />
             </View>
-            <TextInput
-              label="חפש פריט..."
+            <Searchbar
+              placeholder="חפש פריט..."
               value={catalogSearch}
               onChangeText={setCatalogSearch}
-              mode="outlined"
-              dense
-              style={{ marginBottom: 10 }}
-              activeOutlineColor={BRAND_COLOR}
-              right={<TextInput.Icon icon="magnify" />}
+              style={{ marginHorizontal: 12, marginBottom: 8 }}
             />
-            <ScrollView style={{ maxHeight: 350 }} keyboardShouldPersistTaps="handled">
-              {catalogLoading && <ActivityIndicator size="small" color={BRAND_COLOR} style={{ marginVertical: 20 }} />}
-              {!catalogLoading && filteredCatalog.length === 0 && (
-                <Text style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, padding: 20 }}>לא נמצאו פריטים בקטלוג</Text>
-              )}
-              {filteredCatalog.map((item, i) => (
-                <React.Fragment key={i}>
-                  {i > 0 && <Divider />}
-                  <TouchableOpacity onPress={() => addFromCatalog(item)} style={styles.inventoryRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text variant="bodySmall" style={{ fontWeight: '600', color: theme.colors.onSurface }}>
-                        {item.name || item.description || ''}
+            {catalogLoading ? (
+              <ActivityIndicator size="large" color={BRAND_COLOR} style={{ marginVertical: 32 }} />
+            ) : (
+              <>
+                {!catalogSearch.trim() && catalogItems.length > 3 && (
+                  <Text style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, fontSize: 11, marginBottom: 6 }}>
+                    מציג 3 ראשונים — חפש כדי לראות את כולם ({catalogItems.length})
+                  </Text>
+                )}
+                <FlatList
+                  data={filteredCatalog}
+                  keyExtractor={(_item, i) => String(i)}
+                  style={{ maxHeight: 360 }}
+                  keyboardShouldPersistTaps="handled"
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
+                      onPress={() => addFromCatalog(item)}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
+                          {item.name || item.description || ''}
+                        </Text>
+                        {item.description && item.name ? (
+                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                            {item.description}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
+                        {(item.unitPrice || item.price) != null ? `₪${Number(item.unitPrice || item.price || 0).toFixed(2)}` : ''}
                       </Text>
-                      {item.description && item.name && (
-                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{item.description}</Text>
-                      )}
-                    </View>
-                    {(item.unitPrice || item.price) != null && (
-                      <Text variant="bodySmall" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-                        ₪{Number(item.unitPrice || item.price || 0).toFixed(2)}
-                      </Text>
-                    )}
-                    <MaterialCommunityIcons name="plus-circle-outline" size={20} color={BRAND_COLOR} style={{ marginStart: 8 }} />
-                  </TouchableOpacity>
-                </React.Fragment>
-              ))}
-            </ScrollView>
+                    </TouchableOpacity>
+                  )}
+                  ListEmptyComponent={
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
+                      לא נמצאו פריטים בקטלוג
+                    </Text>
+                  }
+                />
+              </>
+            )}
           </Modal>
         </Portal>
       </View>
@@ -660,7 +677,7 @@ export default function InvoiceDetailScreen() {
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
       <Appbar.Header style={{ backgroundColor: docColor }} mode="center-aligned">
-        <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
+        <Appbar.Action icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} color="#FFF" />
         <Appbar.Content
           title={`${getDocLabel(invoice.type)}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}`}
           titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 16 }}

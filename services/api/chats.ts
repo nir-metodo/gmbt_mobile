@@ -25,12 +25,12 @@ export const chatsApi = {
     contextMessageId?: string,
   ): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.CREATE_OUTBOUND_MESSAGE, {
-      organizationiD: organization,
+      organization,
+      text: message,
       to,
-      message,
-      senderName: senderName || '',
-      userId: userId || '',
-      ...(contextMessageId ? { ContextMessageId: contextMessageId } : {}),
+      sentByName: senderName || '',
+      sentById: userId || '',
+      ...(contextMessageId ? { contextMessageId } : {}),
     });
     return response.data;
   },
@@ -67,12 +67,19 @@ export const chatsApi = {
     phoneNumber: string,
     message: string,
     senderName: string,
+    sentById?: string,
+    mentionedUsers?: { userId: string; userName: string }[],
   ): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.CREATE_INTERNAL_MESSAGE, {
-      organization,
-      phoneNumber,
-      message,
-      senderName,
+      organizationName: organization,
+      messageText: message,
+      mentionedUsers: mentionedUsers || [],
+      relatedEntityType: 'contact',
+      relatedEntityId: phoneNumber,
+      relatedEntityName: phoneNumber,
+      sentById: sentById || '',
+      sentByName: senderName,
+      createdFrom: 'chat',
     });
     return response.data;
   },
@@ -208,5 +215,14 @@ export const chatsApi = {
       emoji,
     });
     return response.data;
+  },
+
+  async getChatTimeline(organization: string, phoneNumber: string): Promise<any[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CHAT_TIMELINE, {
+      organizationiD: organization,
+      phoneNumber,
+    });
+    const raw = response.data;
+    return Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
   },
 };

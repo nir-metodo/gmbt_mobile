@@ -88,7 +88,7 @@ function formatFieldValue(value: any, field: DynamicField): string {
 
 interface DynamicFieldsSectionViewProps {
   sections: DynamicSection[];
-  data: Record<string, any>;
+  data: Record<string, any> | null | undefined;
   lang?: 'en' | 'he';
   formLayout?: string[];
 }
@@ -99,6 +99,7 @@ export function DynamicFieldsSectionView({
   lang = 'en',
   formLayout = [],
 }: DynamicFieldsSectionViewProps) {
+  const safeData: Record<string, any> = data ?? {};
   const theme = useAppTheme();
   const { flexDirection, textAlign } = useRTL();
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
@@ -134,7 +135,7 @@ export function DynamicFieldsSectionView({
           ([, f]) => f.showOnView !== false,
         );
         const hasData = fields.some(([key]) => {
-          const v = data[key];
+          const v = safeData[key];
           return v != null && v !== '' && (Array.isArray(v) ? v.length > 0 : true);
         });
         if (!hasData) return null;
@@ -170,7 +171,7 @@ export function DynamicFieldsSectionView({
             </Pressable>
             {isExpanded &&
               fields.map(([fieldKey, field], idx) => {
-                const value = data[fieldKey];
+                const value = safeData[fieldKey];
                 const displayValue = formatFieldValue(value, field);
                 if (!displayValue) return null;
                 return (

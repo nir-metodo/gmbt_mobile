@@ -667,12 +667,14 @@ export default function LeadDetailScreen() {
           ) : null}
         </Surface>
 
-        <DynamicFieldsSectionView
-          sections={leadFormSections}
-          data={lead as Record<string, any>}
-          lang={lang}
-          formLayout={leadFormLayout}
-        />
+        {lead ? (
+          <DynamicFieldsSectionView
+            sections={leadFormSections}
+            data={lead as Record<string, any>}
+            lang={lang}
+            formLayout={leadFormLayout}
+          />
+        ) : null}
 
         {/* Description */}
         {lead?.description ? (

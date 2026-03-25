@@ -82,6 +82,15 @@ export default function ChatsListScreen() {
     }
   }, [user?.organization]);
 
+  // Polling fallback: refresh chat list every 15s to catch messages missed by WebSocket
+  useEffect(() => {
+    if (!user?.organization) return;
+    const interval = setInterval(() => {
+      loadChats(user.organization);
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [user?.organization, loadChats]);
+
   useEffect(() => {
     if (!user?.organization) return;
 
@@ -114,6 +123,10 @@ export default function ChatsListScreen() {
           setChats(data.chats);
         }
       }
+      // Reload full list on any WS event so ordering stays fresh
+      if (data.type === 'new_message' || data.type === 'message') {
+        loadChats(user.organization);
+      }
     });
 
     wsRef.current = ws;
@@ -121,7 +134,7 @@ export default function ChatsListScreen() {
       ws.close();
       wsRef.current = null;
     };
-  }, [user?.organization, addOrUpdateChat, setChats]);
+  }, [user?.organization, addOrUpdateChat, setChats, loadChats]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;

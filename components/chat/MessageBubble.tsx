@@ -58,7 +58,7 @@ function MessageBubbleInner({
   const displaySenderName = isInternal
     ? (message.createdByName || message.sentByName || message.senderName)
     : isOutbound
-      ? (message.sentFromApp ? 'APP' : (message.sentByName || null))
+      ? (message.sentFromApp ? `${message.sentByName ? message.sentByName + ' · ' : ''}APP` : (message.sentByName || null))
       : (message.senderName || message.sentByName || null);
 
   const renderStatus = () => {

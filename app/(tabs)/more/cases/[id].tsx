@@ -222,7 +222,14 @@ export default function CaseDetailScreen() {
   }, [caseData, user?.organization, orgUsers.length]);
 
   const handleCreate = useCallback(async () => {
-    if (!user?.organization || !formTitle.trim()) return;
+    if (!user?.organization) {
+      Alert.alert(t('common.error'), t('errors.generic', 'אירעה שגיאה, נסה שוב'));
+      return;
+    }
+    if (!formTitle.trim()) {
+      Alert.alert(t('common.error'), t('cases.titleRequired', 'יש להזין כותרת לפנייה'));
+      return;
+    }
     setSaving(true);
     try {
       await casesApi.create(user.organization, {
@@ -242,13 +249,17 @@ export default function CaseDetailScreen() {
         customFields: formDynamicFields,
         ...formDynamicFields,
       }, user?.fullname, user?.userId || user?.uID || '');
-      router.back();
+      Alert.alert(
+        t('common.success', 'נוצר בהצלחה'),
+        t('cases.caseCreated', 'הפנייה נוצרה בהצלחה'),
+        [{ text: 'OK', onPress: () => router.back() }],
+      );
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
     } finally {
       setSaving(false);
     }
-  }, [user, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formSource, formContactName, formContactPhone, formDueDate, formTags, formNotes, formDynamicFields, router, t]);
+  }, [user, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formAssignedToId, formSource, formContactName, formContactPhone, formDueDate, formTags, formNotes, formDynamicFields, router, t]);
 
   const handleSave = useCallback(async () => {
     if (!user?.organization || !caseData || !formTitle.trim()) return;
