@@ -21,24 +21,29 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Gambot needs access to your camera to take photos and videos to share in chats.",
         "NSPhotoLibraryUsageDescription": "Gambot needs access to your photo library to share images and media files in chats.",
-        "LSApplicationQueriesSchemes": ["whatsapp", "tel", "mailto"]
+        "LSApplicationQueriesSchemes": [
+          "whatsapp",
+          "tel",
+          "mailto"
+        ]
       }
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 1,
+      "versionCode": 5,
       "minSdkVersion": 26,
       "adaptiveIcon": {
         "backgroundColor": "#2e6155",
         "foregroundImage": "./assets/icon.png"
       },
       "permissions": [
-        "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO",
-        "VIBRATE",
-        "RECEIVE_BOOT_COMPLETED",
-        "POST_NOTIFICATIONS"
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -64,9 +69,11 @@
       ]
     ],
     "extra": {
+      "router": {},
       "eas": {
-        "projectId": "gambot-mobile"
+        "projectId": "ef6c2932-16ab-410d-8e34-b2926e4b92e7"
       }
-    }
+    },
+    "owner": "segas_nir"
   }
 }
