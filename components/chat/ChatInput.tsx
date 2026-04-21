@@ -19,6 +19,7 @@ import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { Audio } from 'expo-av';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRTL } from '../../hooks/useRTL';
 
@@ -88,6 +89,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   const theme = useAppTheme();
   const { isRTL, writingDirection } = useRTL();
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
 
   useImperativeHandle(ref, () => ({
     insertText: (t: string) => {
@@ -196,7 +198,11 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
     <View
       style={[
         styles.outerContainer,
-        { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outline },
+        {
+          backgroundColor: theme.colors.surface,
+          borderTopColor: theme.colors.outline,
+          paddingBottom: Math.max(insets.bottom, Platform.OS === 'ios' ? 4 : 6),
+        },
       ]}
     >
       {/* Reply preview */}
@@ -399,7 +405,6 @@ ChatInput.displayName = 'ChatInput';
 const styles = StyleSheet.create({
   outerContainer: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingBottom: Platform.OS === 'ios' ? 4 : 6,
   },
   replyPreview: {
     flexDirection: 'row',

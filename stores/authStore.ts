@@ -3,6 +3,7 @@ import type { User } from '../types';
 import { authApi } from '../services/api/auth';
 import { appStorage, secureStorage } from '../services/storage';
 import WebSocketService from '../services/websocket';
+import { setTokenCache } from '../services/api/axiosInstance';
 import i18n from '../i18n';
 
 interface AuthState {
@@ -27,11 +28,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   initialize: async () => {
     try {
-      const user = await appStorage.getUser();
-      const token = await secureStorage.getToken();
+      const [user, token] = await Promise.all([
+        appStorage.getUser(),
+        secureStorage.getToken(),
+      ]);
 
       if (user && token) {
         user.authToken = token;
+        setTokenCache(token);
         const lang = await appStorage.getLanguage();
         i18n.changeLanguage(lang);
         set({ user, isInitialized: true });
@@ -77,6 +81,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       WebSocketService.closeAll();
       await authApi.logout();
     } finally {
+      setTokenCache(null);
       set({ user: null, error: null });
     }
   },

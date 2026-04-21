@@ -171,14 +171,9 @@ export default function LeadsListScreen() {
     leadsApi.getPipelineSettings(organization)
       .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
       .catch(() => {});
+    leadsApi.getViews(organization).then(setSavedViews).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organization, searchQuery, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine]);
-
-  // ── Load saved views ────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!organization) return;
-    leadsApi.getViews(organization).then(setSavedViews).catch(() => {});
-  }, [organization]);
 
   const applyView = useCallback((view: LeadView) => {
     setActiveViewId(view.id);
@@ -280,13 +275,34 @@ export default function LeadsListScreen() {
   const handleStageChange = useCallback(
     async (lead: Lead, newStage: string) => {
       setStagePickerLead(null);
+      const stageObj = pipelineStages.find((s) => s.name === newStage);
+      const patch: Partial<Lead> = {
+        id: lead.id,
+        stageName: newStage,
+        stage: newStage,
+        ...(stageObj ? { stageId: stageObj.id } : {}),
+      };
+
+      // Optimistic local update so the pipeline view moves the card immediately
+      setLeads((prev) =>
+        prev.map((l) => (l.id === lead.id ? { ...l, ...patch } : l)),
+      );
+
       try {
-        await updateLead(organization, { id: lead.id, stageName: newStage, stage: newStage });
+        await updateLead(organization, patch);
       } catch (err: any) {
+        // Revert on failure
+        setLeads((prev) =>
+          prev.map((l) =>
+            l.id === lead.id
+              ? { ...l, stageName: lead.stageName, stage: lead.stage, stageId: lead.stageId }
+              : l,
+          ),
+        );
         Alert.alert(t('common.error', 'Error'), err?.message || t('errors.generic'));
       }
     },
-    [organization, updateLead, t],
+    [organization, updateLead, t, pipelineStages],
   );
 
   const renderLeadItem = useCallback(

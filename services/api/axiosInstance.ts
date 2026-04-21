@@ -5,6 +5,13 @@ import { router } from 'expo-router';
 
 const getAuthStore = () => require('../../stores/authStore').useAuthStore;
 
+// In-memory token cache — avoids expensive SecureStore reads on every request
+let _cachedToken: string | null = null;
+
+export const setTokenCache = (token: string | null) => {
+  _cachedToken = token;
+};
+
 const CONFIG = {
   DEFAULT_TIMEOUT: 30000,
   UPLOAD_TIMEOUT: 120000,
@@ -107,6 +114,7 @@ const refreshAndRetry = async (originalRequest: any) => {
     }
 
     const newToken = res.data.IdToken;
+    _cachedToken = newToken;
     await secureStorage.setToken(newToken);
 
     const user = await appStorage.getUser();
@@ -146,8 +154,9 @@ axiosInstance.interceptors.request.use(
       );
     }
 
-    const token = await secureStorage.getToken();
+    const token = _cachedToken ?? await secureStorage.getToken();
     if (token) {
+      if (!_cachedToken) _cachedToken = token;
       config.headers.Authorization = `Bearer ${token}`;
     }
 

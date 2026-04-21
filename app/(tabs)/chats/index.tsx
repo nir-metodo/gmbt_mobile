@@ -82,12 +82,12 @@ export default function ChatsListScreen() {
     }
   }, [user?.organization]);
 
-  // Polling fallback: refresh chat list every 15s to catch messages missed by WebSocket
+  // Polling fallback: refresh chat list every 60s to catch messages missed by WebSocket
   useEffect(() => {
     if (!user?.organization) return;
     const interval = setInterval(() => {
       loadChats(user.organization);
-    }, 15000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [user?.organization, loadChats]);
 
@@ -123,10 +123,7 @@ export default function ChatsListScreen() {
           setChats(data.chats);
         }
       }
-      // Reload full list on any WS event so ordering stays fresh
-      if (data.type === 'new_message' || data.type === 'message') {
-        loadChats(user.organization);
-      }
+      
     });
 
     wsRef.current = ws;

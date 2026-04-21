@@ -33,8 +33,7 @@ export default function RootLayout() {
   useEffect(() => {
     async function bootstrap() {
       try {
-        await initializeSettings();
-        await initialize();
+        await Promise.all([initializeSettings(), initialize()]);
       } catch {
         useAuthStore.setState({ isInitialized: true });
       }

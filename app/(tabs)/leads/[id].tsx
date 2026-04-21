@@ -869,7 +869,7 @@ export default function LeadDetailScreen() {
         >
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}
+            style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
           >
             <View
               style={[

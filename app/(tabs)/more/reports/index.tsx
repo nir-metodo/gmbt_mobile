@@ -794,7 +794,7 @@ export default function ReportsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND }} statusBarHeight={0}>
+      <Appbar.Header style={{ backgroundColor: BRAND }}>
         <Appbar.BackAction onPress={() => router.back()} color="#fff" />
         <Appbar.Content title={t('reports.title')} titleStyle={styles.headerTitle} />
         <Appbar.Action icon="export-variant" onPress={handleExport} color="#fff" disabled={sortedData.length === 0} />
