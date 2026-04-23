@@ -21,6 +21,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatPhoneNumber, getInitials } from '../../../utils/formatters';
+import { getDataVisibility } from '../../../constants/permissions';
 import { spacing, borderRadius, fontSize as fs } from '../../../constants/theme';
 import type { Contact } from '../../../types';
 
@@ -65,9 +66,17 @@ export default function ContactsListScreen() {
   const searchAnim = useRef(new Animated.Value(1)).current;
   const swipeableRefs = useRef(new Map<string, Swipeable>()).current;
 
+  const contactsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'contacts');
+
   useEffect(() => {
-    if (organization) loadContacts(organization);
-  }, [organization, loadContacts]);
+    if (organization) {
+      loadContacts(
+        organization,
+        contactsDV === 'own' ? currentUserId : '',
+        contactsDV === 'own' ? 'own' : 'all',
+      );
+    }
+  }, [organization, loadContacts, contactsDV, currentUserId]);
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -157,9 +166,15 @@ export default function ContactsListScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    if (organization) await loadContacts(organization);
+    if (organization) {
+      await loadContacts(
+        organization,
+        contactsDV === 'own' ? currentUserId : '',
+        contactsDV === 'own' ? 'own' : 'all',
+      );
+    }
     setRefreshing(false);
-  }, [organization, loadContacts]);
+  }, [organization, loadContacts, contactsDV, currentUserId]);
 
   const handleCall = useCallback(
     (contact: Contact) => {

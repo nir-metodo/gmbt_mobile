@@ -1375,8 +1375,9 @@ export default function QuoteDetailScreen() {
         {quote.contactName ? (
           <Pressable
             onPress={() => {
-              if (quote.contactId) {
-                router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: quote.contactId } });
+              const navId = quote.contactId || quote.contactPhone || quote.phoneNumber;
+              if (navId) {
+                router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: navId } });
               }
             }}
             style={[
@@ -1401,7 +1402,7 @@ export default function QuoteDetailScreen() {
                   </Text>
                 ) : null}
               </View>
-              {quote.contactId ? (
+              {(quote.contactId || quote.contactPhone || quote.phoneNumber) ? (
                 <MaterialCommunityIcons
                   name={isRTL ? 'chevron-left' : 'chevron-right'}
                   size={22}

@@ -18,7 +18,6 @@ import {
   Alert,
   ActivityIndicator,
   Linking,
-  Share,
   TextInput,
 } from 'react-native';
 import { Text, IconButton, Menu, Avatar, Button } from 'react-native-paper';
@@ -1053,9 +1052,7 @@ export default function ChatConversationScreen() {
                   {contactName}
                 </Text>
                 <Text style={styles.headerStatus}>
-                  {chat?.isOnline
-                    ? t('chats.online')
-                    : t('chats.offline')}
+                  {phoneNumber}
                 </Text>
               </View>
             </Pressable>
@@ -1128,28 +1125,6 @@ export default function ChatConversationScreen() {
                     handleQuickActionsPress();
                   }}
                   title={t('chats.quickActions', 'פעולות מהירות')}
-                />
-                <Menu.Item
-                  leadingIcon="export-variant"
-                  onPress={async () => {
-                    setMenuVisible(false);
-                    const messages = currentMessages
-                      .sort((a, b) => new Date(getTs(a)).getTime() - new Date(getTs(b)).getTime())
-                      .map((m) => {
-                        const time = formatMessageTime(m.createdOn || m.timestamp);
-                        const sender = m.direction?.toLowerCase() === 'outbound' ? t('chats.you') : (m.senderName || contactName);
-                        const text = m.text || m.body || `[${m.type}]`;
-                        return `[${time}] ${sender}: ${text}`;
-                      })
-                      .join('\n');
-                    try {
-                      await Share.share({
-                        message: `${t('chats.export')} - ${contactName}\n\n${messages}`,
-                        title: `${contactName} - Chat Export`,
-                      });
-                    } catch {}
-                  }}
-                  title={t('chats.export')}
                 />
               </Menu>
             </View>

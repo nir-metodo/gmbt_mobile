@@ -51,6 +51,7 @@ export const ENDPOINTS = {
   GET_LEADS_BY_CONTACT: '/api/Webhooks/GetLeadsByContact',
   CREATE_LEAD: '/api/Webhooks/CreateLead',
   UPDATE_LEAD: '/api/Webhooks/UpdateLead',
+  MOVE_LEAD_STAGE: '/api/Webhooks/MoveLeadStage',
   DELETE_LEAD: '/api/Webhooks/DeleteLead',
   GET_PIPELINE_SETTINGS: '/api/Webhooks/GetPipelineSettings',
   GET_LEAD_FORM_SETTINGS: '/api/Webhooks/GetLeadFormSettings',

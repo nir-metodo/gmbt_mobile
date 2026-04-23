@@ -39,6 +39,7 @@ import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatChatTime, getInitials } from '../../../utils/formatters';
 import WebSocketService from '../../../services/websocket';
+import { getDataVisibility } from '../../../constants/permissions';
 import type { Chat } from '../../../types';
 
 const FILTER_OPTIONS = ['all', 'unread', 'open', 'closed', 'myChats', 'internal'] as const;
@@ -66,6 +67,9 @@ export default function ChatsListScreen() {
   const setChats = useChatStore((s) => s.setChats);
   const addOrUpdateChat = useChatStore((s) => s.addOrUpdateChat);
 
+  const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
+  const currentUserId = user?.uID || user?.userId || '';
+
   const [categoryMenuVisible, setCategoryMenuVisible] = useState(false);
   const [ownerMenuVisible, setOwnerMenuVisible] = useState(false);
   const [newChatVisible, setNewChatVisible] = useState(false);
@@ -78,18 +82,26 @@ export default function ChatsListScreen() {
 
   useEffect(() => {
     if (user?.organization) {
-      loadChats(user.organization);
+      loadChats(
+        user.organization,
+        chatsDV === 'own' ? currentUserId : '',
+        chatsDV === 'own' ? 'own' : 'all',
+      );
     }
-  }, [user?.organization]);
+  }, [user?.organization, chatsDV, currentUserId]);
 
   // Polling fallback: refresh chat list every 60s to catch messages missed by WebSocket
   useEffect(() => {
     if (!user?.organization) return;
     const interval = setInterval(() => {
-      loadChats(user.organization);
+      loadChats(
+        user.organization,
+        chatsDV === 'own' ? currentUserId : '',
+        chatsDV === 'own' ? 'own' : 'all',
+      );
     }, 60000);
     return () => clearInterval(interval);
-  }, [user?.organization, loadChats]);
+  }, [user?.organization, loadChats, chatsDV, currentUserId]);
 
   useEffect(() => {
     if (!user?.organization) return;
@@ -215,9 +227,15 @@ export default function ChatsListScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    if (user?.organization) await loadChats(user.organization);
+    if (user?.organization) {
+      await loadChats(
+        user.organization,
+        chatsDV === 'own' ? currentUserId : '',
+        chatsDV === 'own' ? 'own' : 'all',
+      );
+    }
     setRefreshing(false);
-  }, [user?.organization, loadChats]);
+  }, [user?.organization, loadChats, chatsDV, currentUserId]);
 
   const openChat = useCallback(
     (chat: Chat) => {

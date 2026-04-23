@@ -3,9 +3,16 @@ import { ENDPOINTS } from '../../constants/api';
 import type { Contact } from '../../types';
 
 export const contactsApi = {
-  async getAll(organization: string): Promise<Contact[]> {
-    const response = await axiosInstance.post(ENDPOINTS.GET_CONTACTS, {
+  async getAll(
+    organization: string,
+    options?: { userId?: string; dataVisibility?: string },
+  ): Promise<Contact[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CONTACTS_PAGINATED, {
       organizationiD: organization,
+      pageNumber: 1,
+      pageSize: 9999,
+      userId: options?.userId || '',
+      dataVisibility: options?.dataVisibility || 'all',
     });
     const raw = response.data;
     const items = raw?.Contacts || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);

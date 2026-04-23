@@ -33,6 +33,7 @@ import { useRTL } from '../../../../hooks/useRTL';
 import { tasksApi } from '../../../../services/api/tasks';
 import { usersApi } from '../../../../services/api/users';
 import { leadsApi } from '../../../../services/api/leads';
+import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import ContactLookup from '../../../../components/ContactLookup';
@@ -156,6 +157,8 @@ export default function TaskDetailScreen() {
   const [leadSearching, setLeadSearching] = useState(false);
   const leadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const tasksDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'tasks');
+
   const fetchTask = useCallback(async () => {
     if (!user?.organization || !id) { setLoading(false); return; }
     try {
@@ -163,7 +166,7 @@ export default function TaskDetailScreen() {
       const tasks = await tasksApi.getAll(
         user.organization,
         user.uID || user.userId,
-        'seeAll',
+        tasksDV === 'own' ? 'seeOwn' : 'seeAll',
       );
       const found = tasks.find((t) => t.id === id);
       if (found) {
@@ -176,7 +179,7 @@ export default function TaskDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, user?.uID, user?.userId, id, t]);
+  }, [user?.organization, user?.uID, user?.userId, id, t, tasksDV]);
 
   useEffect(() => {
     fetchTask();
@@ -343,14 +346,14 @@ export default function TaskDetailScreen() {
   }, [handleStatusChange]);
 
   const navigateToRelated = useCallback(
-    (entityType: string, entityId?: string) => {
-      if (!entityId) return;
+    (entityType: string, entityId?: string, entityPhone?: string) => {
+      if (!entityId && !entityPhone) return;
       if (entityType === 'contact') {
-        router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: entityId } });
+        router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: entityId || entityPhone || '' } });
       } else if (entityType === 'lead') {
-        router.push({ pathname: '/(tabs)/leads', params: { leadId: entityId } });
+        router.push({ pathname: '/(tabs)/leads/[id]', params: { id: entityId || '' } });
       } else if (entityType === 'case') {
-        router.push(`/(tabs)/more/cases/${entityId}`);
+        router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: entityId || '' } });
       }
     },
     [router],
@@ -626,7 +629,10 @@ export default function TaskDetailScreen() {
           {/* Related entity (contact/lead/case) */}
           {relatedEntity ? (
             <Pressable
-              onPress={() => relatedEntity.entityId && navigateToRelated(relatedEntity.type || '', relatedEntity.entityId)}
+              onPress={() => {
+                const phone = (task as any)?.relatedContactPhone || (task?.relatedTo as any)?.entityPhone;
+                navigateToRelated(relatedEntity.type || '', relatedEntity.entityId, phone);
+              }}
               style={styles.detailRow}
             >
               <View style={[styles.detailIcon, { backgroundColor: withAlpha(theme.colors.secondary, 0.094) }]}>
@@ -650,13 +656,11 @@ export default function TaskDetailScreen() {
                   {relatedEntity.name}
                 </Text>
               </View>
-              {relatedEntity.entityId && (
-                <MaterialCommunityIcons
-                  name={isRTL ? 'chevron-left' : 'chevron-right'}
-                  size={20}
-                  color={theme.colors.onSurfaceVariant}
-                />
-              )}
+              <MaterialCommunityIcons
+                name={isRTL ? 'chevron-left' : 'chevron-right'}
+                size={20}
+                color={theme.colors.onSurfaceVariant}
+              />
             </Pressable>
           ) : null}
         </View>

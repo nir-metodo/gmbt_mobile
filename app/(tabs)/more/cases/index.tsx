@@ -33,6 +33,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
+import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 import type { Case } from '../../../../types';
@@ -121,18 +122,21 @@ export default function CasesListScreen() {
     dateRangePreset: filterDateRange || '',
   }), [searchQuery, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange]);
 
+  const casesDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'cases');
+
   // ── Fetch a page ─────────────────────────────────────────────────────────
   const fetchPage = useCallback(async (pageNum: number, reset: boolean) => {
     if (!user?.organization || fetchingRef.current) return;
     fetchingRef.current = true;
     if (reset) { setLoading(true); setError(null); } else setLoadingMore(true);
+    const shouldFilterOwn = filterMine || casesDV === 'own';
     try {
       const result = await casesApi.getAll(user.organization, {
         page: pageNum,
         pageSize: PAGE_SIZE,
         filters: buildFilters(),
-        dataVisibility: filterMine ? 'mineOnly' : 'seeAll',
-        userId: filterMine ? (user.userId || user.uID || '') : '',
+        dataVisibility: shouldFilterOwn ? 'mineOnly' : 'seeAll',
+        userId: shouldFilterOwn ? (user.userId || user.uID || '') : '',
       });
       const newItems = result.data ?? [];
       const total = result.total ?? 0;

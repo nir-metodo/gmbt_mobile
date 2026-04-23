@@ -20,6 +20,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { leadsApi, type LeadView } from '../../../services/api/leads';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
+import { getDataVisibility } from '../../../constants/permissions';
 import { formatCurrency, formatDate, getInitials, withAlpha } from '../../../utils/formatters';
 import { spacing, borderRadius } from '../../../constants/theme';
 import type { Lead, LeadStage } from '../../../types';
@@ -147,8 +148,14 @@ export default function LeadsListScreen() {
         page: pageNum,
         pageSize: PAGE_SIZE,
         filters: buildFilters(),
-        dataVisibility: filterMine ? 'mineOnly' : 'seeAll',
-        userId: filterMine ? (user?.uID || user?.userId || '') : '',
+        dataVisibility: filterMine
+          ? 'mineOnly'
+          : getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own'
+            ? 'mineOnly'
+            : 'seeAll',
+        userId: (filterMine || getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own')
+          ? (user?.uID || user?.userId || '')
+          : '',
       });
       const newItems = result.data ?? [];
       const total = result.total ?? 0;
@@ -276,22 +283,22 @@ export default function LeadsListScreen() {
     async (lead: Lead, newStage: string) => {
       setStagePickerLead(null);
       const stageObj = pipelineStages.find((s) => s.name === newStage);
-      const patch: Partial<Lead> = {
-        id: lead.id,
-        stageName: newStage,
-        stage: newStage,
-        ...(stageObj ? { stageId: stageObj.id } : {}),
-      };
+      const newStageId = stageObj?.id || '';
 
-      // Optimistic local update so the pipeline view moves the card immediately
+      // Optimistic local update
       setLeads((prev) =>
-        prev.map((l) => (l.id === lead.id ? { ...l, ...patch } : l)),
+        prev.map((l) => (l.id === lead.id ? { ...l, stageName: newStage, stage: newStage, stageId: newStageId } : l)),
       );
 
       try {
-        await updateLead(organization, patch);
+        await leadsApi.moveStage(
+          organization,
+          lead.id,
+          newStageId,
+          newStage,
+          user?.fullname || '',
+        );
       } catch (err: any) {
-        // Revert on failure
         setLeads((prev) =>
           prev.map((l) =>
             l.id === lead.id
@@ -302,7 +309,7 @@ export default function LeadsListScreen() {
         Alert.alert(t('common.error', 'Error'), err?.message || t('errors.generic'));
       }
     },
-    [organization, updateLead, t, pipelineStages],
+    [organization, user, t, pipelineStages],
   );
 
   const renderLeadItem = useCallback(

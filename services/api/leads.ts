@@ -87,6 +87,17 @@ export const leadsApi = {
     return response.data;
   },
 
+  async moveStage(organization: string, leadId: string, stageId: string, stageName: string, userName?: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
+      organization,
+      leadId,
+      stageId,
+      stageName,
+      user: { userName: userName || '' },
+    });
+    return response.data;
+  },
+
   async delete(organization: string, leadId: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.DELETE_LEAD, {
       organization,

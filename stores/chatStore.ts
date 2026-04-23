@@ -16,7 +16,7 @@ interface ChatState {
   categoryFilter: string;
   ownerFilter: string;
 
-  loadChats: (organization: string) => Promise<void>;
+  loadChats: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
   setChats: (chats: Chat[]) => void;
   addOrUpdateChat: (chat: Chat) => void;
   setSearchQuery: (query: string) => void;
@@ -49,10 +49,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   categoryFilter: 'all',
   ownerFilter: 'all',
 
-  loadChats: async (organization) => {
+  loadChats: async (organization, userId?, dataVisibility?) => {
     set({ isLoadingChats: true });
     try {
-      const contacts = await contactsApi.getAll(organization);
+      const contacts = await contactsApi.getAll(organization, { userId, dataVisibility });
       const chatList: Chat[] = (contacts || [])
         .filter((c: any) => c.phoneNumber || c.PhoneNumber)
         .map((c: any) => ({

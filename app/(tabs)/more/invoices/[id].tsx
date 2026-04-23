@@ -705,12 +705,9 @@ export default function InvoiceDetailScreen() {
         <Pressable
           style={[styles.section, { backgroundColor: theme.colors.surface }]}
           onPress={() => {
-            const cid = invoice.contactId;
-            const phone = invoice.contactPhone;
-            if (cid) {
-              router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: cid } });
-            } else if (phone) {
-              router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: phone.replace(/\D/g, '') } });
+            const navId = invoice.contactId || invoice.contactPhone;
+            if (navId) {
+              router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: navId } });
             }
           }}
           disabled={!invoice.contactId && !invoice.contactPhone}

@@ -11,7 +11,7 @@ interface ContactState {
   tagFilter: string[];
   ownerFilter: string[];
 
-  loadContacts: (organization: string) => Promise<void>;
+  loadContacts: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
   setSearchQuery: (query: string) => void;
   setSelectedContact: (contact: Contact | null) => void;
   setTagFilter: (tags: string[]) => void;
@@ -41,7 +41,7 @@ export const useContactStore = create<ContactState>((set, get) => ({
   tagFilter: [],
   ownerFilter: [],
 
-  loadContacts: async (organization) => {
+  loadContacts: async (organization, userId?, dataVisibility?) => {
     const cacheKey = `contacts_${organization}`;
     const cached = appCache.get<Contact[]>(cacheKey);
     if (cached && get().contacts.length === 0) {
@@ -50,7 +50,7 @@ export const useContactStore = create<ContactState>((set, get) => ({
       set({ isLoading: true });
     }
     try {
-      const contacts = await contactsApi.getAll(organization);
+      const contacts = await contactsApi.getAll(organization, { userId, dataVisibility });
       const arr = Array.isArray(contacts) ? contacts : [];
       appCache.set(cacheKey, arr);
       set({ contacts: arr, isLoading: false });

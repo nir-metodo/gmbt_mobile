@@ -253,10 +253,11 @@ export default function LeadDetailScreen() {
   }, [lead, router]);
 
   const handleViewContact = useCallback(() => {
-    if (lead?.contactId) {
+    const navId = lead?.contactId || lead?.contactPhone || lead?.phoneNumber;
+    if (navId) {
       router.push({
         pathname: '/(tabs)/contacts/[id]',
-        params: { id: lead.contactId },
+        params: { id: navId },
       });
     }
   }, [lead, router]);

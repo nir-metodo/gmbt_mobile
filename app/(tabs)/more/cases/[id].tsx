@@ -709,8 +709,9 @@ export default function CaseDetailScreen() {
             <View>
               <Pressable
                 onPress={() => {
-                  if (caseData.contactId) {
-                    router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: caseData.contactId } });
+                  const contactNavId = caseData.contactId || caseData.contactPhone || (caseData as any).contact_phone;
+                  if (contactNavId) {
+                    router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: contactNavId } });
                   }
                 }}
                 style={styles.detailRow}
@@ -726,7 +727,7 @@ export default function CaseDetailScreen() {
                     {caseData.contactName}
                   </Text>
                 </View>
-                {caseData.contactId ? (
+                {(caseData.contactId || caseData.contactPhone || (caseData as any).contact_phone) ? (
                   <MaterialCommunityIcons
                     name={isRTL ? 'chevron-left' : 'chevron-right'}
                     size={20}

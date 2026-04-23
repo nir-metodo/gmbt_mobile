@@ -370,29 +370,23 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
           >
             <MaterialCommunityIcons name="send" size={20} color="#FFFFFF" />
           </Pressable>
+        ) : isRecording ? (
+          <Pressable
+            onPress={() => stopRecording(false)}
+            style={[styles.sendBtn, { backgroundColor: '#E53935', transform: [{ scale: 1.15 }] }]}
+          >
+            <MaterialCommunityIcons name="send" size={22} color="#fff" />
+          </Pressable>
         ) : (
           <Pressable
-            onLongPress={startRecording}
-            onPressOut={() => { if (isRecording) stopRecording(false); }}
-            delayLongPress={200}
+            onPress={startRecording}
             disabled={disabled}
             style={({ pressed }) => [
               styles.sendBtn,
-              {
-                backgroundColor: isRecording
-                  ? '#E53935'
-                  : pressed
-                  ? theme.colors.surfaceVariant
-                  : theme.colors.surfaceVariant,
-                transform: [{ scale: isRecording ? 1.15 : 1 }],
-              },
+              { backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surfaceVariant },
             ]}
           >
-            <MaterialCommunityIcons
-              name={isRecording ? 'send' : 'microphone'}
-              size={22}
-              color={isRecording ? '#fff' : theme.colors.onSurfaceVariant}
-            />
+            <MaterialCommunityIcons name="microphone" size={22} color={theme.colors.onSurfaceVariant} />
           </Pressable>
         )}
       </View>

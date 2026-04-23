@@ -34,6 +34,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { tasksApi } from '../../../../services/api/tasks';
+import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 import type { Task } from '../../../../types';
@@ -97,6 +98,8 @@ export default function TasksMoreScreen() {
   const [formTaskType, setFormTaskType] = useState<string>('general');
   const [formRelatedEntityName, setFormRelatedEntityName] = useState('');
 
+  const tasksDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'tasks');
+
   const fetchTasks = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
     try {
@@ -104,7 +107,7 @@ export default function TasksMoreScreen() {
       const data = await tasksApi.getAll(
         user.organization,
         user.uID || user.userId,
-        'seeAll',
+        tasksDV === 'own' ? 'seeOwn' : 'seeAll',
       );
       setTasks(data);
     } catch (err: any) {
@@ -112,7 +115,7 @@ export default function TasksMoreScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, t]);
+  }, [user?.organization, t, tasksDV]);
 
   useEffect(() => {
     fetchTasks();
@@ -203,10 +206,26 @@ export default function TasksMoreScreen() {
     [router],
   );
 
+  const handleCompleteTask = useCallback(async (task: Task) => {
+    const taskId = (task as any).taskId || task.id;
+    setTasks((prev) => prev.map((t) => t.id === task.id ? { ...t, status: 'completed' as const } : t));
+    try {
+      await tasksApi.complete(
+        user?.organization || '',
+        taskId,
+        user?.uID || user?.userId || '',
+        user?.fullname || '',
+      );
+    } catch {
+      setTasks((prev) => prev.map((t) => t.id === task.id ? { ...t, status: task.status } : t));
+    }
+  }, [user]);
+
   const renderTaskCard = useCallback(
     ({ item }: { item: Task }) => {
       const overdue = isOverdue(item);
       const completed = item.status === 'completed';
+      const cancelled = item.status === 'cancelled';
       const priorityColor = PRIORITY_COLORS[item.priority] || PRIORITY_COLORS.medium;
       const statusColor = STATUS_COLORS[item.status] || STATUS_COLORS.pending;
 
@@ -224,6 +243,28 @@ export default function TasksMoreScreen() {
           ]}
         >
           <View style={[styles.priorityBar, { backgroundColor: priorityColor }]} />
+
+          {!completed && !cancelled ? (
+            <Pressable
+              onPress={() => handleCompleteTask(item)}
+              hitSlop={8}
+              style={styles.completeBtn}
+            >
+              <MaterialCommunityIcons
+                name="checkbox-blank-circle-outline"
+                size={26}
+                color={theme.colors.onSurfaceVariant}
+              />
+            </Pressable>
+          ) : (
+            <View style={styles.completeBtn}>
+              <MaterialCommunityIcons
+                name="check-circle"
+                size={26}
+                color={STATUS_COLORS.completed}
+              />
+            </View>
+          )}
 
           <View style={styles.taskContent}>
             <View style={[styles.taskTopRow, { flexDirection }]}>
@@ -305,7 +346,7 @@ export default function TasksMoreScreen() {
         </Pressable>
       );
     },
-    [theme, openTask, flexDirection, textAlign, t],
+    [theme, openTask, handleCompleteTask, flexDirection, textAlign, t],
   );
 
   const renderEmpty = useCallback(() => {
@@ -682,9 +723,15 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: borderRadius.lg,
     borderBottomLeftRadius: borderRadius.lg,
   },
+  completeBtn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
   taskContent: {
     flex: 1,
-    padding: 14,
+    paddingVertical: 14,
+    paddingEnd: 14,
     gap: 6,
   },
   taskTopRow: {

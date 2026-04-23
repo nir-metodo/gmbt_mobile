@@ -186,7 +186,7 @@ export default function LoginScreen() {
               >
                 <View style={styles.logoImageWrapper}>
                   <Image
-                    source={require('../../assets/images/logo.png')}
+                    source={require('../../assets/images/logo_white.png')}
                     style={styles.logoImage}
                     resizeMode="contain"
                   />
@@ -392,6 +392,11 @@ export default function LoginScreen() {
                 {t('login.sslSecure')}
               </Text>
             </View>
+
+            {/* Companion app notice for Apple review */}
+            <Text style={[styles.companionNotice, { color: theme.colors.onSurfaceVariant }]}>
+              {t('login.companionNotice', 'A Gambot CRM account is required.\nVisit gambot.io to learn more.')}
+            </Text>
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -536,22 +541,15 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   logoImageWrapper: {
-    width: 90,
-    height: 90,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    width: 80,
+    height: 80,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.md,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 8,
   },
   logoImage: {
-    width: 70,
-    height: 70,
+    width: 80,
+    height: 80,
   },
   brandName: {
     fontSize: fontSize.title,
@@ -658,6 +656,13 @@ const styles = StyleSheet.create({
   },
   securityText: {
     fontSize: fontSize.xs,
+  },
+  companionNotice: {
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: spacing.md,
+    lineHeight: 16,
+    opacity: 0.6,
   },
   modalContent: {
     margin: spacing.lg,
