@@ -14,6 +14,23 @@ interface MakeCallOptions {
   contactName?: string;
 }
 
+export interface GambotCallOptions {
+  phoneNumber: string;
+  organization: string;
+  agentPhone: string;
+  fromPhoneNumber: string;
+  agentId: string;
+  agentName: string;
+  customerName?: string;
+  notes?: string;
+}
+
+export interface GambotCallResult {
+  success: boolean;
+  callId?: string;
+  error?: string;
+}
+
 let lastAppCall: { callId: string; organization: string; startTime: number } | null = null;
 
 function handleAppStateChange(nextState: AppStateStatus) {
@@ -61,4 +78,39 @@ export async function makeAppCall(options: MakeCallOptions): Promise<{ callId?: 
   }
 
   await Linking.openURL(`tel:${phoneNumber}`);
+}
+
+/**
+ * Place a Gambot-routed call via Telnyx.
+ * Flow: Telnyx calls the agent's phone → agent answers → Telnyx bridges to customer.
+ * Call is recorded and logged in CRM automatically.
+ */
+export async function makeGambotCall(options: GambotCallOptions): Promise<GambotCallResult> {
+  const { phoneNumber, organization, agentPhone, fromPhoneNumber, agentId, agentName, customerName, notes } = options;
+
+  if (!phoneNumber || !agentPhone || !fromPhoneNumber) {
+    return { success: false, error: 'missing_fields' };
+  }
+
+  try {
+    const result = await phoneCallsApi.gambotOutboundCall({
+      organizationName: organization,
+      phoneNumber,
+      fromPhoneNumber,
+      agentPhone,
+      agentIdentity: fromPhoneNumber,
+      agentId,
+      agentName,
+      customerName,
+      notes,
+    });
+
+    return {
+      success: !!result.success,
+      callId: result.callId,
+      error: result.success ? undefined : 'call_failed',
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'network_error' };
+  }
 }

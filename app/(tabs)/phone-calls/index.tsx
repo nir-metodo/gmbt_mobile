@@ -10,6 +10,7 @@ import {
   RefreshControl,
   Pressable,
   ScrollView,
+  Alert,
 } from 'react-native';
 import type { MD3Theme } from 'react-native-paper';
 import {
@@ -39,7 +40,7 @@ import { phoneCallsApi } from '../../../services/api/phoneCalls';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { useAuthStore } from '../../../stores/authStore';
-import { makeAppCall } from '../../../utils/phoneCall';
+import { makeAppCall, makeGambotCall } from '../../../utils/phoneCall';
 import { getDataVisibility } from '../../../constants/permissions';
 import { PhoneCall, CallRule } from '../../../types';
 import {
@@ -575,6 +576,9 @@ export default function PhoneCallsTabScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [dialerVisible, setDialerVisible] = useState(false);
   const [dialNumber, setDialNumber] = useState('');
+  const [gambotCallActive, setGambotCallActive] = useState(false);
+  const [gambotCallStatus, setGambotCallStatus] = useState<string | null>(null);
+  const [telSettings, setTelSettings] = useState<{ phoneNumbers?: any[]; defaultCallerId?: string } | null>(null);
 
   const user = useAuthStore((s) => s.user);
   const org = user?.organization || '';
@@ -610,11 +614,18 @@ export default function PhoneCallsTabScreen() {
     }
   }, [org]);
 
+  const fetchTelSettings = useCallback(async () => {
+    try {
+      const data = await phoneCallsApi.getTelephonySettings(org);
+      if (data?.phoneNumbers?.length) setTelSettings(data);
+    } catch {}
+  }, [org]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
-    await Promise.all([fetchCalls(), fetchRules()]);
+    await Promise.all([fetchCalls(), fetchRules(), fetchTelSettings()]);
     setLoading(false);
-  }, [fetchCalls, fetchRules]);
+  }, [fetchCalls, fetchRules, fetchTelSettings]);
 
   useEffect(() => {
     loadData();
@@ -692,6 +703,54 @@ export default function PhoneCallsTabScreen() {
       });
     }
   }, [org, user]);
+
+  const handleGambotDial = useCallback(async (phone?: string) => {
+    if (!phone?.trim()) return;
+    const agentPhone = (user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone;
+    const fromNumber = telSettings?.defaultCallerId || telSettings?.phoneNumbers?.[0]?.number;
+
+    if (!agentPhone) {
+      Alert.alert(
+        t('phoneCalls.gambotCallTitle'),
+        t('phoneCalls.noAgentPhone'),
+      );
+      return;
+    }
+    if (!fromNumber) {
+      Alert.alert(
+        t('phoneCalls.gambotCallTitle'),
+        t('phoneCalls.noGambotNumber'),
+      );
+      return;
+    }
+
+    setGambotCallActive(true);
+    setGambotCallStatus('calling_agent');
+
+    const result = await makeGambotCall({
+      phoneNumber: phone.trim(),
+      organization: org,
+      agentPhone,
+      fromPhoneNumber: fromNumber,
+      agentId: user?.uID || user?.userId || '',
+      agentName: user?.fullname || user?.FullName || '',
+    });
+
+    if (result.success) {
+      setGambotCallStatus('connecting');
+      setDialerVisible(false);
+      setDialNumber('');
+      setTimeout(() => {
+        setGambotCallActive(false);
+        setGambotCallStatus(null);
+        fetchCalls();
+      }, 5000);
+    } else {
+      setGambotCallActive(false);
+      setGambotCallStatus(null);
+      Alert.alert(t('common.error'), t('phoneCalls.gambotCallFailed'));
+    }
+  }, [org, user, telSettings, t, fetchCalls]);
 
   const handleQuickAction = useCallback((action: string, call: PhoneCall) => {
     switch (action) {
@@ -1008,8 +1067,51 @@ export default function PhoneCallsTabScreen() {
               <MaterialCommunityIcons name="phone" size={28} color={dialNumber.trim() ? '#FFF' : theme.colors.onSurfaceVariant} />
             </Pressable>
 
-            <View style={{ width: 48 }} />
+            {telSettings?.phoneNumbers?.length ? (
+              <Pressable
+                onPress={() => handleGambotDial(dialNumber)}
+                disabled={!dialNumber.trim() || gambotCallActive}
+                style={[
+                  styles.dialCallBtn,
+                  { backgroundColor: dialNumber.trim() && !gambotCallActive ? '#059669' : theme.colors.surfaceVariant },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={gambotCallActive ? 'phone-ring' : 'phone-in-talk'}
+                  size={28}
+                  color={dialNumber.trim() && !gambotCallActive ? '#FFF' : theme.colors.onSurfaceVariant}
+                />
+              </Pressable>
+            ) : (
+              <View style={{ width: 48 }} />
+            )}
           </View>
+
+          {/* Call type labels */}
+          {telSettings?.phoneNumbers?.length ? (
+            <View style={styles.dialLabels}>
+              <View style={{ width: 48 }} />
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', width: 64 }}>
+                {t('phoneCalls.regularCall')}
+              </Text>
+              <Text variant="labelSmall" style={{ color: '#059669', textAlign: 'center', width: 64, fontWeight: '600' }}>
+                {t('phoneCalls.gambotCall')}
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Gambot call status indicator */}
+          {gambotCallActive && (
+            <View style={styles.gambotCallStatus}>
+              <ActivityIndicator size="small" color="#059669" />
+              <Text variant="bodySmall" style={{ color: '#059669', fontWeight: '600', marginStart: 8 }}>
+                {gambotCallStatus === 'calling_agent'
+                  ? t('phoneCalls.callingYourPhone')
+                  : t('phoneCalls.connectingCustomer')
+                }
+              </Text>
+            </View>
+          )}
         </Modal>
       </Portal>
     </View>
@@ -1088,5 +1190,22 @@ const styles = StyleSheet.create({
     borderRadius: 32,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  dialLabels: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 24,
+    marginTop: 6,
+  },
+  gambotCallStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    backgroundColor: '#ecfdf5',
+    borderRadius: 12,
   },
 });

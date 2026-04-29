@@ -112,6 +112,26 @@ export const phoneCallsApi = {
     return response.data;
   },
 
+  async getTelephonySettings(organization: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_TELEPHONY_SETTINGS, { organization });
+    return response.data?.Data || response.data?.data || response.data || {};
+  },
+
+  async gambotOutboundCall(payload: {
+    organizationName: string;
+    phoneNumber: string;
+    fromPhoneNumber: string;
+    agentPhone: string;
+    agentIdentity: string;
+    agentId: string;
+    agentName: string;
+    customerName?: string;
+    notes?: string;
+  }): Promise<{ success: boolean; callId?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.TELNYX_OUTBOUND_CALL, payload);
+    return response.data || {};
+  },
+
   async getCallRules(organization: string): Promise<CallRule[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_CALL_RULES, {
       organization,

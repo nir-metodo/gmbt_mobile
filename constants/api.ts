@@ -160,6 +160,8 @@ export const ENDPOINTS = {
   TRANSCRIBE_CALL: '/api/Webhooks/TranscribeCall',
   GET_CALL_RULES: '/api/Webhooks/GetCallRules',
   UPDATE_CALL_RULES: '/api/Webhooks/UpdateCallRules',
+  TELNYX_OUTBOUND_CALL: '/api/webhooks/telnyx/streamOutboundCall',
+  GET_TELEPHONY_SETTINGS: '/api/Webhooks/GetTelephonySettings',
 
   // Media Manager
   GET_MEDIA_FOLDERS: '/api/Webhooks/GetMediaFolders',
