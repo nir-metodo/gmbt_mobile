@@ -738,11 +738,11 @@ export default function PhoneCallsTabScreen() {
 
     if (result.success) {
       setGambotCallStatus('connecting');
-      setDialerVisible(false);
-      setDialNumber('');
       setTimeout(() => {
         setGambotCallActive(false);
         setGambotCallStatus(null);
+        setDialerVisible(false);
+        setDialNumber('');
         fetchCalls();
       }, 5000);
     } else {
@@ -1001,116 +1001,181 @@ export default function PhoneCallsTabScreen() {
       <Portal>
         <Modal
           visible={dialerVisible}
-          onDismiss={() => { setDialerVisible(false); setDialNumber(''); }}
+          onDismiss={() => { if (!gambotCallActive) { setDialerVisible(false); setDialNumber(''); } }}
           contentContainerStyle={[styles.dialerModal, { backgroundColor: theme.colors.surface }]}
         >
-          <Text variant="titleLarge" style={{ textAlign: 'center', color: theme.colors.onSurface, fontWeight: '700', marginBottom: 16 }}>
-            {t('phoneCalls.makeCall')}
-          </Text>
-
-          <TextInput
-            value={dialNumber}
-            onChangeText={setDialNumber}
-            mode="outlined"
-            placeholder={t('phoneCalls.enterPhoneNumber')}
-            keyboardType="phone-pad"
-            style={styles.dialInput}
-            outlineColor={BRAND_COLOR + '40'}
-            activeOutlineColor={BRAND_COLOR}
-            left={<TextInput.Icon icon="phone" />}
-            right={dialNumber ? <TextInput.Icon icon="close" onPress={() => setDialNumber('')} /> : undefined}
-          />
-
-          <View style={styles.dialPad}>
-            {[['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9'], ['*', '0', '#']].map((row, ri) => (
-              <View key={ri} style={styles.dialRow}>
-                {row.map((digit) => (
-                  <Pressable
-                    key={digit}
-                    onPress={() => setDialNumber((prev) => prev + digit)}
-                    style={({ pressed }) => [
-                      styles.dialKey,
-                      { backgroundColor: pressed ? BRAND_COLOR + '20' : theme.colors.surfaceVariant },
-                    ]}
-                  >
-                    <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                      {digit}
-                    </Text>
-                  </Pressable>
-                ))}
+          {/* In-call status screen */}
+          {gambotCallActive ? (
+            <View style={styles.inCallScreen}>
+              <View style={styles.inCallAvatarWrap}>
+                <MaterialCommunityIcons name="phone-in-talk" size={48} color="#FFF" />
               </View>
-            ))}
-          </View>
-
-          <View style={styles.dialActions}>
-            <Pressable
-              onPress={() => setDialNumber((prev) => prev.slice(0, -1))}
-              style={styles.dialBackspace}
-            >
-              <MaterialCommunityIcons name="backspace-outline" size={24} color={theme.colors.onSurfaceVariant} />
-            </Pressable>
-
-            <Pressable
-              onPress={() => {
-                if (dialNumber.trim()) {
-                  handleDial(dialNumber.trim());
+              <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign: 'center', marginTop: 16 }}>
+                {dialNumber || t('phoneCalls.unknownNumber')}
+              </Text>
+              <View style={styles.inCallStatusRow}>
+                <ActivityIndicator size="small" color="#059669" />
+                <Text variant="bodyMedium" style={{ color: '#059669', fontWeight: '600', marginStart: 8 }}>
+                  {gambotCallStatus === 'calling_agent'
+                    ? t('phoneCalls.callingYourPhone')
+                    : t('phoneCalls.connectingCustomer')
+                  }
+                </Text>
+              </View>
+              <View style={styles.inCallActions}>
+                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
+                  <MaterialCommunityIcons name="microphone-off" size={24} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
+                    {t('phoneCalls.mute')}
+                  </Text>
+                </Pressable>
+                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
+                  <MaterialCommunityIcons name="pause" size={24} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
+                    {t('phoneCalls.hold')}
+                  </Text>
+                </Pressable>
+                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
+                  <MaterialCommunityIcons name="dialpad" size={24} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
+                    {t('phoneCalls.keypad')}
+                  </Text>
+                </Pressable>
+                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
+                  <MaterialCommunityIcons name="volume-high" size={24} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
+                    {t('phoneCalls.speaker')}
+                  </Text>
+                </Pressable>
+              </View>
+              <Pressable
+                onPress={() => {
+                  setGambotCallActive(false);
+                  setGambotCallStatus(null);
                   setDialerVisible(false);
                   setDialNumber('');
-                }
-              }}
-              disabled={!dialNumber.trim()}
-              style={[
-                styles.dialCallBtn,
-                { backgroundColor: dialNumber.trim() ? BRAND_COLOR : theme.colors.surfaceVariant },
-              ]}
-            >
-              <MaterialCommunityIcons name="phone" size={28} color={dialNumber.trim() ? '#FFF' : theme.colors.onSurfaceVariant} />
-            </Pressable>
-
-            {telSettings?.phoneNumbers?.length ? (
-              <Pressable
-                onPress={() => handleGambotDial(dialNumber)}
-                disabled={!dialNumber.trim() || gambotCallActive}
-                style={[
-                  styles.dialCallBtn,
-                  { backgroundColor: dialNumber.trim() && !gambotCallActive ? '#059669' : theme.colors.surfaceVariant },
-                ]}
+                }}
+                style={styles.inCallEndBtn}
               >
-                <MaterialCommunityIcons
-                  name={gambotCallActive ? 'phone-ring' : 'phone-in-talk'}
-                  size={28}
-                  color={dialNumber.trim() && !gambotCallActive ? '#FFF' : theme.colors.onSurfaceVariant}
-                />
+                <MaterialCommunityIcons name="phone-hangup" size={28} color="#FFF" />
               </Pressable>
-            ) : (
-              <View style={{ width: 48 }} />
-            )}
-          </View>
-
-          {/* Call type labels */}
-          {telSettings?.phoneNumbers?.length ? (
-            <View style={styles.dialLabels}>
-              <View style={{ width: 48 }} />
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', width: 64 }}>
-                {t('phoneCalls.regularCall')}
-              </Text>
-              <Text variant="labelSmall" style={{ color: '#059669', textAlign: 'center', width: 64, fontWeight: '600' }}>
-                {t('phoneCalls.gambotCall')}
-              </Text>
             </View>
-          ) : null}
+          ) : (
+            <>
+              <View style={styles.dialerHeader}>
+                <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                  {t('phoneCalls.makeCall')}
+                </Text>
+                <IconButton
+                  icon="close"
+                  size={22}
+                  onPress={() => { setDialerVisible(false); setDialNumber(''); }}
+                  style={{ margin: 0 }}
+                />
+              </View>
 
-          {/* Gambot call status indicator */}
-          {gambotCallActive && (
-            <View style={styles.gambotCallStatus}>
-              <ActivityIndicator size="small" color="#059669" />
-              <Text variant="bodySmall" style={{ color: '#059669', fontWeight: '600', marginStart: 8 }}>
-                {gambotCallStatus === 'calling_agent'
-                  ? t('phoneCalls.callingYourPhone')
-                  : t('phoneCalls.connectingCustomer')
-                }
-              </Text>
-            </View>
+              {/* Number display */}
+              <View style={styles.dialNumberDisplay}>
+                <Text style={[styles.dialNumberText, { color: dialNumber ? theme.colors.onSurface : theme.colors.onSurfaceVariant }]}>
+                  {dialNumber || t('phoneCalls.enterPhoneNumber')}
+                </Text>
+                {dialNumber.length > 0 && (
+                  <IconButton
+                    icon="backspace-outline"
+                    size={22}
+                    onPress={() => setDialNumber(prev => prev.slice(0, -1))}
+                    onLongPress={() => setDialNumber('')}
+                    iconColor={theme.colors.onSurfaceVariant}
+                    style={{ margin: 0 }}
+                  />
+                )}
+              </View>
+
+              <Divider style={{ marginBottom: 8 }} />
+
+              {/* Keypad */}
+              <View style={styles.dialPad}>
+                {[
+                  [{ d: '1', sub: '' }, { d: '2', sub: 'ABC' }, { d: '3', sub: 'DEF' }],
+                  [{ d: '4', sub: 'GHI' }, { d: '5', sub: 'JKL' }, { d: '6', sub: 'MNO' }],
+                  [{ d: '7', sub: 'PQRS' }, { d: '8', sub: 'TUV' }, { d: '9', sub: 'WXYZ' }],
+                  [{ d: '*', sub: '' }, { d: '0', sub: '+' }, { d: '#', sub: '' }],
+                ].map((row, ri) => (
+                  <View key={ri} style={styles.dialRow}>
+                    {row.map(({ d, sub }) => (
+                      <Pressable
+                        key={d}
+                        onPress={() => setDialNumber(prev => prev + d)}
+                        onLongPress={d === '0' ? () => setDialNumber(prev => prev + '+') : undefined}
+                        style={({ pressed }) => [
+                          styles.dialKey,
+                          { backgroundColor: pressed ? BRAND_COLOR + '18' : 'transparent' },
+                        ]}
+                      >
+                        <Text style={{ fontSize: 28, fontWeight: '400', color: theme.colors.onSurface }}>
+                          {d}
+                        </Text>
+                        {sub ? (
+                          <Text style={{ fontSize: 10, color: theme.colors.onSurfaceVariant, letterSpacing: 2, marginTop: -2 }}>
+                            {sub}
+                          </Text>
+                        ) : null}
+                      </Pressable>
+                    ))}
+                  </View>
+                ))}
+              </View>
+
+              {/* Call buttons */}
+              <View style={styles.dialActions}>
+                <Pressable
+                  onPress={() => {
+                    if (dialNumber.trim()) {
+                      handleDial(dialNumber.trim());
+                      setDialerVisible(false);
+                      setDialNumber('');
+                    }
+                  }}
+                  disabled={!dialNumber.trim()}
+                  style={[
+                    styles.dialCallBtn,
+                    { backgroundColor: dialNumber.trim() ? BRAND_COLOR : theme.colors.surfaceVariant },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="phone" size={28} color={dialNumber.trim() ? '#FFF' : theme.colors.onSurfaceVariant} />
+                </Pressable>
+
+                {telSettings?.phoneNumbers?.length ? (
+                  <Pressable
+                    onPress={() => handleGambotDial(dialNumber)}
+                    disabled={!dialNumber.trim() || gambotCallActive}
+                    style={[
+                      styles.dialCallBtnGambot,
+                      { backgroundColor: dialNumber.trim() && !gambotCallActive ? '#059669' : theme.colors.surfaceVariant },
+                    ]}
+                  >
+                    <MaterialCommunityIcons
+                      name="phone-in-talk"
+                      size={22}
+                      color={dialNumber.trim() && !gambotCallActive ? '#FFF' : theme.colors.onSurfaceVariant}
+                    />
+                    <Text style={{ color: dialNumber.trim() && !gambotCallActive ? '#FFF' : theme.colors.onSurfaceVariant, fontWeight: '700', fontSize: 12, marginStart: 4 }}>
+                      Gambot
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+
+              {/* Call type hints */}
+              <View style={styles.dialHints}>
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+                  {telSettings?.phoneNumbers?.length
+                    ? (isRTL ? 'שיחה רגילה | שיחת Gambot (מוקלטת + CRM)' : 'Regular call | Gambot call (recorded + CRM)')
+                    : (isRTL ? 'שיחה רגילה' : 'Regular call')
+                  }
+                </Text>
+              </View>
+            </>
           )}
         </Modal>
       </Portal>
@@ -1146,29 +1211,46 @@ const styles = StyleSheet.create({
   fab: { position: 'absolute', bottom: 24, end: 20, borderRadius: 28 },
   empty: { alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
   dialerModal: {
-    margin: 20,
-    borderRadius: 24,
-    padding: 24,
-    maxHeight: '90%',
+    margin: 16,
+    borderRadius: 28,
+    padding: 20,
+    maxHeight: '92%',
   },
-  dialInput: {
-    marginBottom: 16,
-    fontSize: 20,
+  dialerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  dialNumberDisplay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    minHeight: 56,
+  },
+  dialNumberText: {
+    fontSize: 28,
+    fontWeight: '300',
     textAlign: 'center',
+    flex: 1,
+    letterSpacing: 1.5,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   dialPad: {
-    gap: 10,
-    marginBottom: 16,
+    gap: 4,
+    marginBottom: 12,
   },
   dialRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 16,
+    gap: 12,
   },
   dialKey: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 72,
+    height: 56,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1176,13 +1258,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 24,
-  },
-  dialBackspace: {
-    width: 48,
-    height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
+    gap: 16,
+    paddingVertical: 8,
   },
   dialCallBtn: {
     width: 64,
@@ -1190,22 +1267,83 @@ const styles = StyleSheet.create({
     borderRadius: 32,
     alignItems: 'center',
     justifyContent: 'center',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
   },
-  dialLabels: {
+  dialCallBtnGambot: {
+    height: 44,
+    borderRadius: 22,
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    gap: 24,
-    marginTop: 6,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
   },
-  gambotCallStatus: {
+  dialHints: {
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  // In-call screen
+  inCallScreen: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  inCallAvatarWrap: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: BRAND_COLOR,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: BRAND_COLOR,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+  },
+  inCallStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 14,
-    paddingVertical: 10,
+    marginTop: 12,
+    paddingVertical: 8,
     paddingHorizontal: 16,
     backgroundColor: '#ecfdf5',
-    borderRadius: 12,
+    borderRadius: 20,
+  },
+  inCallActions: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 24,
+    marginTop: 32,
+    marginBottom: 24,
+  },
+  inCallActionBtn: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9',
+  },
+  inCallEndBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
   },
 });

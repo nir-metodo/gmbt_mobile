@@ -95,6 +95,17 @@ export default function RootLayout() {
     }).catch(() => {});
   }, [user?.organization, user?.uID, user?.userId]);
 
+  // Handle incoming call push notifications
+  useEffect(() => {
+    const sub = notificationService.addNotificationResponseListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data?.type === 'incoming_call') {
+        router.push('/(tabs)/phone-calls');
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   const isDark =
     themeSetting === 'dark' ||
     (themeSetting === 'system' && theme.dark);
