@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gambot",
     "slug": "gambot-mobile",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -30,7 +30,7 @@
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 5,
+      "versionCode": 6,
       "minSdkVersion": 26,
       "adaptiveIcon": {
         "backgroundColor": "#ffffff",
