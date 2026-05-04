@@ -187,8 +187,8 @@ export default function ChatConversationScreen() {
         setRecipientReplied24h(replied === true || replied === 'true');
       }
     }).catch(() => {
-      setConversationLive(null);
-      setRecipientReplied24h(null);
+      setConversationLive(false);
+      setRecipientReplied24h(false);
     });
   }, [user?.organization, phoneNumber]);
 
@@ -204,11 +204,14 @@ export default function ChatConversationScreen() {
       .catch(() => setTimelineEntries([]));
   }, [user?.organization, phoneNumber]);
 
+  const isStatusLoading = conversationLive === null;
+
   // Window closed: conversation is not live at all
+  // Default to closed while loading to prevent sending free-form messages before status is known
   const isWindowClosed = useMemo(() => {
     if (conversationLive === true) return false;
     if (conversationLive === false) return true;
-    if (!chat) return false;
+    if (!chat) return true;
     const status = chat.lastConversationStatus?.toLowerCase() || '';
     return !status || status === 'closed' || status === 'expired';
   }, [conversationLive, chat?.lastConversationStatus]);
@@ -613,6 +616,10 @@ export default function ChatConversationScreen() {
   const handleSend = useCallback(
     async (text: string) => {
       if (!user?.organization || !phoneNumber) return;
+      if (!isInternalNote && isWindowClosed) {
+        handleOpenConversation();
+        return;
+      }
       try {
         if (isInternalNote) {
           await sendInternalMessage(
@@ -639,7 +646,7 @@ export default function ChatConversationScreen() {
         Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
       }
     },
-    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t],
+    [user, phoneNumber, isInternalNote, isWindowClosed, handleOpenConversation, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t],
   );
 
   const sendPickedMedia = useCallback(async (uri: string, fileName: string, mimeType: string, fileSize?: number) => {
@@ -1265,7 +1272,23 @@ export default function ChatConversationScreen() {
         )}
 
         {/* Input / Conversation Closed Banner */}
-        {isWindowClosed ? (
+        {isStatusLoading ? (
+          <View
+            style={[
+              styles.closedBanner,
+              {
+                backgroundColor: theme.dark ? '#1a1a2e' : '#f8f9fa',
+                borderTopColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e2e8f0',
+                paddingBottom: Math.max(insets.bottom, 8),
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: 56,
+              },
+            ]}
+          >
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+          </View>
+        ) : isWindowClosed ? (
           <View
             style={[
               styles.closedBanner,

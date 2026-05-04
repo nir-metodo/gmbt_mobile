@@ -395,7 +395,7 @@ export default function LoginScreen() {
 
             {/* Companion app notice for Apple review */}
             <Text style={[styles.companionNotice, { color: theme.colors.onSurfaceVariant }]}>
-              {t('login.companionNotice', 'A Gambot CRM account is required.\nVisit gambot.io to learn more.')}
+              {t('login.companionNotice', 'A Gambot CRM account is required.\nVisit gambot.co.il to learn more.')}
             </Text>
           </Animated.View>
         </ScrollView>

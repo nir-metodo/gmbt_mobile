@@ -23,16 +23,25 @@ export const chatsApi = {
     senderName?: string,
     userId?: string,
     contextMessageId?: string,
+    wabaNumber?: string,
   ): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.CREATE_OUTBOUND_MESSAGE, {
       organization,
       text: message,
+      from: wabaNumber || '',
       to,
+      senderEmail: '',
+      receiverEmail: to,
+      timeStamp: '',
       sentByName: senderName || '',
       sentById: userId || '',
       ...(contextMessageId ? { contextMessageId } : {}),
     });
-    return response.data;
+    const data = response.data;
+    if (data && data.Success === false) {
+      throw new Error(data.Message || 'Failed to send message');
+    }
+    return data;
   },
 
   async sendMediaMessage(
@@ -59,7 +68,11 @@ export const chatsApi = {
     const response = await axiosInstance.post(ENDPOINTS.CREATE_MEDIA_MESSAGE, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
-    return response.data;
+    const data = response.data;
+    if (data && data.Success === false) {
+      throw new Error(data.Message || 'Failed to send media message');
+    }
+    return data;
   },
 
   async sendInternalMessage(
@@ -197,9 +210,19 @@ export const chatsApi = {
         TemplateId: templateId,
         SentById: sentById || '',
         TemplateVariableQuery: templateVariableQuery || [],
+        LocationDetails: {
+          locationName: '',
+          locationAddress: '',
+          longitude: '',
+          latitude: '',
+        },
       },
     });
-    return response.data;
+    const data = response.data;
+    if (data && data.Success === false) {
+      throw new Error(data.Message || 'Failed to send template message');
+    }
+    return data;
   },
 
   async sendReaction(

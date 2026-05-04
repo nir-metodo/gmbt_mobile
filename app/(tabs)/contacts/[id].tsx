@@ -29,6 +29,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useContactStore } from '../../../stores/contactStore';
 import { useAuthStore } from '../../../stores/authStore';
+import { useLeadStore } from '../../../stores/leadStore';
 import { contactsApi } from '../../../services/api/contacts';
 import { quotesApi } from '../../../services/api/quotes';
 import { makeAppCall } from '../../../utils/phoneCall';
@@ -1181,7 +1182,10 @@ function RelatedRecordsSection({
           {data.leads.map((lead: any) => (
             <Pressable
               key={lead.id}
-              onPress={() => router.push({ pathname: '/(tabs)/leads/[id]', params: { id: lead.id } })}
+              onPress={() => {
+                useLeadStore.getState().setSelectedLead(lead);
+                router.push({ pathname: '/(tabs)/leads/[id]', params: { id: lead.id } });
+              }}
               style={[styles.relatedCard, { backgroundColor: theme.colors.surfaceVariant, flexDirection }]}
             >
               <View style={{ flex: 1 }}>
