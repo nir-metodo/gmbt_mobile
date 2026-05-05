@@ -658,11 +658,12 @@ const styles = StyleSheet.create({
     fontSize: fontSize.xs,
   },
   companionNotice: {
-    fontSize: 11,
+    fontSize: 12,
     textAlign: 'center',
-    marginTop: spacing.md,
-    lineHeight: 16,
-    opacity: 0.6,
+    marginTop: spacing.lg,
+    marginBottom: spacing.lg,
+    lineHeight: 18,
+    opacity: 0.7,
   },
   modalContent: {
     margin: spacing.lg,
