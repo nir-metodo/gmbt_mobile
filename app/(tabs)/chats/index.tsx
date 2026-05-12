@@ -44,6 +44,9 @@ import type { Chat } from '../../../types';
 
 const FILTER_OPTIONS = ['all', 'unread', 'open', 'closed', 'myChats', 'internal'] as const;
 
+const ChatDivider = () => <Divider style={{ marginStart: 78 }} />;
+const chatKeyExtractor = (item: Chat) => item.phoneNumber;
+
 export default function ChatsListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -565,10 +568,8 @@ export default function ChatsListScreen() {
       <FlashList
         data={filteredChats}
         renderItem={renderChatItem}
-        keyExtractor={(item) => item.phoneNumber}
-        ItemSeparatorComponent={() => (
-          <Divider style={{ marginStart: 78 }} />
-        )}
+        keyExtractor={chatKeyExtractor}
+        ItemSeparatorComponent={ChatDivider}
         ListEmptyComponent={
           isLoadingChats && chats.length === 0 ? (
             <View style={styles.loadingContainer}>
@@ -583,7 +584,7 @@ export default function ChatsListScreen() {
         }
         refreshControl={
           <RefreshControl
-            refreshing={refreshing || isLoadingChats}
+            refreshing={refreshing}
             onRefresh={onRefresh}
             colors={[theme.colors.primary]}
             tintColor={theme.colors.primary}

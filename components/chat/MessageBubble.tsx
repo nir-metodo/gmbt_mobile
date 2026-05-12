@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useState } from 'react';
-import { View, StyleSheet, Pressable, Dimensions, I18nManager, Image, Linking } from 'react-native';
+import { View, StyleSheet, Pressable, Dimensions, I18nManager, Linking } from 'react-native';
+import { Image } from 'expo-image';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -127,7 +128,9 @@ function MessageBubbleInner({
               <Image
                 source={{ uri: mediaUrl }}
                 style={styles.mediaImage}
-                resizeMode="cover"
+                contentFit="cover"
+                cachePolicy="disk"
+                recyclingKey={mediaUrl}
                 onError={() => setImageError(true)}
               />
             </Pressable>

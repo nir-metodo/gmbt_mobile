@@ -1,7 +1,10 @@
 import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Chat, Message } from '../types';
 import { chatsApi } from '../services/api/chats';
 import { contactsApi } from '../services/api/contacts';
+
+const CHATS_CACHE_KEY = 'gambot_chats_cache';
 
 interface ChatState {
   chats: Chat[];
@@ -50,7 +53,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
   ownerFilter: 'all',
 
   loadChats: async (organization, userId?, dataVisibility?) => {
-    set({ isLoadingChats: true });
+    const { chats: existingChats } = get();
+    const isFirstLoad = existingChats.length === 0;
+
+    if (isFirstLoad) {
+      set({ isLoadingChats: true });
+      try {
+        const cached = await AsyncStorage.getItem(`${CHATS_CACHE_KEY}_${organization}`);
+        if (cached) {
+          const parsed = JSON.parse(cached) as Chat[];
+          if (parsed.length > 0) {
+            const totalUnread = parsed.filter((c) => c.isRead === false).length;
+            set({ chats: parsed, isLoadingChats: false, unreadCount: totalUnread });
+          }
+        }
+      } catch {}
+    }
+
     try {
       const contacts = await contactsApi.getAll(organization, { userId, dataVisibility });
       const chatList: Chat[] = (contacts || [])
@@ -78,6 +97,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
       const totalUnread = chatList.filter((c) => c.isRead === false).length;
       set({ chats: chatList, isLoadingChats: false, unreadCount: totalUnread });
+      AsyncStorage.setItem(`${CHATS_CACHE_KEY}_${organization}`, JSON.stringify(chatList.slice(0, 100))).catch(() => {});
     } catch {
       set({ isLoadingChats: false });
     }

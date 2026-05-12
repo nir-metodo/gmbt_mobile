@@ -192,7 +192,7 @@ export default function LoginScreen() {
                   />
                 </View>
                 <Text style={styles.brandName}>Gambot</Text>
-                <Text style={styles.brandTagline}>CRM & Business Automation</Text>
+                <Text style={styles.brandTagline}>Enterprise CRM & Automation</Text>
               </Animated.View>
             </View>
             <View style={styles.curveOverlay}>
@@ -380,6 +380,19 @@ export default function LoginScreen() {
               {isLoading ? t('login.loggingIn') : t('login.loginButton')}
             </Button>
 
+            {/* Enterprise-only notice */}
+            <View style={styles.enterpriseBadge}>
+              <IconButton
+                icon="office-building"
+                iconColor={theme.colors.primary}
+                size={20}
+                style={styles.enterpriseIcon}
+              />
+              <Text style={[styles.enterpriseText, { color: theme.colors.onSurfaceVariant }]}>
+                {t('login.companionNotice')}
+              </Text>
+            </View>
+
             {/* Security Badge */}
             <View style={styles.securityBadge}>
               <IconButton
@@ -392,11 +405,6 @@ export default function LoginScreen() {
                 {t('login.sslSecure')}
               </Text>
             </View>
-
-            {/* Companion app notice for Apple review */}
-            <Text style={[styles.companionNotice, { color: theme.colors.onSurfaceVariant }]}>
-              {t('login.companionNotice', 'A Gambot CRM account is required.\nVisit gambot.co.il to learn more.')}
-            </Text>
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -657,13 +665,24 @@ const styles = StyleSheet.create({
   securityText: {
     fontSize: fontSize.xs,
   },
-  companionNotice: {
-    fontSize: 12,
-    textAlign: 'center',
+  enterpriseBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(46, 97, 85, 0.06)',
+    borderRadius: 12,
+    padding: 12,
     marginTop: spacing.lg,
-    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(46, 97, 85, 0.15)',
+  },
+  enterpriseIcon: {
+    margin: 0,
+    marginRight: 4,
+  },
+  enterpriseText: {
+    fontSize: 12,
     lineHeight: 18,
-    opacity: 0.7,
+    flex: 1,
   },
   modalContent: {
     margin: spacing.lg,

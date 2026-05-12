@@ -78,6 +78,9 @@ export default function WebFeatureScreen({ titleKey, path, icon = 'open-in-new',
         >
           {t('more.openInWeb')}
         </Button>
+        <Text style={styles.enterpriseNote}>
+          {t('login.companionNotice').split('\n')[0]}
+        </Text>
       </View>
     </View>
   );
@@ -121,5 +124,12 @@ const styles = StyleSheet.create({
   },
   buttonContent: {
     flexDirection: 'row-reverse',
+  },
+  enterpriseNote: {
+    marginTop: 24,
+    fontSize: 12,
+    color: '#6B7280',
+    textAlign: 'center',
+    opacity: 0.8,
   },
 });

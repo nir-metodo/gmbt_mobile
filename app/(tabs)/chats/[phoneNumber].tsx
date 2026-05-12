@@ -399,13 +399,13 @@ export default function ChatConversationScreen() {
         data.type === 'new_message' ||
         data.type === 'message'
       ) {
-        // Server sends { type: 'messages', data: <json string or array> }
         let raw = data.data ?? data.message ?? data;
         if (typeof raw === 'string') {
           try { raw = JSON.parse(raw); } catch { raw = null; }
         }
         const msgs: any[] = Array.isArray(raw) ? raw : (raw ? [raw] : []);
 
+        let hasInbound = false;
         msgs.forEach((msg) => {
           if (!msg?.messageId) return;
           addMessage({
@@ -414,13 +414,18 @@ export default function ChatConversationScreen() {
             timestamp: msg.timestamp || msg.createdOn || '',
             createdOn: msg.createdOn || msg.timestamp || '',
           });
-          markAsRead(user.organization, phoneNumber);
           const dir = (msg.direction || '').toLowerCase();
           if (dir === 'inbound' || msg.from === phoneNumber) {
-            setConversationLive(true);
-            setRecipientReplied24h(true);
+            hasInbound = true;
           }
         });
+        if (msgs.length > 0) {
+          markAsRead(user.organization, phoneNumber);
+        }
+        if (hasInbound) {
+          setConversationLive(true);
+          setRecipientReplied24h(true);
+        }
       }
 
       if (data.type === 'message_updated') {
@@ -1221,6 +1226,10 @@ export default function ChatConversationScreen() {
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
+            windowSize={11}
+            maxToRenderPerBatch={15}
+            initialNumToRender={20}
+            removeClippedSubviews={true}
             ListEmptyComponent={
               <View style={styles.emptyMessages}>
                 <MaterialCommunityIcons

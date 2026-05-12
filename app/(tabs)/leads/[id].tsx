@@ -138,7 +138,7 @@ export default function LeadDetailScreen() {
   const user = useAuthStore((s) => s.user);
   const organization = user?.organization ?? '';
 
-  const leads = useLeadStore((s) => s.leads);
+  const leadFromStore = useLeadStore((s) => s.leads.find((l) => l.id === id) ?? null);
   const selectedLead = useLeadStore((s) => s.selectedLead);
   const updateLead = useLeadStore((s) => s.updateLead);
   const createLead = useLeadStore((s) => s.createLead);
@@ -148,9 +148,9 @@ export default function LeadDetailScreen() {
   const lead = useMemo(
     () => {
       if (isNew) return null;
-      return leads.find((l) => l.id === id) ?? (selectedLead?.id === id ? selectedLead : null);
+      return leadFromStore ?? (selectedLead?.id === id ? selectedLead : null);
     },
-    [leads, selectedLead, id, isNew],
+    [leadFromStore, selectedLead, id, isNew],
   );
 
   const [menuVisible, setMenuVisible] = useState(false);

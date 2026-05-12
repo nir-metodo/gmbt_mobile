@@ -2,11 +2,12 @@
   "expo": {
     "name": "Gambot",
     "slug": "gambot-mobile",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "scheme": "gambot",
+    "description": "Gambot is an enterprise companion app for the Gambot CRM platform. This app is designed exclusively for organizations and their employees. Access requires an account provisioned by an organization administrator. Not available for individual consumer purchase.",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -15,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "2",
+      "buildNumber": "3",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,

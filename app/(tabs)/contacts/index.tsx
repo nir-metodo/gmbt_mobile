@@ -36,6 +36,8 @@ function extractContactTags(keys: string[] | string | undefined): string[] {
   return [];
 }
 
+const ContactDivider = () => <Divider style={{ marginStart: 78 }} />;
+
 export default function ContactsListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -546,9 +548,7 @@ export default function ContactsListScreen() {
             data={filteredContacts}
             renderItem={renderContactItem}
             keyExtractor={(item) => item.id}
-            ItemSeparatorComponent={() => (
-              <Divider style={{ marginStart: 78 }} />
-            )}
+            ItemSeparatorComponent={ContactDivider}
             ListEmptyComponent={renderEmpty}
             refreshControl={
               <RefreshControl

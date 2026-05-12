@@ -10,6 +10,7 @@ import {
   Alert,
   Linking,
 } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -61,6 +62,8 @@ const PRIORITY_COLORS: Record<string, string> = {
   high: '#FF5722',
 };
 
+
+const LeadDivider = () => <Divider />;
 
 export default function LeadsListScreen() {
   const router = useRouter();
@@ -160,16 +163,26 @@ export default function LeadsListScreen() {
       const newItems = result.data ?? [];
       const total = result.total ?? 0;
       setTotalCount(total);
-      setLeads((prev) => (reset ? newItems : [...prev, ...newItems]));
+      setLeads((prev) => {
+        const updated = reset ? newItems : [...prev, ...newItems];
+        setHasMore(newItems.length === PAGE_SIZE && updated.length < total);
+        return updated;
+      });
       setPage(pageNum);
-      setHasMore(newItems.length === PAGE_SIZE && (reset ? newItems.length : leads.length + newItems.length) < total);
     } catch {
       /* keep existing data on error */
     } finally {
       fetchingRef.current = false;
       if (reset) setIsLoading(false); else setLoadingMore(false);
     }
-  }, [organization, buildFilters, leads.length]);
+  }, [organization, buildFilters, filterMine, user]);
+
+  // ── Debounced search ────────────────────────────────────────────────────────
+  const [debouncedSearch, setDebouncedSearch] = useState(searchQuery);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 350);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // ── Initial load & filter change → reset ───────────────────────────────────
   useEffect(() => {
@@ -180,7 +193,7 @@ export default function LeadsListScreen() {
       .catch(() => {});
     leadsApi.getViews(organization).then(setSavedViews).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization, searchQuery, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine]);
+  }, [organization, debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine]);
 
   const applyView = useCallback((view: LeadView) => {
     setActiveViewId(view.id);
@@ -671,9 +684,21 @@ export default function LeadsListScreen() {
           <ActivityIndicator size="large" color={theme.colors.primary} />
         </View>
       ) : viewMode === 'list' ? (
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={styles.listContent}
+        <FlashList
+          data={filteredLeads}
+          renderItem={renderLeadItem}
+          keyExtractor={(item, idx) => item.id || `lead_${idx}`}
+          ItemSeparatorComponent={LeadDivider}
+          ListEmptyComponent={renderEmpty}
+          ListFooterComponent={
+            loadingMore ? (
+              <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
+            ) : totalCount > 0 ? (
+              <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
+                {leads.length} / {totalCount}
+              </Text>
+            ) : null
+          }
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -682,28 +707,10 @@ export default function LeadsListScreen() {
               tintColor={theme.colors.primary}
             />
           }
-          onScroll={({ nativeEvent }) => {
-            const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
-            const isNearBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 80;
-            if (isNearBottom) onEndReached();
-          }}
-          scrollEventThrottle={400}
-          showsVerticalScrollIndicator={false}
-        >
-          {filteredLeads.length === 0 ? renderEmpty() : filteredLeads.map((item, idx) => (
-            <React.Fragment key={item.id || `lead_${idx}`}>
-              {idx > 0 && <Divider />}
-              {renderLeadItem({ item, index: idx })}
-            </React.Fragment>
-          ))}
-          {loadingMore ? (
-            <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
-          ) : totalCount > 0 ? (
-            <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
-              {leads.length} / {totalCount}
-            </Text>
-          ) : null}
-        </ScrollView>
+          onEndReached={onEndReached}
+          onEndReachedThreshold={0.3}
+          contentContainerStyle={styles.listContent}
+        />
       ) : (
         <ScrollView
           horizontal
