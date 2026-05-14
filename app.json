@@ -33,6 +33,7 @@
       "package": "com.gambot.mobile",
       "versionCode": 6,
       "minSdkVersion": 26,
+      "softwareKeyboardLayoutMode": "adjustResize",
       "adaptiveIcon": {
         "backgroundColor": "#ffffff",
         "foregroundImage": "./assets/adaptive-foreground.png"

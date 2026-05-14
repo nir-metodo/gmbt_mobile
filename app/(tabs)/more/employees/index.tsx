@@ -23,7 +23,7 @@ import {
   IconButton,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
@@ -169,6 +169,18 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
 
   useEffect(() => { fetchStatus(); fetchMyRecords(); }, [fetchStatus, fetchMyRecords]);
 
+  const didMountRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didMountRef.current) {
+        didMountRef.current = true;
+        return;
+      }
+      fetchStatus();
+      fetchMyRecords();
+    }, [fetchStatus, fetchMyRecords])
+  );
+
   const handleClockInOut = async () => {
     setClocking(true);
     try {
@@ -296,6 +308,17 @@ function ManageTab({ org }: { org: string }) {
   }, [org, t]);
 
   useEffect(() => { fetchEmployees(); }, [fetchEmployees]);
+
+  const didMountRefManage = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didMountRefManage.current) {
+        didMountRefManage.current = true;
+        return;
+      }
+      fetchEmployees();
+    }, [fetchEmployees])
+  );
 
   const openEmployee = async (emp: Employee) => {
     setSelected(emp);

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -17,7 +17,7 @@ import {
   Divider,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
@@ -89,6 +89,17 @@ export default function OrdersScreen() {
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders]);
+
+  const didMountRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didMountRef.current) {
+        didMountRef.current = true;
+        return;
+      }
+      fetchOrders();
+    }, [fetchOrders])
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

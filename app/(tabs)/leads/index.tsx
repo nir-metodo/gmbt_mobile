@@ -13,7 +13,7 @@ import {
 import { FlashList } from '@shopify/flash-list';
 import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
@@ -194,6 +194,18 @@ export default function LeadsListScreen() {
     leadsApi.getViews(organization).then(setSavedViews).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organization, debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine]);
+
+  // Refetch on screen focus (e.g. returning from detail screen)
+  const didMountRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didMountRef.current) {
+        didMountRef.current = true;
+        return;
+      }
+      if (organization) fetchPage(1, true);
+    }, [organization, fetchPage])
+  );
 
   const applyView = useCallback((view: LeadView) => {
     setActiveViewId(view.id);

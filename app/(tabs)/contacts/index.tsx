@@ -13,7 +13,7 @@ import { FlashList } from '@shopify/flash-list';
 import { Text, Searchbar, Chip, FAB, Avatar, Divider, Portal, Modal, Button, ActivityIndicator } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Swipeable } from 'react-native-gesture-handler';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useContactStore } from '../../../stores/contactStore';
@@ -79,6 +79,23 @@ export default function ContactsListScreen() {
       );
     }
   }, [organization, loadContacts, contactsDV, currentUserId]);
+
+  const didMountRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didMountRef.current) {
+        didMountRef.current = true;
+        return;
+      }
+      if (organization) {
+        loadContacts(
+          organization,
+          contactsDV === 'own' ? currentUserId : '',
+          contactsDV === 'own' ? 'own' : 'all',
+        );
+      }
+    }, [organization, loadContacts, contactsDV, currentUserId])
+  );
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();

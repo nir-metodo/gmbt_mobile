@@ -35,8 +35,6 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'invoices', icon: 'file-invoice-dollar', labelKey: 'more.invoices', route: '/(tabs)/more/invoices', color: '#2e6155' },
   { key: 'esignature', icon: 'draw-pen', labelKey: 'more.eSignature', route: '/(tabs)/more/esignature', color: '#00A86B' },
   { key: 'orders', icon: 'cart-outline', labelKey: 'more.orders', route: '/(tabs)/more/orders', color: '#E67E22', permission: 'orders' },
-  { key: 'inventory', icon: 'package-variant-closed', labelKey: 'more.inventory', route: '/(tabs)/more/inventory', color: '#2980B9', permission: 'inventory' },
-  { key: 'purchasing', icon: 'cart-arrow-down', labelKey: 'more.purchasing', route: '/(tabs)/more/purchasing', color: '#7B2D8E', permission: 'orders' },
   { key: 'employees', icon: 'badge-account-horizontal-outline', labelKey: 'more.employees', route: '/(tabs)/more/employees', color: '#2A9D8F' },
   { key: 'users', icon: 'account-group-outline', labelKey: 'more.users', route: '/(tabs)/more/users', color: '#E63946', adminOnly: true },
   { key: 'settings', icon: 'cog-outline', labelKey: 'more.settings', route: '/(tabs)/more/settings', color: '#6C757D' },

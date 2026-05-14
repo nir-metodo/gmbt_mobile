@@ -644,6 +644,7 @@ export default function ChatConversationScreen() {
             user.fullname,
             user.uID || user.userId || '',
             replyToMessage?.messageId,
+            user.wabaNumber || '',
           );
         }
         setReplyToMessage(null);
@@ -991,7 +992,7 @@ export default function ChatConversationScreen() {
           { backgroundColor: theme.custom.chatBackground },
         ]}
         behavior={
-          Platform.OS === 'ios' ? 'padding' : undefined
+          Platform.OS === 'ios' ? 'padding' : 'height'
         }
         keyboardVerticalOffset={0}
       >

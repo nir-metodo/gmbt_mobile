@@ -28,7 +28,7 @@ interface ChatState {
   setOwnerFilter: (owner: string) => void;
 
   loadMessages: (organization: string, phoneNumber: string) => Promise<void>;
-  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string) => Promise<void>;
+  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string, wabaNumber?: string) => Promise<void>;
   sendInternalMessage: (organization: string, phoneNumber: string, message: string, senderName: string, sentById?: string, mentionedUsers?: { userId: string; userName: string }[]) => Promise<void>;
   markAsRead: (organization: string, phoneNumber: string) => Promise<void>;
   toggleStarred: (organization: string, messageId: string, phoneNumber: string, isStarred: boolean) => Promise<void>;
@@ -149,7 +149,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?) => {
+  sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?) => {
     set({ isSending: true });
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const optimisticMsg: Message = {
@@ -169,7 +169,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentMessages: [...state.currentMessages, optimisticMsg],
     }));
     try {
-      await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId);
+      await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId, wabaNumber);
       set((state) => ({
         currentMessages: state.currentMessages.map((m) =>
           m.messageId === tempId ? { ...m, status: 'sent' as const } : m

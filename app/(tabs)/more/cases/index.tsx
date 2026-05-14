@@ -26,7 +26,7 @@ import {
   TouchableRipple,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
@@ -156,6 +156,18 @@ export default function CasesListScreen() {
     fetchPage(1, true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.organization, searchQuery, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange, filterMine]);
+
+  // Refetch on screen focus (e.g. returning from detail screen)
+  const didMountRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didMountRef.current) {
+        didMountRef.current = true;
+        return;
+      }
+      if (user?.organization) fetchPage(1, true);
+    }, [user?.organization, fetchPage])
+  );
 
   const onEndReached = useCallback(() => {
     if (!hasMore || loadingMore || loading) return;
