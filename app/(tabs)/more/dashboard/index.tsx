@@ -18,8 +18,6 @@ type DateRange = 'today' | 'week' | 'month' | 'year';
 
 interface DashboardData {
   messages?: { total: number; sent: number; received: number; delivered: number; read: number; failed: number };
-  aiUsage?: { used: number; limit: number };
-  proActiveUsage?: { used: number; limit: number };
   activeTasks?: number;
 }
 
@@ -141,24 +139,6 @@ function StatCard({ icon, label, value, color, surfaceBg, textColor, subtextColo
   );
 }
 
-function UsageBar({ label, used, limit, color, textColor, subtextColor }: {
-  label: string; used: number; limit: number; color: string;
-  textColor: string; subtextColor: string;
-}) {
-  const pct = limit > 0 ? Math.round((used / limit) * 100) : 0;
-  return (
-    <View style={styles.usageRow}>
-      <View style={styles.usageHeader}>
-        <Text variant="bodyMedium" style={{ color: textColor, fontWeight: '600' }}>{label}</Text>
-        <Text variant="labelSmall" style={{ color: subtextColor }}>
-          {used.toLocaleString()} / {limit.toLocaleString()} ({pct}%)
-        </Text>
-      </View>
-      <ProgressBar progress={limit > 0 ? Math.min(used / limit, 1) : 0} color={color} style={styles.progressBar} />
-    </View>
-  );
-}
-
 export default function DashboardScreen() {
   const router = useRouter();
   const theme = useAppTheme();
@@ -191,12 +171,15 @@ export default function DashboardScreen() {
       if (growthRes.status === 'fulfilled') setContactGrowth(growthRes.value.data || {});
       if (leadsRes.status === 'fulfilled') setLeadsData(leadsRes.value.data || {});
 
+      const withTimeout = (promise: Promise<any>, ms = 15000) =>
+        Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
+
       const [tasksRes, quotesRes, esigRes, convRes, callsRes] = await Promise.allSettled([
-        axiosInstance.post(ENDPOINTS.GET_TASKS, { organization: org }),
-        axiosInstance.post(ENDPOINTS.GET_ALL_QUOTES, { organization: org }),
-        axiosInstance.post(ENDPOINTS.GET_ESIGNATURE_DOCS, { organization: org }),
-        axiosInstance.post(ENDPOINTS.GET_CONVERSATION_STATS, { organization: org, startDate, endDate }),
-        axiosInstance.post(ENDPOINTS.GET_PHONE_CALLS, { organization: org, page: 1, pageSize: 1000 }),
+        withTimeout(axiosInstance.post(ENDPOINTS.GET_TASKS, { organization: org })),
+        withTimeout(axiosInstance.post(ENDPOINTS.GET_ALL_QUOTES, { organization: org })),
+        withTimeout(axiosInstance.post(ENDPOINTS.GET_ESIGNATURE_DOCS, { organization: org })),
+        withTimeout(axiosInstance.post(ENDPOINTS.GET_CONVERSATION_STATS, { organization: org, startDate, endDate })),
+        withTimeout(axiosInstance.post(ENDPOINTS.GET_PHONE_CALLS, { organization: org, page: 1, pageSize: 100 })),
       ]);
 
       if (tasksRes.status === 'fulfilled') {
@@ -408,39 +391,6 @@ export default function DashboardScreen() {
                 </View>
               ))}
             </Surface>
-
-            {/* AI & Pro Active Usage */}
-            {(dashData.aiUsage || dashData.proActiveUsage) && (
-              <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-                <View style={styles.sectionHeader}>
-                  <MaterialCommunityIcons name="robot" size={20} color="#6366f1" />
-                  <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                    {t('dashboard.aiProActiveUsage')}
-                  </Text>
-                </View>
-                <Divider style={styles.sectionDivider} />
-                {dashData.aiUsage && (
-                  <UsageBar
-                    label={t('dashboard.aiUsage')}
-                    used={dashData.aiUsage.used}
-                    limit={dashData.aiUsage.limit}
-                    color="#6366f1"
-                    textColor={textColor}
-                    subtextColor={subtextColor}
-                  />
-                )}
-                {dashData.proActiveUsage && (
-                  <UsageBar
-                    label={t('dashboard.proActiveUsage')}
-                    used={dashData.proActiveUsage.used}
-                    limit={dashData.proActiveUsage.limit}
-                    color={BRAND}
-                    textColor={textColor}
-                    subtextColor={subtextColor}
-                  />
-                )}
-              </Surface>
-            )}
 
             {/* Leads Pipeline */}
             <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
@@ -857,8 +807,6 @@ const styles = StyleSheet.create({
   msgBarLabel: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   msgDot: { width: 8, height: 8, borderRadius: 4 },
 
-  usageRow: { marginBottom: spacing.md },
-  usageHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs },
   progressBar: { height: 8, borderRadius: 4 },
 
   pipelineSummary: { gap: spacing.sm },

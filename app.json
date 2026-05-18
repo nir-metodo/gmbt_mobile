@@ -7,7 +7,7 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "scheme": "gambot",
-    "description": "Gambot is an enterprise companion app for the Gambot CRM platform. This app is designed exclusively for organizations and their employees. Access requires an account provisioned by an organization administrator. Not available for individual consumer purchase.",
+    "description": "Gambot is a B2B enterprise companion app for the Gambot CRM platform. This app is designed exclusively for organizations, businesses, and their employees who have been provisioned an account by their organization administrator. It is NOT available for individual consumer purchase or self-service signup. All billing and subscription management is handled outside the app through enterprise sales contracts between Gambot Ltd. and organizations. There is no mechanism within the app to purchase, upgrade, or subscribe to any service. This app serves solely as a mobile interface for existing enterprise CRM accounts.",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",

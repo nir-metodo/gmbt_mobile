@@ -23,7 +23,7 @@ export default function WebFeatureScreen({ titleKey, path, icon = 'open-in-new',
   const { t } = useTranslation();
   const { isRTL } = useRTL();
 
-  const url = `${WEB_APP_BASE_URL}${path}`;
+  const url = `${WEB_APP_BASE_URL}${path}?source=mobileapp`;
   const displayColor = color || theme.colors.primary;
 
   const handleOpen = async () => {
