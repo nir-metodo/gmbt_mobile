@@ -18,7 +18,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
-import { leadsApi, type LeadView } from '../../../services/api/leads';
+import { leadsApi } from '../../../services/api/leads';
+import { ENDPOINTS } from '../../../constants/api';
+import axiosInstance from '../../../services/api/axiosInstance';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { getDataVisibility } from '../../../constants/permissions';
@@ -63,6 +65,15 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 
 
+interface SavedView {
+  id: string;
+  Name: string;
+  ViewData: { filters?: any; searchTerm?: string };
+  IsPinned?: boolean;
+  Visibility?: string;
+  UserId?: string;
+}
+
 const LeadDivider = () => <Divider />;
 
 export default function LeadsListScreen() {
@@ -74,6 +85,7 @@ export default function LeadsListScreen() {
 
   const user = useAuthStore((s) => s.user);
   const organization = user?.organization ?? '';
+  const userIsAdmin = user?.SecurityRole === 'admin' || user?.SecurityRole === 'Admin';
 
   // Store – used only for create/update/delete to keep detail screen in sync
   const updateLead = useLeadStore((s) => s.updateLead);
@@ -110,11 +122,11 @@ export default function LeadsListScreen() {
   const fetchingRef = useRef(false);
 
   // ── Saved views ─────────────────────────────────────────────────────────────
-  const [savedViews, setSavedViews] = useState<LeadView[]>([]);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeViewId, setActiveViewId] = useState('__all');
-  const [viewsMenuVisible, setViewsMenuVisible] = useState(false);
-  const [saveViewVisible, setSaveViewVisible] = useState(false);
+  const [showSaveViewModal, setShowSaveViewModal] = useState(false);
   const [newViewName, setNewViewName] = useState('');
+  const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
 
   const stageColorMap = useMemo(() => {
     if (pipelineStages.length > 0) {
@@ -132,14 +144,14 @@ export default function LeadsListScreen() {
 
   // ── Build filter object for API ─────────────────────────────────────────────
   const buildFilters = useCallback(() => ({
-    searchTerm: searchQuery.trim(),
+    searchTerm: debouncedSearch.trim(),
     stages: selectedStage ? [selectedStage] : [],
     sources: filterSource.trim() ? [filterSource.trim()] : [],
     owners: filterOwner.trim() ? [filterOwner.trim()] : [],
     statuses: filterStatus ? [filterStatus] : [],
     priorities: filterPriority ? [filterPriority] : [],
     dateRangePreset: filterDateRange || '',
-  }), [searchQuery, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange]);
+  }), [debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange]);
 
   // ── Fetch a page ────────────────────────────────────────────────────────────
   const fetchPage = useCallback(async (pageNum: number, reset: boolean) => {
@@ -178,9 +190,9 @@ export default function LeadsListScreen() {
   }, [organization, buildFilters, filterMine, user]);
 
   // ── Debounced search ────────────────────────────────────────────────────────
-  const [debouncedSearch, setDebouncedSearch] = useState(searchQuery);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 350);
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
@@ -191,9 +203,25 @@ export default function LeadsListScreen() {
     leadsApi.getPipelineSettings(organization)
       .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
       .catch(() => {});
-    leadsApi.getViews(organization).then(setSavedViews).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organization, debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine]);
+
+  // Load saved views
+  useEffect(() => {
+    if (!organization) return;
+    axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, {
+      organization,
+      userId: user?.uID || user?.userId,
+      viewType: 'leads',
+    }).then((res) => {
+      const data = res.data;
+      if (data?.Success && data?.Data?.views) {
+        setSavedViews(data.Data.views);
+      } else if (Array.isArray(data)) {
+        setSavedViews(data);
+      }
+    }).catch(() => {});
+  }, [organization, user?.uID, user?.userId]);
 
   // Refetch on screen focus (e.g. returning from detail screen)
   const didMountRef = useRef(false);
@@ -207,47 +235,84 @@ export default function LeadsListScreen() {
     }, [organization, fetchPage])
   );
 
-  const applyView = useCallback((view: LeadView) => {
+  const loadSavedView = useCallback((view: SavedView) => {
+    const viewData = view.ViewData || {};
+    const filters = viewData.filters || {};
     setActiveViewId(view.id);
-    setViewsMenuVisible(false);
     setFilterMine(false);
-    const f = view.filters || {};
-    setSelectedStage(f.stage ?? null);
-    setFilterSource(f.source ?? '');
-    setFilterOwner(f.owner ?? '');
-    setFilterStatus(f.status ?? '');
-    setFilterPriority(f.priority ?? '');
-    setFilterDateRange(f.dateRange ?? '');
-    if (f.search) setSearchQuery(f.search);
+    setSelectedStage(filters.stage ?? null);
+    setFilterSource(filters.source ?? '');
+    setFilterOwner(filters.owner ?? '');
+    setFilterStatus(filters.status ?? '');
+    setFilterPriority(filters.priority ?? '');
+    setFilterDateRange(filters.dateRange ?? '');
+    if (viewData.searchTerm) setSearchQuery(viewData.searchTerm);
   }, []);
 
-  const handleSaveView = useCallback(async () => {
-    if (!newViewName.trim() || !organization) return;
-    const viewData: LeadView = {
-      id: `view_${Date.now()}`,
-      name: newViewName.trim(),
-      filters: {
-        stage: selectedStage,
-        source: filterSource,
-        owner: filterOwner,
-        status: filterStatus,
-        priority: filterPriority,
-        dateRange: filterDateRange,
-        search: searchQuery,
-      },
-    };
-    const saved = await leadsApi.saveView(organization, viewData);
-    if (saved) setSavedViews((prev) => [...prev, saved]);
-    else setSavedViews((prev) => [...prev, viewData]);
-    setNewViewName('');
-    setSaveViewVisible(false);
-  }, [newViewName, organization, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, searchQuery]);
+  const clearAllFilters = useCallback(() => {
+    setActiveViewId('__all');
+    setSelectedStage(null);
+    setFilterSource('');
+    setFilterOwner('');
+    setFilterStatus('');
+    setFilterPriority('');
+    setFilterDateRange('');
+    setFilterMine(false);
+    setSearchQuery('');
+  }, []);
 
-  const handleDeleteView = useCallback(async (viewId: string) => {
-    await leadsApi.deleteView(organization, viewId);
-    setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
-    if (activeViewId === viewId) setActiveViewId('__all');
-  }, [organization, activeViewId]);
+  const saveCurrentView = useCallback(async () => {
+    if (!newViewName.trim() || !organization) return;
+    try {
+      const viewData = {
+        filters: {
+          stage: selectedStage,
+          source: filterSource,
+          owner: filterOwner,
+          status: filterStatus,
+          priority: filterPriority,
+          dateRange: filterDateRange,
+        },
+        searchTerm: searchQuery,
+      };
+      const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
+        organization,
+        userId: user?.uID || user?.userId,
+        viewType: 'leads',
+        name: newViewName.trim(),
+        isPinned: false,
+        viewData,
+        visibility: userIsAdmin ? saveViewVisibility : 'personal',
+      });
+      if (res.data?.Success) {
+        const newView: SavedView = {
+          id: res.data.Data?.id || Date.now().toString(),
+          Name: newViewName.trim(),
+          ViewData: viewData,
+          IsPinned: false,
+          Visibility: userIsAdmin ? saveViewVisibility : 'personal',
+          UserId: user?.uID || user?.userId,
+        };
+        setSavedViews((prev) => [...prev, newView]);
+      }
+    } catch {}
+    setShowSaveViewModal(false);
+    setNewViewName('');
+    setSaveViewVisibility('personal');
+  }, [newViewName, organization, user, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, searchQuery, userIsAdmin, saveViewVisibility]);
+
+  const deleteSavedView = useCallback(async (viewId: string) => {
+    if (!organization) return;
+    try {
+      await axiosInstance.post(ENDPOINTS.DELETE_USER_VIEW, {
+        organization,
+        userId: user?.uID || user?.userId,
+        viewId,
+      });
+      setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
+      if (activeViewId === viewId) clearAllFilters();
+    } catch {}
+  }, [organization, user, activeViewId, clearAllFilters]);
 
 
   // ── Infinite scroll ─────────────────────────────────────────────────────────
@@ -337,8 +402,22 @@ export default function LeadsListScreen() {
     [organization, user, t, pipelineStages],
   );
 
+  const handleTakeOwnership = useCallback(async (lead: Lead) => {
+    if (!organization || !user) return;
+    const userId = user.uID || user.userId || '';
+    const userName = user.fullname || '';
+    setLeads((prev) => prev.map((l) => l.id === lead.id ? { ...l, ownerId: userId, ownerName: userName } : l));
+    try {
+      await leadsApi.update(organization, { id: lead.id, ownerId: userId, ownerName: userName }, userId, userName);
+    } catch {
+      setLeads((prev) => prev.map((l) => l.id === lead.id ? { ...l, ownerId: lead.ownerId, ownerName: (lead as any).ownerName } : l));
+    }
+  }, [organization, user]);
+
   const renderLeadItem = useCallback(
-    ({ item }: { item: Lead; index?: number }) => (
+    ({ item }: { item: Lead; index?: number }) => {
+      const isMyLead = (item as any).ownerId === (user?.uID || user?.userId);
+      return (
       <Pressable
         onPress={() => openLead(item)}
         onLongPress={() => setStagePickerLead(item)}
@@ -463,6 +542,20 @@ export default function LeadsListScreen() {
               </Text>
             </Pressable>
           ) : null}
+
+          {/* Take ownership */}
+          {!isMyLead && (
+            <Pressable
+              onPress={(e) => { e.stopPropagation?.(); handleTakeOwnership(item); }}
+              style={[styles.quickDialRow, { flexDirection, marginTop: 4 }]}
+              hitSlop={4}
+            >
+              <MaterialCommunityIcons name="account-arrow-left" size={13} color={theme.colors.tertiary || '#FF9800'} />
+              <Text variant="labelSmall" style={{ color: theme.colors.tertiary || '#FF9800', marginStart: 4, fontWeight: '600' }}>
+                {t('leads.takeOwnership', 'קח בעלות')}
+              </Text>
+            </Pressable>
+          )}
         </View>
 
         <MaterialCommunityIcons
@@ -472,8 +565,8 @@ export default function LeadsListScreen() {
           style={{ opacity: 0.4, alignSelf: 'center' }}
         />
       </Pressable>
-    ),
-    [theme, isRTL, flexDirection, textAlign, openLead, stageColor, t],
+    );},
+    [theme, isRTL, flexDirection, textAlign, openLead, stageColor, t, user, handleTakeOwnership],
   );
 
   const renderPipelineCard = useCallback(
@@ -572,17 +665,6 @@ export default function LeadsListScreen() {
             />
           </Pressable>
           <Pressable
-            onPress={() => setViewsMenuVisible(true)}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name="bookmark-multiple-outline"
-              size={24}
-              color={activeViewId !== '__all' ? '#FFD54F' : theme.custom.headerText}
-            />
-          </Pressable>
-          <Pressable
             onPress={() => setAdvancedFilterVisible(true)}
             hitSlop={8}
             style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
@@ -623,6 +705,7 @@ export default function LeadsListScreen() {
             placeholder={t('leads.searchPlaceholder')}
             value={searchQuery}
             onChangeText={setSearchQuery}
+            returnKeyType="search"
             style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
             inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
             iconColor={theme.colors.onSurfaceVariant}
@@ -630,6 +713,56 @@ export default function LeadsListScreen() {
           />
         </Animated.View>
       ) : null}
+
+      {/* Saved Views Tabs */}
+      <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.viewsScroll, { flexDirection }]}>
+          <Pressable
+            onPress={clearAllFilters}
+            style={[styles.viewTab, activeViewId === '__all' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__all' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('leads.viewAll', 'הכל')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); }}
+            style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__mine' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('leads.viewMine', 'שלי')}
+            </Text>
+          </Pressable>
+          {savedViews.filter((v) => {
+            const vis = v.Visibility || 'personal';
+            if (vis === 'shared') return true;
+            return (v.UserId || '') === (user?.uID || user?.userId || '');
+          }).map((view) => (
+            <Pressable
+              key={view.id}
+              onPress={() => loadSavedView(view)}
+              onLongPress={() => {
+                Alert.alert(
+                  view.Name,
+                  t('sidebar.deleteViewConfirm', 'Delete this view?'),
+                  [
+                    { text: t('common.cancel'), style: 'cancel' },
+                    { text: t('common.delete', 'Delete'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
+                  ],
+                );
+              }}
+              style={[styles.viewTab, activeViewId === view.id && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+            >
+              <Text style={[styles.viewTabText, { color: activeViewId === view.id ? theme.colors.primary : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
+                {(view.Visibility === 'shared' ? '👥 ' : '') + view.Name}
+              </Text>
+            </Pressable>
+          ))}
+          <Pressable onPress={() => setShowSaveViewModal(true)} style={styles.viewTab}>
+            <MaterialCommunityIcons name="plus" size={18} color={theme.colors.primary} />
+          </Pressable>
+        </ScrollView>
+      </View>
 
       {/* Stage filter chips */}
       {viewMode === 'list' ? (
@@ -1001,97 +1134,51 @@ export default function LeadsListScreen() {
         </Modal>
       </Portal>
 
-      {/* Saved Views Modal */}
+      {/* Save View Modal */}
       <Portal>
         <Modal
-          visible={viewsMenuVisible}
-          onDismiss={() => setViewsMenuVisible(false)}
+          visible={showSaveViewModal}
+          onDismiss={() => { setShowSaveViewModal(false); setNewViewName(''); }}
           contentContainerStyle={[styles.stageModal, { backgroundColor: theme.colors.surface }]}
         >
-          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12, textAlign }}>
-            {t('leads.savedViews', 'תצוגות שמורות')}
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 16 }}>
+            {t('sidebar.saveCurrentView', 'שמור תצוגה נוכחית')}
           </Text>
-
-          {/* Built-in views */}
-          {[
-            { id: '__all', name: t('leads.viewAll', 'כל הלידים'), icon: 'view-list-outline' },
-            { id: '__mine', name: t('leads.viewMine', 'הלידים שלי'), icon: 'account-outline' },
-          ].map((v) => (
-            <Pressable
-              key={v.id}
-              onPress={() => {
-                setActiveViewId(v.id);
-                setViewsMenuVisible(false);
-                if (v.id === '__all') {
-                  setSelectedStage(null);
-                  setFilterSource('');
-                  setFilterOwner('');
-                  setFilterStatus('');
-                  setFilterPriority('');
-                  setFilterDateRange('');
-                  setFilterMine(false);
-                } else if (v.id === '__mine') {
-                  setFilterMine(true);
-                }
-              }}
-              style={[styles.stageOption, { backgroundColor: activeViewId === v.id ? withAlpha(theme.colors.primary, 0.1) : 'transparent', flexDirection }]}
-            >
-              <MaterialCommunityIcons name={v.icon as any} size={18} color={activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface} style={{ marginEnd: 10 }} />
-              <Text style={{ flex: 1, color: activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface, fontWeight: activeViewId === v.id ? '700' : '400', textAlign }}>
-                {v.name}
-              </Text>
-              {activeViewId === v.id && <MaterialCommunityIcons name="check" size={18} color={theme.colors.primary} />}
-            </Pressable>
-          ))}
-
-          {/* Custom saved views */}
-          {savedViews.length > 0 && <Divider style={{ marginVertical: 8 }} />}
-          {savedViews.map((v) => (
-            <Pressable
-              key={v.id}
-              onPress={() => applyView(v)}
-              style={[styles.stageOption, { backgroundColor: activeViewId === v.id ? withAlpha(theme.colors.primary, 0.1) : 'transparent', flexDirection }]}
-            >
-              <MaterialCommunityIcons name="bookmark-outline" size={18} color={activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface} style={{ marginEnd: 10 }} />
-              <Text style={{ flex: 1, color: activeViewId === v.id ? theme.colors.primary : theme.colors.onSurface, fontWeight: activeViewId === v.id ? '700' : '400', textAlign }}>
-                {v.name}
-              </Text>
-              <Pressable onPress={() => handleDeleteView(v.id)} hitSlop={8}>
-                <MaterialCommunityIcons name="delete-outline" size={18} color={theme.colors.error} />
-              </Pressable>
-            </Pressable>
-          ))}
-
-          <Divider style={{ marginVertical: 8 }} />
-          {saveViewVisible ? (
-            <View style={{ gap: 8 }}>
-              <PaperInput
-                label={t('leads.viewName', 'שם התצוגה')}
-                value={newViewName}
-                onChangeText={setNewViewName}
-                mode="outlined"
-                dense
-                autoFocus
-                style={{ textAlign }}
-              />
-              <View style={[{ flexDirection, gap: 8, justifyContent: 'flex-end' }]}>
-                <Button mode="text" onPress={() => setSaveViewVisible(false)}>{t('common.cancel')}</Button>
-                <Button mode="contained" onPress={handleSaveView} disabled={!newViewName.trim()}>{t('common.save', 'שמור')}</Button>
-              </View>
+          <PaperInput
+            label={t('sidebar.viewName', 'שם התצוגה')}
+            value={newViewName}
+            onChangeText={setNewViewName}
+            mode="outlined"
+            style={{ marginBottom: 12 }}
+          />
+          {userIsAdmin && (
+            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <Chip
+                selected={saveViewVisibility === 'personal'}
+                onPress={() => setSaveViewVisibility('personal')}
+                compact
+                style={{ backgroundColor: saveViewVisibility === 'personal' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+              >
+                {t('sidebar.onlyMe', 'רק לי')}
+              </Chip>
+              <Chip
+                selected={saveViewVisibility === 'shared'}
+                onPress={() => setSaveViewVisibility('shared')}
+                compact
+                style={{ backgroundColor: saveViewVisibility === 'shared' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+              >
+                {t('sidebar.everyone', 'לכולם')}
+              </Chip>
             </View>
-          ) : (
-            <Button
-              mode="outlined"
-              icon="bookmark-plus-outline"
-              onPress={() => setSaveViewVisible(true)}
-            >
-              {t('leads.saveCurrentView', 'שמור תצוגה נוכחית')}
-            </Button>
           )}
-
-          <Button mode="text" onPress={() => setViewsMenuVisible(false)} style={{ marginTop: 4 }} textColor={theme.colors.onSurfaceVariant}>
-            {t('common.close', 'סגור')}
-          </Button>
+          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', justifyContent: 'flex-end', gap: 8 }}>
+            <Button mode="outlined" onPress={() => { setShowSaveViewModal(false); setNewViewName(''); }}>
+              {t('common.cancel')}
+            </Button>
+            <Button mode="contained" disabled={!newViewName.trim()} onPress={saveCurrentView}>
+              {t('common.save', 'שמור')}
+            </Button>
+          </View>
         </Modal>
       </Portal>
     </View>
@@ -1117,6 +1204,25 @@ const styles = StyleSheet.create({
     paddingBottom: 2,
   },
   searchbar: { height: 40, borderRadius: 20, elevation: 0 },
+  viewsRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingTop: 4,
+  },
+  viewTab: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: -1,
+  },
+  viewTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    maxWidth: 100,
+  },
+  viewsScroll: {
+    paddingHorizontal: 14,
+    gap: 8,
+    alignItems: 'center',
+  },
   stageFilters: {
     gap: 6,
     alignItems: 'center',

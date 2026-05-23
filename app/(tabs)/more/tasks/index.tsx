@@ -83,6 +83,7 @@ export default function TasksMoreScreen() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
@@ -99,6 +100,11 @@ export default function TasksMoreScreen() {
   const [formRelatedEntityName, setFormRelatedEntityName] = useState('');
 
   const tasksDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'tasks');
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const fetchTasks = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
@@ -149,13 +155,15 @@ export default function TasksMoreScreen() {
       result = result.filter((t) => t.priority === priorityFilter);
     }
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.trim().toLowerCase();
       result = result.filter(
         (t) =>
           t.title?.toLowerCase().includes(q) ||
           t.description?.toLowerCase().includes(q) ||
-          t.assignedToName?.toLowerCase().includes(q),
+          t.assignedToName?.toLowerCase().includes(q) ||
+          (t as any).contactName?.toLowerCase().includes(q) ||
+          (t as any).relatedEntityName?.toLowerCase().includes(q),
       );
     }
 
@@ -169,7 +177,7 @@ export default function TasksMoreScreen() {
       const priorityOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
       return (priorityOrder[a.priority] ?? 2) - (priorityOrder[b.priority] ?? 2);
     });
-  }, [tasks, statusFilter, priorityFilter, searchQuery]);
+  }, [tasks, statusFilter, priorityFilter, debouncedSearch]);
 
   const resetForm = useCallback(() => {
     setFormTitle('');
@@ -406,6 +414,7 @@ export default function TasksMoreScreen() {
             placeholder={t('tasks.searchPlaceholder')}
             value={searchQuery}
             onChangeText={setSearchQuery}
+            returnKeyType="search"
             style={[styles.searchbar, { backgroundColor: theme.colors.surfaceVariant }]}
             inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
             iconColor={theme.colors.onSurfaceVariant}

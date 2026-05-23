@@ -245,7 +245,11 @@ export default function DashboardScreen() {
   const msgs = dashData.messages || { total: 0, sent: 0, received: 0, delivered: 0, read: 0, failed: 0 };
   const msgMax = Math.max(msgs.sent, msgs.received, msgs.delivered, msgs.read, msgs.failed, 1);
 
-  const stageEntries = Object.entries(leadsData.byStage || {});
+  const rawStageEntries = Object.entries(leadsData.byStage || {});
+  const stageEntries: [string, number][] = rawStageEntries.map(([key, val]: [string, any]) => {
+    const count = typeof val === 'number' ? val : (val?.count ?? val?.value ?? 0);
+    return [val?.stageName || key, count as number];
+  });
   const maxStageCount = stageEntries.length > 0 ? Math.max(...stageEntries.map(([, c]) => c), 1) : 1;
   const funnelStages = [...stageEntries].sort(([, a], [, b]) => b - a);
   const maxFunnelCount = funnelStages.length > 0 ? funnelStages[0][1] : 1;
@@ -490,7 +494,7 @@ export default function DashboardScreen() {
                       </Text>
                       <View style={styles.recentLeadMeta}>
                         <View style={[styles.stageBadge, { backgroundColor: BRAND + '15' }]}>
-                          <Text variant="labelSmall" style={{ color: BRAND, fontWeight: '600' }}>{lead.stage}</Text>
+                          <Text variant="labelSmall" style={{ color: BRAND, fontWeight: '600' }}>{typeof lead.stage === 'object' ? (lead.stage as any)?.stageName || '' : lead.stage}</Text>
                         </View>
                         {lead.contactName ? (
                           <Text variant="labelSmall" style={{ color: subtextColor }} numberOfLines={1}>

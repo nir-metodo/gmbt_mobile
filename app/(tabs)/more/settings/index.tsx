@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, Image, Linking } from 'react-native';
+import React, { useState, useCallback, useEffect } from 'react';
+import { View, StyleSheet, ScrollView, Pressable, Image, Linking, ActivityIndicator } from 'react-native';
 import type { MD3Theme } from 'react-native-paper';
 import {
   Appbar,
@@ -23,6 +23,7 @@ import { useRTL } from '../../../../hooks/useRTL';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useSettingsStore } from '../../../../stores/settingsStore';
 import { getInitials } from '../../../../utils/formatters';
+import { getCacheSize, clearCache, formatCacheSize } from '../../../../services/mediaCache';
 import Constants from 'expo-constants';
 
 const BRAND_COLOR = '#2e6155';
@@ -85,6 +86,23 @@ export default function SettingsScreen() {
   const [languageDialogVisible, setLanguageDialogVisible] = useState(false);
   const [themeDialogVisible, setThemeDialogVisible] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [cacheSize, setCacheSize] = useState<string>('...');
+  const [clearingCache, setClearingCache] = useState(false);
+  const [clearCacheDialogVisible, setClearCacheDialogVisible] = useState(false);
+
+  useEffect(() => {
+    getCacheSize().then((bytes) => setCacheSize(formatCacheSize(bytes)));
+  }, []);
+
+  const handleClearCache = useCallback(async () => {
+    setClearingCache(true);
+    try {
+      await clearCache();
+      setCacheSize(formatCacheSize(0));
+    } catch {}
+    setClearingCache(false);
+    setClearCacheDialogVisible(false);
+  }, []);
 
   const currentLanguage = i18n.language?.startsWith('he') ? 'he' : 'en';
   const currentTheme = settings.theme || 'system';
@@ -257,6 +275,33 @@ export default function SettingsScreen() {
           />
         </Surface>
 
+        {/* ────── Storage ────── */}
+        <SectionHeader title={t('settings.storage', 'אחסון')} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[s.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon="database-outline"
+            iconColor="#0ea5e9"
+            label={t('settings.mediaCacheSize', 'גודל מטמון מדיה')}
+            description={cacheSize}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="delete-sweep-outline"
+            iconColor="#E63946"
+            label={t('settings.clearMediaCache', 'נקה מטמון מדיה')}
+            description={t('settings.clearMediaCacheDesc', 'מחק את כל קבצי המדיה השמורים במכשיר')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            onPress={() => setClearCacheDialogVisible(true)}
+            right={clearingCache
+              ? <ActivityIndicator size="small" color={BRAND_COLOR} />
+              : <MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
+            }
+          />
+        </Surface>
+
         {/* ────── Account ────── */}
         <SectionHeader title={t('settings.account')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[s.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
@@ -386,6 +431,27 @@ export default function SettingsScreen() {
               ))}
             </RadioButton.Group>
           </Dialog.Content>
+        </Dialog>
+      </Portal>
+
+      {/* ── Clear Cache Confirmation Dialog ── */}
+      <Portal>
+        <Dialog visible={clearCacheDialogVisible} onDismiss={() => setClearCacheDialogVisible(false)} style={{ borderRadius: 20 }}>
+          <Dialog.Icon icon="delete-sweep-outline" color="#E63946" size={40} />
+          <Dialog.Title style={{ textAlign: 'center' }}>{t('settings.clearCacheTitle', 'ניקוי מטמון מדיה')}</Dialog.Title>
+          <Dialog.Content>
+            <Text variant="bodyMedium" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
+              {t('settings.clearCacheMessage', 'פעולה זו תמחק את כל קבצי המדיה השמורים במכשיר. קבצים יורדו מחדש לפי הצורך.')}
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions style={{ justifyContent: 'center', gap: 12 }}>
+            <Button onPress={() => setClearCacheDialogVisible(false)} textColor={theme.colors.onSurfaceVariant}>
+              {t('settings.cancel')}
+            </Button>
+            <Button onPress={handleClearCache} loading={clearingCache} textColor="#E63946" mode="contained" buttonColor="#E6394615">
+              {t('settings.clearCache', 'נקה')}
+            </Button>
+          </Dialog.Actions>
         </Dialog>
       </Portal>
 

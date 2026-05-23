@@ -24,6 +24,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { esignatureApi } from '../../../../services/api/esignature';
+import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import type { ESignatureDocument } from '../../../../types';
@@ -70,18 +71,24 @@ export default function ESignatureListScreen() {
 
   const searchAnim = useRef(new Animated.Value(0)).current;
 
+  const esigDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'esignature');
+
   const fetchDocuments = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
     try {
       setError(null);
-      const result = await esignatureApi.getDocuments(user.organization);
+      const result = await esignatureApi.getDocuments(
+        user.organization,
+        esigDV,
+        user.uID || user.userId
+      );
       setDocuments(Array.isArray(result) ? result : []);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, t]);
+  }, [user?.organization, user?.uID, user?.userId, user?.SecurityRole, esigDV, t]);
 
   useEffect(() => {
     fetchDocuments();

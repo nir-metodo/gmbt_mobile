@@ -3,11 +3,18 @@ import { ENDPOINTS } from '../../constants/api';
 import type { ESignatureDocument } from '../../types';
 
 export const esignatureApi = {
-  async getDocuments(organization: string): Promise<ESignatureDocument[]> {
+  async getDocuments(
+    organizationName: string,
+    dataVisibility: 'all' | 'own',
+    userId: string | null
+  ): Promise<ESignatureDocument[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_ESIGNATURE_DOCS, {
-      organization,
+      organizationName,
+      dataVisibility,
+      userId,
     });
     const raw = response.data;
+    if (raw?.Success === false) return [];
     const items = raw?.Data ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
     return Array.isArray(items) ? items : [];
   },

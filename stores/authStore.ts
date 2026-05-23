@@ -4,6 +4,7 @@ import { authApi } from '../services/api/auth';
 import { appStorage, secureStorage } from '../services/storage';
 import WebSocketService from '../services/websocket';
 import { setTokenCache } from '../services/api/axiosInstance';
+import { pushNotificationService } from '../services/pushNotifications';
 import i18n from '../i18n';
 
 interface AuthState {
@@ -39,6 +40,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const lang = await appStorage.getLanguage();
         i18n.changeLanguage(lang);
         set({ user, isInitialized: true });
+
+        pushNotificationService
+          .registerPushToken(user.organization, user.userId)
+          .catch(() => {});
       } else {
         set({ isInitialized: true });
       }
@@ -53,6 +58,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = await authApi.login(email, password, organization);
       i18n.changeLanguage(user.language);
       set({ user, isLoading: false });
+
+      pushNotificationService
+        .registerPushToken(user.organization, user.userId)
+        .catch(() => {});
     } catch (error: any) {
       const errorCode = error.response?.data?.ErrorCode;
       let errorMessage: string;

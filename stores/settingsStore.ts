@@ -8,6 +8,7 @@ import i18n from '../i18n';
 interface SettingsState {
   theme: 'light' | 'dark' | 'system';
   language: 'en' | 'he';
+  telephonyEnabled: boolean | null;
   callRecordingEnabled: boolean;
   callTranscriptionEnabled: boolean;
   callAiSummaryEnabled: boolean;
@@ -21,6 +22,7 @@ interface SettingsState {
   initialize: () => Promise<void>;
   setTheme: (theme: 'light' | 'dark' | 'system') => Promise<void>;
   setLanguage: (lang: 'en' | 'he') => Promise<void>;
+  loadTelephonySettings: (organization: string) => Promise<void>;
   setCallRecording: (enabled: boolean) => void;
   setCallTranscription: (enabled: boolean) => void;
   setCallAiSummary: (enabled: boolean) => void;
@@ -35,6 +37,7 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set) => ({
   theme: 'system',
   language: 'he',
+  telephonyEnabled: null,
   callRecordingEnabled: false,
   callTranscriptionEnabled: false,
   callAiSummaryEnabled: false,
@@ -61,6 +64,16 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     await appStorage.setLanguage(lang);
     i18n.changeLanguage(lang);
     set({ language: lang });
+  },
+
+  loadTelephonySettings: async (organization) => {
+    try {
+      const settings = await phoneCallsApi.getTelephonySettings(organization);
+      const nums = Array.isArray(settings?.phoneNumbers) ? settings.phoneNumbers : [];
+      set({ telephonyEnabled: !!settings?.enabled || nums.length > 0 });
+    } catch {
+      set({ telephonyEnabled: false });
+    }
   },
 
   setCallRecording: (enabled) => {

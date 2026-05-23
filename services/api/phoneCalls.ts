@@ -132,6 +132,50 @@ export const phoneCallsApi = {
     return response.data || {};
   },
 
+  async initiateOutboundCall(
+    organization: string,
+    fromUserId: string,
+    toPhoneNumber: string,
+    fromNumberId?: string,
+  ): Promise<{ success: boolean; callId?: string; error?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.INITIATE_OUTBOUND_CALL, {
+      organization,
+      fromUserId,
+      toPhoneNumber,
+      fromNumberId,
+    });
+    return response.data || {};
+  },
+
+  async getCallRecordings(
+    organization: string,
+    filters?: { callId?: string; phoneNumber?: string; page?: number; pageSize?: number },
+  ): Promise<any[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CALL_RECORDINGS, {
+      organization,
+      ...filters,
+    });
+    const raw = response.data;
+    const items = raw?.Data ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+    return Array.isArray(items) ? items : [];
+  },
+
+  async getRecordingSettings(organization: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_RECORDING_SETTINGS, { organization });
+    return response.data?.Data || response.data?.data || response.data || {};
+  },
+
+  async updateRecordingSettings(
+    organization: string,
+    settings: { recordAllCalls?: boolean; recordOnlyWithLead?: boolean; recordOnlyWithActiveCase?: boolean },
+  ): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_RECORDING_SETTINGS, {
+      organization,
+      ...settings,
+    });
+    return response.data;
+  },
+
   async getCallRules(organization: string): Promise<CallRule[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_CALL_RULES, {
       organization,

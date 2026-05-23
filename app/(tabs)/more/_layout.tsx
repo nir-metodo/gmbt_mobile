@@ -9,6 +9,7 @@ export default function MoreLayout() {
       <Stack.Screen name="phone-calls" />
       <Stack.Screen name="users" />
       <Stack.Screen name="settings" />
+      <Stack.Screen name="notifications" />
       <Stack.Screen name="cases" />
       <Stack.Screen name="quotes" />
       <Stack.Screen name="esignature" />
@@ -24,6 +25,7 @@ export default function MoreLayout() {
       <Stack.Screen name="employees" />
       <Stack.Screen name="orders" />
       <Stack.Screen name="catalog" />
+      <Stack.Screen name="transactions" />
     </Stack>
   );
 }

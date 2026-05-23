@@ -24,24 +24,38 @@ export const chatsApi = {
     userId?: string,
     contextMessageId?: string,
     wabaNumber?: string,
+    senderEmail?: string,
   ): Promise<any> {
-    const response = await axiosInstance.post(ENDPOINTS.CREATE_OUTBOUND_MESSAGE, {
-      organization,
+    const payload = {
       text: message,
       from: wabaNumber || '',
       to,
-      senderEmail: '',
+      senderEmail: senderEmail || '',
       receiverEmail: to,
       timeStamp: '',
       sentByName: senderName || '',
       sentById: userId || '',
+      organization,
       ...(contextMessageId ? { contextMessageId } : {}),
-    });
-    const data = response.data;
-    if (data && data.Success === false) {
-      throw new Error(data.Message || 'Failed to send message');
+    };
+
+    if (!payload.from) {
+      console.warn('[chatsApi.sendMessage] "from" field is empty — backend may reject the message.');
     }
-    return data;
+    console.log('[chatsApi.sendMessage] POST', ENDPOINTS.CREATE_OUTBOUND_MESSAGE, { to: payload.to, from: payload.from, org: payload.organization });
+
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.CREATE_OUTBOUND_MESSAGE, payload);
+      const data = response.data;
+      if (data && data.Success === false) {
+        console.error('[chatsApi.sendMessage] Backend failure:', data.Message);
+        throw new Error(data.Message || 'Failed to send message');
+      }
+      return data;
+    } catch (err: any) {
+      console.error('[chatsApi.sendMessage] Error:', err?.response?.status, err?.response?.data || err?.message);
+      throw err;
+    }
   },
 
   async sendMediaMessage(
@@ -50,6 +64,7 @@ export const chatsApi = {
     file: { uri: string; name: string; type: string; size?: number },
     caption?: string,
     userId?: string,
+    fromNumberId?: string,
   ): Promise<any> {
     const formData = new FormData();
     formData.append('phoneNumber', to);
@@ -60,6 +75,7 @@ export const chatsApi = {
     formData.append('fileName', file.name);
     formData.append('file_type', file.type);
     formData.append('file_length', String(file.size || 0));
+    if (fromNumberId) formData.append('fromNumberId', fromNumberId);
     formData.append('File', {
       uri: file.uri,
       name: file.name,
@@ -97,10 +113,11 @@ export const chatsApi = {
     return response.data;
   },
 
-  async markAsRead(organization: string, phoneNumber: string): Promise<any> {
+  async markAsRead(organization: string, phoneNumber: string, userId?: string, userName?: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.MARK_AS_READ, {
-      organizationiD: organization,
+      organization,
       phoneNumber,
+      user: { userId: userId || '', fullname: userName || '' },
     });
     return response.data;
   },
@@ -142,20 +159,23 @@ export const chatsApi = {
     to: string,
     message: string,
     scheduledTime: string,
+    fromNumberId?: string,
   ): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.SCHEDULE_MESSAGE, {
       organizationiD: organization,
       to,
       message,
       scheduledTime,
+      fromNumberId: fromNumberId || undefined,
     });
     return response.data;
   },
 
-  async getConversationStatus(organization: string, phoneNumber: string): Promise<any> {
+  async getConversationStatus(organization: string, phoneNumber: string, fromNumberId?: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.GET_CONVERSATION_STATUS, {
       organization,
       phoneNumber,
+      ...(fromNumberId ? { fromNumberId } : {}),
     });
     return response.data;
   },
@@ -202,9 +222,11 @@ export const chatsApi = {
     templateId: string,
     sentById?: string,
     templateVariableQuery?: any[],
+    fromNumberId?: string,
   ): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.SEND_TEMPLATE_MESSAGE, {
       organization,
+      fromNumberId: fromNumberId || undefined,
       templateMessageData: {
         PhoneNumber: phoneNumber,
         TemplateId: templateId,

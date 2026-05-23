@@ -47,6 +47,7 @@ import {
   DynamicFieldsSectionForm,
   type DynamicSection,
 } from '../../../components/DynamicFieldsSection';
+import { MediaPanel } from '../../../components/chat/MediaPanel';
 import type { Contact, TimelineEvent } from '../../../types';
 
 type DetailTab = 'timeline' | 'related';
@@ -96,6 +97,7 @@ export default function ContactDetailScreen() {
   const [activeTab, setActiveTab] = useState<DetailTab>('timeline');
   const [editVisible, setEditVisible] = useState(isNew);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [mediaPanelVisible, setMediaPanelVisible] = useState(false);
   const [form, setForm] = useState<Partial<Contact>>(
     contact ? { ...contact } : { ...EMPTY_CONTACT },
   );
@@ -403,6 +405,14 @@ export default function ContactDetailScreen() {
                 setEditVisible(true);
               }}
               title={t('common.edit')}
+            />
+            <Menu.Item
+              leadingIcon="image-multiple"
+              onPress={() => {
+                setMenuVisible(false);
+                setMediaPanelVisible(true);
+              }}
+              title={t('contacts.mediaAndFiles', 'מדיה וקבצים')}
             />
             <Divider />
             <Menu.Item
@@ -851,6 +861,14 @@ export default function ContactDetailScreen() {
           </Pressable>
         </Modal>
       </Portal>
+
+      <MediaPanel
+        visible={mediaPanelVisible}
+        onClose={() => setMediaPanelVisible(false)}
+        contactPhone={contact?.phoneNumber || ''}
+        organization={organization}
+        wabaNumbers={user?.wabaNumbers && user.wabaNumbers.length > 1 ? user.wabaNumbers : undefined}
+      />
     </View>
   );
 }

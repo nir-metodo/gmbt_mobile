@@ -374,96 +374,106 @@ export default function CaseDetailScreen() {
           </View>
         </View>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-          <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }} keyboardShouldPersistTaps="handled">
-            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.caseTitle')} *</Text>
-            <TextInput
-              value={formTitle}
-              onChangeText={setFormTitle}
-              placeholder={t('cases.caseTitle')}
-              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign, writingDirection }]}
-              placeholderTextColor={theme.colors.onSurfaceVariant}
-            />
-
-            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.description', 'תיאור')}</Text>
-            <TextInput
-              value={formDescription}
-              onChangeText={setFormDescription}
-              placeholder={t('cases.description', 'תאר את הבעיה...')}
-              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, height: 80, textAlignVertical: 'top', textAlign, writingDirection }]}
-              placeholderTextColor={theme.colors.onSurfaceVariant}
-              multiline
-            />
-
-            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.priority', 'עדיפות')}</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <View style={[{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8 }]}>
-                {PRIORITIES.map((p) => (
-                  <Pressable
-                    key={p}
-                    onPress={() => setFormPriority(p)}
-                    style={[styles.formChipNew, formPriority === p && { backgroundColor: `${PRIORITY_COLORS[p]}20`, borderColor: PRIORITY_COLORS[p], borderWidth: 1.5 }]}
-                  >
-                    <Text style={{ fontSize: 13, color: formPriority === p ? PRIORITY_COLORS[p] : theme.colors.onSurfaceVariant, fontWeight: formPriority === p ? '700' : '400' }}>{t(`cases.${p}`, p)}</Text>
-                  </Pressable>
-                ))}
+          <ScrollView contentContainerStyle={styles.formScrollContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            {/* ── Contact Section ── */}
+            <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+              <View style={[styles.formSectionHeader, { flexDirection }]}>
+                <View style={styles.formSectionAccent} />
+                <MaterialCommunityIcons name="account-box-outline" size={18} color="#2e6155" />
+                <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.contact', 'איש קשר')}</Text>
               </View>
-            </ScrollView>
-
-            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.contactName', 'שם איש קשר')}</Text>
-            <TextInput
-              value={formContactName}
-              onChangeText={setFormContactName}
-              placeholder={t('cases.contactName', 'שם')}
-              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign, writingDirection }]}
-              placeholderTextColor={theme.colors.onSurfaceVariant}
-            />
-
-            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.contactPhone', 'טלפון')}</Text>
-            <TextInput
-              value={formContactPhone}
-              onChangeText={setFormContactPhone}
-              placeholder={t('cases.contactPhone', 'מספר טלפון')}
-              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline }]}
-              placeholderTextColor={theme.colors.onSurfaceVariant}
-              keyboardType="phone-pad"
-            />
-
-            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>{t('cases.category', 'קטגוריה')}</Text>
-            <TextInput
-              value={formCategory}
-              onChangeText={setFormCategory}
-              placeholder={t('cases.category', 'קטגוריה')}
-              style={[styles.formInputNew, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign, writingDirection }]}
-              placeholderTextColor={theme.colors.onSurfaceVariant}
-            />
-
-            <DynamicFieldsSectionForm
-              sections={caseFormSections}
-              values={formDynamicFields}
-              onChange={(key, val) => setFormDynamicFields((prev) => ({ ...prev, [key]: val }))}
-              lang={lang}
-              formLayout={caseFormLayout}
-              theme={theme}
-              textAlign={textAlign}
-              writingDirection={writingDirection}
-              flexDirection={flexDirection}
-            />
-
-            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 12, marginTop: 8, paddingBottom: insets.bottom + 20 }}>
-              <Button mode="outlined" onPress={() => router.back()} style={{ flex: 1 }}>{t('common.cancel')}</Button>
-              <Button
-                mode="contained"
-                onPress={handleCreate}
-                style={{ flex: 1 }}
-                buttonColor={theme.colors.primary}
-                textColor="#fff"
-                loading={saving}
-                disabled={saving || !formTitle.trim()}
+              <Pressable
+                onPress={() => setContactLookupVisible(true)}
+                style={[styles.contactLookupBtn, { backgroundColor: withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
               >
-                {t('common.save')}
-              </Button>
+                <View style={[styles.contactLookupIconCircle, { backgroundColor: '#2e6155' }]}>
+                  <MaterialCommunityIcons name="account-search" size={20} color="#FFFFFF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: formContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 15, fontWeight: formContactName ? '600' : '400', textAlign }} numberOfLines={1}>
+                    {formContactName ? `${formContactName}${formContactPhone ? `  •  ${formContactPhone}` : ''}` : t('common.selectContact', 'בחר איש קשר')}
+                  </Text>
+                </View>
+                <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+              </Pressable>
+              <CaseFormField label={t('cases.contactName', 'שם איש קשר')} value={formContactName} onChangeText={setFormContactName} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
+              <CaseFormField label={t('cases.contactPhone', 'טלפון')} value={formContactPhone} onChangeText={setFormContactPhone} theme={theme} textAlign={textAlign} writingDirection={writingDirection} keyboardType="phone-pad" />
             </View>
+
+            {/* ── Case Details Section ── */}
+            <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+              <View style={[styles.formSectionHeader, { flexDirection }]}>
+                <View style={styles.formSectionAccent} />
+                <MaterialCommunityIcons name="text-box-outline" size={18} color="#2e6155" />
+                <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.caseTitle')} *</Text>
+              </View>
+              <CaseFormField label={t('cases.caseTitle')} value={formTitle} onChangeText={setFormTitle} theme={theme} textAlign={textAlign} writingDirection={writingDirection} required />
+              <CaseFormField label={t('cases.description', 'תיאור')} value={formDescription} onChangeText={setFormDescription} theme={theme} textAlign={textAlign} writingDirection={writingDirection} multiline placeholder={t('cases.description', 'תאר את הבעיה...')} />
+              <CaseFormField label={t('cases.category', 'קטגוריה')} value={formCategory} onChangeText={setFormCategory} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
+            </View>
+
+            {/* ── Priority Section ── */}
+            <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+              <View style={[styles.formSectionHeader, { flexDirection }]}>
+                <View style={styles.formSectionAccent} />
+                <MaterialCommunityIcons name="flag-outline" size={18} color="#2e6155" />
+                <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.priority', 'עדיפות')}</Text>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <View style={[styles.chipRow, { flexDirection }]}>
+                  {PRIORITIES.map((p) => {
+                    const pc = PRIORITY_COLORS[p];
+                    const active = formPriority === p;
+                    return (
+                      <Chip
+                        key={p}
+                        selected={active}
+                        onPress={() => setFormPriority(p)}
+                        compact
+                        style={[styles.formPill, active ? { backgroundColor: `${pc}20`, borderColor: pc, borderWidth: 1.5 } : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' }]}
+                        textStyle={{ fontSize: 12, color: active ? pc : theme.colors.onSurfaceVariant, fontWeight: active ? '700' : '400' }}
+                      >
+                        {t(`cases.${p}`, p)}
+                      </Chip>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+            </View>
+
+            {/* ── Custom Fields Section ── */}
+            <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+              <DynamicFieldsSectionForm
+                sections={caseFormSections}
+                values={formDynamicFields}
+                onChange={(key, val) => setFormDynamicFields((prev) => ({ ...prev, [key]: val }))}
+                lang={lang}
+                formLayout={caseFormLayout}
+                theme={theme}
+                textAlign={textAlign}
+                writingDirection={writingDirection}
+                flexDirection={flexDirection}
+              />
+            </View>
+
+            <View style={{ height: 100 }} />
           </ScrollView>
+
+          {/* ── Sticky Footer ── */}
+          <View style={[styles.stickyFooter, { paddingBottom: insets.bottom + 12, borderTopColor: theme.colors.outline, backgroundColor: theme.colors.surface }]}>
+            <View style={{ flex: 1 }} />
+            <Button mode="outlined" onPress={() => router.back()} style={styles.footerBtn} textColor={theme.colors.onSurface}>{t('common.cancel')}</Button>
+            <Button
+              mode="contained"
+              onPress={handleCreate}
+              style={[styles.footerBtn, { backgroundColor: '#2e6155' }]}
+              textColor="#fff"
+              loading={saving}
+              disabled={saving || !formTitle.trim()}
+            >
+              {t('common.save')}
+            </Button>
+          </View>
         </KeyboardAvoidingView>
       </View>
     );
@@ -955,11 +965,43 @@ export default function CaseDetailScreen() {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={[styles.modalHeader, { flexDirection }]}>
-                <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => setEditModalVisible(false)} style={{ margin: 0 }} />
+                <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
                   {t('cases.editCase')}
                 </Text>
-                <IconButton icon="close" size={22} onPress={() => setEditModalVisible(false)} />
+                <View style={{ width: 40 }} />
               </View>
+
+              {/* ── Contact Section ── */}
+              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="account-box-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.contact')}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setContactLookupVisible(true)}
+                  style={[styles.contactLookupBtn, { backgroundColor: withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
+                >
+                  <View style={[styles.contactLookupIconCircle, { backgroundColor: '#2e6155' }]}>
+                    <MaterialCommunityIcons name="account-search" size={20} color="#FFFFFF" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: formContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 15, fontWeight: formContactName ? '600' : '400', textAlign }} numberOfLines={1}>
+                      {formContactName ? `${formContactName}${formContactPhone ? `  •  ${formContactPhone}` : ''}` : t('common.selectContact')}
+                    </Text>
+                  </View>
+                  <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+                </Pressable>
+              </View>
+
+              {/* ── Case Details Section ── */}
+              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="text-box-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.caseTitle')}</Text>
+                </View>
 
               <TextInput
                 label={t('cases.caseTitle')}
@@ -983,40 +1025,25 @@ export default function CaseDetailScreen() {
                 activeOutlineColor={theme.colors.primary}
               />
 
-              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('cases.contact')}
-              </Text>
-              <Pressable
-                onPress={() => setContactLookupVisible(true)}
-                style={[
-                  styles.contactLookupField,
-                  {
-                    backgroundColor: theme.colors.surfaceVariant,
-                    borderColor: theme.colors.outline,
-                    flexDirection,
-                  },
-                ]}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={{
-                      color: formContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant,
-                      fontSize: 15,
-                      textAlign,
-                    }}
-                    numberOfLines={1}
-                  >
-                    {formContactName
-                      ? `${formContactName}${formContactPhone ? `  •  ${formContactPhone}` : ''}`
-                      : t('common.selectContact')}
-                  </Text>
+              <TextInput
+                label={t('cases.category')}
+                value={formCategory}
+                onChangeText={setFormCategory}
+                mode="outlined"
+                style={[styles.formInput, { textAlign }]}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={theme.colors.primary}
+                right={<TextInput.Icon icon="tag" />}
+              />
+              </View>
+
+              {/* ── Status & Priority Section ── */}
+              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="flag-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.status')}</Text>
                 </View>
-                <MaterialCommunityIcons
-                  name="account-search"
-                  size={20}
-                  color={theme.colors.onSurfaceVariant}
-                />
-              </Pressable>
 
               <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
                 {t('cases.status')}
@@ -1079,17 +1106,15 @@ export default function CaseDetailScreen() {
                   );
                 })}
               </View>
+              </View>
 
-              <TextInput
-                label={t('cases.category')}
-                value={formCategory}
-                onChangeText={setFormCategory}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                right={<TextInput.Icon icon="tag" />}
-              />
+              {/* ── Source & Assignment Section ── */}
+              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="source-branch" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.source')}</Text>
+                </View>
 
               <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
                 {t('leads.source')}
@@ -1178,6 +1203,15 @@ export default function CaseDetailScreen() {
                   ))}
                 </View>
               )}
+              </View>
+
+              {/* ── Additional Info Section ── */}
+              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="information-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.dueDate', 'Due Date')}</Text>
+                </View>
 
               <TextInput
                 label={t('cases.dueDate', 'Due Date')}
@@ -1215,7 +1249,10 @@ export default function CaseDetailScreen() {
                 activeOutlineColor={theme.colors.primary}
                 right={<TextInput.Icon icon="note-text" />}
               />
+              </View>
 
+              {/* ── Custom Fields Section ── */}
+              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
               <DynamicFieldsSectionForm
                 sections={caseFormSections}
                 values={formDynamicFields}
@@ -1227,8 +1264,14 @@ export default function CaseDetailScreen() {
                 writingDirection={writingDirection}
                 flexDirection={flexDirection}
               />
+              </View>
 
-              <View style={[styles.modalActions, { flexDirection }]}>
+              <View style={[styles.editModalActions, { flexDirection }]}>
+                <Pressable onPress={handleDelete} style={[styles.deleteBtn, { backgroundColor: withAlpha(theme.colors.error, 0.08) }]}>
+                  <MaterialCommunityIcons name="delete-outline" size={18} color={theme.colors.error} />
+                  <Text style={{ color: theme.colors.error, fontWeight: '600', fontSize: 13 }}>{t('common.delete')}</Text>
+                </Pressable>
+                <View style={{ flex: 1 }} />
                 <Button
                   mode="outlined"
                   onPress={() => setEditModalVisible(false)}
@@ -1242,7 +1285,7 @@ export default function CaseDetailScreen() {
                   onPress={handleSave}
                   loading={saving}
                   disabled={!formTitle.trim() || saving}
-                  style={[styles.modalButton, { backgroundColor: theme.colors.primary }]}
+                  style={[styles.modalButton, { backgroundColor: '#2e6155' }]}
                   textColor="#FFFFFF"
                 >
                   {t('common.save')}
@@ -1295,6 +1338,49 @@ export default function CaseDetailScreen() {
           </View>
         </Modal>
       </Portal>
+    </View>
+  );
+}
+
+function CaseFormField({
+  label,
+  value,
+  onChangeText,
+  theme,
+  textAlign,
+  writingDirection,
+  multiline,
+  keyboardType,
+  placeholder,
+  required,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (v: string) => void;
+  theme: any;
+  textAlign: 'left' | 'right';
+  writingDirection: 'ltr' | 'rtl';
+  multiline?: boolean;
+  keyboardType?: any;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  return (
+    <View style={{ marginBottom: 12 }}>
+      <TextInput
+        label={`${label}${required ? ' *' : ''}`}
+        value={value}
+        onChangeText={onChangeText}
+        mode="outlined"
+        multiline={multiline}
+        numberOfLines={multiline ? 3 : undefined}
+        placeholder={placeholder}
+        style={[styles.formInput, { textAlign }]}
+        outlineColor={theme.colors.outline}
+        activeOutlineColor="#2e6155"
+        keyboardType={keyboardType}
+        outlineStyle={{ borderRadius: 10 }}
+      />
     </View>
   );
 }
@@ -1352,9 +1438,14 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   bannerCard: {
-    borderRadius: borderRadius.lg,
+    borderRadius: 14,
     borderWidth: 1,
     padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
   },
   bannerRow: {
     alignItems: 'flex-start',
@@ -1385,9 +1476,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   sectionCard: {
-    borderRadius: borderRadius.lg,
+    borderRadius: 14,
     borderWidth: 1,
     padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
   },
   sectionHeader: {
     alignItems: 'center',
@@ -1443,26 +1539,23 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   modalContainer: {
-    marginHorizontal: 20,
+    marginHorizontal: 16,
     borderRadius: borderRadius.xl,
-    maxHeight: '85%',
+    maxHeight: '92%',
     padding: 20,
+  },
+  modalSectionCard: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
   },
   modalHeader: {
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  formInput: {
     marginBottom: 14,
   },
-  contactLookupField: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    alignItems: 'center',
-    gap: 8,
+  formInput: {
     marginBottom: 14,
   },
   formLabel: {
@@ -1476,6 +1569,15 @@ const styles = StyleSheet.create({
   },
   formChip: {
     height: 32,
+    borderRadius: 16,
+  },
+  editModalActions: {
+    gap: 10,
+    alignItems: 'center',
+    marginTop: 8,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e2e8f0',
   },
   modalActions: {
     gap: 12,
@@ -1483,8 +1585,78 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   modalButton: {
-    minWidth: 100,
-    borderRadius: borderRadius.md,
+    minWidth: 90,
+    borderRadius: 10,
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  formScrollContent: {
+    padding: 16,
+    paddingBottom: 0,
+    gap: 0,
+  },
+  formSectionCard: {
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  formSectionHeader: {
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  formSectionAccent: {
+    width: 3,
+    height: 18,
+    borderRadius: 2,
+    backgroundColor: '#2e6155',
+  },
+  formSectionTitle: {
+    fontWeight: '700',
+    color: '#2e6155',
+    fontSize: 14,
+  },
+  contactLookupBtn: {
+    borderWidth: 1.5,
+    borderRadius: 12,
+    borderStyle: 'dashed',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  contactLookupIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chipRow: { gap: 8, paddingBottom: 6 },
+  formPill: { height: 32, borderRadius: 16 },
+  stickyFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  footerBtn: {
+    minWidth: 90,
+    borderRadius: 10,
   },
   formInputNew: {
     borderWidth: 1,

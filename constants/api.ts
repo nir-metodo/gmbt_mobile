@@ -40,6 +40,9 @@ export const ENDPOINTS = {
   GET_CONVERSATION_EXPIRATION: '/api/Webhooks/GetConversationExpirationTime',
   UPDATE_CONVERSATION_CATEGORY: '/api/Webhooks/updateConversationCategory',
   UPDATE_CONVERSATION_STATUS: '/api/Webhooks/updateConversationStatus',
+  GET_CONVERSATION_CATEGORIES: '/api/Webhooks/getConversationCategories',
+  ADD_CONVERSATION_CATEGORY: '/api/Webhooks/addConversationCategory',
+  UPDATE_CONTACT_KEYS: '/api/Webhooks/UpdateContactKeysById',
 
   // Templates
   GET_TEMPLATES: '/api/Webhooks/GetAllTemplates',
@@ -77,6 +80,7 @@ export const ENDPOINTS = {
   CREATE_CASE: '/api/Webhooks/CreateCase',
   UPDATE_CASE: '/api/Webhooks/UpdateCase',
   DELETE_CASE: '/api/Webhooks/DeleteCase',
+  GET_CASES_BY_CONTACT: '/api/Webhooks/GetCasesByContact',
 
   // Tasks
   GET_TASKS: '/api/Webhooks/GetAllTasksByOrganization',
@@ -162,6 +166,10 @@ export const ENDPOINTS = {
   UPDATE_CALL_RULES: '/api/Webhooks/UpdateCallRules',
   TELNYX_OUTBOUND_CALL: '/api/webhooks/telnyx/streamOutboundCall',
   GET_TELEPHONY_SETTINGS: '/api/Webhooks/GetTelephonySettings',
+  INITIATE_OUTBOUND_CALL: '/api/Webhooks/InitiateOutboundCall',
+  GET_CALL_RECORDINGS: '/api/Webhooks/GetCallRecordings',
+  GET_RECORDING_SETTINGS: '/api/Webhooks/GetRecordingSettings',
+  UPDATE_RECORDING_SETTINGS: '/api/Webhooks/UpdateRecordingSettings',
 
   // Media Manager
   GET_MEDIA_FOLDERS: '/api/Webhooks/GetMediaFolders',
@@ -176,9 +184,21 @@ export const ENDPOINTS = {
   GET_INTERNAL_MESSAGES: '/api/Webhooks/GetAllInternalMessages',
   MARK_MENTION_READ: '/api/Webhooks/MarkMentionAsRead',
 
+  // Saved Views
+  GET_USER_VIEWS: '/api/Webhooks/GetUserViews',
+  SAVE_USER_VIEW: '/api/Webhooks/SaveUserView',
+  DELETE_USER_VIEW: '/api/Webhooks/DeleteUserView',
+  PIN_USER_VIEW: '/api/Webhooks/PinUserView',
+
+  // Contact Groups (Keys)
+  GET_ALL_KEYS: '/api/Webhooks/GetAllKeys',
+
   // Push Notifications
   REGISTER_DEVICE: '/api/Webhooks/RegisterDeviceToken',
   UNREGISTER_DEVICE: '/api/Webhooks/UnregisterDeviceToken',
+  REGISTER_PUSH_TOKEN: '/api/Webhooks/RegisterPushToken',
+  UPDATE_PUSH_SETTINGS: '/api/Webhooks/UpdatePushNotificationSettings',
+  GET_PUSH_SETTINGS: '/api/Webhooks/GetPushNotificationSettings',
 
   // Employees / Attendance
   GET_EMPLOYEES_DASHBOARD: '/api/Webhooks/GetEmployeesDashboard',
@@ -215,6 +235,13 @@ export const ENDPOINTS = {
   CREATE_SUPPLIER: '/api/Suppliers/CreateSupplier',
   UPDATE_SUPPLIER: '/api/Suppliers/UpdateSupplier',
   DELETE_SUPPLIER: '/api/Suppliers/DeleteSupplier',
+
+  // Payments / Clearing
+  GET_CLEARING_SETTINGS: '/api/Webhooks/GetClearingSettings',
+  CREATE_PAYMENT_LINK: '/api/Webhooks/CreatePaymentLink',
+  CREATE_MANUAL_CHARGE: '/api/Webhooks/CreateManualCharge',
+  GET_PAYMENT_TRANSACTIONS: '/api/Webhooks/GetPaymentTransactions',
+  MARK_TRANSACTION_PAID: '/api/Webhooks/MarkTransactionPaid',
 
   // Invoices
   GET_INVOICES_PAGINATED: '/api/Webhooks/GetInvoicesPaginated',

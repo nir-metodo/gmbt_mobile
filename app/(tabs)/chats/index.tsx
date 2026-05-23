@@ -13,6 +13,7 @@ import {
   Animated,
   ScrollView,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import {
@@ -23,7 +24,6 @@ import {
   Avatar,
   Divider,
   Menu,
-  Badge,
   Portal,
   Modal,
   Button,
@@ -40,9 +40,20 @@ import { useRTL } from '../../../hooks/useRTL';
 import { formatChatTime, getInitials } from '../../../utils/formatters';
 import WebSocketService from '../../../services/websocket';
 import { getDataVisibility } from '../../../constants/permissions';
+import { ENDPOINTS } from '../../../constants/api';
+import axiosInstance from '../../../services/api/axiosInstance';
 import type { Chat } from '../../../types';
 
 const FILTER_OPTIONS = ['all', 'unread', 'open', 'closed', 'myChats', 'internal'] as const;
+
+interface SavedView {
+  id: string;
+  Name: string;
+  ViewData: { filters?: any; searchTerm?: string };
+  IsPinned?: boolean;
+  Visibility?: string;
+  UserId?: string;
+}
 
 const ChatDivider = () => <Divider style={{ marginStart: 78 }} />;
 const chatKeyExtractor = (item: Chat) => item.phoneNumber;
@@ -58,8 +69,7 @@ export default function ChatsListScreen() {
   const user = useAuthStore((s) => s.user);
   const chats = useChatStore((s) => s.chats);
   const isLoadingChats = useChatStore((s) => s.isLoadingChats);
-  const searchQuery = useChatStore((s) => s.searchQuery);
-  const setSearchQuery = useChatStore((s) => s.setSearchQuery);
+  const storeSetSearchQuery = useChatStore((s) => s.setSearchQuery);
   const filter = useChatStore((s) => s.filter);
   const setFilter = useChatStore((s) => s.setFilter);
   const categoryFilter = useChatStore((s) => s.categoryFilter);
@@ -72,9 +82,20 @@ export default function ChatsListScreen() {
 
   const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
   const currentUserId = user?.uID || user?.userId || '';
+  const userIsAdmin = user?.SecurityRole === 'admin' || user?.SecurityRole === 'Admin';
+
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchInput), 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const [categoryMenuVisible, setCategoryMenuVisible] = useState(false);
   const [ownerMenuVisible, setOwnerMenuVisible] = useState(false);
+  const [groupMenuVisible, setGroupMenuVisible] = useState(false);
+  const [leadStageMenuVisible, setLeadStageMenuVisible] = useState(false);
   const [newChatVisible, setNewChatVisible] = useState(false);
   const [newChatPhone, setNewChatPhone] = useState('');
 
@@ -82,6 +103,158 @@ export default function ChatsListScreen() {
   const [searchVisible, setSearchVisible] = useState(false);
   const searchAnim = useRef(new Animated.Value(0)).current;
   const wsRef = useRef<WebSocketService | null>(null);
+
+  // Saved Views
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<string>('__all__');
+  const [showSaveViewModal, setShowSaveViewModal] = useState(false);
+  const [newViewName, setNewViewName] = useState('');
+  const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
+
+  // Advanced filters
+  const [groupFilter, setGroupFilter] = useState<string[]>([]);
+  const [leadStageFilter, setLeadStageFilter] = useState<string[]>([]);
+  const [contactGroups, setContactGroups] = useState<string[]>([]);
+  const [leadStages, setLeadStages] = useState<{ id: string; name: string; color?: string }[]>([]);
+
+  // Lead/case stage map for chat list badges
+  const [contactLeadMap, setContactLeadMap] = useState<Record<string, { stageName: string; stageColor: string }>>({});
+
+  // Load saved views
+  useEffect(() => {
+    if (!user?.organization) return;
+    axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, {
+      organization: user.organization,
+      userId: user.uID || user.userId,
+      viewType: 'sidebar',
+    }).then((res) => {
+      const data = res.data;
+      if (data?.Success && data?.Data?.views) {
+        setSavedViews(data.Data.views);
+      } else if (Array.isArray(data)) {
+        setSavedViews(data);
+      }
+    }).catch(() => {});
+  }, [user?.organization, user?.uID, user?.userId]);
+
+  // Load contact groups and lead stages
+  useEffect(() => {
+    if (!user?.organization) return;
+    axiosInstance.post(ENDPOINTS.GET_ALL_KEYS, { organization: user.organization })
+      .then((res) => {
+        const raw = res.data;
+        const keys = Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
+        setContactGroups(keys.map((k: any) => typeof k === 'string' ? k : k.name || k.Name || '').filter(Boolean));
+      }).catch(() => {});
+
+    axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, { organization: user.organization })
+      .then((res) => {
+        const raw = res.data;
+        const stages = raw?.stages || raw?.Data?.stages || raw?.pipelines?.[0]?.stages || [];
+        const stageArr = Array.isArray(stages) ? stages : [];
+        setLeadStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color })));
+
+        // Build contact→lead stage map
+        axiosInstance.post(ENDPOINTS.GET_LEADS, { organization: user.organization, pageSize: 500 })
+          .then((leadsRes) => {
+            const leads = leadsRes.data?.Data || leadsRes.data?.data || leadsRes.data || [];
+            if (!Array.isArray(leads)) return;
+            const stageMap: Record<string, any> = {};
+            stageArr.forEach((s: any) => { stageMap[s.id || s.Id] = s; });
+            const map: Record<string, { stageName: string; stageColor: string }> = {};
+            leads.forEach((lead: any) => {
+              const phone = (lead.contactPhone || lead.phoneNumber || '').replace(/\D/g, '');
+              if (phone && lead.stageId) {
+                const stageInfo = stageMap[lead.stageId];
+                const name = stageInfo?.name || stageInfo?.Name || lead.stageName;
+                if (!name) return;
+                map[phone] = { stageName: name, stageColor: stageInfo?.color || '#7c3aed' };
+              }
+            });
+            setContactLeadMap(map);
+          }).catch(() => {});
+      }).catch(() => {});
+  }, [user?.organization]);
+
+  const loadSavedView = useCallback((view: SavedView) => {
+    const viewData = view.ViewData || {};
+    const filters = viewData.filters || {};
+    setActiveViewId(view.id);
+    setFilter(filters.myConversations ? 'myChats' : filters.unread ? 'unread' : filters.openConversations ? 'open' : 'all');
+    setCategoryFilter(filters.category || 'all');
+    setOwnerFilter(filters.owner || 'all');
+    setGroupFilter(filters.contactGroup || []);
+    setLeadStageFilter(filters.leadStage || []);
+    if (viewData.searchTerm) {
+      setSearchInput(viewData.searchTerm);
+    }
+  }, [setFilter, setCategoryFilter, setOwnerFilter]);
+
+  const clearAllFilters = useCallback(() => {
+    setActiveViewId('__all__');
+    setFilter('all');
+    setCategoryFilter('all');
+    setOwnerFilter('all');
+    setGroupFilter([]);
+    setLeadStageFilter([]);
+    setSearchInput('');
+    setDebouncedSearch('');
+    storeSetSearchQuery('');
+  }, [setFilter, setCategoryFilter, setOwnerFilter, storeSetSearchQuery]);
+
+  const saveCurrentView = useCallback(async () => {
+    if (!newViewName.trim() || !user?.organization) return;
+    try {
+      const viewData = {
+        filters: {
+          myConversations: filter === 'myChats',
+          unread: filter === 'unread',
+          openConversations: filter === 'open',
+          category: categoryFilter !== 'all' ? categoryFilter : '',
+          owner: ownerFilter !== 'all' ? ownerFilter : '',
+          contactGroup: groupFilter,
+          leadStage: leadStageFilter,
+        },
+        searchTerm: searchInput,
+      };
+      const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
+        organization: user.organization,
+        userId: user.uID || user.userId,
+        viewType: 'sidebar',
+        name: newViewName.trim(),
+        isPinned: false,
+        viewData,
+        visibility: userIsAdmin ? saveViewVisibility : 'personal',
+      });
+      if (res.data?.Success) {
+        const newView: SavedView = {
+          id: res.data.Data?.id || Date.now().toString(),
+          Name: newViewName.trim(),
+          ViewData: viewData,
+          IsPinned: false,
+          Visibility: userIsAdmin ? saveViewVisibility : 'personal',
+          UserId: user.uID || user.userId,
+        };
+        setSavedViews((prev) => [...prev, newView]);
+      }
+    } catch {}
+    setShowSaveViewModal(false);
+    setNewViewName('');
+    setSaveViewVisibility('personal');
+  }, [newViewName, user, filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, searchInput, userIsAdmin, saveViewVisibility]);
+
+  const deleteSavedView = useCallback(async (viewId: string) => {
+    if (!user?.organization) return;
+    try {
+      await axiosInstance.post(ENDPOINTS.DELETE_USER_VIEW, {
+        organization: user.organization,
+        userId: user.uID || user.userId,
+        viewId,
+      });
+      setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
+      if (activeViewId === viewId) clearAllFilters();
+    } catch {}
+  }, [user, activeViewId, clearAllFilters]);
 
   useEffect(() => {
     if (user?.organization) {
@@ -164,10 +337,12 @@ export default function ChatsListScreen() {
         useNativeDriver: false,
       }).start(() => {
         setSearchVisible(false);
-        setSearchQuery('');
+        setSearchInput('');
+        setDebouncedSearch('');
+        storeSetSearchQuery('');
       });
     }
-  }, [searchVisible, searchAnim, setSearchQuery]);
+  }, [searchVisible, searchAnim, storeSetSearchQuery]);
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -215,8 +390,24 @@ export default function ChatsListScreen() {
       result = result.filter((c) => c.ownerName === ownerFilter);
     }
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (groupFilter.length > 0) {
+      result = result.filter((c) => {
+        const keys = (c as any).keys || (c as any).searchKeys || [];
+        return groupFilter.some((g) => keys.includes(g));
+      });
+    }
+
+    if (leadStageFilter.length > 0) {
+      result = result.filter((c) => {
+        const phoneNorm = (c.phoneNumber || '').replace(/\D/g, '');
+        const leadInfo = contactLeadMap[phoneNorm];
+        const stageId = (c as any).leadStageId || (c as any).leadStage;
+        return (stageId && leadStageFilter.includes(stageId)) || (leadInfo && leadStages.some(s => leadStageFilter.includes(s.id) && s.name === leadInfo.stageName));
+      });
+    }
+
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.trim().toLowerCase();
       result = result.filter(
         (c) =>
           c.contactName?.toLowerCase().includes(q) ||
@@ -226,7 +417,7 @@ export default function ChatsListScreen() {
     }
 
     return result;
-  }, [chats, filter, searchQuery, categoryFilter, ownerFilter, user]);
+  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, user, contactLeadMap, leadStages]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -253,6 +444,10 @@ export default function ChatsListScreen() {
   const renderChatItem = useCallback(
     ({ item }: { item: Chat }) => {
       const hasUnread = item.unreadCount > 0;
+      const phoneNorm = (item.phoneNumber || '').replace(/\D/g, '');
+      const leadInfo = contactLeadMap[phoneNorm];
+      const displayLeadStage = item.leadStageName || leadInfo?.stageName || '';
+      const displayLeadColor = item.leadStageColor || leadInfo?.stageColor || '#7c3aed';
 
       return (
         <Pressable
@@ -323,6 +518,46 @@ export default function ChatsListScreen() {
               </Text>
             </View>
 
+            {/* Badges row: status, lead stage, case stage, CTWA */}
+            {(item.lastConversationStatus || displayLeadStage || item.caseStageName || item.isCTWA) && (
+              <View style={[styles.badgesRow, { flexDirection }]}>
+                {!!item.lastConversationStatus && (
+                  <View style={[styles.badge, {
+                    backgroundColor: item.lastConversationStatus === 'Open' ? '#dcfce7' :
+                      item.lastConversationStatus === 'In Process' ? '#fef9c3' : '#f1f5f9',
+                  }]}>
+                    <Text style={[styles.badgeText, {
+                      color: item.lastConversationStatus === 'Open' ? '#16a34a' :
+                        item.lastConversationStatus === 'In Process' ? '#ca8a04' : '#64748b',
+                    }]}>
+                      {item.lastConversationStatus === 'Open' ? t('chats.open') :
+                        item.lastConversationStatus === 'Closed' ? t('chats.closed') : item.lastConversationStatus}
+                    </Text>
+                  </View>
+                )}
+                {!!displayLeadStage && (
+                  <View style={[styles.badge, { backgroundColor: displayLeadColor + '20' }]}>
+                    <Text style={[styles.badgeText, { color: displayLeadColor }]}>
+                      {displayLeadStage}
+                    </Text>
+                  </View>
+                )}
+                {!!item.caseStageName && (
+                  <View style={[styles.badge, { backgroundColor: (item.caseStageColor || '#0891b2') + '20' }]}>
+                    <Text style={[styles.badgeText, { color: item.caseStageColor || '#0891b2' }]}>
+                      {item.caseStageName}
+                    </Text>
+                  </View>
+                )}
+                {item.isCTWA && (
+                  <View style={[styles.badge, { backgroundColor: '#dbeafe' }]}>
+                    <MaterialCommunityIcons name="cursor-default-click" size={10} color="#2563eb" style={{ marginEnd: 2 }} />
+                    <Text style={[styles.badgeText, { color: '#2563eb' }]}>CTWA</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
             <View style={[styles.chatBottomRow, { flexDirection }]}>
               <Text
                 variant="bodyMedium"
@@ -351,7 +586,7 @@ export default function ChatsListScreen() {
         </Pressable>
       );
     },
-    [theme, openChat, flexDirection, textAlign, isRTL, lang],
+    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, t],
   );
 
   const renderEmpty = useCallback(
@@ -436,8 +671,9 @@ export default function ChatsListScreen() {
         >
           <Searchbar
             placeholder={t('chats.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
+            value={searchInput}
+            onChangeText={setSearchInput}
+            returnKeyType="search"
             style={[
               styles.searchbar,
               { backgroundColor: theme.colors.surface },
@@ -451,6 +687,64 @@ export default function ChatsListScreen() {
           />
         </Animated.View>
       )}
+
+      {/* Saved Views Tabs */}
+      <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection }]}>
+          <Pressable
+            onPress={clearAllFilters}
+            style={[styles.viewTab, activeViewId === '__all__' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__all__' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('sidebar.allConversations', 'הכל')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setActiveViewId('__mine__'); setFilter('myChats'); }}
+            style={[styles.viewTab, activeViewId === '__mine__' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__mine__' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('sidebar.myConversations', 'שלי')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setActiveViewId('__unread__'); setFilter('unread'); }}
+            style={[styles.viewTab, activeViewId === '__unread__' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__unread__' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('sidebar.unread', 'לא נקרא')}
+            </Text>
+          </Pressable>
+          {savedViews.filter((v) => {
+            const vis = v.Visibility || 'personal';
+            if (vis === 'shared') return true;
+            return (v.UserId || '') === (user?.uID || user?.userId || '');
+          }).map((view) => (
+            <Pressable
+              key={view.id}
+              onPress={() => loadSavedView(view)}
+              onLongPress={() => {
+                Alert.alert(
+                  view.Name,
+                  t('sidebar.deleteViewConfirm', 'למחוק תצוגה זו?'),
+                  [
+                    { text: t('common.cancel'), style: 'cancel' },
+                    { text: t('common.delete', 'מחק'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
+                  ],
+                );
+              }}
+              style={[styles.viewTab, activeViewId === view.id && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+            >
+              <Text style={[styles.viewTabText, { color: activeViewId === view.id ? theme.colors.primary : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
+                {(view.Visibility === 'shared' ? '👥 ' : '') + view.Name}
+              </Text>
+            </Pressable>
+          ))}
+          <Pressable onPress={() => setShowSaveViewModal(true)} style={styles.viewTab}>
+            <MaterialCommunityIcons name="plus" size={18} color={theme.colors.primary} />
+          </Pressable>
+        </ScrollView>
+      </View>
 
       {/* Filter chips */}
       <View
@@ -471,7 +765,7 @@ export default function ChatsListScreen() {
             <Chip
               key={f}
               selected={filter === f}
-              onPress={() => setFilter(f)}
+              onPress={() => { setFilter(f); setActiveViewId(''); }}
               showSelectedOverlay
               compact
               style={[
@@ -561,6 +855,90 @@ export default function ChatsListScreen() {
               ))}
             </Menu>
           )}
+
+          {contactGroups.length > 0 && (
+            <Menu
+              visible={groupMenuVisible}
+              onDismiss={() => setGroupMenuVisible(false)}
+              anchor={
+                <Chip
+                  icon="account-multiple-outline"
+                  onPress={() => setGroupMenuVisible(true)}
+                  compact
+                  style={[
+                    styles.filterChip,
+                    groupFilter.length > 0
+                      ? { backgroundColor: theme.colors.primaryContainer }
+                      : { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    groupFilter.length > 0 && { color: theme.colors.primary, fontWeight: '600' },
+                  ]}
+                >
+                  {groupFilter.length > 0 ? `${t('chats.groups', 'קבוצות')} (${groupFilter.length})` : t('chats.groups', 'קבוצות')}
+                </Chip>
+              }
+            >
+              <Menu.Item
+                title={t('common.all')}
+                onPress={() => { setGroupFilter([]); setGroupMenuVisible(false); }}
+                leadingIcon={groupFilter.length === 0 ? 'check' : undefined}
+              />
+              {contactGroups.map((g) => (
+                <Menu.Item
+                  key={g}
+                  title={g}
+                  onPress={() => {
+                    setGroupFilter((prev) => prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]);
+                  }}
+                  leadingIcon={groupFilter.includes(g) ? 'check' : undefined}
+                />
+              ))}
+            </Menu>
+          )}
+
+          {leadStages.length > 0 && (
+            <Menu
+              visible={leadStageMenuVisible}
+              onDismiss={() => setLeadStageMenuVisible(false)}
+              anchor={
+                <Chip
+                  icon="trending-up"
+                  onPress={() => setLeadStageMenuVisible(true)}
+                  compact
+                  style={[
+                    styles.filterChip,
+                    leadStageFilter.length > 0
+                      ? { backgroundColor: theme.colors.primaryContainer }
+                      : { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    leadStageFilter.length > 0 && { color: theme.colors.primary, fontWeight: '600' },
+                  ]}
+                >
+                  {leadStageFilter.length > 0 ? `${t('chats.leadStage', 'שלב ליד')} (${leadStageFilter.length})` : t('chats.leadStage', 'שלב ליד')}
+                </Chip>
+              }
+            >
+              <Menu.Item
+                title={t('common.all')}
+                onPress={() => { setLeadStageFilter([]); setLeadStageMenuVisible(false); }}
+                leadingIcon={leadStageFilter.length === 0 ? 'check' : undefined}
+              />
+              {leadStages.map((s) => (
+                <Menu.Item
+                  key={s.id}
+                  title={s.name}
+                  onPress={() => {
+                    setLeadStageFilter((prev) => prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id]);
+                  }}
+                  leadingIcon={leadStageFilter.includes(s.id) ? 'check' : undefined}
+                />
+              ))}
+            </Menu>
+          )}
         </ScrollView>
       </View>
 
@@ -645,6 +1023,52 @@ export default function ChatsListScreen() {
             </Button>
           </View>
         </Modal>
+
+        {/* Save View Modal */}
+        <Modal
+          visible={showSaveViewModal}
+          onDismiss={() => { setShowSaveViewModal(false); setNewViewName(''); }}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 16 }}>
+            {t('sidebar.saveCurrentView', 'שמור תצוגה נוכחית')}
+          </Text>
+          <PaperInput
+            label={t('sidebar.viewName', 'שם התצוגה')}
+            value={newViewName}
+            onChangeText={setNewViewName}
+            mode="outlined"
+            style={{ marginBottom: 12 }}
+          />
+          {userIsAdmin && (
+            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <Chip
+                selected={saveViewVisibility === 'personal'}
+                onPress={() => setSaveViewVisibility('personal')}
+                compact
+                style={{ backgroundColor: saveViewVisibility === 'personal' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+              >
+                {t('sidebar.onlyMe', 'רק לי')}
+              </Chip>
+              <Chip
+                selected={saveViewVisibility === 'shared'}
+                onPress={() => setSaveViewVisibility('shared')}
+                compact
+                style={{ backgroundColor: saveViewVisibility === 'shared' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+              >
+                {t('sidebar.everyone', 'לכולם')}
+              </Chip>
+            </View>
+          )}
+          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', justifyContent: 'flex-end', gap: 8 }}>
+            <Button mode="outlined" onPress={() => { setShowSaveViewModal(false); setNewViewName(''); }}>
+              {t('common.cancel')}
+            </Button>
+            <Button mode="contained" disabled={!newViewName.trim()} onPress={saveCurrentView}>
+              {t('common.save', 'שמור')}
+            </Button>
+          </View>
+        </Modal>
       </Portal>
     </View>
   );
@@ -660,6 +1084,20 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 18,
     paddingBottom: 12,
+  },
+  viewsRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingTop: 4,
+  },
+  viewTab: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: -1,
+  },
+  viewTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    maxWidth: 100,
   },
   headerTitle: {
     fontSize: 22,
@@ -737,6 +1175,24 @@ const styles = StyleSheet.create({
   },
   chatTime: {
     fontSize: 12,
+  },
+  badgesRow: {
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 2,
+    marginBottom: 1,
+  },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: '700',
   },
   chatBottomRow: {
     alignItems: 'center',

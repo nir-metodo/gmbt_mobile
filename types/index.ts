@@ -5,6 +5,7 @@ export interface User {
   userId: string;
   organization: string;
   wabaNumber: string | null;
+  wabaNumbers?: string[];
   timeZone: string | null;
   phoneNumber: string | null;
   uID: string | null;
@@ -60,6 +61,8 @@ export interface Message {
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'pending';
   direction: 'Inbound' | 'Outbound' | 'inbound' | 'outbound';
   mediaUrl?: string;
+  MediaUrl?: string;
+  media_url?: string;
   mediaType?: string;
   fileName?: string;
   isStarred?: boolean;
@@ -75,6 +78,8 @@ export interface Message {
   reactions?: Record<string, string> | MessageReaction[];
   errorMessage?: string;
   isHistoryMediaSuccess?: boolean;
+  isInternal?: boolean;
+  contextMessageId?: string;
 }
 
 export interface MessageReaction {
@@ -95,12 +100,18 @@ export interface Chat {
   category?: string;
   status?: string;
   lastConversationStatus?: string;
+  lastConversationCategory?: string;
   lastMessageDirection?: string;
   assignedTo?: string;
   ownerId?: string;
   ownerName?: string;
   tags?: string[];
   keys?: string[] | string;
+  leadStageName?: string;
+  leadStageColor?: string;
+  caseStageName?: string;
+  caseStageColor?: string;
+  isCTWA?: boolean;
 }
 
 export interface Lead {

@@ -53,6 +53,9 @@ interface ChatInputProps {
   replyTo?: ReplyPreview | null;
   onCancelReply?: () => void;
   onTextChange?: (text: string) => void;
+  activeWabaNumber?: string | null;
+  wabaNumbers?: string[];
+  onChangeWabaNumber?: (num: string) => void;
 }
 
 function formatRecordingTime(seconds: number): string {
@@ -75,11 +78,15 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   replyTo,
   onCancelReply,
   onTextChange,
+  activeWabaNumber,
+  wabaNumbers,
+  onChangeWabaNumber,
 }, ref) => {
   const [text, setText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingStartMs, setRecordingStartMs] = useState(0);
+  const [showNumberPicker, setShowNumberPicker] = useState(false);
 
   const inputRef = useRef<TextInput>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -100,7 +107,6 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
     clear: () => setText(''),
   }));
 
-  // Pulse animation while recording
   useEffect(() => {
     if (isRecording) {
       const loop = Animated.loop(
@@ -179,28 +185,21 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         }
       }
     } catch {
-      // ignore cleanup errors
     } finally {
       recordingRef.current = null;
       setRecordingSeconds(0);
     }
   }, [recordingStartMs, onVoiceMessage]);
 
-  const containerBg = isInternalNote
-    ? theme.dark ? '#3E3500' : '#FFF9C4'
-    : theme.dark ? theme.custom.inputBackground : '#F0F2F5';
-
-  const containerBorder = isInternalNote
-    ? theme.dark ? '#FFE082' : '#FFB300'
-    : 'transparent';
+  const hasMultipleNumbers = wabaNumbers && wabaNumbers.length > 1;
+  const displayNumber = activeWabaNumber ? activeWabaNumber.slice(-4) : '';
 
   return (
     <View
       style={[
         styles.outerContainer,
         {
-          backgroundColor: theme.colors.surface,
-          borderTopColor: theme.colors.outline,
+          backgroundColor: theme.dark ? '#1e293b' : '#f0ebe3',
           paddingBottom: Math.max(insets.bottom, Platform.OS === 'ios' ? 4 : 6),
         },
       ]}
@@ -225,7 +224,6 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
       {/* Internal note banner + mention pills */}
       {isInternalNote && (
         <View style={[styles.noteBannerWrap, { backgroundColor: theme.dark ? '#2A1F00' : '#FFF8E1' }]}>
-          {/* Top row: label + close */}
           <View style={styles.noteBanner}>
             <MaterialCommunityIcons name="note-text" size={14} color={theme.dark ? '#FFE082' : '#E65100'} />
             <Text style={[styles.noteBannerText, { color: theme.dark ? '#FFE082' : '#E65100' }]}>
@@ -238,15 +236,10 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               <MaterialCommunityIcons name="close" size={16} color={theme.dark ? '#FFE082' : '#E65100'} />
             </Pressable>
           </View>
-
-          {/* Mentioned user pills */}
           {mentionedUsers && mentionedUsers.length > 0 && (
             <View style={styles.pillsRow}>
               {mentionedUsers.map((u) => (
-                <View
-                  key={u.userId}
-                  style={[styles.pill, { backgroundColor: theme.dark ? '#5C4800' : '#FFE0B2' }]}
-                >
+                <View key={u.userId} style={[styles.pill, { backgroundColor: theme.dark ? '#5C4800' : '#FFE0B2' }]}>
                   <MaterialCommunityIcons name="account" size={12} color={theme.dark ? '#FFE082' : '#E65100'} />
                   <Text style={[styles.pillText, { color: theme.dark ? '#FFE082' : '#BF6900' }]} numberOfLines={1}>
                     {u.userName}
@@ -255,6 +248,36 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
                     <MaterialCommunityIcons name="close" size={12} color={theme.dark ? '#FFE082' : '#E65100'} />
                   </Pressable>
                 </View>
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Multi-number selector chip */}
+      {hasMultipleNumbers && !isRecording && (
+        <View style={styles.numberSelectorRow}>
+          <Pressable
+            onPress={() => setShowNumberPicker(!showNumberPicker)}
+            style={[styles.numberChip, { backgroundColor: theme.dark ? '#334155' : '#e2e8f0' }]}
+          >
+            <MaterialCommunityIcons name="phone-outline" size={13} color={theme.colors.primary} />
+            <Text style={{ fontSize: 11, color: theme.colors.primary, fontWeight: '600' }}>
+              {activeWabaNumber || t('chats.selectNumber', 'בחר מספר')}
+            </Text>
+            <MaterialCommunityIcons name="chevron-down" size={14} color={theme.colors.primary} />
+          </Pressable>
+          {showNumberPicker && (
+            <View style={[styles.numberDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline }]}>
+              {wabaNumbers!.map((num) => (
+                <Pressable
+                  key={num}
+                  onPress={() => { onChangeWabaNumber?.(num); setShowNumberPicker(false); }}
+                  style={({ pressed }) => [styles.numberDropdownItem, pressed && { backgroundColor: theme.colors.surfaceVariant }, num === activeWabaNumber && { backgroundColor: theme.dark ? '#1e3a32' : '#d1fae5' }]}
+                >
+                  <MaterialCommunityIcons name={num === activeWabaNumber ? 'check-circle' : 'circle-outline'} size={16} color={theme.colors.primary} />
+                  <Text style={{ fontSize: 13, color: theme.colors.onSurface, marginStart: 8 }}>{num}</Text>
+                </Pressable>
               ))}
             </View>
           )}
@@ -276,13 +299,13 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             hitSlop={8}
             style={[styles.cancelRecordBtn, { borderColor: theme.colors.outline }]}
           >
-            <MaterialCommunityIcons name="trash-can-outline" size={18} color={theme.colors.error} />
+            <MaterialCommunityIcons name="trash-can-outline" size={18} color="#ef4444" />
           </Pressable>
         </View>
       )}
 
       <View style={styles.row}>
-        {/* Note toggle — hidden while recording */}
+        {/* Note toggle */}
         {!isRecording && (
           <Pressable
             onPress={onToggleInternalNote}
@@ -301,12 +324,19 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
           </Pressable>
         )}
 
-        {/* Input container — hidden while recording */}
+        {/* Input container — WhatsApp style rounded */}
         {!isRecording ? (
           <View
             style={[
               styles.inputContainer,
-              { backgroundColor: containerBg, borderColor: containerBorder },
+              {
+                backgroundColor: isInternalNote
+                  ? (theme.dark ? '#3E3500' : '#FFF9C4')
+                  : (theme.dark ? '#2a3942' : '#FFFFFF'),
+                borderColor: isInternalNote
+                  ? (theme.dark ? '#FFE082' : '#FFB300')
+                  : 'transparent',
+              },
             ]}
           >
             <Pressable
@@ -316,10 +346,9 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.6 }]}
             >
               <MaterialCommunityIcons
-                name="attachment"
-                size={22}
-                color={theme.colors.onSurfaceVariant}
-                style={{ transform: [{ rotate: '-45deg' }] }}
+                name="plus"
+                size={24}
+                color={theme.dark ? '#8696a0' : '#54656f'}
               />
             </Pressable>
 
@@ -328,7 +357,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               value={text}
               onChangeText={handleChangeText}
               placeholder={isInternalNote ? t('chats.internalNote') : t('chats.typeMessage')}
-              placeholderTextColor={theme.custom.placeholder}
+              placeholderTextColor={theme.dark ? '#8696a0' : '#667781'}
               multiline
               maxLength={4096}
               editable={!disabled}
@@ -349,26 +378,25 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
                 hitSlop={4}
                 style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.6 }]}
               >
-                <MaterialCommunityIcons name="lightning-bolt" size={20} color={theme.colors.onSurfaceVariant} />
+                <MaterialCommunityIcons name="lightning-bolt" size={20} color={theme.dark ? '#8696a0' : '#54656f'} />
               </Pressable>
             )}
           </View>
         ) : (
-          // Spacer so mic button stays on the right while recording
           <View style={{ flex: 1 }} />
         )}
 
-        {/* Send / Mic button */}
+        {/* Send / Mic button — circular WhatsApp style */}
         {hasText ? (
           <Pressable
             onPress={handleSend}
             disabled={isSending || disabled}
             style={({ pressed }) => [
               styles.sendBtn,
-              { backgroundColor: theme.colors.primary, opacity: pressed ? 0.8 : 1 },
+              { backgroundColor: pressed ? '#1a7a5e' : '#2e6155', opacity: isSending ? 0.6 : 1 },
             ]}
           >
-            <MaterialCommunityIcons name="send" size={20} color="#FFFFFF" />
+            <MaterialCommunityIcons name="send" size={20} color="#FFFFFF" style={{ marginLeft: 2 }} />
           </Pressable>
         ) : isRecording ? (
           <Pressable
@@ -383,10 +411,10 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             disabled={disabled}
             style={({ pressed }) => [
               styles.sendBtn,
-              { backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surfaceVariant },
+              { backgroundColor: pressed ? '#1a7a5e' : '#2e6155' },
             ]}
           >
-            <MaterialCommunityIcons name="microphone" size={22} color={theme.colors.onSurfaceVariant} />
+            <MaterialCommunityIcons name="microphone" size={22} color="#FFFFFF" />
           </Pressable>
         )}
       </View>
@@ -398,7 +426,6 @@ ChatInput.displayName = 'ChatInput';
 
 const styles = StyleSheet.create({
   outerContainer: {
-    borderTopWidth: StyleSheet.hairlineWidth,
   },
   replyPreview: {
     flexDirection: 'row',
@@ -451,6 +478,42 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     flexShrink: 1,
+  },
+  numberSelectorRow: {
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  numberChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  numberDropdown: {
+    position: 'absolute',
+    bottom: 36,
+    left: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    zIndex: 100,
+    minWidth: 180,
+  },
+  numberDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(128,128,128,0.15)',
   },
   recordingBar: {
     flexDirection: 'row',
@@ -506,6 +569,11 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     paddingHorizontal: 4,
     minHeight: 44,
+    elevation: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 0.5 },
+    shadowOpacity: 0.04,
+    shadowRadius: 1,
   },
   iconBtn: {
     width: 36,
@@ -523,10 +591,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
   },
 });

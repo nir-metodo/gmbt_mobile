@@ -5,19 +5,25 @@ import { chatsApi } from '../services/api/chats';
 import { contactsApi } from '../services/api/contacts';
 
 const CHATS_CACHE_KEY = 'gambot_chats_cache';
+const PAGE_SIZE = 50;
 
 interface ChatState {
   chats: Chat[];
+  allMessages: Message[];
   currentMessages: Message[];
   currentPhoneNumber: string | null;
   isLoadingChats: boolean;
   isLoadingMessages: boolean;
+  isLoadingOlderMessages: boolean;
   isSending: boolean;
   searchQuery: string;
   filter: string;
   unreadCount: number;
   categoryFilter: string;
   ownerFilter: string;
+  displayedCount: number;
+  hasMoreMessages: boolean;
+  activeWabaNumber: string | null;
 
   loadChats: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
   setChats: (chats: Chat[]) => void;
@@ -28,29 +34,36 @@ interface ChatState {
   setOwnerFilter: (owner: string) => void;
 
   loadMessages: (organization: string, phoneNumber: string) => Promise<void>;
-  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string, wabaNumber?: string) => Promise<void>;
+  loadOlderMessages: () => void;
+  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string, wabaNumber?: string, senderEmail?: string) => Promise<void>;
   sendInternalMessage: (organization: string, phoneNumber: string, message: string, senderName: string, sentById?: string, mentionedUsers?: { userId: string; userName: string }[]) => Promise<void>;
-  markAsRead: (organization: string, phoneNumber: string) => Promise<void>;
+  markAsRead: (organization: string, phoneNumber: string, userId?: string, userName?: string) => Promise<void>;
   toggleStarred: (organization: string, messageId: string, phoneNumber: string, isStarred: boolean) => Promise<void>;
   addMessage: (message: Message) => void;
   updateMessage: (messageId: string, updates: Partial<Message>) => void;
   updateMessageStatus: (messageId: string, status: Message['status']) => void;
   clearCurrentChat: () => void;
   updateUnreadCount: (count: number) => void;
+  setActiveWabaNumber: (number: string | null) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
+  allMessages: [],
   currentMessages: [],
   currentPhoneNumber: null,
   isLoadingChats: false,
   isLoadingMessages: false,
+  isLoadingOlderMessages: false,
   isSending: false,
   searchQuery: '',
   filter: 'all',
   unreadCount: 0,
   categoryFilter: 'all',
   ownerFilter: 'all',
+  displayedCount: PAGE_SIZE,
+  hasMoreMessages: false,
+  activeWabaNumber: null,
 
   loadChats: async (organization, userId?, dataVisibility?) => {
     const { chats: existingChats } = get();
@@ -84,13 +97,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isRead: c.isRead,
           profilePicture: c.photoURL || c.ProfilePicture || null,
           isOnline: false,
+          category: c.lastConversationCategory || c.category || '',
           status: c.lastConversationStatus || c.conversationStatus || 'Open',
           lastConversationStatus: c.lastConversationStatus || '',
+          lastConversationCategory: c.lastConversationCategory || '',
           lastMessageDirection: c.lastMessageDirection || '',
           ownerId: c.ownerId || '',
           ownerName: c.ownerName || '',
           keys: c.keys,
           tags: Array.isArray(c.keys) ? c.keys : [],
+          leadStageName: c.leadStageName || c.leadStage?.stageName || '',
+          leadStageColor: c.leadStageColor || c.leadStage?.stageColor || c.leadStage?.color || '',
+          caseStageName: c.caseStageName || c.caseStage?.stageName || '',
+          caseStageColor: c.caseStageColor || c.caseStage?.stageColor || c.caseStage?.color || '',
+          isCTWA: !!(c.ctwaClid || c.adSourceId),
         }));
       chatList.sort((a, b) =>
         new Date(b.lastMessageTime || 0).getTime() - new Date(a.lastMessageTime || 0).getTime()
@@ -132,7 +152,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setOwnerFilter: (owner) => set({ ownerFilter: owner }),
 
   loadMessages: async (organization, phoneNumber) => {
-    set({ isLoadingMessages: true, currentPhoneNumber: phoneNumber, currentMessages: [] });
+    set({ isLoadingMessages: true, currentPhoneNumber: phoneNumber, currentMessages: [], allMessages: [], displayedCount: PAGE_SIZE });
     try {
       const raw = await chatsApi.getMessages(organization, phoneNumber);
       const messages = (Array.isArray(raw) ? raw : []).map((m: any) => ({
@@ -143,15 +163,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messageId: m.messageId || m.id || m.Id || '',
         direction: m.direction || (m.sentFromApp ? 'Outbound' : ''),
       }));
-      set({ currentMessages: messages, isLoadingMessages: false });
+      const displayed = messages.slice(-PAGE_SIZE);
+      set({
+        allMessages: messages,
+        currentMessages: displayed,
+        displayedCount: PAGE_SIZE,
+        hasMoreMessages: messages.length > PAGE_SIZE,
+        isLoadingMessages: false,
+      });
     } catch {
-      set({ isLoadingMessages: false, currentMessages: [] });
+      set({ isLoadingMessages: false, currentMessages: [], allMessages: [] });
     }
   },
 
-  sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?) => {
+  loadOlderMessages: () => {
+    const { allMessages, displayedCount, hasMoreMessages } = get();
+    if (!hasMoreMessages) return;
+
+    set({ isLoadingOlderMessages: true });
+
+    const newCount = displayedCount + PAGE_SIZE;
+    const displayed = allMessages.slice(-newCount);
+    set({
+      currentMessages: displayed,
+      displayedCount: newCount,
+      hasMoreMessages: allMessages.length > newCount,
+      isLoadingOlderMessages: false,
+    });
+  },
+
+  sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?, senderEmail?) => {
     set({ isSending: true });
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const fromNumber = wabaNumber || get().activeWabaNumber || '';
     const optimisticMsg: Message = {
       messageId: tempId,
       text: message,
@@ -163,21 +207,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sentByName: senderName || '',
       sentFromApp: true,
       type: 'text',
+      from: fromNumber,
+      to,
       contextMessageId: replyToMessageId,
     } as Message;
     set((state) => ({
       currentMessages: [...state.currentMessages, optimisticMsg],
+      allMessages: [...state.allMessages, optimisticMsg],
     }));
     try {
-      await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId, wabaNumber);
+      console.log('[sendMessage] Sending:', { organization, to, message: message.substring(0, 50), from: fromNumber, senderName, userId, senderEmail });
+      await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId, fromNumber, senderEmail);
       set((state) => ({
         currentMessages: state.currentMessages.map((m) =>
           m.messageId === tempId ? { ...m, status: 'sent' as const } : m
         ),
+        allMessages: state.allMessages.map((m) =>
+          m.messageId === tempId ? { ...m, status: 'sent' as const } : m
+        ),
       }));
     } catch (err) {
+      console.error('[sendMessage] Failed:', err);
       set((state) => ({
         currentMessages: state.currentMessages.map((m) =>
+          m.messageId === tempId ? { ...m, status: 'failed' as const } : m
+        ),
+        allMessages: state.allMessages.map((m) =>
           m.messageId === tempId ? { ...m, status: 'failed' as const } : m
         ),
       }));
@@ -205,6 +260,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } as Message;
     set((state) => ({
       currentMessages: [...state.currentMessages, optimisticMsg],
+      allMessages: [...state.allMessages, optimisticMsg],
       isSending: true,
     }));
     try {
@@ -212,6 +268,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       set((state) => ({
         currentMessages: state.currentMessages.filter((m) => m.messageId !== tempId),
+        allMessages: state.allMessages.filter((m) => m.messageId !== tempId),
       }));
       throw err;
     } finally {
@@ -219,14 +276,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  markAsRead: async (organization, phoneNumber) => {
+  markAsRead: async (organization, phoneNumber, userId, userName) => {
+    set((state) => ({
+      chats: state.chats.map((c) =>
+        c.phoneNumber === phoneNumber ? { ...c, unreadCount: 0, isRead: true } : c
+      ),
+    }));
     try {
-      await chatsApi.markAsRead(organization, phoneNumber);
-      set((state) => ({
-        chats: state.chats.map((c) =>
-          c.phoneNumber === phoneNumber ? { ...c, unreadCount: 0, isRead: true } : c
-        ),
-      }));
+      await chatsApi.markAsRead(organization, phoneNumber, userId, userName);
     } catch {}
   },
 
@@ -235,6 +292,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await chatsApi.toggleStarred(organization, messageId, phoneNumber, isStarred);
       set((state) => ({
         currentMessages: state.currentMessages.map((m) =>
+          m.messageId === messageId ? { ...m, isStarred } : m
+        ),
+        allMessages: state.allMessages.map((m) =>
           m.messageId === messageId ? { ...m, isStarred } : m
         ),
       }));
@@ -247,13 +307,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         (m) => m.messageId === message.messageId
       );
       if (exists) return state;
-      return { currentMessages: [...state.currentMessages, message] };
+      return {
+        currentMessages: [...state.currentMessages, message],
+        allMessages: [...state.allMessages, message],
+      };
     });
   },
 
   updateMessage: (messageId, updates) => {
     set((state) => ({
       currentMessages: state.currentMessages.map((m) =>
+        m.messageId === messageId ? { ...m, ...updates } : m
+      ),
+      allMessages: state.allMessages.map((m) =>
         m.messageId === messageId ? { ...m, ...updates } : m
       ),
     }));
@@ -264,12 +330,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentMessages: state.currentMessages.map((m) =>
         m.messageId === messageId ? { ...m, status } : m
       ),
+      allMessages: state.allMessages.map((m) =>
+        m.messageId === messageId ? { ...m, status } : m
+      ),
     }));
   },
 
   clearCurrentChat: () => {
-    set({ currentMessages: [], currentPhoneNumber: null });
+    set({ currentMessages: [], allMessages: [], currentPhoneNumber: null, displayedCount: PAGE_SIZE, hasMoreMessages: false });
   },
 
   updateUnreadCount: (count) => set({ unreadCount: count }),
+
+  setActiveWabaNumber: (number) => set({ activeWabaNumber: number }),
 }));

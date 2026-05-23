@@ -33,12 +33,15 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
+import { ENDPOINTS } from '../../../../constants/api';
+import axiosInstance from '../../../../services/api/axiosInstance';
 import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 import type { Case } from '../../../../types';
 import { useContactLookup } from '../../../../hooks/useContactLookup';
 import ContactLookupField from '../../../../components/ContactLookupField';
+import { DynamicFieldsSectionForm, type DynamicSection } from '../../../../components/DynamicFieldsSection';
 
 const STATUS_FILTERS = ['all', 'open', 'in_progress', 'resolved', 'closed'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
@@ -66,6 +69,15 @@ function getStatusColor(status: string): string {
   return STATUS_COLORS[normalized] || '#9E9E9E';
 }
 
+interface SavedView {
+  id: string;
+  Name: string;
+  ViewData: { filters?: any; searchTerm?: string };
+  IsPinned?: boolean;
+  Visibility?: string;
+  UserId?: string;
+}
+
 export default function CasesListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -74,6 +86,7 @@ export default function CasesListScreen() {
   const { t } = useTranslation();
 
   const user = useAuthStore((s) => s.user);
+  const userIsAdmin = user?.SecurityRole === 'admin' || user?.SecurityRole === 'Admin';
   const { contactSearch, contactResults, contactSearching, selectedContact, handleContactSearch, handleSelectContact, resetContactLookup } = useContactLookup();
 
   // ── Pagination state ────────────────────────────────────────────────────────
@@ -90,6 +103,7 @@ export default function CasesListScreen() {
 
   // ── Filter state ─────────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [advancedFilterVisible, setAdvancedFilterVisible] = useState(false);
@@ -98,6 +112,13 @@ export default function CasesListScreen() {
   const [filterPriority, setFilterPriority] = useState('');
   const [filterDateRange, setFilterDateRange] = useState('');
   const [filterMine, setFilterMine] = useState(false);
+
+  // ── Saved views ─────────────────────────────────────────────────────────────
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [activeViewId, setActiveViewId] = useState('__all');
+  const [showSaveViewModal, setShowSaveViewModal] = useState(false);
+  const [newViewName, setNewViewName] = useState('');
+  const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
 
   // ── Create form state ────────────────────────────────────────────────────────
   const [createModalVisible, setCreateModalVisible] = useState(false);
@@ -109,18 +130,26 @@ export default function CasesListScreen() {
   const [formContactName, setFormContactName] = useState('');
   const [formAssignedTo, setFormAssignedTo] = useState('');
   const [statusPickerCase, setStatusPickerCase] = useState<Case | null>(null);
+  const [caseFormSections, setCaseFormSections] = useState<DynamicSection[]>([]);
+  const [caseFormLayout, setCaseFormLayout] = useState<string[]>([]);
+  const [formDynamicFields, setFormDynamicFields] = useState<Record<string, any>>({});
 
   const searchAnim = useRef(new Animated.Value(0)).current;
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   // ── Build filters for API ─────────────────────────────────────────────────
   const buildFilters = useCallback(() => ({
-    searchTerm: searchQuery.trim(),
+    searchTerm: debouncedSearch.trim(),
     statuses: statusFilter !== 'all' ? [statusFilter] : [],
     categories: filterCategory.trim() ? [filterCategory.trim()] : [],
     owners: filterAssignee.trim() ? [filterAssignee.trim()] : [],
     priorities: filterPriority ? [filterPriority] : [],
     dateRangePreset: filterDateRange || '',
-  }), [searchQuery, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange]);
+  }), [debouncedSearch, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange]);
 
   const casesDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'cases');
 
@@ -155,7 +184,100 @@ export default function CasesListScreen() {
   useEffect(() => {
     fetchPage(1, true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.organization, searchQuery, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange, filterMine]);
+  }, [user?.organization, debouncedSearch, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange, filterMine]);
+
+  // Load saved views
+  useEffect(() => {
+    if (!user?.organization) return;
+    axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, {
+      organization: user.organization,
+      userId: user.uID || user.userId,
+      viewType: 'cases',
+    }).then((res) => {
+      const data = res.data;
+      if (data?.Success && data?.Data?.views) {
+        setSavedViews(data.Data.views);
+      } else if (Array.isArray(data)) {
+        setSavedViews(data);
+      }
+    }).catch(() => {});
+  }, [user?.organization, user?.uID, user?.userId]);
+
+  const loadSavedView = useCallback((view: SavedView) => {
+    const viewData = view.ViewData || {};
+    const filters = viewData.filters || {};
+    setActiveViewId(view.id);
+    setFilterMine(false);
+    setStatusFilter(filters.status ? filters.status as StatusFilter : 'all');
+    setFilterCategory(filters.category ?? '');
+    setFilterAssignee(filters.assignee ?? '');
+    setFilterPriority(filters.priority ?? '');
+    setFilterDateRange(filters.dateRange ?? '');
+    if (viewData.searchTerm) setSearchQuery(viewData.searchTerm);
+  }, []);
+
+  const clearAllFilters = useCallback(() => {
+    setActiveViewId('__all');
+    setStatusFilter('all');
+    setFilterCategory('');
+    setFilterAssignee('');
+    setFilterPriority('');
+    setFilterDateRange('');
+    setFilterMine(false);
+    setSearchQuery('');
+  }, []);
+
+  const saveCurrentView = useCallback(async () => {
+    if (!newViewName.trim() || !user?.organization) return;
+    try {
+      const viewData = {
+        filters: {
+          status: statusFilter !== 'all' ? statusFilter : '',
+          category: filterCategory,
+          assignee: filterAssignee,
+          priority: filterPriority,
+          dateRange: filterDateRange,
+        },
+        searchTerm: searchQuery,
+      };
+      const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
+        organization: user.organization,
+        userId: user.uID || user.userId,
+        viewType: 'cases',
+        name: newViewName.trim(),
+        isPinned: false,
+        viewData,
+        visibility: userIsAdmin ? saveViewVisibility : 'personal',
+      });
+      if (res.data?.Success) {
+        const newView: SavedView = {
+          id: res.data.Data?.id || Date.now().toString(),
+          Name: newViewName.trim(),
+          ViewData: viewData,
+          IsPinned: false,
+          Visibility: userIsAdmin ? saveViewVisibility : 'personal',
+          UserId: user.uID || user.userId,
+        };
+        setSavedViews((prev) => [...prev, newView]);
+      }
+    } catch {}
+    setShowSaveViewModal(false);
+    setNewViewName('');
+    setSaveViewVisibility('personal');
+  }, [newViewName, user, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange, searchQuery, userIsAdmin, saveViewVisibility]);
+
+  const deleteSavedView = useCallback(async (viewId: string) => {
+    if (!user?.organization) return;
+    try {
+      await axiosInstance.post(ENDPOINTS.DELETE_USER_VIEW, {
+        organization: user.organization,
+        userId: user.uID || user.userId,
+        viewId,
+      });
+      setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
+      if (activeViewId === viewId) clearAllFilters();
+    } catch {}
+  }, [user, activeViewId, clearAllFilters]);
 
   // Refetch on screen focus (e.g. returning from detail screen)
   const didMountRef = useRef(false);
@@ -204,8 +326,18 @@ export default function CasesListScreen() {
     setFormCategory('');
     setFormContactName('');
     setFormAssignedTo('');
+    setFormDynamicFields({});
     resetContactLookup();
   }, [resetContactLookup]);
+
+  // Load case form settings for dynamic fields
+  useEffect(() => {
+    if (!user?.organization) return;
+    casesApi.getSettings(user.organization).then((settings: any) => {
+      if (Array.isArray(settings?.formSections)) setCaseFormSections(settings.formSections);
+      if (Array.isArray(settings?.formLayout)) setCaseFormLayout(settings.formLayout);
+    }).catch(() => {});
+  }, [user?.organization]);
 
   const handleCreate = useCallback(async () => {
     if (!user?.organization || !formTitle.trim()) return;
@@ -223,6 +355,8 @@ export default function CasesListScreen() {
         contactId: selectedContact?.id || undefined,
         assignedTo: formAssignedTo.trim() || undefined,
         status: 'open',
+        customFields: formDynamicFields,
+        ...formDynamicFields,
       } as any, user.fullname);
       setCreateModalVisible(false);
       resetForm();
@@ -232,7 +366,7 @@ export default function CasesListScreen() {
     } finally {
       setCreating(false);
     }
-  }, [user?.organization, formTitle, formDescription, formPriority, formCategory, formContactName, formAssignedTo, resetForm, fetchCases, t]);
+  }, [user?.organization, formTitle, formDescription, formPriority, formCategory, formContactName, formAssignedTo, formDynamicFields, resetForm, fetchCases, t]);
 
   const openCase = useCallback(
     (caseItem: Case) => {
@@ -262,10 +396,23 @@ export default function CasesListScreen() {
     outputRange: [0, 56],
   });
 
+  const handleTakeOwnership = useCallback(async (caseItem: Case) => {
+    if (!user?.organization) return;
+    const userId = user.uID || user.userId || '';
+    const userName = user.fullname || '';
+    setCases((prev) => prev.map((c) => c.id === caseItem.id ? { ...c, assignedTo: userName, assignedToId: userId } as any : c));
+    try {
+      await casesApi.update(user.organization, caseItem.id, { assignedTo: userName, assignedToId: userId, ownerId: userId, ownerName: userName } as any, userName);
+    } catch {
+      setCases((prev) => prev.map((c) => c.id === caseItem.id ? { ...c, assignedTo: (caseItem as any).assignedTo, assignedToId: (caseItem as any).assignedToId } : c));
+    }
+  }, [user]);
+
   const renderCaseCard = useCallback(
     ({ item }: { item: Case }) => {
       const priorityColor = PRIORITY_COLORS[item.priority] || PRIORITY_COLORS.medium;
       const statusColor = getStatusColor(item.status);
+      const isMyCase = ((item as any).ownerId || (item as any).assignedToId) === (user?.uID || user?.userId);
 
       return (
         <Pressable
@@ -343,12 +490,25 @@ export default function CasesListScreen() {
                   {formatDate(item.createdOn || '')}
                 </Text>
               </View>
+
+              {!isMyCase && (
+                <Pressable
+                  onPress={(e) => { e.stopPropagation?.(); handleTakeOwnership(item); }}
+                  style={[styles.metaItem, { flexDirection }]}
+                  hitSlop={4}
+                >
+                  <MaterialCommunityIcons name="account-arrow-left" size={14} color={theme.colors.tertiary || '#FF9800'} />
+                  <Text variant="labelSmall" style={{ color: theme.colors.tertiary || '#FF9800', marginStart: 3, fontWeight: '600' }}>
+                    {t('leads.takeOwnership', 'קח בעלות')}
+                  </Text>
+                </Pressable>
+              )}
             </View>
           </View>
         </Pressable>
       );
     },
-    [theme, openCase, flexDirection, textAlign],
+    [theme, openCase, flexDirection, textAlign, user, handleTakeOwnership, t],
   );
 
   const renderEmpty = useCallback(() => {
@@ -444,6 +604,7 @@ export default function CasesListScreen() {
             placeholder={t('cases.searchPlaceholder')}
             value={searchQuery}
             onChangeText={setSearchQuery}
+            returnKeyType="search"
             style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
             inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
             iconColor={theme.colors.onSurfaceVariant}
@@ -451,6 +612,56 @@ export default function CasesListScreen() {
           />
         </Animated.View>
       )}
+
+      {/* Saved Views Tabs */}
+      <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.viewsScroll, { flexDirection }]}>
+          <Pressable
+            onPress={clearAllFilters}
+            style={[styles.viewTab, activeViewId === '__all' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__all' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('common.all')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); }}
+            style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__mine' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('leads.viewMine', 'שלי')}
+            </Text>
+          </Pressable>
+          {savedViews.filter((v) => {
+            const vis = v.Visibility || 'personal';
+            if (vis === 'shared') return true;
+            return (v.UserId || '') === (user?.uID || user?.userId || '');
+          }).map((view) => (
+            <Pressable
+              key={view.id}
+              onPress={() => loadSavedView(view)}
+              onLongPress={() => {
+                Alert.alert(
+                  view.Name,
+                  t('sidebar.deleteViewConfirm', 'Delete this view?'),
+                  [
+                    { text: t('common.cancel'), style: 'cancel' },
+                    { text: t('common.delete', 'Delete'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
+                  ],
+                );
+              }}
+              style={[styles.viewTab, activeViewId === view.id && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+            >
+              <Text style={[styles.viewTabText, { color: activeViewId === view.id ? theme.colors.primary : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
+                {(view.Visibility === 'shared' ? '👥 ' : '') + view.Name}
+              </Text>
+            </Pressable>
+          ))}
+          <Pressable onPress={() => setShowSaveViewModal(true)} style={styles.viewTab}>
+            <MaterialCommunityIcons name="plus" size={18} color={theme.colors.primary} />
+          </Pressable>
+        </ScrollView>
+      </View>
 
       {/* Filter chips */}
       <View
@@ -681,6 +892,22 @@ export default function CasesListScreen() {
                 right={<TextInput.Icon icon="account-check" />}
               />
 
+              {caseFormSections.length > 0 && (
+                <View style={{ marginTop: 8 }}>
+                  <DynamicFieldsSectionForm
+                    sections={caseFormSections}
+                    values={formDynamicFields}
+                    onChange={(key: string, val: any) => setFormDynamicFields((prev) => ({ ...prev, [key]: val }))}
+                    lang={isRTL ? 'he' : 'en'}
+                    formLayout={caseFormLayout}
+                    theme={theme}
+                    textAlign={textAlign}
+                    writingDirection={isRTL ? 'rtl' : 'ltr'}
+                    flexDirection={flexDirection}
+                  />
+                </View>
+              )}
+
               <View style={[styles.modalActions, { flexDirection }]}>
                 <Button
                   mode="outlined"
@@ -875,6 +1102,52 @@ export default function CasesListScreen() {
             </Button>
           </View>
         </Modal>
+
+        {/* Save View Modal */}
+        <Modal
+          visible={showSaveViewModal}
+          onDismiss={() => { setShowSaveViewModal(false); setNewViewName(''); }}
+          contentContainerStyle={[styles.statusPickerModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 16 }}>
+            {t('sidebar.saveCurrentView', 'שמור תצוגה נוכחית')}
+          </Text>
+          <TextInput
+            label={t('sidebar.viewName', 'שם התצוגה')}
+            value={newViewName}
+            onChangeText={setNewViewName}
+            mode="outlined"
+            style={{ marginBottom: 12 }}
+          />
+          {userIsAdmin && (
+            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <Chip
+                selected={saveViewVisibility === 'personal'}
+                onPress={() => setSaveViewVisibility('personal')}
+                compact
+                style={{ backgroundColor: saveViewVisibility === 'personal' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+              >
+                {t('sidebar.onlyMe', 'רק לי')}
+              </Chip>
+              <Chip
+                selected={saveViewVisibility === 'shared'}
+                onPress={() => setSaveViewVisibility('shared')}
+                compact
+                style={{ backgroundColor: saveViewVisibility === 'shared' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+              >
+                {t('sidebar.everyone', 'לכולם')}
+              </Chip>
+            </View>
+          )}
+          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', justifyContent: 'flex-end', gap: 8 }}>
+            <Button mode="outlined" onPress={() => { setShowSaveViewModal(false); setNewViewName(''); }}>
+              {t('common.cancel')}
+            </Button>
+            <Button mode="contained" disabled={!newViewName.trim()} onPress={saveCurrentView}>
+              {t('common.save', 'שמור')}
+            </Button>
+          </View>
+        </Modal>
       </Portal>
     </View>
   );
@@ -903,6 +1176,25 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   searchbar: { height: 40, borderRadius: 20, elevation: 0 },
+  viewsRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingTop: 4,
+  },
+  viewTab: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: -1,
+  },
+  viewTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    maxWidth: 100,
+  },
+  viewsScroll: {
+    paddingHorizontal: 14,
+    gap: 8,
+    alignItems: 'center',
+  },
   filtersRow: {
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,

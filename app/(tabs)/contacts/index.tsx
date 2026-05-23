@@ -51,11 +51,17 @@ export default function ContactsListScreen() {
 
   const contacts = useContactStore((s) => s.contacts);
   const isLoading = useContactStore((s) => s.isLoading);
-  const searchQuery = useContactStore((s) => s.searchQuery);
-  const setSearchQuery = useContactStore((s) => s.setSearchQuery);
+  const storeSetSearchQuery = useContactStore((s) => s.setSearchQuery);
   const loadContacts = useContactStore((s) => s.loadContacts);
   const deleteContact = useContactStore((s) => s.deleteContact);
-  const getFilteredContacts = useContactStore((s) => s.getFilteredContacts);
+
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchInput), 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const [refreshing, setRefreshing] = useState(false);
   const [searchVisible, setSearchVisible] = useState(true);
@@ -122,7 +128,18 @@ export default function ContactsListScreen() {
   }, [contacts]);
 
   const filteredContacts = useMemo(() => {
-    let result = getFilteredContacts();
+    let result = contacts;
+
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.trim().toLowerCase();
+      result = result.filter(
+        (c) =>
+          c.name?.toLowerCase().includes(q) ||
+          c.phoneNumber?.includes(q) ||
+          c.email?.toLowerCase().includes(q) ||
+          extractContactTags(c.keys).some((tag) => tag.toLowerCase().includes(q)),
+      );
+    }
 
     if (filterMode === 'myContacts') {
       result = result.filter((c) => c.ownerId === currentUserId);
@@ -160,7 +177,7 @@ export default function ContactsListScreen() {
     }
 
     return result;
-  }, [contacts, searchQuery, getFilteredContacts, filterMode, currentUserId, selectedTag, filterOwner, filterStatus, sortBy]);
+  }, [contacts, debouncedSearch, filterMode, currentUserId, selectedTag, filterOwner, filterStatus, sortBy]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
@@ -178,10 +195,12 @@ export default function ContactsListScreen() {
         useNativeDriver: false,
       }).start(() => {
         setSearchVisible(false);
-        setSearchQuery('');
+        setSearchInput('');
+        setDebouncedSearch('');
+        storeSetSearchQuery('');
       });
     }
-  }, [searchVisible, searchAnim, setSearchQuery]);
+  }, [searchVisible, searchAnim, storeSetSearchQuery]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -447,8 +466,9 @@ export default function ContactsListScreen() {
         >
           <Searchbar
             placeholder={t('contacts.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
+            value={searchInput}
+            onChangeText={setSearchInput}
+            returnKeyType="search"
             style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
             inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left', paddingVertical: 0, alignSelf: 'center' }}
             iconColor={theme.colors.onSurfaceVariant}

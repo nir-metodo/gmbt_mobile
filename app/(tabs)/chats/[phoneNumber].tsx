@@ -46,9 +46,16 @@ import {
 import WebSocketService from '../../../services/websocket';
 import { MessageBubble } from '../../../components/chat/MessageBubble';
 import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/ChatInput';
+import { MediaPanel } from '../../../components/chat/MediaPanel';
+import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
 import { chatsApi } from '../../../services/api/chats';
+import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
 import { tasksApi } from '../../../services/api/tasks';
+import { phoneCallsApi } from '../../../services/api/phoneCalls';
+import { makeGambotCall } from '../../../utils/phoneCall';
+import { prefetchMediaList } from '../../../services/mediaPrefetcher';
+import type { MediaType } from '../../../services/mediaCache';
 import type { Message, Template, QuickMessage } from '../../../types';
 
 type ListItem =
@@ -92,8 +99,11 @@ export default function ChatConversationScreen() {
   );
   const currentMessages = useChatStore((s) => s.currentMessages);
   const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
+  const isLoadingOlderMessages = useChatStore((s) => s.isLoadingOlderMessages);
+  const hasMoreMessages = useChatStore((s) => s.hasMoreMessages);
   const isSending = useChatStore((s) => s.isSending);
   const loadMessages = useChatStore((s) => s.loadMessages);
+  const loadOlderMessages = useChatStore((s) => s.loadOlderMessages);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const sendInternalMessage = useChatStore(
     (s) => s.sendInternalMessage,
@@ -103,10 +113,13 @@ export default function ChatConversationScreen() {
   const addMessage = useChatStore((s) => s.addMessage);
   const updateMessage = useChatStore((s) => s.updateMessage);
   const clearCurrentChat = useChatStore((s) => s.clearCurrentChat);
+  const activeWabaNumber = useChatStore((s) => s.activeWabaNumber);
+  const setActiveWabaNumber = useChatStore((s) => s.setActiveWabaNumber);
 
   const [isInternalNote, setIsInternalNote] = useState(false);
   const [messageMode, setMessageMode] = useState<'regular' | 'internal'>('regular');
   const [menuVisible, setMenuVisible] = useState(false);
+  const [mediaPanelVisible, setMediaPanelVisible] = useState(false);
   const [selectedMessage, setSelectedMessage] =
     useState<Message | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -160,6 +173,13 @@ export default function ChatConversationScreen() {
   // Timeline entries
   const [timelineEntries, setTimelineEntries] = useState<any[]>([]);
 
+  // Outbound calling
+  const [isInitiatingCall, setIsInitiatingCall] = useState(false);
+  const [telSettings, setTelSettings] = useState<{ phoneNumbers?: any[]; defaultCallerId?: string } | null>(null);
+
+  // Contact Info sheet (category, status, lead stage, tags, timeline)
+  const [showContactInfoSheet, setShowContactInfoSheet] = useState(false);
+
   // Quick Actions sheet
   const [showQuickActionsSheet, setShowQuickActionsSheet] = useState(false);
 
@@ -174,27 +194,92 @@ export default function ChatConversationScreen() {
 
   const contactName = chat?.contactName || phoneNumber || '';
 
+  const wabaNumbers = user?.wabaNumbers || (user?.wabaNumber ? [user.wabaNumber] : []);
+
+  useEffect(() => {
+    if (!activeWabaNumber && user?.wabaNumber) {
+      setActiveWabaNumber(user.wabaNumber);
+    }
+  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber]);
+
   const [conversationLive, setConversationLive] = useState<boolean | null>(null);
   const [recipientReplied24h, setRecipientReplied24h] = useState<boolean | null>(null);
+  const [conversationExpiresAt, setConversationExpiresAt] = useState<string | null>(null);
 
   const fetchConversationStatus = useCallback(() => {
     if (!user?.organization || !phoneNumber) return;
-    chatsApi.getConversationStatus(user.organization, phoneNumber as string).then((res) => {
+    chatsApi.getConversationStatus(user.organization, phoneNumber as string, activeWabaNumber || undefined).then((res) => {
       const live = res?.IsConversationLive ?? res?.IsConversationLiveByPhoneNumber ?? res?.isConversationLive ?? res?.isLive;
       setConversationLive(live === true || live === 'true');
       const replied = res?.IsRecipientReplyLast24Hours ?? res?.isRecipientReplyLast24Hours;
       if (replied !== undefined && replied !== null) {
         setRecipientReplied24h(replied === true || replied === 'true');
       }
+      const expires = res?.ConversationExpiresAt ?? res?.conversationExpiresAt;
+      setConversationExpiresAt(expires || null);
     }).catch(() => {
       setConversationLive(false);
       setRecipientReplied24h(false);
+      setConversationExpiresAt(null);
     });
-  }, [user?.organization, phoneNumber]);
+  }, [user?.organization, phoneNumber, activeWabaNumber]);
 
   useEffect(() => {
     fetchConversationStatus();
   }, [fetchConversationStatus]);
+
+  // Load telephony settings for outbound calling
+  useEffect(() => {
+    if (!user?.organization) return;
+    phoneCallsApi.getTelephonySettings(user.organization)
+      .then((data) => { if (data?.phoneNumbers?.length) setTelSettings(data); })
+      .catch(() => {});
+  }, [user?.organization]);
+
+  const handleInitiateCall = useCallback(async () => {
+    if (!user?.organization || !phoneNumber || isInitiatingCall) return;
+
+    const agentPhone = (user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone;
+    const fromNumber = telSettings?.defaultCallerId || telSettings?.phoneNumbers?.[0]?.number;
+
+    if (!agentPhone) {
+      Alert.alert(
+        t('phoneCalls.gambotCallTitle', 'Gambot Call'),
+        t('phoneCalls.noAgentPhone', 'No phone number configured for your account. Go to settings to add one.'),
+      );
+      return;
+    }
+    if (!fromNumber) {
+      Linking.openURL(`tel:${phoneNumber}`);
+      return;
+    }
+
+    setIsInitiatingCall(true);
+    try {
+      const result = await makeGambotCall({
+        phoneNumber: phoneNumber as string,
+        organization: user.organization,
+        agentPhone,
+        fromPhoneNumber: fromNumber,
+        agentId: user.uID || user.userId || '',
+        agentName: user.fullname || user.FullName || '',
+        customerName: contactName,
+      });
+
+      if (result.success) {
+        Alert.alert(
+          t('phoneCalls.gambotCallTitle', 'Gambot Call'),
+          t('phoneCalls.callInitiated', 'Call initiated. Your phone will ring shortly.'),
+        );
+      } else {
+        Alert.alert(t('common.error'), t('phoneCalls.gambotCallFailed', 'Failed to initiate call'));
+      }
+    } catch {
+      Alert.alert(t('common.error'), t('phoneCalls.gambotCallFailed', 'Failed to initiate call'));
+    } finally {
+      setIsInitiatingCall(false);
+    }
+  }, [user, phoneNumber, isInitiatingCall, telSettings, contactName, t]);
 
   // Load timeline entries
   useEffect(() => {
@@ -291,6 +376,7 @@ export default function ChatConversationScreen() {
           templateId,
           user.userId,
           templateVariableQuery,
+          activeWabaNumber || user.wabaNumber || '',
         );
         if (result?.Success === false) {
           throw new Error(result?.Message || t('chats.templateSendError'));
@@ -298,7 +384,6 @@ export default function ChatConversationScreen() {
         setSelectedTemplateForVars(null);
         setTemplateVariableValues({});
         loadMessages(user.organization, phoneNumber);
-        // After template sent, re-check conversation status (still waiting for reply)
         fetchConversationStatus();
         Alert.alert(t('common.success'), t('chats.templateSent'));
       } catch (err: any) {
@@ -308,7 +393,7 @@ export default function ChatConversationScreen() {
         setIsSendingTemplate(false);
       }
     },
-    [user, phoneNumber, loadMessages, t, fetchConversationStatus],
+    [user, phoneNumber, loadMessages, t, fetchConversationStatus, activeWabaNumber],
   );
 
   const handleSendTemplateWithVariables = useCallback(() => {
@@ -349,6 +434,7 @@ export default function ChatConversationScreen() {
         phoneNumber,
         scheduleText.trim(),
         scheduledTime,
+        activeWabaNumber || user.wabaNumber || '',
       );
       Alert.alert(t('common.success'), t('chats.scheduleSuccess', 'ההודעה תוזמנה בהצלחה'));
       setShowScheduleModal(false);
@@ -359,7 +445,7 @@ export default function ChatConversationScreen() {
     } finally {
       setIsScheduling(false);
     }
-  }, [user, phoneNumber, scheduleText, scheduledDateTime, scheduleDate, scheduleTime, t]);
+  }, [user, phoneNumber, scheduleText, scheduledDateTime, scheduleDate, scheduleTime, t, activeWabaNumber]);
 
   // Hide tab bar in conversation
   useLayoutEffect(() => {
@@ -374,7 +460,7 @@ export default function ChatConversationScreen() {
   useEffect(() => {
     if (user?.organization && phoneNumber) {
       loadMessages(user.organization, phoneNumber);
-      markAsRead(user.organization, phoneNumber);
+      markAsRead(user.organization, phoneNumber, user.uID || user.userId, user.fullname || user.displayName || '');
     }
     return () => {
       clearCurrentChat();
@@ -420,7 +506,7 @@ export default function ChatConversationScreen() {
           }
         });
         if (msgs.length > 0) {
-          markAsRead(user.organization, phoneNumber);
+          markAsRead(user.organization, phoneNumber, user.uID || user.userId, user.fullname || user.displayName || '');
         }
         if (hasInbound) {
           setConversationLive(true);
@@ -459,6 +545,22 @@ export default function ChatConversationScreen() {
     }
     prevMessageCount.current = currentMessages.length;
   }, [currentMessages.length]);
+
+  // Pre-cache media from visible messages in the background
+  useEffect(() => {
+    if (currentMessages.length === 0) return;
+    const mediaItems: Array<{ url: string; type: MediaType }> = [];
+    for (const msg of currentMessages) {
+      const url = msg.mediaUrl || (msg as any).MediaUrl || (msg as any).media_url;
+      if (!url) continue;
+      const t = (msg.type || (msg as any).messageType) as string;
+      const mediaType: MediaType = (['image', 'video', 'audio', 'document'].includes(t) ? t : 'image') as MediaType;
+      mediaItems.push({ url, type: mediaType });
+    }
+    if (mediaItems.length > 0) {
+      prefetchMediaList(mediaItems);
+    }
+  }, [currentMessages]);
 
   // Build list data with date separators + timeline entries (newest first for inverted list)
   const listData = useMemo<ListItem[]>(() => {
@@ -644,7 +746,8 @@ export default function ChatConversationScreen() {
             user.fullname,
             user.uID || user.userId || '',
             replyToMessage?.messageId,
-            user.wabaNumber || '',
+            activeWabaNumber || user.wabaNumber || '',
+            user.email || user.Email || '',
           );
         }
         setReplyToMessage(null);
@@ -652,7 +755,7 @@ export default function ChatConversationScreen() {
         Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
       }
     },
-    [user, phoneNumber, isInternalNote, isWindowClosed, handleOpenConversation, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t],
+    [user, phoneNumber, isInternalNote, isWindowClosed, handleOpenConversation, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber],
   );
 
   const sendPickedMedia = useCallback(async (uri: string, fileName: string, mimeType: string, fileSize?: number) => {
@@ -664,11 +767,12 @@ export default function ChatConversationScreen() {
         { uri, name: fileName, type: mimeType, size: fileSize },
         '',
         user?.uID || user?.userId || '',
+        activeWabaNumber || user.wabaNumber || '',
       );
     } catch {
       Alert.alert(t('common.error'), t('chats.sendFailed', 'Failed to send media'));
     }
-  }, [user?.organization, phoneNumber, user?.uID, user?.userId, t]);
+  }, [user?.organization, phoneNumber, user?.uID, user?.userId, t, activeWabaNumber]);
 
   const handleAttachment = useCallback(() => {
     Alert.alert(
@@ -767,11 +871,12 @@ export default function ChatConversationScreen() {
         { uri, name: fileName, type: mimeType },
         '',
         user?.uID || user?.userId || '',
+        activeWabaNumber || user.wabaNumber || '',
       );
     } catch {
       Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההקלטה נכשלה'));
     }
-  }, [user?.organization, user?.uID, user?.userId, phoneNumber, t]);
+  }, [user?.organization, user?.uID, user?.userId, phoneNumber, t, activeWabaNumber]);
 
   // Long press context actions
   const handleMessageLongPress = useCallback(
@@ -889,10 +994,15 @@ export default function ChatConversationScreen() {
   }, []);
 
   const handleScroll = useCallback((e: any) => {
-    setShowScrollBtn(
-      e.nativeEvent.contentOffset.y > 400,
-    );
+    const offsetY = e.nativeEvent.contentOffset.y;
+    setShowScrollBtn(offsetY > 400);
   }, []);
+
+  const handleEndReached = useCallback(() => {
+    if (hasMoreMessages && !isLoadingOlderMessages) {
+      loadOlderMessages();
+    }
+  }, [hasMoreMessages, isLoadingOlderMessages, loadOlderMessages]);
 
   // Render each list item
   const renderItem = useCallback(
@@ -905,8 +1015,8 @@ export default function ChatConversationScreen() {
                 styles.separatorPill,
                 {
                   backgroundColor: theme.dark
-                    ? 'rgba(255,255,255,0.08)'
-                    : 'rgba(0,0,0,0.06)',
+                    ? 'rgba(255,255,255,0.1)'
+                    : '#ffffffcc',
                 },
               ]}
             >
@@ -915,7 +1025,7 @@ export default function ChatConversationScreen() {
                 style={[
                   styles.separatorText,
                   {
-                    color: theme.colors.onSurfaceVariant,
+                    color: theme.dark ? '#8696a0' : '#54656f',
                   },
                 ]}
               >
@@ -991,10 +1101,9 @@ export default function ChatConversationScreen() {
           styles.screen,
           { backgroundColor: theme.custom.chatBackground },
         ]}
-        behavior={
-          Platform.OS === 'ios' ? 'padding' : 'height'
-        }
-        keyboardVerticalOffset={0}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        enabled
       >
         {/* Header */}
         <View
@@ -1071,25 +1180,32 @@ export default function ChatConversationScreen() {
             </Pressable>
 
             <View style={styles.headerActions}>
+              {conversationExpiresAt && conversationLive && (() => {
+                const diff = new Date(conversationExpiresAt).getTime() - Date.now();
+                if (diff <= 0) return null;
+                const hours = Math.floor(diff / 3600000);
+                const mins = Math.floor((diff % 3600000) / 60000);
+                return (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, marginEnd: 2 }}>
+                    <MaterialCommunityIcons name="clock-outline" size={13} color="#90EE90" />
+                    <Text style={{ color: '#90EE90', fontSize: 11, fontWeight: '600', marginStart: 3 }}>
+                      {hours}:{mins.toString().padStart(2, '0')}
+                    </Text>
+                  </View>
+                );
+              })()}
               <IconButton
-                icon={({ size, color }) => (
-                  <Ionicons
-                    name="call-outline"
-                    size={size}
-                    color={color}
-                  />
-                )}
+                icon="phone-outgoing"
                 size={20}
                 iconColor={theme.custom.headerText}
-                onPress={() => {
-                  if (phoneNumber) Linking.openURL(`tel:${phoneNumber}`);
-                }}
+                onPress={handleInitiateCall}
+                disabled={isInitiatingCall}
               />
               <IconButton
-                icon={messageMode === 'internal' ? 'note-text' : 'note-text-outline'}
+                icon="image-multiple"
                 size={20}
-                iconColor={messageMode === 'internal' ? '#FFB300' : theme.custom.headerText}
-                onPress={() => setMessageMode(messageMode === 'internal' ? 'regular' : 'internal')}
+                iconColor={theme.custom.headerText}
+                onPress={() => setMediaPanelVisible(true)}
               />
               <Menu
                 visible={menuVisible}
@@ -1098,19 +1214,20 @@ export default function ChatConversationScreen() {
                   <IconButton
                     icon="dots-vertical"
                     size={20}
-                    iconColor={
-                      theme.custom.headerText
-                    }
-                    onPress={() =>
-                      setMenuVisible(true)
-                    }
+                    iconColor={theme.custom.headerText}
+                    onPress={() => setMenuVisible(true)}
                   />
                 }
-                contentStyle={{
-                  backgroundColor:
-                    theme.colors.surface,
-                }}
+                contentStyle={{ backgroundColor: theme.colors.surface }}
               >
+                <Menu.Item
+                  leadingIcon={messageMode === 'internal' ? 'note-text' : 'note-text-outline'}
+                  onPress={() => {
+                    setMenuVisible(false);
+                    setMessageMode(messageMode === 'internal' ? 'regular' : 'internal');
+                  }}
+                  title={t('chats.internalNote', 'הודעה פנימית')}
+                />
                 <Menu.Item
                   leadingIcon={starredFilter ? 'star' : 'star-outline'}
                   onPress={() => {
@@ -1138,6 +1255,25 @@ export default function ChatConversationScreen() {
                     handleQuickActionsPress();
                   }}
                   title={t('chats.quickActions', 'פעולות מהירות')}
+                />
+                <Menu.Item
+                  leadingIcon="information-outline"
+                  onPress={() => {
+                    setMenuVisible(false);
+                    setShowContactInfoSheet(true);
+                  }}
+                  title={t('chats.contactInfo', 'פרטי שיחה')}
+                />
+                <Menu.Item
+                  leadingIcon="account-arrow-left"
+                  onPress={() => {
+                    setMenuVisible(false);
+                    if (user?.organization && phoneNumber) {
+                      const userId = user.uID || user.userId || '';
+                      contactsApi.updateOwner(user.organization, phoneNumber as string, userId).catch(() => {});
+                    }
+                  }}
+                  title={t('chats.takeOwnership', 'קח בעלות')}
                 />
               </Menu>
             </View>
@@ -1224,6 +1360,8 @@ export default function ChatConversationScreen() {
             inverted
             onScroll={handleScroll}
             scrollEventThrottle={200}
+            onEndReached={handleEndReached}
+            onEndReachedThreshold={0.3}
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
@@ -1231,6 +1369,16 @@ export default function ChatConversationScreen() {
             maxToRenderPerBatch={15}
             initialNumToRender={20}
             removeClippedSubviews={true}
+            ListFooterComponent={
+              isLoadingOlderMessages ? (
+                <View style={styles.olderMsgsLoader}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
+                    טוען הודעות ישנות...
+                  </Text>
+                </View>
+              ) : null
+            }
             ListEmptyComponent={
               <View style={styles.emptyMessages}>
                 <MaterialCommunityIcons
@@ -1445,6 +1593,9 @@ export default function ChatConversationScreen() {
             } : null}
             onCancelReply={() => setReplyToMessage(null)}
             onTextChange={handleTextChange}
+            activeWabaNumber={activeWabaNumber}
+            wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
+            onChangeWabaNumber={setActiveWabaNumber}
           />
         )}
 
@@ -2201,6 +2352,29 @@ export default function ChatConversationScreen() {
           </View>
         )}
       </KeyboardAvoidingView>
+
+      <MediaPanel
+        visible={mediaPanelVisible}
+        onClose={() => setMediaPanelVisible(false)}
+        contactPhone={phoneNumber || ''}
+        organization={user?.organization || ''}
+        messages={currentMessages}
+        wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
+      />
+
+      <ContactInfoSheet
+        visible={showContactInfoSheet}
+        onDismiss={() => setShowContactInfoSheet(false)}
+        organization={user?.organization || ''}
+        phoneNumber={phoneNumber as string}
+        userId={user?.uID || user?.userId || ''}
+        contactData={chat}
+        onUpdate={() => {
+          if (user?.organization && phoneNumber) {
+            loadMessages(user.organization, phoneNumber as string);
+          }
+        }}
+      />
     </>
   );
 }
@@ -2258,6 +2432,11 @@ const styles = StyleSheet.create({
   },
   messagesContent: {
     paddingVertical: 8,
+    paddingHorizontal: 2,
+  },
+  olderMsgsLoader: {
+    alignItems: 'center',
+    paddingVertical: 16,
   },
   emptyMessages: {
     alignItems: 'center',
@@ -2271,12 +2450,17 @@ const styles = StyleSheet.create({
   },
   separatorPill: {
     paddingHorizontal: 14,
-    paddingVertical: 5,
-    borderRadius: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    elevation: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 0.5 },
+    shadowOpacity: 0.06,
+    shadowRadius: 1,
   },
   separatorText: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   scrollDownBtn: {
     position: 'absolute',
@@ -2451,6 +2635,10 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 10,
     marginTop: 16,
+  },
+  scheduleActions: {
+    flexDirection: 'row',
+    gap: 10,
   },
   quickActionIcon: {
     width: 44,

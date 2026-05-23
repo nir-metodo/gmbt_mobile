@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Tabs } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 import { Badge, useTheme } from 'react-native-paper';
@@ -6,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
 import { useChatStore } from '../../stores/chatStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { useRTL } from '../../hooks/useRTL';
 import { hasPermission } from '../../constants/permissions';
 import { fontSize, spacing } from '../../constants/theme';
@@ -20,6 +22,7 @@ interface TabConfig {
   iconFocused: TabIconName;
   permission: string | null;
   badge?: number;
+  requiresTelephony?: boolean;
 }
 
 export default function TabsLayout() {
@@ -30,6 +33,14 @@ export default function TabsLayout() {
 
   const user = useAuthStore((s) => s.user);
   const unreadCount = useChatStore((s) => s.unreadCount);
+  const telephonyEnabled = useSettingsStore((s) => s.telephonyEnabled);
+  const loadTelephonySettings = useSettingsStore((s) => s.loadTelephonySettings);
+
+  useEffect(() => {
+    if (user?.organization) {
+      loadTelephonySettings(user.organization);
+    }
+  }, [user?.organization]);
 
   const tabs: TabConfig[] = [
     {
@@ -59,7 +70,8 @@ export default function TabsLayout() {
       titleKey: 'tabs.phoneCalls',
       icon: 'phone-outline',
       iconFocused: 'phone',
-      permission: 'phoneCalls',
+      permission: null,
+      requiresTelephony: true,
     },
     {
       name: 'more',
@@ -70,17 +82,17 @@ export default function TabsLayout() {
     },
   ];
 
-  const visibleTabs = tabs.filter(
-    (tab) =>
-      tab.permission === null ||
-      hasPermission(user?.Permissions, user?.SecurityRole, tab.permission as any)
-  );
+  const isTabVisible = (tab: TabConfig) => {
+    if (tab.requiresTelephony && !telephonyEnabled) return false;
+    if (tab.permission !== null &&
+        !hasPermission(user?.Permissions, user?.SecurityRole, tab.permission as any)) {
+      return false;
+    }
+    return true;
+  };
 
-  const hiddenTabs = tabs.filter(
-    (tab) =>
-      tab.permission !== null &&
-      !hasPermission(user?.Permissions, user?.SecurityRole, tab.permission as any)
-  );
+  const visibleTabs = tabs.filter(isTabVisible);
+  const hiddenTabs = tabs.filter((tab) => !isTabVisible(tab));
 
   const tabBarHeight = 60 + insets.bottom;
 
@@ -131,7 +143,7 @@ export default function TabsLayout() {
                   <View
                     style={[
                       styles.activeIndicator,
-                      { backgroundColor: theme.colors.primary },
+                      { backgroundColor: theme.custom.tabBarActive },
                     ]}
                   />
                 )}
@@ -161,7 +173,7 @@ export default function TabsLayout() {
 const styles = StyleSheet.create({
   tabBar: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    elevation: 8,
+    elevation: 0,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.08,

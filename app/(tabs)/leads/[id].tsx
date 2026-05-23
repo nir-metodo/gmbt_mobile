@@ -34,6 +34,7 @@ import { tasksApi } from '../../../services/api/tasks';
 import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
 import { leadsApi } from '../../../services/api/leads';
+import { paymentsApi } from '../../../services/api/payments';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import {
@@ -171,6 +172,15 @@ export default function LeadDetailScreen() {
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
   const [leadFormSections, setLeadFormSections] = useState<DynamicSection[]>([]);
   const [leadFormLayout, setLeadFormLayout] = useState<string[]>([]);
+
+  // Payment / clearing state
+  const [clearingEnabled, setClearingEnabled] = useState(false);
+  const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentDescription, setPaymentDescription] = useState('');
+  const [paymentInstallments, setPaymentInstallments] = useState(1);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentResult, setPaymentResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
   const [form, setForm] = useState<Partial<Lead>>(
     lead
       ? { ...lead }
@@ -198,6 +208,15 @@ export default function LeadDetailScreen() {
       .then((res) => {
         setLeadFormSections(res.sections || []);
         setLeadFormLayout(res.formLayout || []);
+      })
+      .catch(() => {});
+  }, [organization]);
+
+  useEffect(() => {
+    if (!organization) return;
+    paymentsApi.getClearingSettings(organization)
+      .then((settings) => {
+        if (settings?.enabledEntities?.leads) setClearingEnabled(true);
       })
       .catch(() => {});
   }, [organization]);
@@ -364,6 +383,47 @@ export default function LeadDetailScreen() {
       setAddingNote(false);
     }
   }, [organization, lead, noteText, user, t, fetchLeadTimeline]);
+
+  const handleOpenPayment = useCallback(() => {
+    setPaymentAmount(lead?.value?.toString() || '');
+    setPaymentDescription(lead?.title || '');
+    setPaymentInstallments(1);
+    setPaymentResult(null);
+    setPaymentModalVisible(true);
+  }, [lead]);
+
+  const handleCreatePaymentLink = useCallback(async () => {
+    if (!organization || !lead) return;
+    const amt = parseFloat(paymentAmount);
+    if (!amt || amt <= 0) {
+      Alert.alert(t('common.error'), t('payments.enterAmount', 'Please enter an amount'));
+      return;
+    }
+    setPaymentLoading(true);
+    try {
+      const res = await paymentsApi.createPaymentLink(organization, {
+        amount: amt,
+        description: paymentDescription,
+        customerName: lead.contactName || '',
+        customerPhone: lead.contactPhone || lead.phoneNumber || '',
+        entityType: 'lead',
+        entityId: lead.id,
+        payments: paymentInstallments,
+      });
+      if (res.success) {
+        setPaymentResult({
+          success: true,
+          url: res.gambotPaymentUrl || res.paymentUrl,
+        });
+      } else {
+        setPaymentResult({ success: false, error: res.error || t('common.error') });
+      }
+    } catch (err: any) {
+      setPaymentResult({ success: false, error: err?.message || t('common.error') });
+    } finally {
+      setPaymentLoading(false);
+    }
+  }, [organization, lead, paymentAmount, paymentDescription, paymentInstallments, t]);
 
   const handleSave = useCallback(async () => {
     if (!organization) return;
@@ -777,6 +837,15 @@ export default function LeadDetailScreen() {
                 },
               })}
             />
+            {clearingEnabled ? (
+              <ActionButton
+                icon="credit-card-outline"
+                label={t('payments.charge', 'סליקה')}
+                color="#2e6155"
+                bg="#E8F5E9"
+                onPress={handleOpenPayment}
+              />
+            ) : null}
           </View>
         ) : null}
 
@@ -872,45 +941,51 @@ export default function LeadDetailScreen() {
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
           >
-            <View
-              style={[
-                styles.modalHeader,
-                { borderBottomColor: theme.colors.outline, flexDirection },
-              ]}
-            >
-              <Pressable
-                onPress={() => {
-                  if (isNew) router.back();
-                  else setEditVisible(false);
-                }}
-              >
-                <Text style={{ color: theme.colors.primary, fontSize: 16 }}>
-                  {t('common.cancel')}
-                </Text>
-              </Pressable>
-              <Text
-                variant="titleMedium"
-                style={{ color: theme.colors.onSurface, fontWeight: '700' }}
-              >
+            <View style={[styles.modalHeader, { borderBottomColor: theme.colors.outline, flexDirection }]}>
+              <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => { if (isNew) router.back(); else setEditVisible(false); }} style={{ margin: 0 }} />
+              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
                 {isNew ? t('leads.addLead') : t('leads.editLead')}
               </Text>
-              <Pressable onPress={handleSave} disabled={saving}>
-                {saving ? (
-                  <ActivityIndicator size="small" color={theme.colors.primary} />
-                ) : (
-                  <Text
-                    style={{ color: theme.colors.primary, fontSize: 16, fontWeight: '600' }}
-                  >
-                    {t('common.save')}
-                  </Text>
-                )}
-              </Pressable>
+              <View style={{ width: 40 }} />
             </View>
 
             <ScrollView
-              contentContainerStyle={styles.formContent}
+              contentContainerStyle={styles.formScrollContent}
               keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
             >
+              {/* ── Contact Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="account-box-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.contact')}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setContactLookupVisible(true)}
+                  style={[styles.contactLookupBtn, { backgroundColor: withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
+                >
+                  <View style={[styles.contactLookupIconCircle, { backgroundColor: '#2e6155' }]}>
+                    <MaterialCommunityIcons name="account-search" size={20} color="#FFFFFF" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: form.contactName ? theme.colors.onSurface : theme.custom.placeholder, fontSize: 15, fontWeight: form.contactName ? '600' : '400', textAlign }} numberOfLines={1}>
+                      {form.contactName ? `${form.contactName}${form.contactPhone ? `  •  ${form.contactPhone}` : ''}` : t('common.selectContact')}
+                    </Text>
+                  </View>
+                  <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+                </Pressable>
+                <FormField label={t('contacts.company')} value={form.companyName ?? ''} onChangeText={(v) => updateField('companyName', v)} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
+                <FormField label={t('leads.jobTitle', 'Job Title')} value={form.jobTitle ?? ''} onChangeText={(v) => updateField('jobTitle', v)} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
+              </View>
+
+              {/* ── Lead Details Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="text-box-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.leadTitle')}</Text>
+                </View>
               <FormField
                 label={t('leads.leadTitle')}
                 value={form.title ?? ''}
@@ -943,13 +1018,13 @@ export default function LeadDetailScreen() {
                       style={[
                         styles.formStageChip,
                         isSelected
-                          ? { backgroundColor: withAlpha(color, 0.145), borderColor: color, borderWidth: 1 }
-                          : { backgroundColor: theme.colors.surfaceVariant },
+                          ? { backgroundColor: withAlpha(color, 0.145), borderColor: color, borderWidth: 1.5 }
+                          : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
                       ]}
                       textStyle={{
                         fontSize: 12,
                         color: isSelected ? color : theme.colors.onSurfaceVariant,
-                        fontWeight: isSelected ? '600' : '400',
+                        fontWeight: isSelected ? '700' : '400',
                       }}
                     >
                       {t(STAGE_I18N[stage] ?? stage)}
@@ -1004,7 +1079,15 @@ export default function LeadDetailScreen() {
                   );
                 })}
               </ScrollView>
+              </View>
 
+              {/* ── Source & Channel Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="source-branch" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.source')}</Text>
+                </View>
               <Text
                 variant="labelMedium"
                 style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
@@ -1078,7 +1161,15 @@ export default function LeadDetailScreen() {
                   );
                 })}
               </ScrollView>
+              </View>
 
+              {/* ── Status & Assignment Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="flag-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.status')}</Text>
+                </View>
               <Text
                 variant="labelMedium"
                 style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
@@ -1116,62 +1207,6 @@ export default function LeadDetailScreen() {
                 })}
               </ScrollView>
 
-              <View style={styles.formField}>
-                <Text
-                  variant="labelMedium"
-                  style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
-                >
-                  {t('leads.contact')}
-                </Text>
-                <Pressable
-                  onPress={() => setContactLookupVisible(true)}
-                  style={[
-                    styles.formInput,
-                    {
-                      backgroundColor: theme.custom.inputBackground,
-                      borderColor: theme.colors.outline,
-                      flexDirection,
-                      alignItems: 'center',
-                    },
-                  ]}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={{
-                        color: form.contactName ? theme.colors.onSurface : theme.custom.placeholder,
-                        fontSize: 15,
-                        textAlign,
-                      }}
-                      numberOfLines={1}
-                    >
-                      {form.contactName
-                        ? `${form.contactName}${form.contactPhone ? `  •  ${form.contactPhone}` : ''}`
-                        : t('common.selectContact')}
-                    </Text>
-                  </View>
-                  <MaterialCommunityIcons
-                    name="account-search"
-                    size={20}
-                    color={theme.colors.onSurfaceVariant}
-                  />
-                </Pressable>
-              </View>
-              <FormField
-                label={t('contacts.company')}
-                value={form.companyName ?? ''}
-                onChangeText={(v) => updateField('companyName', v)}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-              />
-              <FormField
-                label={t('leads.jobTitle', 'Job Title')}
-                value={form.jobTitle ?? ''}
-                onChangeText={(v) => updateField('jobTitle', v)}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-              />
               <Text
                 variant="labelMedium"
                 style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
@@ -1208,6 +1243,15 @@ export default function LeadDetailScreen() {
                   );
                 })}
               </ScrollView>
+              </View>
+
+              {/* ── Dates Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="calendar-range" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.expectedClose')}</Text>
+                </View>
               <FormField
                 label={t('leads.expectedClose')}
                 value={form.expectedCloseDate ?? ''}
@@ -1226,6 +1270,15 @@ export default function LeadDetailScreen() {
                 writingDirection={writingDirection}
                 placeholder="YYYY-MM-DD"
               />
+              </View>
+
+              {/* ── Additional Details Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="text-box-multiple-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.description')}</Text>
+                </View>
               <FormField
                 label={t('leads.description')}
                 value={form.description ?? ''}
@@ -1313,7 +1366,10 @@ export default function LeadDetailScreen() {
                 writingDirection={writingDirection}
                 placeholder={t('leads.tagsPlaceholder', 'tag1, tag2, tag3')}
               />
+              </View>
 
+              {/* ── Custom Fields Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
               <DynamicFieldsSectionForm
                 sections={leadFormSections}
                 values={form as Record<string, any>}
@@ -1325,7 +1381,15 @@ export default function LeadDetailScreen() {
                 writingDirection={writingDirection}
                 flexDirection={flexDirection}
               />
+              </View>
 
+              {/* ── Scoring Section ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="star-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.score', 'Score')}</Text>
+                </View>
               <Text
                 variant="labelMedium"
                 style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
@@ -1395,7 +1459,39 @@ export default function LeadDetailScreen() {
                   </ScrollView>
                 </>
               ) : null}
+              </View>
+
+              <View style={{ height: 100 }} />
             </ScrollView>
+
+            {/* ── Sticky Footer ── */}
+            <View style={[styles.stickyFooter, { paddingBottom: insets.bottom + 12, borderTopColor: theme.colors.outline, backgroundColor: theme.colors.surface }]}>
+              {!isNew && (
+                <Pressable onPress={handleDelete} style={[styles.deleteBtn, { backgroundColor: withAlpha(theme.colors.error, 0.08) }]}>
+                  <MaterialCommunityIcons name="delete-outline" size={20} color={theme.colors.error} />
+                  <Text style={{ color: theme.colors.error, fontWeight: '600', fontSize: 14 }}>{t('common.delete')}</Text>
+                </Pressable>
+              )}
+              <View style={{ flex: 1 }} />
+              <Button
+                mode="outlined"
+                onPress={() => { if (isNew) router.back(); else setEditVisible(false); }}
+                style={styles.footerBtn}
+                textColor={theme.colors.onSurface}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                mode="contained"
+                onPress={handleSave}
+                loading={saving}
+                disabled={saving}
+                style={[styles.footerBtn, { backgroundColor: '#2e6155' }]}
+                textColor="#FFFFFF"
+              >
+                {t('common.save')}
+              </Button>
+            </View>
           </KeyboardAvoidingView>
         </Modal>
       </Portal>
@@ -1555,6 +1651,214 @@ export default function LeadDetailScreen() {
           </Pressable>
         </Modal>
       </Portal>
+
+      {/* Payment Modal */}
+      <Portal>
+        <Modal
+          visible={paymentModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPaymentModalVisible(false)}
+        >
+          <Pressable
+            style={styles.stagePickerOverlay}
+            onPress={() => setPaymentModalVisible(false)}
+          >
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
+              style={[
+                styles.stagePickerSheet,
+                { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 },
+              ]}
+            >
+              <View style={[{ flexDirection, alignItems: 'center', gap: 8, marginBottom: 16 }]}>
+                <MaterialCommunityIcons name="credit-card-outline" size={22} color="#2e6155" />
+                <Text
+                  variant="titleMedium"
+                  style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}
+                >
+                  {t('payments.chargePayment', 'סליקה ותשלומים')}
+                </Text>
+              </View>
+
+              {paymentResult?.success ? (
+                <View style={{ alignItems: 'center', paddingVertical: 12 }}>
+                  <MaterialCommunityIcons name="check-circle" size={56} color="#16a34a" />
+                  <Text variant="titleMedium" style={{ color: '#16a34a', fontWeight: '700', marginTop: 8, textAlign: 'center' }}>
+                    {t('payments.linkCreated', 'לינק תשלום נוצר!')}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, textAlign: 'center' }}>
+                    {t('payments.amount', 'סכום')}: ₪{parseFloat(paymentAmount).toFixed(2)}
+                  </Text>
+                  {paymentResult.url ? (
+                    <Pressable
+                      onPress={() => {
+                        if (paymentResult.url) Linking.openURL(paymentResult.url);
+                      }}
+                      style={{
+                        marginTop: 12,
+                        paddingHorizontal: 16,
+                        paddingVertical: 10,
+                        backgroundColor: '#f0fdf4',
+                        borderWidth: 1,
+                        borderColor: '#bbf7d0',
+                        borderRadius: 10,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <MaterialCommunityIcons name="open-in-new" size={16} color="#2e6155" />
+                      <Text variant="bodySmall" style={{ color: '#2e6155', fontWeight: '600' }}>
+                        {t('payments.openLink', 'פתח קישור תשלום')}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  {paymentResult.url && (lead?.contactPhone || lead?.phoneNumber) ? (
+                    <Pressable
+                      onPress={() => {
+                        const phone = lead?.contactPhone || lead?.phoneNumber || '';
+                        const text = encodeURIComponent(
+                          `${t('common.hello', 'שלום')} ${lead?.contactName || ''},\n${t('payments.paymentLink', 'קישור לתשלום')}:\n${paymentResult.url}\n${t('payments.amount', 'סכום')}: ₪${parseFloat(paymentAmount).toFixed(2)}`
+                        );
+                        Linking.openURL(`whatsapp://send?phone=${phone}&text=${text}`);
+                      }}
+                      style={{
+                        marginTop: 8,
+                        paddingHorizontal: 16,
+                        paddingVertical: 10,
+                        backgroundColor: '#25D366',
+                        borderRadius: 10,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <MaterialCommunityIcons name="whatsapp" size={16} color="#FFF" />
+                      <Text variant="bodySmall" style={{ color: '#FFF', fontWeight: '600' }}>
+                        {t('payments.sendWhatsApp', 'שלח בוואטסאפ')}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  <View style={[styles.modalActions, { flexDirection, marginTop: 16 }]}>
+                    <Button
+                      mode="outlined"
+                      onPress={() => { setPaymentResult(null); }}
+                      style={styles.addTaskModalBtn}
+                      textColor={theme.colors.onSurface}
+                    >
+                      {t('payments.newPayment', 'תשלום נוסף')}
+                    </Button>
+                    <Button
+                      mode="contained"
+                      onPress={() => setPaymentModalVisible(false)}
+                      style={[styles.addTaskModalBtn, { backgroundColor: '#2e6155' }]}
+                      textColor="#FFFFFF"
+                    >
+                      {t('common.close', 'סגור')}
+                    </Button>
+                  </View>
+                </View>
+              ) : (
+                <>
+                  {paymentResult?.error ? (
+                    <View style={{ padding: 10, backgroundColor: '#fef2f2', borderRadius: 8, marginBottom: 12 }}>
+                      <Text variant="bodySmall" style={{ color: '#991b1b' }}>{paymentResult.error}</Text>
+                    </View>
+                  ) : null}
+
+                  {lead?.contactName ? (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, textAlign }}>
+                      {t('payments.customer', 'לקוח')}: <Text style={{ fontWeight: '600', color: theme.colors.onSurface }}>{lead.contactName}</Text>
+                      {lead.contactPhone || lead.phoneNumber ? ` • ${lead.contactPhone || lead.phoneNumber}` : ''}
+                    </Text>
+                  ) : null}
+
+                  <FormField
+                    label={t('payments.amount', 'סכום (₪)')}
+                    value={paymentAmount}
+                    onChangeText={setPaymentAmount}
+                    theme={theme}
+                    textAlign={textAlign}
+                    writingDirection={writingDirection}
+                    keyboardType="numeric"
+                    placeholder="0.00"
+                  />
+
+                  <FormField
+                    label={t('payments.description', 'תיאור')}
+                    value={paymentDescription}
+                    onChangeText={setPaymentDescription}
+                    theme={theme}
+                    textAlign={textAlign}
+                    writingDirection={writingDirection}
+                    placeholder={t('payments.descPlaceholder', 'תיאור העסקה')}
+                  />
+
+                  <Text
+                    variant="labelMedium"
+                    style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
+                  >
+                    {t('payments.installments', 'תשלומים')}
+                  </Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={[styles.formStageRow, { flexDirection }]}
+                  >
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => {
+                      const isSelected = paymentInstallments === n;
+                      return (
+                        <Chip
+                          key={n}
+                          selected={isSelected}
+                          onPress={() => setPaymentInstallments(n)}
+                          compact
+                          style={[
+                            styles.formStageChip,
+                            isSelected
+                              ? { backgroundColor: withAlpha('#2e6155', 0.145), borderColor: '#2e6155', borderWidth: 1 }
+                              : { backgroundColor: theme.colors.surfaceVariant },
+                          ]}
+                          textStyle={{
+                            fontSize: 12,
+                            color: isSelected ? '#2e6155' : theme.colors.onSurfaceVariant,
+                            fontWeight: isSelected ? '600' : '400',
+                          }}
+                        >
+                          {n === 1 ? (t('payments.onePayment', '1') ) : `${n}`}
+                        </Chip>
+                      );
+                    })}
+                  </ScrollView>
+
+                  <View style={[styles.modalActions, { flexDirection, marginTop: 16 }]}>
+                    <Button
+                      mode="outlined"
+                      onPress={() => setPaymentModalVisible(false)}
+                      style={styles.addTaskModalBtn}
+                      textColor={theme.colors.onSurface}
+                    >
+                      {t('common.cancel')}
+                    </Button>
+                    <Button
+                      mode="contained"
+                      onPress={handleCreatePaymentLink}
+                      loading={paymentLoading}
+                      disabled={paymentLoading}
+                      style={[styles.addTaskModalBtn, { backgroundColor: '#2e6155' }]}
+                      textColor="#FFFFFF"
+                      icon="link-variant"
+                    >
+                      {t('payments.createLink', 'צור לינק תשלום')}
+                    </Button>
+                  </View>
+                </>
+              )}
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </Portal>
     </View>
   );
 }
@@ -1638,6 +1942,9 @@ function FormField({
   multiline,
   keyboardType,
   placeholder,
+  icon,
+  error,
+  required,
 }: {
   label: string;
   value: string;
@@ -1648,31 +1955,73 @@ function FormField({
   multiline?: boolean;
   keyboardType?: TextInput['props']['keyboardType'];
   placeholder?: string;
+  icon?: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  error?: string;
+  required?: boolean;
 }) {
+  const [focused, setFocused] = React.useState(false);
+  const borderColor = error
+    ? theme.colors.error
+    : focused
+      ? '#2e6155'
+      : theme.colors.outline;
   return (
     <View style={styles.formField}>
-      <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
-        {label}
+      <Text
+        variant="labelMedium"
+        style={{
+          color: error ? theme.colors.error : theme.colors.onSurfaceVariant,
+          marginBottom: 6,
+          textAlign,
+          fontWeight: '500',
+        }}
+      >
+        {label}{required ? ' *' : ''}
       </Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
+      <View
         style={[
-          styles.formInput,
+          styles.formInputRow,
           {
             backgroundColor: theme.custom.inputBackground,
-            color: theme.colors.onSurface,
-            textAlign,
-            writingDirection,
-            borderColor: theme.colors.outline,
+            borderColor,
+            borderWidth: focused || error ? 1.5 : 1,
           },
-          multiline && { height: 100, textAlignVertical: 'top' },
+          multiline && { alignItems: 'flex-start' },
         ]}
-        placeholderTextColor={theme.custom.placeholder}
-        multiline={multiline}
-        keyboardType={keyboardType}
-      />
+      >
+        {icon ? (
+          <MaterialCommunityIcons
+            name={icon}
+            size={18}
+            color={focused ? '#2e6155' : theme.colors.onSurfaceVariant}
+            style={{ marginEnd: 10, marginTop: multiline ? 2 : 0 }}
+          />
+        ) : null}
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          placeholder={placeholder}
+          style={[
+            styles.formInputInner,
+            {
+              color: theme.colors.onSurface,
+              textAlign,
+              writingDirection,
+            },
+            multiline && { height: 80, textAlignVertical: 'top' },
+          ]}
+          placeholderTextColor={theme.custom.placeholder}
+          multiline={multiline}
+          keyboardType={keyboardType}
+        />
+      </View>
+      {error ? (
+        <Text variant="labelSmall" style={{ color: theme.colors.error, marginTop: 4, textAlign }}>
+          {error}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -1887,7 +2236,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginTop: 16,
     marginBottom: 12,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 14,
   },
   stageIndicator: { alignItems: 'center', gap: 10, marginBottom: 10 },
@@ -1904,7 +2253,12 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 12,
     padding: 16,
-    borderRadius: 12,
+    borderRadius: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
   },
   cardDivider: { marginVertical: 12 },
   infoRow: { alignItems: 'center' },
@@ -1961,12 +2315,74 @@ const styles = StyleSheet.create({
   modalHeader: {
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  formContent: { padding: 16, gap: 16 },
-  formField: {},
+  formScrollContent: { padding: 16, paddingBottom: 0, gap: 0 },
+  formSectionCard: {
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  formSectionHeader: {
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  formSectionAccent: {
+    width: 3,
+    height: 18,
+    borderRadius: 2,
+    backgroundColor: '#2e6155',
+  },
+  formSectionTitle: {
+    fontWeight: '700',
+    color: '#2e6155',
+    fontSize: 14,
+  },
+  contactLookupBtn: {
+    borderWidth: 1.5,
+    borderRadius: 12,
+    borderStyle: 'dashed',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  contactLookupIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chipLabel: {
+    marginBottom: 8,
+    fontWeight: '500',
+  },
+  chipRow: { gap: 8, paddingBottom: 6 },
+  valueRow: { gap: 12 },
+  formField: { marginBottom: 12 },
+  formInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  formInputInner: {
+    flex: 1,
+    fontSize: 15,
+    padding: 0,
+  },
   formInput: {
     borderWidth: 1,
     borderRadius: 10,
@@ -1975,7 +2391,28 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   formStageRow: { gap: 8, paddingBottom: 4 },
-  formStageChip: { height: 32 },
+  formStageChip: { height: 32, borderRadius: 16 },
+  formPill: { height: 32, borderRadius: 16 },
+  stickyFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  footerBtn: {
+    minWidth: 90,
+    borderRadius: 10,
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
   modalActions: {
     flexDirection: 'row',
     gap: 12,

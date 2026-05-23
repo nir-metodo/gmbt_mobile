@@ -5,12 +5,12 @@ import type { Contact } from '../../types';
 export const contactsApi = {
   async getAll(
     organization: string,
-    options?: { userId?: string; dataVisibility?: string },
+    options?: { userId?: string; dataVisibility?: string; pageSize?: number; pageNumber?: number },
   ): Promise<Contact[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_CONTACTS_PAGINATED, {
       organizationiD: organization,
-      pageNumber: 1,
-      pageSize: 9999,
+      pageNumber: options?.pageNumber || 1,
+      pageSize: options?.pageSize || 100,
       userId: options?.userId || '',
       dataVisibility: options?.dataVisibility || 'all',
     });
