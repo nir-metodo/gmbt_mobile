@@ -46,6 +46,7 @@ export const ENDPOINTS = {
 
   // Templates
   GET_TEMPLATES: '/api/Webhooks/GetAllTemplates',
+  GET_DEFAULT_MESSAGE_TEMPLATES: '/api/Webhooks/GetDefaultMessageTemplates',
   CREATE_TEMPLATE: '/api/Webhooks/CreateTemplate',
   SEND_TEMPLATE_MESSAGE: '/api/Webhooks/SendTemplateMessage',
 
@@ -129,6 +130,7 @@ export const ENDPOINTS = {
   UPDATE_TIMELINE_ENTRY: '/api/Webhooks/UpdateTimelineEntry',
   DELETE_TIMELINE_ENTRY: '/api/Webhooks/DeleteTimelineEntry',
   GET_LEADS_BY_CONTACT: '/api/Webhooks/GetLeadsByContact',
+  GET_CROSS_ENTITY_NOTES_SETTING: '/api/Webhooks/GetCrossEntityNotesSetting',
 
   // Quick Messages
   GET_QUICK_MESSAGES: '/api/Webhooks/GetQuickMessages',

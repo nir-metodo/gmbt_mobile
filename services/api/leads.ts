@@ -106,7 +106,7 @@ export const leadsApi = {
     return response.data;
   },
 
-  async getPipelineSettings(organization: string): Promise<{ stages: LeadStage[] }> {
+  async getPipelineSettings(organization: string): Promise<{ stages: LeadStage[]; enableProductCatalog?: boolean; syncCatalogToValue?: boolean }> {
     const response = await axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, {
       organization,
     });
@@ -117,7 +117,19 @@ export const leadsApi = {
       (Array.isArray(raw) ? raw : []);
     return {
       stages: stages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+      enableProductCatalog: !!raw?.enableProductCatalog,
+      syncCatalogToValue: !!raw?.syncCatalogToValue,
     };
+  },
+
+  async getCatalogItems(organization: string): Promise<any[]> {
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_QUOTE_BRANDING, { organization });
+      const raw = response.data;
+      return Array.isArray(raw?.catalogItems) ? raw.catalogItems : [];
+    } catch {
+      return [];
+    }
   },
 
   async getLeadFormSettings(organization: string): Promise<{ sections: any[]; formLayout: string[] }> {

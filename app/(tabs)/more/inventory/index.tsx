@@ -329,7 +329,7 @@ export default function InventoryScreen() {
           onDismiss={() => { setCreateVisible(false); resetForm(); }}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>

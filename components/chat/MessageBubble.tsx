@@ -15,6 +15,56 @@ import type { MediaType } from '../../services/mediaCache';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const MAX_BUBBLE_WIDTH = SCREEN_WIDTH * 0.78;
 const MEDIA_WIDTH = MAX_BUBBLE_WIDTH - 18;
+const STICKER_SIZE = SCREEN_WIDTH * 0.38;
+
+function renderFormattedText(text: string, color: string): React.ReactNode[] {
+  const segments: React.ReactNode[] = [];
+  const pattern = /(\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~|```[^`]+```|`[^`\n]+`)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push(text.slice(lastIndex, match.index));
+    }
+    const raw = match[0];
+    if (raw.startsWith('```') && raw.endsWith('```')) {
+      segments.push(
+        <Text key={match.index} style={{ fontFamily: 'monospace', fontSize: 13, backgroundColor: 'rgba(0,0,0,0.06)', color }}>
+          {raw.slice(3, -3)}
+        </Text>
+      );
+    } else if (raw.startsWith('`') && raw.endsWith('`')) {
+      segments.push(
+        <Text key={match.index} style={{ fontFamily: 'monospace', fontSize: 13, backgroundColor: 'rgba(0,0,0,0.06)', color }}>
+          {raw.slice(1, -1)}
+        </Text>
+      );
+    } else if (raw.startsWith('*') && raw.endsWith('*')) {
+      segments.push(<Text key={match.index} style={{ fontWeight: '700', color }}>{raw.slice(1, -1)}</Text>);
+    } else if (raw.startsWith('_') && raw.endsWith('_')) {
+      segments.push(<Text key={match.index} style={{ fontStyle: 'italic', color }}>{raw.slice(1, -1)}</Text>);
+    } else if (raw.startsWith('~') && raw.endsWith('~')) {
+      segments.push(<Text key={match.index} style={{ textDecorationLine: 'line-through', color }}>{raw.slice(1, -1)}</Text>);
+    }
+    lastIndex = match.index + raw.length;
+  }
+  if (lastIndex < text.length) {
+    segments.push(text.slice(lastIndex));
+  }
+  return segments;
+}
+
+interface WabaNumber {
+  PhoneNumberId?: string;
+  phoneNumberId?: string;
+  DisplayNumber?: string;
+  displayNumber?: string;
+  Label?: string;
+  label?: string;
+  Color?: string;
+  color?: string;
+}
 
 interface MessageBubbleProps {
   message: Message;
@@ -22,6 +72,8 @@ interface MessageBubbleProps {
   showTail: boolean;
   theme: AppTheme;
   onLongPress?: (message: Message) => void;
+  onMediaPress?: (message: Message) => void;
+  wabaNumbers?: WabaNumber[];
 }
 
 function MessageBubbleInner({
@@ -30,6 +82,8 @@ function MessageBubbleInner({
   showTail,
   theme,
   onLongPress,
+  onMediaPress,
+  wabaNumbers,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isInternal = message.type === 'internal';
@@ -87,8 +141,30 @@ function MessageBubbleInner({
     }
   };
 
-  const mediaUrl = message.mediaUrl || message.MediaUrl || message.media_url;
-  const msgType = (message.type || message.messageType) as MediaType | string;
+  const mediaUrl = (message as any).gmbt_mediaUrl || message.mediaUrl || message.MediaUrl || message.media_url;
+  const rawType = (message.type || message.messageType || '') as string;
+  const resolvedType = (() => {
+    const t = rawType.toLowerCase();
+    if (t === 'image' || t.startsWith('image/')) return 'image';
+    if (t === 'video' || t.startsWith('video/')) return 'video';
+    if (t === 'audio' || t.startsWith('audio/')) return 'audio';
+    if (t === 'document' || t.startsWith('application/') || t === 'file') return 'document';
+    if (t === 'sticker') return 'image';
+    if ((t === 'media' || t === 'text' || t === '') && mediaUrl) {
+      const ext = (mediaUrl.split('?')[0].split('.').pop() || '').toLowerCase();
+      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'].includes(ext)) return 'image';
+      if (['mp4', 'mov', 'avi', 'webm', '3gp'].includes(ext)) return 'video';
+      if (['mp3', 'ogg', 'opus', 'wav', 'aac', 'm4a', 'amr'].includes(ext)) return 'audio';
+      if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip'].includes(ext)) return 'document';
+      const mt = (message.mediaType || '').toLowerCase();
+      if (mt.startsWith('image')) return 'image';
+      if (mt.startsWith('video')) return 'video';
+      if (mt.startsWith('audio')) return 'audio';
+      return 'image';
+    }
+    return t;
+  })();
+  const msgType = resolvedType as MediaType | string;
   const cacheType: MediaType = (['image', 'video', 'audio', 'document'].includes(msgType) ? msgType : 'image') as MediaType;
   const { uri: cachedMediaUri, isLoading: mediaLoading } = useCachedMedia(mediaUrl, cacheType);
   const effectiveMediaUrl = cachedMediaUri || mediaUrl;
@@ -143,7 +219,7 @@ function MessageBubbleInner({
           }
           return (
             <>
-              <Pressable onPress={() => setImageViewerVisible(true)}>
+              <Pressable onPress={() => onMediaPress ? onMediaPress(message) : setImageViewerVisible(true)}>
                 <Image
                   source={{ uri: effectiveMediaUrl! }}
                   style={styles.mediaImage}
@@ -153,19 +229,21 @@ function MessageBubbleInner({
                   onError={() => setImageError(true)}
                 />
               </Pressable>
-              <Modal visible={imageViewerVisible} transparent animationType="fade" onRequestClose={() => setImageViewerVisible(false)}>
-                <View style={styles.imageViewerOverlay}>
-                  <Pressable style={styles.imageViewerClose} onPress={() => setImageViewerVisible(false)}>
-                    <MaterialCommunityIcons name="close" size={28} color="#fff" />
-                  </Pressable>
-                  <Image
-                    source={{ uri: effectiveMediaUrl! }}
-                    style={styles.imageViewerImage}
-                    contentFit="contain"
-                    cachePolicy="disk"
-                  />
-                </View>
-              </Modal>
+              {!onMediaPress && (
+                <Modal visible={imageViewerVisible} transparent animationType="fade" onRequestClose={() => setImageViewerVisible(false)}>
+                  <View style={styles.imageViewerOverlay}>
+                    <Pressable style={styles.imageViewerClose} onPress={() => setImageViewerVisible(false)}>
+                      <MaterialCommunityIcons name="close" size={28} color="#fff" />
+                    </Pressable>
+                    <Image
+                      source={{ uri: effectiveMediaUrl! }}
+                      style={styles.imageViewerImage}
+                      contentFit="contain"
+                      cachePolicy="disk"
+                    />
+                  </View>
+                </Modal>
+              )}
             </>
           );
         }
@@ -187,20 +265,19 @@ function MessageBubbleInner({
               </View>
             );
           }
-          if (videoFullscreen) {
-            return (
-              <>
-                <Pressable onPress={() => setVideoFullscreen(true)} style={styles.videoThumb}>
-                  <View style={[styles.mediaPlaceholder, { backgroundColor: isDark ? '#111' : '#000' }]}>
-                    <Video
-                      source={{ uri: effectiveMediaUrl! }}
-                      style={{ width: MEDIA_WIDTH, height: 180, borderRadius: 8 }}
-                      resizeMode={ResizeMode.CONTAIN}
-                      useNativeControls
-                      shouldPlay
-                    />
-                  </View>
-                </Pressable>
+          return (
+            <>
+              <Pressable onPress={() => onMediaPress ? onMediaPress(message) : setVideoFullscreen(true)} style={styles.videoThumb}>
+                <View style={[styles.mediaPlaceholder, { backgroundColor: isDark ? '#111' : '#000' }]}>
+                  <Video
+                    source={{ uri: effectiveMediaUrl! }}
+                    style={{ width: MEDIA_WIDTH, height: 180, borderRadius: 8 }}
+                    resizeMode={ResizeMode.CONTAIN}
+                    useNativeControls
+                  />
+                </View>
+              </Pressable>
+              {!onMediaPress && (
                 <Modal visible={videoFullscreen} transparent animationType="fade" onRequestClose={() => setVideoFullscreen(false)}>
                   <View style={styles.imageViewerOverlay}>
                     <Pressable style={styles.imageViewerClose} onPress={() => setVideoFullscreen(false)}>
@@ -215,18 +292,8 @@ function MessageBubbleInner({
                     />
                   </View>
                 </Modal>
-              </>
-            );
-          }
-          return (
-            <Pressable onPress={() => setVideoFullscreen(true)}>
-              <View style={[styles.mediaPlaceholder, { backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)' }]}>
-                <MaterialCommunityIcons name="play-circle" size={52} color="#fff" style={{ opacity: 0.9 }} />
-                <Text variant="labelSmall" style={{ color: isDark ? '#8696a0' : '#667781', marginTop: 4 }}>
-                  {t('chats.tapToPlay', 'לחץ להפעלה')}
-                </Text>
-              </View>
-            </Pressable>
+              )}
+            </>
           );
         }
         return (
@@ -264,22 +331,41 @@ function MessageBubbleInner({
         const durationSec = Math.round((audioDuration || 0) / 1000);
         const positionSec = Math.round(audioPosition / 1000);
         const formatSec = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+        const waveColor = isOutbound ? (isDark ? '#b4dfc9' : '#075e54') : (isDark ? '#8696a0' : '#2e6155');
+        const waveActiveColor = isOutbound ? '#25D366' : '#2e6155';
+        const WAVE_BARS = 28;
         return (
           <View style={styles.audioContainer}>
-            <Pressable onPress={handleAudioPlay} disabled={mediaLoading} style={styles.audioPlayBtn}>
+            <Pressable onPress={handleAudioPlay} disabled={mediaLoading} style={[styles.audioPlayBtn, { backgroundColor: isOutbound ? '#075e54' : '#2e6155' }]}>
               {mediaLoading ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <MaterialCommunityIcons
                   name={audioPlaying ? 'pause' : 'play'}
-                  size={24}
+                  size={22}
                   color="#fff"
                 />
               )}
             </Pressable>
             <View style={styles.audioTrackWrap}>
-              <View style={styles.audioTrack}>
-                <View style={[styles.audioTrackFill, { width: `${progress * 100}%`, backgroundColor: isOutbound ? '#075e54' : '#2e6155' }]} />
+              <View style={styles.waveformRow}>
+                {Array.from({ length: WAVE_BARS }).map((_, i) => {
+                  const barProgress = i / WAVE_BARS;
+                  const isActive = barProgress < progress;
+                  const heights = [4, 7, 12, 8, 15, 10, 6, 14, 9, 5, 11, 16, 7, 13, 8, 4, 10, 15, 6, 12, 9, 7, 14, 5, 11, 8, 13, 6];
+                  const h = heights[i % heights.length];
+                  return (
+                    <View
+                      key={i}
+                      style={{
+                        width: 3,
+                        height: h,
+                        borderRadius: 1.5,
+                        backgroundColor: isActive ? waveActiveColor : (isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.15)'),
+                      }}
+                    />
+                  );
+                })}
               </View>
               <Text style={[styles.audioDuration, { color: timeColor }]}>
                 {audioPlaying ? formatSec(positionSec) : formatSec(durationSec)}
@@ -293,10 +379,115 @@ function MessageBubbleInner({
     }
   };
 
+  const renderTemplate = () => {
+    const config = message.templateConfig;
+    if (!config && !message.templateName) return null;
+
+    const headerMedia = config?.header?.mediaUrl || mediaUrl;
+    const headerType = (config?.header?.type || config?.header?.format || '').toUpperCase();
+    const bodyText = message.text || message.body || config?.body?.text || '';
+    const footerText = config?.footer?.text || config?.footer || '';
+    const buttons = config?.buttons || config?.components?.find((c: any) => c.type === 'BUTTONS')?.buttons || [];
+
+    return (
+      <View style={[styles.templateContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)' }]}>
+        {message.templateName && (
+          <View style={styles.templateBadge}>
+            <Text style={[styles.templateBadgeText, { color: isDark ? '#4ade80' : '#047857' }]}>
+              📋 {message.templateName}
+            </Text>
+          </View>
+        )}
+        {headerType === 'IMAGE' && headerMedia && (
+          <Pressable onPress={() => setImageViewerVisible(true)}>
+            <Image
+              source={{ uri: headerMedia }}
+              style={styles.templateHeaderImage}
+              contentFit="cover"
+              cachePolicy="disk"
+            />
+          </Pressable>
+        )}
+        {headerType === 'VIDEO' && headerMedia && (
+          <Video
+            source={{ uri: headerMedia }}
+            style={styles.templateHeaderVideo}
+            resizeMode={ResizeMode.CONTAIN}
+            useNativeControls
+          />
+        )}
+        {headerType === 'DOCUMENT' && headerMedia && (
+          <Pressable onPress={() => headerMedia && Linking.openURL(headerMedia).catch(() => {})}>
+            <View style={[styles.docContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#f0f4f0' }]}>
+              <MaterialCommunityIcons name="file-document-outline" size={22} color={theme.colors.primary} />
+              <Text style={{ color: textColor, fontSize: 13, flex: 1 }}>{message.fileName || 'Document'}</Text>
+              <MaterialCommunityIcons name="download" size={18} color={theme.colors.primary} />
+            </View>
+          </Pressable>
+        )}
+        {bodyText ? (
+          <Text style={[styles.body, { color: textColor, marginTop: 4 }]}>
+            {bodyText.replace(/\\n/g, '\n')}
+          </Text>
+        ) : null}
+        {footerText ? (
+          <Text style={[styles.templateFooter, { color: isDark ? '#8696a0' : '#667781' }]}>
+            {typeof footerText === 'string' ? footerText : ''}
+          </Text>
+        ) : null}
+        {buttons.length > 0 && (
+          <View style={styles.templateButtons}>
+            {buttons.map((btn: any, idx: number) => (
+              <View key={idx} style={[styles.templateButton, { borderColor: isDark ? '#2a3942' : '#e2e8f0' }]}>
+                <Text style={[styles.templateButtonText, { color: isDark ? '#53bdeb' : '#0891b2' }]}>
+                  {btn.type === 'URL' ? '🔗 ' : btn.type === 'PHONE_NUMBER' ? '📞 ' : '↩ '}
+                  {btn.text || btn.label || ''}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderWabaNumberBadge = () => {
+    if (!wabaNumbers || wabaNumbers.length <= 1) return null;
+    const fromId = (message as any).fromNumberId;
+    const msgFrom = message.from;
+    const msgTo = message.to;
+    const lookupField = isOutbound ? msgFrom : msgTo;
+
+    let match: WabaNumber | undefined;
+    if (fromId) {
+      match = wabaNumbers.find(n => (n.PhoneNumberId || n.phoneNumberId) === fromId);
+    }
+    if (!match && lookupField) {
+      const norm = lookupField.replace(/[\s\-+]/g, '');
+      match = wabaNumbers.find(n => {
+        const d = (n.DisplayNumber || n.displayNumber || '').replace(/[\s\-+]/g, '');
+        return d && (d === norm || norm.endsWith(d) || d.endsWith(norm));
+      });
+    }
+    if (!match) return null;
+
+    const display = match.Label || match.label || match.DisplayNumber || match.displayNumber || '';
+    const numColor = match.Color || match.color || '';
+    if (!display) return null;
+
+    return (
+      <Text style={[styles.wabaBadge, { color: numColor || (isDark ? '#8696a0' : '#6b7280') }]}>
+        ({display})
+      </Text>
+    );
+  };
+
   const renderLinkedText = (text: string, _color: string) => {
     const urlPattern = /(https?:\/\/[^\s<>]+|www\.[^\s<>]+)/gi;
     const parts = text.split(urlPattern);
-    if (parts.length === 1) return text;
+    if (parts.length === 1) {
+      return renderFormattedText(text, _color);
+    }
 
     return parts.map((part, index) => {
       if (index % 2 === 1) {
@@ -311,20 +502,167 @@ function MessageBubbleInner({
           </Text>
         );
       }
-      return part;
+      const formatted = renderFormattedText(part, _color);
+      return formatted.length === 1 && typeof formatted[0] === 'string' ? formatted[0] : <Text key={index}>{formatted}</Text>;
     });
   };
 
+  const renderQuotedMessage = () => {
+    const quoted = message.quotedMessage;
+    if (!quoted) return null;
+
+    const quotedText = (quoted.text || quoted.body || '').trim();
+    const quotedSender = quoted.senderName || quoted.sentByName || '';
+    const quotedMediaUrl = (quoted as any).gmbt_mediaUrl || quoted.mediaUrl || quoted.MediaUrl || '';
+    const quotedType = (quoted.type || quoted.messageType || '').toLowerCase();
+    const isQuotedMedia = ['image', 'video', 'audio', 'document', 'sticker'].includes(quotedType) || !!quotedMediaUrl;
+
+    const accentColor = isOutbound ? '#06cf9c' : '#7c3aed';
+
+    return (
+      <View style={[styles.quotedContainer, { borderLeftColor: accentColor, backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' }]}>
+        {quotedSender ? (
+          <Text style={[styles.quotedSender, { color: accentColor }]} numberOfLines={1}>
+            {quotedSender}
+          </Text>
+        ) : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={[styles.quotedText, { color: isDark ? '#8696a0' : '#667781' }]} numberOfLines={2}>
+            {isQuotedMedia && !quotedText ? (
+              <>
+                <MaterialCommunityIcons name={quotedType === 'video' ? 'video' : quotedType === 'audio' ? 'microphone' : quotedType === 'document' ? 'file-document-outline' : 'image'} size={13} color={isDark ? '#8696a0' : '#667781'} />
+                {' '}{quotedType === 'image' ? 'Photo' : quotedType === 'video' ? 'Video' : quotedType === 'audio' ? 'Audio' : 'Document'}
+              </>
+            ) : quotedText}
+          </Text>
+          {isQuotedMedia && quotedMediaUrl && quotedType === 'image' && (
+            <Image source={{ uri: quotedMediaUrl }} style={styles.quotedThumb} contentFit="cover" cachePolicy="disk" />
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  const renderLocation = () => {
+    const loc = message.location || (message as any).locationData;
+    if (!loc) return null;
+    const { latitude, longitude, name, address } = loc;
+    const mapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${latitude},${longitude}&zoom=15&size=300x150&markers=color:red%7C${latitude},${longitude}&key=AIzaSyBwXDO&style=feature:all`;
+    const mapsLink = `https://maps.google.com/?q=${latitude},${longitude}`;
+
+    return (
+      <Pressable onPress={() => Linking.openURL(mapsLink).catch(() => {})}>
+        <View style={[styles.locationContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#f0f9f4' }]}>
+          <View style={styles.locationMapPlaceholder}>
+            <MaterialCommunityIcons name="map-marker" size={32} color="#E53935" />
+            <View style={styles.locationPinCircle}>
+              <MaterialCommunityIcons name="google-maps" size={18} color="#4285F4" />
+            </View>
+          </View>
+          {(name || address) && (
+            <View style={styles.locationInfo}>
+              {name ? <Text style={[styles.locationName, { color: textColor }]} numberOfLines={1}>{name}</Text> : null}
+              {address ? <Text style={[styles.locationAddress, { color: timeColor }]} numberOfLines={2}>{address}</Text> : null}
+            </View>
+          )}
+          {!name && !address && (
+            <View style={styles.locationInfo}>
+              <Text style={[styles.locationName, { color: textColor }]}>{t('chats.location', 'מיקום')}</Text>
+              <Text style={[styles.locationAddress, { color: timeColor }]}>{`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`}</Text>
+            </View>
+          )}
+        </View>
+      </Pressable>
+    );
+  };
+
+  const renderContacts = () => {
+    const contacts = message.contacts || (message as any).contactsList;
+    if (!contacts || contacts.length === 0) return null;
+
+    return (
+      <View style={[styles.contactCardContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#f8fafc' }]}>
+        {contacts.map((contact: any, idx: number) => {
+          const name = contact.name?.formatted_name || `${contact.name?.first_name || ''} ${contact.name?.last_name || ''}`.trim() || t('chats.contact', 'Contact');
+          const phone = contact.phones?.[0]?.phone || '';
+          return (
+            <Pressable key={idx} onPress={() => { if (phone) Linking.openURL(`tel:${phone}`).catch(() => {}); }} style={styles.contactCardItem}>
+              <View style={[styles.contactCardAvatar, { backgroundColor: isDark ? '#2e6155' : '#d1fae5' }]}>
+                <MaterialCommunityIcons name="account" size={22} color={isDark ? '#fff' : '#065f46'} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.contactCardName, { color: textColor }]} numberOfLines={1}>{name}</Text>
+                {phone ? <Text style={[styles.contactCardPhone, { color: timeColor }]}>{phone}</Text> : null}
+              </View>
+              {phone ? <MaterialCommunityIcons name="message-text-outline" size={18} color={theme.colors.primary} /> : null}
+            </Pressable>
+          );
+        })}
+      </View>
+    );
+  };
+
   const isRTL = I18nManager.isRTL;
+  const isSticker = rawType.toLowerCase() === 'sticker';
+
+  if (isSticker && mediaUrl) {
+    return (
+      <View
+        style={[
+          styles.wrapper,
+          { alignItems: isOutbound ? 'flex-end' : 'flex-start' },
+          showTail && styles.tailSpacing,
+        ]}
+      >
+        <Pressable onLongPress={handleLongPress} delayLongPress={250} style={({ pressed }) => [{ opacity: pressed ? 0.8 : 1 }]}>
+          {mediaLoading ? (
+            <View style={[styles.stickerPlaceholder]}>
+              <ActivityIndicator size="small" color={theme.colors.primary} />
+            </View>
+          ) : (
+            <Image
+              source={{ uri: effectiveMediaUrl || mediaUrl }}
+              style={styles.stickerImage}
+              contentFit="contain"
+              cachePolicy="disk"
+              recyclingKey={mediaUrl}
+            />
+          )}
+          <View style={[styles.stickerMeta, { alignSelf: isOutbound ? 'flex-end' : 'flex-start' }]}>
+            <Text style={[styles.time, { color: isDark ? '#8696a0' : '#667781' }]}>
+              {formatMessageTime(message.createdOn || message.timestamp)}
+            </Text>
+            {renderStatus()}
+          </View>
+        </Pressable>
+        {(() => {
+          const reactions = message.reactions;
+          if (!reactions) return null;
+          let emojiList: { key: string; emoji: string }[] = [];
+          if (Array.isArray(reactions)) {
+            emojiList = reactions.map((r, i) => ({ key: `${i}`, emoji: r.emoji }));
+          } else if (typeof reactions === 'object') {
+            emojiList = Object.entries(reactions).map(([phone, emoji]) => ({ key: phone, emoji: emoji as string }));
+          }
+          if (emojiList.length === 0) return null;
+          const uniqueEmojis = [...new Set(emojiList.map(e => e.emoji))];
+          return (
+            <View style={[styles.reactionsContainer, { alignSelf: isOutbound ? 'flex-end' : 'flex-start', backgroundColor: isDark ? '#1f2c34' : '#ffffff' }]}>
+              {uniqueEmojis.map((emoji, i) => (<Text key={i} style={styles.reactionEmoji}>{emoji}</Text>))}
+              {emojiList.length > 1 && <Text style={[styles.reactionCount, { color: isDark ? '#8696a0' : '#667781' }]}>{emojiList.length}</Text>}
+            </View>
+          );
+        })()}
+      </View>
+    );
+  }
 
   return (
     <View
       style={[
         styles.wrapper,
         {
-          alignItems: isOutbound
-            ? (isRTL ? 'flex-start' : 'flex-end')
-            : (isRTL ? 'flex-end' : 'flex-start'),
+          alignItems: isOutbound ? 'flex-end' : 'flex-start',
         },
         showTail && styles.tailSpacing,
       ]}
@@ -377,6 +715,16 @@ function MessageBubbleInner({
           />
         )}
 
+        {/* Forwarded indicator */}
+        {(message.isForwarded || (message as any).forwarded) && (
+          <View style={styles.forwardedBadge}>
+            <MaterialCommunityIcons name="share" size={11} color={isDark ? '#8696a0' : '#667781'} style={{ transform: [{ scaleX: -1 }] }} />
+            <Text style={[styles.forwardedText, { color: isDark ? '#8696a0' : '#667781' }]}>
+              {t('chats.forwarded', 'Forwarded')}
+            </Text>
+          </View>
+        )}
+
         {isInternal && (
           <View style={styles.internalBadge}>
             <MaterialCommunityIcons name="note-text-outline" size={11} color={isDark ? '#FFE082' : '#E65100'} />
@@ -387,18 +735,39 @@ function MessageBubbleInner({
         )}
 
         {displaySenderName ? (
-          <Text style={[styles.senderName, { color: isOutbound ? '#075e54' : '#6366f1' }]}>
-            {displaySenderName}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+            <Text style={[styles.senderName, { color: isOutbound ? '#075e54' : '#6366f1' }]}>
+              {displaySenderName}
+            </Text>
+            {renderWabaNumberBadge()}
+          </View>
         ) : null}
 
-        {renderMedia()}
+        {/* Quoted/Reply message */}
+        {renderQuotedMessage()}
 
-        {(message.text || message.body) ? (
-          <Text style={[styles.body, { color: textColor }]}>
-            {renderLinkedText(message.text || message.body || '', textColor)}
-          </Text>
-        ) : null}
+        {(message.type === 'template' || (message as any).messageType === 'template') ? (
+          renderTemplate()
+        ) : msgType === 'location' ? (
+          renderLocation()
+        ) : (message.contacts || (message as any).contactsList) ? (
+          renderContacts()
+        ) : (
+          <>
+            {renderMedia()}
+            {(message.text || message.body || message.caption) ? (() => {
+              const txt = (message.caption || message.text || message.body || '').trim();
+              const isMediaPlaceholder = ['image', 'video', 'audio', 'document'].includes(msgType) && mediaUrl &&
+                /^(תמונה|סרטון|וידאו|אודיו|מסמך|קובץ|image|video|audio|document|photo|sticker|file)$/i.test(txt);
+              if (isMediaPlaceholder) return null;
+              return (
+                <Text style={[styles.body, { color: textColor }]}>
+                  {renderLinkedText(txt, textColor)}
+                </Text>
+              );
+            })() : null}
+          </>
+        )}
 
         <View style={[styles.meta, { justifyContent: isOutbound ? 'flex-end' : 'flex-start' }]}>
           {message.isStarred && (
@@ -410,6 +779,39 @@ function MessageBubbleInner({
           {renderStatus()}
         </View>
       </Pressable>
+
+      {/* Reactions - WhatsApp style floating pill */}
+      {(() => {
+        const reactions = message.reactions;
+        if (!reactions) return null;
+        let emojiList: { key: string; emoji: string }[] = [];
+        if (Array.isArray(reactions)) {
+          emojiList = reactions.map((r, i) => ({ key: `${i}`, emoji: r.emoji }));
+        } else if (typeof reactions === 'object') {
+          emojiList = Object.entries(reactions).map(([phone, emoji]) => ({ key: phone, emoji: emoji as string }));
+        }
+        if (emojiList.length === 0) return null;
+
+        const uniqueEmojis = [...new Set(emojiList.map(e => e.emoji))];
+        const count = emojiList.length;
+
+        return (
+          <View style={[
+            styles.reactionsContainer,
+            {
+              alignSelf: isOutbound ? 'flex-end' : 'flex-start',
+              backgroundColor: isDark ? '#1f2c34' : '#ffffff',
+            },
+          ]}>
+            {uniqueEmojis.map((emoji, i) => (
+              <Text key={i} style={styles.reactionEmoji}>{emoji}</Text>
+            ))}
+            {count > 1 && (
+              <Text style={[styles.reactionCount, { color: isDark ? '#8696a0' : '#667781' }]}>{count}</Text>
+            )}
+          </View>
+        );
+      })()}
     </View>
   );
 }
@@ -527,17 +929,13 @@ const styles = StyleSheet.create({
   },
   audioTrackWrap: {
     flex: 1,
-    gap: 2,
+    gap: 4,
   },
-  audioTrack: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(128,128,128,0.25)',
-    overflow: 'hidden',
-  },
-  audioTrackFill: {
-    height: '100%',
-    borderRadius: 2,
+  waveformRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 1.5,
+    height: 20,
   },
   audioDuration: {
     fontSize: 11,
@@ -564,6 +962,201 @@ const styles = StyleSheet.create({
   imageViewerImage: {
     width: '100%',
     height: '80%',
+  },
+  templateContainer: {
+    borderRadius: 8,
+    padding: 4,
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  templateBadge: {
+    marginBottom: 4,
+  },
+  templateBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  templateHeaderImage: {
+    width: MEDIA_WIDTH,
+    height: 160,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  templateHeaderVideo: {
+    width: MEDIA_WIDTH,
+    height: 160,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  templateFooter: {
+    fontSize: 12,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  templateButtons: {
+    marginTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.06)',
+    paddingTop: 4,
+    gap: 4,
+  },
+  templateButton: {
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  templateButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  wabaBadge: {
+    fontSize: 11,
+    marginStart: 4,
+    fontWeight: '400',
+  },
+  reactionsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 12,
+    marginTop: -6,
+    marginHorizontal: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    gap: 2,
+  },
+  reactionEmoji: {
+    fontSize: 16,
+  },
+  reactionCount: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginStart: 2,
+  },
+  forwardedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 2,
+  },
+  forwardedText: {
+    fontSize: 11,
+    fontStyle: 'italic',
+    fontWeight: '400',
+  },
+  quotedContainer: {
+    borderLeftWidth: 3,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    marginBottom: 4,
+    marginTop: 2,
+  },
+  quotedSender: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  quotedText: {
+    fontSize: 13,
+    lineHeight: 17,
+    flex: 1,
+  },
+  quotedThumb: {
+    width: 42,
+    height: 42,
+    borderRadius: 4,
+    marginStart: 8,
+  },
+  stickerImage: {
+    width: STICKER_SIZE,
+    height: STICKER_SIZE,
+  },
+  stickerPlaceholder: {
+    width: STICKER_SIZE,
+    height: STICKER_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stickerMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 2,
+  },
+  locationContainer: {
+    borderRadius: 10,
+    overflow: 'hidden',
+    marginTop: 2,
+    marginBottom: 4,
+    minWidth: 200,
+  },
+  locationMapPlaceholder: {
+    height: 100,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(46,97,85,0.08)',
+    position: 'relative',
+  },
+  locationPinCircle: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  locationInfo: {
+    padding: 8,
+  },
+  locationName: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  locationAddress: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  contactCardContainer: {
+    borderRadius: 10,
+    overflow: 'hidden',
+    marginTop: 2,
+    marginBottom: 4,
+    minWidth: 200,
+  },
+  contactCardItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
+    gap: 10,
+  },
+  contactCardAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  contactCardName: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  contactCardPhone: {
+    fontSize: 12,
+    marginTop: 1,
   },
 });
 

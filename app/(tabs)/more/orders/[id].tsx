@@ -40,6 +40,7 @@ import {
   type DynamicSection,
 } from '../../../../components/DynamicFieldsSection';
 import type { Contact } from '../../../../types';
+import { NoteAttachmentRow, type NoteAttachment } from '../../../../components/NoteAttachmentRow';
 import { appCache } from '../../../../services/cache';
 
 const BRAND_COLOR = '#2e6155';
@@ -121,6 +122,7 @@ export default function OrderDetailScreen() {
   const [orderFormLayout, setOrderFormLayout] = useState<string[]>([]);
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
+  const [noteAttachment, setNoteAttachment] = useState<NoteAttachment | null>(null);
   const [savingNote, setSavingNote] = useState(false);
   const [statusMenuVisible, setStatusMenuVisible] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
@@ -274,19 +276,20 @@ export default function OrderDetailScreen() {
 
   // ── Save note (view mode) ─────────────────────────────────────────
   const handleSaveNote = useCallback(async () => {
-    if (!user?.organization || !id || !noteText.trim()) return;
+    if (!user?.organization || !id || (!noteText.trim() && !noteAttachment)) return;
     setSavingNote(true);
     try {
-      await ordersApi.addNote(user.organization, id, noteText.trim(), user.uID || user.userId);
+      await ordersApi.addNote(user.organization, id, noteText.trim(), user.uID || user.userId, noteAttachment || undefined);
       setNoteModalVisible(false);
       setNoteText('');
+      setNoteAttachment(null);
       await fetchOrder();
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
     } finally {
       setSavingNote(false);
     }
-  }, [user?.organization, id, noteText, user?.uID, user?.userId, fetchOrder, t]);
+  }, [user?.organization, id, noteText, noteAttachment, user?.uID, user?.userId, fetchOrder, t]);
 
   // ── Create order ──────────────────────────────────────────────────
   const handleCreate = useCallback(async () => {
@@ -382,7 +385,7 @@ export default function OrderDetailScreen() {
           />
         </Appbar.Header>
 
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           <ScrollView contentContainerStyle={styles.createScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
             {/* ── פרטי לקוח ── */}
@@ -912,7 +915,7 @@ export default function OrderDetailScreen() {
           onDismiss={() => { setNoteModalVisible(false); setNoteText(''); }}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
             <View style={[styles.modalHeader, { flexDirection }]}>
               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                 {t('orders.addNote')}
@@ -931,15 +934,21 @@ export default function OrderDetailScreen() {
               activeOutlineColor={BRAND_COLOR}
               autoFocus
             />
+            <NoteAttachmentRow
+              attachment={noteAttachment}
+              onAttach={setNoteAttachment}
+              onRemove={() => setNoteAttachment(null)}
+              primaryColor={BRAND_COLOR}
+            />
             <View style={[styles.modalActions, { flexDirection }]}>
-              <Button mode="outlined" onPress={() => { setNoteModalVisible(false); setNoteText(''); }} style={styles.modalBtn} textColor={theme.colors.onSurface}>
+              <Button mode="outlined" onPress={() => { setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }} style={styles.modalBtn} textColor={theme.colors.onSurface}>
                 {t('common.cancel')}
               </Button>
               <Button
                 mode="contained"
                 onPress={handleSaveNote}
                 loading={savingNote}
-                disabled={!noteText.trim() || savingNote}
+                disabled={(!noteText.trim() && !noteAttachment) || savingNote}
                 style={[styles.modalBtn, { backgroundColor: BRAND_COLOR }]}
                 textColor="#fff"
               >

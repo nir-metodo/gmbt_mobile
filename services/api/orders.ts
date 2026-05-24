@@ -102,12 +102,17 @@ export const ordersApi = {
     return response.data;
   },
 
-  async addNote(organization: string, orderId: string, note: string, userId?: string): Promise<any> {
-    const response = await axiosInstance.post(ENDPOINTS.ADD_ORDER_NOTE, {
-      organizationName: organization,
-      orderId,
-      note,
-      userId,
+  async addNote(organization: string, orderId: string, note: string, userId?: string, attachment?: { uri: string; name: string; type: string }): Promise<any> {
+    const formData = new FormData();
+    formData.append('organizationName', organization);
+    formData.append('orderId', orderId);
+    formData.append('note', note);
+    if (userId) formData.append('userId', userId);
+    if (attachment) {
+      formData.append('file', { uri: attachment.uri, name: attachment.name, type: attachment.type } as any);
+    }
+    const response = await axiosInstance.post(ENDPOINTS.ADD_ORDER_NOTE, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
     });
     return response.data;
   },

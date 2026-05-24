@@ -151,7 +151,9 @@ export default function ESignatureListScreen() {
 
   const openDocument = useCallback(
     (doc: ESignatureDocument) => {
-      router.push({ pathname: '/(tabs)/more/esignature/[id]', params: { id: doc.id } });
+      const docId = doc.documentId || doc.id;
+      if (!docId) return;
+      router.push(`/(tabs)/more/esignature/${docId}` as any);
     },
     [router],
   );
@@ -203,17 +205,15 @@ export default function ESignatureListScreen() {
                 <Text
                   variant="titleSmall"
                   numberOfLines={1}
-                  style={[styles.docTitle, { color: theme.colors.onSurface, textAlign, flex: 1 }]}
+                  style={[styles.docTitle, { color: theme.colors.onSurface, textAlign }]}
                 >
                   {item.documentName || item.title}
                 </Text>
-                <Chip
-                  compact
-                  textStyle={[styles.statusChipText, { color: statusColor }]}
-                  style={[styles.statusChip, { backgroundColor: `${statusColor}18` }]}
-                >
-                  {t(`esignature.${item.status}`)}
-                </Chip>
+                <View style={[styles.statusBadge, { backgroundColor: `${statusColor}18` }]}>
+                  <Text style={[styles.statusBadgeText, { color: statusColor }]}>
+                    {t(`esignature.${item.status}`)}
+                  </Text>
+                </View>
               </View>
 
               {signersSummary ? (
@@ -448,7 +448,7 @@ export default function ESignatureListScreen() {
       <FlatList
         data={filteredDocuments}
         renderItem={renderDocumentCard}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => item.documentId || item.id}
         ListEmptyComponent={renderEmpty}
         refreshControl={
           <RefreshControl
@@ -495,7 +495,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  headerIcon: { padding: 4, marginRight: 8 },
+  headerIcon: { padding: 4, marginEnd: 8 },
   searchWrap: {
     paddingHorizontal: 14,
     overflow: 'hidden',
@@ -546,12 +546,15 @@ const styles = StyleSheet.create({
   docTitle: {
     fontWeight: '600',
     fontSize: 15,
+    flexShrink: 1,
   },
-  statusChip: {
-    height: 24,
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 12,
+    flexShrink: 0,
   },
-  statusChipText: {
+  statusBadgeText: {
     fontSize: 11,
     fontWeight: '600',
   },

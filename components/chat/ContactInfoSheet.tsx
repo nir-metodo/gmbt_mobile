@@ -73,7 +73,13 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
       }
       if (timelineRes.status === 'fulfilled') {
         const raw = timelineRes.value.data;
-        setTimeline(Array.isArray(raw) ? raw : raw?.Data || raw?.data || []);
+        const arr = Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
+        arr.sort((a: any, b: any) => {
+          const dateA = new Date(a.CreateDateTimeUTC || a.createdOn || a.CreatedOn || a.timestamp || a.createdAt || a.date || 0).getTime();
+          const dateB = new Date(b.CreateDateTimeUTC || b.createdOn || b.CreatedOn || b.timestamp || b.createdAt || b.date || 0).getTime();
+          return dateB - dateA;
+        });
+        setTimeline(arr);
       }
       if (leadsRes.status === 'fulfilled') {
         const raw = leadsRes.value.data;

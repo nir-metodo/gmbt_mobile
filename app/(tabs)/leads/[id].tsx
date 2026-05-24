@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import {
   Text,
@@ -32,6 +33,8 @@ import { useAuthStore } from '../../../stores/authStore';
 import { makeAppCall } from '../../../utils/phoneCall';
 import { tasksApi } from '../../../services/api/tasks';
 import { contactsApi } from '../../../services/api/contacts';
+import axiosInstance from '../../../services/api/axiosInstance';
+import { ENDPOINTS } from '../../../constants/api';
 import { usersApi } from '../../../services/api/users';
 import { leadsApi } from '../../../services/api/leads';
 import { paymentsApi } from '../../../services/api/payments';
@@ -51,6 +54,7 @@ import {
   DynamicFieldsSectionForm,
   type DynamicSection,
 } from '../../../components/DynamicFieldsSection';
+import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
 import type { Lead, LeadStage, TimelineEvent, OrgUser } from '../../../types';
 
 const DEFAULT_STAGE_COLORS: Record<string, string> = {
@@ -168,10 +172,17 @@ export default function LeadDetailScreen() {
   const [ownerPickerExpanded, setOwnerPickerExpanded] = useState(false);
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
+  const [noteAttachment, setNoteAttachment] = useState<NoteAttachment | null>(null);
   const [addingNote, setAddingNote] = useState(false);
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
   const [leadFormSections, setLeadFormSections] = useState<DynamicSection[]>([]);
   const [leadFormLayout, setLeadFormLayout] = useState<string[]>([]);
+
+  // Product catalog state
+  const [catalogEnabled, setCatalogEnabled] = useState(false);
+  const [syncCatalogToValue, setSyncCatalogToValue] = useState(false);
+  const [catalogItems, setCatalogItems] = useState<any[]>([]);
+  const [catalogSearch, setCatalogSearch] = useState('');
 
   // Payment / clearing state
   const [clearingEnabled, setClearingEnabled] = useState(false);
@@ -196,9 +207,26 @@ export default function LeadDetailScreen() {
   }, [lead]);
 
   useEffect(() => {
+    if (!syncCatalogToValue || !catalogEnabled) return;
+    const products = form.interestedProducts || [];
+    if (products.length === 0) return;
+    const total = products.reduce((s: number, p: any) => s + (parseFloat(p.unitPrice) || 0) * (parseInt(p.quantity) || 1), 0);
+    if (total > 0 && Number(form.value) !== total) {
+      setForm((prev) => ({ ...prev, value: total }));
+    }
+  }, [form.interestedProducts, syncCatalogToValue, catalogEnabled]);
+
+  useEffect(() => {
     if (!organization) return;
     leadsApi.getPipelineSettings(organization)
-      .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
+      .then((res) => {
+        if (res.stages.length > 0) setPipelineStages(res.stages);
+        if (res.enableProductCatalog) {
+          setCatalogEnabled(true);
+          setSyncCatalogToValue(!!res.syncCatalogToValue);
+          leadsApi.getCatalogItems(organization).then(setCatalogItems).catch(() => {});
+        }
+      })
       .catch(() => {});
   }, [organization]);
 
@@ -285,13 +313,32 @@ export default function LeadDetailScreen() {
     async (newStage: string) => {
       setStagePickerVisible(false);
       if (!organization || !lead) return;
+      const stageObj = pipelineStages.find((s) => s.name === newStage);
+      const newStageId = stageObj?.id || '';
+
+      // Optimistic update in store (updates list + detail via leadFromStore)
+      useLeadStore.setState((state) => ({
+        leads: state.leads.map((l) =>
+          l.id === lead.id ? { ...l, stageName: newStage, stage: newStage, stageId: newStageId } : l
+        ),
+      }));
+      // Also update local form
+      setForm((prev) => ({ ...prev, stageName: newStage, stage: newStage, stageId: newStageId }));
+
       try {
-        await updateLead(organization, { id: lead.id, stage: newStage, stageName: newStage });
+        await leadsApi.moveStage(organization, lead.id, newStageId, newStage, user?.fullname || '');
       } catch {
+        // Revert on error
+        useLeadStore.setState((state) => ({
+          leads: state.leads.map((l) =>
+            l.id === lead.id ? { ...l, stageName: lead.stageName, stage: lead.stage, stageId: lead.stageId } : l
+          ),
+        }));
+        setForm((prev) => ({ ...prev, stageName: lead.stageName, stage: lead.stage, stageId: lead.stageId }));
         Alert.alert(t('common.error'));
       }
     },
-    [organization, lead, updateLead, t],
+    [organization, lead, pipelineStages, user, t],
   );
 
   const handleDelete = useCallback(() => {
@@ -349,13 +396,47 @@ export default function LeadDetailScreen() {
     setTimelineLoading(true);
     try {
       const timeline = await contactsApi.getTimeline(organization, `lead_${lead.id}`).catch(() => []);
-      setTimelineEvents(Array.isArray(timeline) ? timeline : []);
+      let arr = Array.isArray(timeline) ? timeline : [];
+
+      // Cross-entity: fetch contact notes if enabled
+      const contactPhone = lead.contactPhone || lead.phoneNumber || '';
+      if (contactPhone) {
+        try {
+          const settingRes = await axiosInstance.post(ENDPOINTS.GET_CROSS_ENTITY_NOTES_SETTING, { organization });
+          const crossEnabled = settingRes.data?.Data?.crossEntityNotesEnabled || settingRes.data?.crossEntityNotesEnabled;
+          const crossMode = settingRes.data?.Data?.crossEntityNotesMode || settingRes.data?.crossEntityNotesMode || 'notes_only';
+          if (crossEnabled) {
+            let contactEntries = await contactsApi.getTimeline(organization, contactPhone).catch(() => []);
+            contactEntries = Array.isArray(contactEntries) ? contactEntries : [];
+            if (crossMode === 'notes_only') {
+              contactEntries = contactEntries.filter((e: any) => (e.TimelineType || e.timelineType) === 'note');
+            }
+            contactEntries = contactEntries.map((e: any) => ({ ...e, _crossEntitySource: 'contact', _crossEntityLabel: contactPhone }));
+            arr = [...arr, ...contactEntries];
+          }
+        } catch {}
+      }
+
+      // Deduplicate
+      const unique = arr.reduce((acc: any[], ev: any) => {
+        const id = ev.TimelineId || ev.timelineId || ev.id;
+        if (id && !acc.find((e: any) => (e.TimelineId || e.timelineId || e.id) === id)) acc.push(ev);
+        else if (!id) acc.push(ev);
+        return acc;
+      }, []);
+
+      unique.sort((a: any, b: any) => {
+        const dateA = new Date(a.CreateDateTimeUTC || a.createdOn || a.CreatedOn || a.timestamp || 0).getTime();
+        const dateB = new Date(b.CreateDateTimeUTC || b.createdOn || b.CreatedOn || b.timestamp || 0).getTime();
+        return dateB - dateA;
+      });
+      setTimelineEvents(unique);
     } catch {
       setTimelineEvents([]);
     } finally {
       setTimelineLoading(false);
     }
-  }, [organization, lead?.id]);
+  }, [organization, lead?.id, lead?.contactPhone, lead?.phoneNumber]);
 
   useEffect(() => {
     if (lead && !isNew) {
@@ -364,7 +445,7 @@ export default function LeadDetailScreen() {
   }, [lead, isNew, fetchLeadTimeline]);
 
   const handleAddNote = useCallback(async () => {
-    if (!organization || !lead || !noteText.trim()) return;
+    if (!organization || !lead || (!noteText.trim() && !noteAttachment)) return;
     setAddingNote(true);
     try {
       await contactsApi.addTimelineEntry(
@@ -373,8 +454,10 @@ export default function LeadDetailScreen() {
         noteText.trim(),
         user?.uID || user?.userId || '',
         user?.fullname || '',
+        noteAttachment || undefined,
       );
       setNoteText('');
+      setNoteAttachment(null);
       setNoteModalVisible(false);
       fetchLeadTimeline();
     } catch {
@@ -382,7 +465,7 @@ export default function LeadDetailScreen() {
     } finally {
       setAddingNote(false);
     }
-  }, [organization, lead, noteText, user, t, fetchLeadTimeline]);
+  }, [organization, lead, noteText, noteAttachment, user, t, fetchLeadTimeline]);
 
   const handleOpenPayment = useCallback(() => {
     setPaymentAmount(lead?.value?.toString() || '');
@@ -877,7 +960,8 @@ export default function LeadDetailScreen() {
             style={styles.stagePickerOverlay}
             onPress={() => setStagePickerVisible(false)}
           >
-            <View
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
               style={[
                 styles.stagePickerSheet,
                 { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 },
@@ -921,7 +1005,7 @@ export default function LeadDetailScreen() {
                   </Pressable>
                 );
               })}
-            </View>
+            </Pressable>
           </Pressable>
         </Modal>
       </Portal>
@@ -938,7 +1022,7 @@ export default function LeadDetailScreen() {
           }}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior="padding"
             style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
           >
             <View style={[styles.modalHeader, { borderBottomColor: theme.colors.outline, flexDirection }]}>
@@ -1339,13 +1423,13 @@ export default function LeadDetailScreen() {
                   <Divider />
                   {orgUsers.map((u) => (
                     <Pressable
-                      key={u.uID || u.userId}
-                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId) === form.ownerId ? `${theme.colors.primary}15` : 'transparent' }]}
-                      onPress={() => { setForm((prev) => ({ ...prev, ownerId: u.uID || u.userId || '', ownerName: u.fullname || u.name || '' })); setOwnerPickerExpanded(false); }}
+                      key={u.uID || u.userId || u.id}
+                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId || u.id) === form.ownerId ? `${theme.colors.primary}15` : 'transparent' }]}
+                      onPress={() => { setForm((prev) => ({ ...prev, ownerId: u.uID || u.userId || u.id || '', ownerName: u.userName || u.fullname || u.name || '' })); setOwnerPickerExpanded(false); }}
                     >
-                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId) === form.ownerId ? theme.colors.primary : theme.colors.onSurfaceVariant} />
-                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId) === form.ownerId ? theme.colors.primary : theme.colors.onSurface, fontWeight: (u.uID || u.userId) === form.ownerId ? '700' : '400' }}>
-                        {u.fullname || u.name}
+                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId || u.id) === form.ownerId ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId || u.id) === form.ownerId ? theme.colors.primary : theme.colors.onSurface, fontWeight: (u.uID || u.userId || u.id) === form.ownerId ? '700' : '400' }}>
+                        {u.userName || u.fullname || u.name}
                       </Text>
                     </Pressable>
                   ))}
@@ -1367,6 +1451,101 @@ export default function LeadDetailScreen() {
                 placeholder={t('leads.tagsPlaceholder', 'tag1, tag2, tag3')}
               />
               </View>
+
+              {/* ── Product Catalog Section ── */}
+              {catalogEnabled && catalogItems.length > 0 && (
+                <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                  <View style={[styles.formSectionHeader, { flexDirection }]}>
+                    <View style={styles.formSectionAccent} />
+                    <MaterialCommunityIcons name="cart-outline" size={18} color="#2e6155" />
+                    <Text variant="titleSmall" style={styles.formSectionTitle}>
+                      {lang === 'he' ? 'מוצרים/שירותים' : 'Products of Interest'}
+                    </Text>
+                  </View>
+                  {catalogItems.length > 6 && (
+                    <TextInput
+                      placeholder={lang === 'he' ? 'חיפוש מוצר...' : 'Search product...'}
+                      placeholderTextColor={theme.colors.onSurfaceVariant}
+                      value={catalogSearch}
+                      onChangeText={setCatalogSearch}
+                      style={[styles.catalogSearchInput, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign }]}
+                    />
+                  )}
+                  <View style={styles.catalogGrid}>
+                    {catalogItems
+                      .filter((item: any) => {
+                        if (!catalogSearch.trim()) return true;
+                        const q = catalogSearch.trim().toLowerCase();
+                        return (item.name || '').toLowerCase().includes(q) || (item.category || '').toLowerCase().includes(q);
+                      })
+                      .map((item: any) => {
+                        const products = (form.interestedProducts || []) as any[];
+                        const existing = products.find((p: any) => p.productId === item.id);
+                        return (
+                          <Pressable
+                            key={item.id}
+                            onPress={() => {
+                              if (existing) {
+                                const updated = products.filter((p: any) => p.productId !== item.id);
+                                setForm((prev) => ({ ...prev, interestedProducts: updated }));
+                              } else {
+                                const updated = [...products, { productId: item.id, name: item.name, unitPrice: item.unitPrice, sku: item.sku, category: item.category, quantity: 1 }];
+                                setForm((prev) => ({ ...prev, interestedProducts: updated }));
+                              }
+                            }}
+                            style={[
+                              styles.catalogCard,
+                              {
+                                backgroundColor: existing ? (theme.dark ? '#1e3a2a' : '#d1fae5') : (theme.dark ? 'rgba(255,255,255,0.04)' : '#f9fafb'),
+                                borderColor: existing ? '#2e6155' : (theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb'),
+                              },
+                            ]}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <View style={[styles.catalogCheck, { backgroundColor: existing ? '#2e6155' : 'transparent', borderColor: existing ? '#2e6155' : theme.colors.outline }]}>
+                                {existing && <MaterialCommunityIcons name="check" size={14} color="#fff" />}
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 14, fontWeight: '600', color: theme.colors.onSurface }} numberOfLines={1}>{item.name}</Text>
+                                {item.description ? <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, marginTop: 1 }} numberOfLines={1}>{item.description}</Text> : null}
+                              </View>
+                              <Text style={{ fontSize: 13, fontWeight: '600', color: '#2e6155' }}>
+                                ₪{Number(item.unitPrice || 0).toLocaleString()}
+                              </Text>
+                            </View>
+                            {existing && (
+                              <View style={[styles.catalogQtyRow, { flexDirection }]}>
+                                <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant }}>{lang === 'he' ? 'כמות:' : 'Qty:'}</Text>
+                                <View style={styles.catalogQtyControls}>
+                                  <Pressable
+                                    onPress={() => setForm((prev) => ({ ...prev, interestedProducts: products.map((p: any) => p.productId === item.id ? { ...p, quantity: Math.max(1, (p.quantity || 1) - 1) } : p) }))}
+                                    style={[styles.catalogQtyBtn, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb' }]}
+                                  >
+                                    <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.onSurface }}>−</Text>
+                                  </Pressable>
+                                  <Text style={{ fontSize: 14, fontWeight: '600', color: theme.colors.onSurface, minWidth: 24, textAlign: 'center' }}>{existing.quantity || 1}</Text>
+                                  <Pressable
+                                    onPress={() => setForm((prev) => ({ ...prev, interestedProducts: products.map((p: any) => p.productId === item.id ? { ...p, quantity: (p.quantity || 1) + 1 } : p) }))}
+                                    style={[styles.catalogQtyBtn, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb' }]}
+                                  >
+                                    <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.onSurface }}>+</Text>
+                                  </Pressable>
+                                </View>
+                              </View>
+                            )}
+                          </Pressable>
+                        );
+                      })}
+                  </View>
+                  {(form.interestedProducts || []).length > 0 && (
+                    <View style={[styles.catalogSummary, { backgroundColor: theme.dark ? 'rgba(46,97,85,0.15)' : '#ecfdf5' }]}>
+                      <Text style={{ fontSize: 13, color: '#2e6155', fontWeight: '600' }}>
+                        {lang === 'he' ? 'נבחרו' : 'Selected'}: {(form.interestedProducts || []).length} {lang === 'he' ? 'פריטים' : 'items'} | {lang === 'he' ? 'שווי' : 'Value'}: ₪{(form.interestedProducts || []).reduce((s: number, p: any) => s + (p.unitPrice || 0) * (p.quantity || 1), 0).toLocaleString()}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
 
               {/* ── Custom Fields Section ── */}
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
@@ -1590,65 +1769,77 @@ export default function LeadDetailScreen() {
           animationType="fade"
           onRequestClose={() => setNoteModalVisible(false)}
         >
-          <Pressable
-            style={styles.stagePickerOverlay}
-            onPress={() => setNoteModalVisible(false)}
+          <KeyboardAvoidingView
+            behavior="padding"
+            style={{ flex: 1 }}
           >
             <Pressable
-              onPress={(e) => e.stopPropagation()}
-              style={[
-                styles.stagePickerSheet,
-                { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 },
-              ]}
+              style={styles.stagePickerOverlay}
+              onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }}
             >
-              <Text
-                variant="titleMedium"
-                style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}
-              >
-                {t('phoneCalls.addNote')}
-              </Text>
-              <TextInput
-                value={noteText}
-                onChangeText={setNoteText}
-                placeholder={t('phoneCalls.noteHint', 'Write a note...')}
-                placeholderTextColor={theme.custom?.placeholder || '#999'}
-                multiline
+              <Pressable
+                onPress={(e) => e.stopPropagation()}
                 style={[
-                  styles.formInput,
-                  {
-                    backgroundColor: theme.custom?.inputBackground || theme.colors.surfaceVariant,
-                    color: theme.colors.onSurface,
-                    borderColor: theme.colors.outline,
-                    textAlign,
-                    writingDirection,
-                    height: 120,
-                    textAlignVertical: 'top',
-                    marginBottom: 12,
-                  },
+                  styles.stagePickerSheet,
+                  { backgroundColor: theme.colors.surface, paddingBottom: Math.max(insets.bottom, 12) + 8 },
                 ]}
-              />
-              <View style={[styles.modalActions, { flexDirection }]}>
-                <Button
-                  mode="outlined"
-                  onPress={() => { setNoteModalVisible(false); setNoteText(''); }}
-                  style={styles.addTaskModalBtn}
-                  textColor={theme.colors.onSurface}
+              >
+                <Text
+                  variant="titleMedium"
+                  style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}
                 >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={handleAddNote}
-                  loading={addingNote}
-                  disabled={!noteText.trim() || addingNote}
-                  style={[styles.addTaskModalBtn, { backgroundColor: theme.colors.primary }]}
-                  textColor="#FFFFFF"
-                >
-                  {t('common.save')}
-                </Button>
-              </View>
+                  {t('phoneCalls.addNote')}
+                </Text>
+                <TextInput
+                  value={noteText}
+                  onChangeText={setNoteText}
+                  placeholder={t('phoneCalls.noteHint', 'Write a note...')}
+                  placeholderTextColor={theme.custom?.placeholder || '#999'}
+                  multiline
+                  autoFocus
+                  style={[
+                    styles.formInput,
+                    {
+                      backgroundColor: theme.custom?.inputBackground || theme.colors.surfaceVariant,
+                      color: theme.colors.onSurface,
+                      borderColor: theme.colors.outline,
+                      textAlign,
+                      writingDirection,
+                      height: 120,
+                      textAlignVertical: 'top',
+                      marginBottom: 12,
+                    },
+                  ]}
+                />
+                <NoteAttachmentRow
+                  attachment={noteAttachment}
+                  onAttach={setNoteAttachment}
+                  onRemove={() => setNoteAttachment(null)}
+                  primaryColor={theme.colors.primary}
+                />
+                <View style={[styles.modalActions, { flexDirection }]}>
+                  <Button
+                    mode="outlined"
+                    onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }}
+                    style={styles.addTaskModalBtn}
+                    textColor={theme.colors.onSurface}
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                  <Button
+                    mode="contained"
+                    onPress={() => { Keyboard.dismiss(); handleAddNote(); }}
+                    loading={addingNote}
+                    disabled={(!noteText.trim() && !noteAttachment) || addingNote}
+                    style={[styles.addTaskModalBtn, { backgroundColor: theme.colors.primary }]}
+                    textColor="#FFFFFF"
+                  >
+                    {t('common.save')}
+                  </Button>
+                </View>
+              </Pressable>
             </Pressable>
-          </Pressable>
+          </KeyboardAvoidingView>
         </Modal>
       </Portal>
 
@@ -2026,6 +2217,22 @@ function FormField({
   );
 }
 
+type LeadTimelineFilterKey = 'all' | 'notes' | 'lead' | 'system';
+
+const LEAD_TIMELINE_FILTERS: { key: LeadTimelineFilterKey; label: string; icon: string }[] = [
+  { key: 'all', label: 'הכל', icon: 'format-list-bulleted' },
+  { key: 'notes', label: 'הערות', icon: 'note-text' },
+  { key: 'lead', label: 'ליד', icon: 'account-convert' },
+  { key: 'system', label: 'מערכת', icon: 'cog-outline' },
+];
+
+function getLeadTimelineGroup(entry: any): LeadTimelineFilterKey {
+  const t = (entry?.TimelineType || entry?.timelineType || entry?.Type || entry?.type || '').toLowerCase();
+  if (t === 'note' || t === 'internal_mention') return 'notes';
+  if (t === 'stage_change' || t.startsWith('lead_')) return 'lead';
+  return 'system';
+}
+
 function TimelineSection({
   theme,
   t,
@@ -2043,6 +2250,8 @@ function TimelineSection({
   events: any[];
   loading: boolean;
 }) {
+  const [activeFilter, setActiveFilter] = useState<LeadTimelineFilterKey>('all');
+
   if (loading) {
     return (
       <View style={styles.timelineEmpty}>
@@ -2067,9 +2276,42 @@ function TimelineSection({
     );
   }
 
+  const counts: Record<LeadTimelineFilterKey, number> = { all: events.length, notes: 0, lead: 0, system: 0 };
+  events.forEach((e) => { counts[getLeadTimelineGroup(e)]++; });
+  const visibleFilters = LEAD_TIMELINE_FILTERS.filter((f) => f.key === 'all' || counts[f.key] > 0);
+  const filtered = activeFilter === 'all' ? events : events.filter((e) => getLeadTimelineGroup(e) === activeFilter);
+
   return (
     <View>
-      {events.map((event, idx) => {
+      {visibleFilters.length > 2 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.timelineFilterBar} contentContainerStyle={{ gap: 6, paddingHorizontal: 4 }}>
+          {visibleFilters.map((f) => {
+            const isActive = activeFilter === f.key;
+            return (
+              <Pressable
+                key={f.key}
+                onPress={() => setActiveFilter(f.key)}
+                style={[
+                  styles.timelineFilterChip,
+                  { backgroundColor: isActive ? theme.colors.primary : theme.colors.surfaceVariant },
+                ]}
+              >
+                <MaterialCommunityIcons name={f.icon as any} size={14} color={isActive ? '#fff' : theme.colors.onSurfaceVariant} />
+                <Text style={[styles.timelineFilterLabel, { color: isActive ? '#fff' : theme.colors.onSurfaceVariant }]}>
+                  {f.label}
+                </Text>
+                {f.key !== 'all' && (
+                  <Text style={[styles.timelineFilterCount, { color: isActive ? '#fff' : theme.colors.onSurfaceVariant }]}>
+                    {counts[f.key]}
+                  </Text>
+                )}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {filtered.map((event, idx) => {
         const id = event.TimelineId || event.timelineId || event.id || `${idx}`;
         const creator = event.CreatedByName || event.createdByName || '';
         const ts = event.CreateDateTimeUTC || event.createDateTimeUTC || event.timestamp || event.createdOn || '';
@@ -2077,7 +2319,7 @@ function TimelineSection({
         return (
           <View key={id} style={[styles.timelineItem, { flexDirection }]}>
             <View style={[styles.timelineDot, { backgroundColor: color }]} />
-            <View style={[styles.timelineBody, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.timelineBody, { alignItems: 'flex-start' }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
                 {icon ? <Text style={{ fontSize: 14 }}>{icon}</Text> : null}
                 {label ? (
@@ -2288,6 +2530,17 @@ const styles = StyleSheet.create({
   timelineItem: { alignItems: 'flex-start', marginBottom: 16, gap: 12 },
   timelineDot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
   timelineBody: { flex: 1 },
+  timelineFilterBar: { marginBottom: 12, maxHeight: 36 },
+  timelineFilterChip: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+  },
+  timelineFilterLabel: { fontSize: 12, fontWeight: '600' as const },
+  timelineFilterCount: { fontSize: 10, fontWeight: '500' as const, marginStart: 2 },
   stagePickerOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',
@@ -2422,5 +2675,54 @@ const styles = StyleSheet.create({
   addTaskModalBtn: {
     minWidth: 100,
     borderRadius: 10,
+  },
+  catalogSearchInput: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    marginBottom: 10,
+  },
+  catalogGrid: {
+    gap: 8,
+  },
+  catalogCard: {
+    borderWidth: 1.5,
+    borderRadius: 10,
+    padding: 12,
+    gap: 8,
+  },
+  catalogCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+  },
+  catalogQtyRow: {
+    alignItems: 'center' as const,
+    gap: 8,
+    marginTop: 4,
+    paddingStart: 30,
+  },
+  catalogQtyControls: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 8,
+  },
+  catalogQtyBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+  },
+  catalogSummary: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 8,
+    alignItems: 'center' as const,
   },
 });

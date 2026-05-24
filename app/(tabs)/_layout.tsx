@@ -4,6 +4,7 @@ import { StyleSheet, View } from 'react-native';
 import { Badge, useTheme } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
+import { CommonActions } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
 import { useChatStore } from '../../stores/chatStore';
@@ -151,9 +152,21 @@ export default function TabsLayout() {
             ),
           }}
           listeners={({ navigation }) => ({
-            tabPress: () => {
-              // Reset tab stack to root on press (prevents stale sub-routes after cross-tab navigation)
-              navigation.navigate(tab.name, { screen: 'index' });
+            tabPress: (e) => {
+              const state = navigation.getState();
+              const tabRoute = state.routes.find((r: any) => r.name === tab.name);
+              const nestedState = tabRoute?.state;
+              // If the tab has a nested stack with more than 1 screen, reset to root
+              if (nestedState && nestedState.routes && nestedState.routes.length > 1) {
+                e.preventDefault();
+                navigation.dispatch({
+                  ...CommonActions.reset({
+                    index: 0,
+                    routes: [{ name: 'index' }],
+                  }),
+                  target: nestedState.key,
+                });
+              }
             },
           })}
         />

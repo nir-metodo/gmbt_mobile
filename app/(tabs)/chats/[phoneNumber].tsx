@@ -19,6 +19,8 @@ import {
   ActivityIndicator,
   Linking,
   TextInput,
+  BackHandler,
+  Keyboard,
 } from 'react-native';
 import { Text, IconButton, Menu, Avatar, Button } from 'react-native-paper';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
@@ -32,6 +34,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
+import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useChatStore } from '../../../stores/chatStore';
@@ -177,8 +180,15 @@ export default function ChatConversationScreen() {
   const [isInitiatingCall, setIsInitiatingCall] = useState(false);
   const [telSettings, setTelSettings] = useState<{ phoneNumbers?: any[]; defaultCallerId?: string } | null>(null);
 
+  // Media gallery viewer
+  const [galleryVisible, setGalleryVisible] = useState(false);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+
   // Contact Info sheet (category, status, lead stage, tags, timeline)
   const [showContactInfoSheet, setShowContactInfoSheet] = useState(false);
+
+  // Attachment sheet
+  const [showAttachSheet, setShowAttachSheet] = useState(false);
 
   // Quick Actions sheet
   const [showQuickActionsSheet, setShowQuickActionsSheet] = useState(false);
@@ -326,6 +336,58 @@ export default function ChatConversationScreen() {
     setShowTemplateSelector(true);
   }, [loadTemplates]);
 
+  const handleSendDefaultTemplate = useCallback(async () => {
+    if (!user?.organization || !phoneNumber || isSendingTemplate) return;
+    setIsSendingTemplate(true);
+    setShowTemplateSelector(false);
+    try {
+      const axiosInst = require('../../../services/api/axiosInstance').default;
+      const { ENDPOINTS: EP } = require('../../../constants/api');
+
+      let templateId = '';
+      const wabaArr: any[] = user?.wabaNumbers || [];
+      if (activeWabaNumber && wabaArr.length > 1) {
+        const selectedNum = wabaArr.find((n: any) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
+        if (selectedNum?.DefaultTemplateId || selectedNum?.defaultTemplateId) {
+          templateId = selectedNum.DefaultTemplateId || selectedNum.defaultTemplateId;
+        }
+      }
+
+      if (!templateId) {
+        const defRes = await axiosInst.post(EP.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
+        const tplAssignment = defRes.data?.Data?.templates?.openConversation;
+        templateId = Array.isArray(tplAssignment?.templateId)
+          ? (tplAssignment.templateId[0] || '')
+          : (tplAssignment?.templateId || '');
+      }
+
+      if (!templateId) {
+        Alert.alert(t('common.error'), t('chats.noDefaultTemplate', 'לא הוגדרה תבנית ברירת מחדל'));
+        return;
+      }
+
+      const result = await chatsApi.sendTemplateMessage(
+        user.organization,
+        phoneNumber as string,
+        templateId,
+        user.userId,
+        [],
+        activeWabaNumber || user.wabaNumber || '',
+      );
+      if (result?.Success === false) {
+        throw new Error(result?.Message || t('chats.templateSendError'));
+      }
+      loadMessages(user.organization, phoneNumber as string);
+      fetchConversationStatus();
+      Alert.alert(t('common.success'), t('chats.templateSent'));
+    } catch (err: any) {
+      const msg = err?.response?.data?.Message || err?.message || t('chats.templateSendError');
+      Alert.alert(t('common.error'), msg);
+    } finally {
+      setIsSendingTemplate(false);
+    }
+  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, loadMessages, fetchConversationStatus, t]);
+
   const getTemplateBodyText = useCallback((template: Template) => {
     const body = template.components?.find(
       (c: any) => c.type === 'BODY',
@@ -456,6 +518,27 @@ export default function ChatConversationScreen() {
     };
   }, [navigation]);
 
+  // Handle hardware back button
+  useEffect(() => {
+    const onBackPress = () => {
+      if (showAttachSheet) { setShowAttachSheet(false); return true; }
+      if (menuVisible) { setMenuVisible(false); return true; }
+      if (searchVisible) { setSearchVisible(false); setSearchQuery(''); return true; }
+      if (showContactInfoSheet) { setShowContactInfoSheet(false); return true; }
+      if (mediaPanelVisible) { setMediaPanelVisible(false); return true; }
+      if (showQuickActionsSheet) { setShowQuickActionsSheet(false); return true; }
+      if (showInlineQuickMessages) { setShowInlineQuickMessages(false); return true; }
+      if (showMentionPicker) { setShowMentionPicker(false); return true; }
+      if (starredFilter) { setStarredFilter(false); return true; }
+      if (replyToMessage) { setReplyToMessage(null); return true; }
+      Keyboard.dismiss();
+      router.back();
+      return true;
+    };
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [showAttachSheet, menuVisible, searchVisible, showContactInfoSheet, mediaPanelVisible, showQuickActionsSheet, showInlineQuickMessages, showMentionPicker, starredFilter, replyToMessage, router]);
+
   // Load messages & mark as read
   useEffect(() => {
     if (user?.organization && phoneNumber) {
@@ -551,16 +634,49 @@ export default function ChatConversationScreen() {
     if (currentMessages.length === 0) return;
     const mediaItems: Array<{ url: string; type: MediaType }> = [];
     for (const msg of currentMessages) {
-      const url = msg.mediaUrl || (msg as any).MediaUrl || (msg as any).media_url;
+      const url = (msg as any).gmbt_mediaUrl || msg.mediaUrl || (msg as any).MediaUrl || (msg as any).media_url;
       if (!url) continue;
-      const t = (msg.type || (msg as any).messageType) as string;
-      const mediaType: MediaType = (['image', 'video', 'audio', 'document'].includes(t) ? t : 'image') as MediaType;
+      const rawT = ((msg.type || (msg as any).messageType) || '').toLowerCase();
+      let mediaType: MediaType = 'image';
+      if (rawT === 'image' || rawT.startsWith('image/')) mediaType = 'image';
+      else if (rawT === 'video' || rawT.startsWith('video/')) mediaType = 'video';
+      else if (rawT === 'audio' || rawT.startsWith('audio/')) mediaType = 'audio';
+      else if (rawT === 'document' || rawT.startsWith('application/') || rawT === 'file') mediaType = 'document';
+      else {
+        const ext = (url.split('?')[0].split('.').pop() || '').toLowerCase();
+        if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'].includes(ext)) mediaType = 'image';
+        else if (['mp4', 'mov', 'avi', 'webm', '3gp'].includes(ext)) mediaType = 'video';
+        else if (['mp3', 'ogg', 'opus', 'wav', 'aac', 'm4a', 'amr'].includes(ext)) mediaType = 'audio';
+        else if (['pdf', 'doc', 'docx', 'xls', 'xlsx'].includes(ext)) mediaType = 'document';
+      }
       mediaItems.push({ url, type: mediaType });
     }
     if (mediaItems.length > 0) {
       prefetchMediaList(mediaItems);
     }
   }, [currentMessages]);
+
+  // Collect all visual media messages for the gallery viewer
+  const mediaMessages = useMemo(() => {
+    return currentMessages
+      .filter((m) => {
+        const t = (m.type || m.mediaType || '').toLowerCase();
+        const url = m.gmbt_mediaUrl || m.mediaUrl || (m as any).MediaUrl || (m as any).media_url || '';
+        if (!url) return false;
+        if (t === 'image' || t === 'video') return true;
+        const ext = (url.split('?')[0].split('.').pop() || '').toLowerCase();
+        return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'mp4', 'mov', 'avi', 'webm', '3gp'].includes(ext);
+      })
+      .sort((a, b) => new Date(getTs(b)).getTime() - new Date(getTs(a)).getTime());
+  }, [currentMessages]);
+
+  const handleMediaPress = useCallback((message: Message) => {
+    const idx = mediaMessages.findIndex((m) => m.messageId === message.messageId);
+    if (idx >= 0) {
+      setGalleryIndex(idx);
+      setGalleryVisible(true);
+    }
+  }, [mediaMessages]);
 
   // Build list data with date separators + timeline entries (newest first for inverted list)
   const listData = useMemo<ListItem[]>(() => {
@@ -775,88 +891,60 @@ export default function ChatConversationScreen() {
   }, [user?.organization, phoneNumber, user?.uID, user?.userId, t, activeWabaNumber]);
 
   const handleAttachment = useCallback(() => {
-    Alert.alert(
-      t('chats.attachFile'),
-      undefined,
-      [
-        {
-          text: t('chats.takePhoto'),
-          onPress: async () => {
-            const { status } = await ImagePicker.requestCameraPermissionsAsync();
-            if (status !== 'granted') {
-              Alert.alert(
-                t('common.permissionDenied', 'הרשאה נדרשת'),
-                t('chats.cameraPermission', 'יש לאפשר גישה למצלמה בהגדרות האפליקציה'),
-              );
-              return;
-            }
-            try {
-              const result = await ImagePicker.launchCameraAsync({
-                mediaTypes: ImagePicker.MediaTypeOptions.Images,
-                quality: 0.8,
-              });
-              if (!result.canceled && result.assets?.[0]) {
-                const asset = result.assets[0];
-                sendPickedMedia(asset.uri, asset.fileName || `photo_${Date.now()}.jpg`, asset.mimeType || 'image/jpeg', asset.fileSize);
-              }
-            } catch (err: any) {
-              Alert.alert(t('common.error'), err?.message || t('errors.generic', 'אירעה שגיאה'));
-            }
-          },
-        },
-        {
-          text: t('chats.gallery', 'גלריה'),
-          onPress: async () => {
-            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-            if (status !== 'granted') {
-              Alert.alert(
-                t('common.permissionDenied', 'הרשאה נדרשת'),
-                t('chats.galleryPermission', 'יש לאפשר גישה לגלריה בהגדרות האפליקציה'),
-              );
-              return;
-            }
-            try {
-              const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ImagePicker.MediaTypeOptions.All,
-                quality: 0.8,
-              });
-              if (!result.canceled && result.assets?.[0]) {
-                const asset = result.assets[0];
-                const isVideo = asset.type === 'video' || asset.mimeType?.startsWith('video');
-                const ext = isVideo ? 'mp4' : 'jpg';
-                const mime = asset.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg');
-                sendPickedMedia(asset.uri, asset.fileName || `media_${Date.now()}.${ext}`, mime, asset.fileSize);
-              }
-            } catch (err: any) {
-              Alert.alert(t('common.error'), err?.message || t('errors.generic', 'אירעה שגיאה'));
-            }
-          },
-        },
-        {
-          text: t('chats.document', 'מסמך'),
-          onPress: async () => {
-            try {
-              const DocumentPicker = require('expo-document-picker');
-              const result = await DocumentPicker.getDocumentAsync({
-                copyToCacheDirectory: true,
-                type: '*/*',
-              });
-              if (!result.canceled && result.assets?.[0]) {
-                const doc = result.assets[0];
-                sendPickedMedia(doc.uri, doc.name, doc.mimeType || 'application/octet-stream', doc.size);
-              }
-            } catch (err: any) {
-              Alert.alert(t('common.error'), err?.message || t('errors.generic', 'אירעה שגיאה'));
-            }
-          },
-        },
-        {
-          text: t('common.cancel', 'ביטול'),
-          style: 'cancel',
-        },
-      ],
-      { cancelable: true },
-    );
+    setShowAttachSheet(true);
+  }, []);
+
+  const handlePickCamera = useCallback(async () => {
+    setShowAttachSheet(false);
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(t('common.permissionDenied', 'הרשאה נדרשת'), t('chats.cameraPermission', 'יש לאפשר גישה למצלמה בהגדרות האפליקציה'));
+      return;
+    }
+    try {
+      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'] as any, quality: 0.8 });
+      if (!result.canceled && result.assets?.[0]) {
+        const asset = result.assets[0];
+        sendPickedMedia(asset.uri, asset.fileName || `photo_${Date.now()}.jpg`, asset.mimeType || 'image/jpeg', asset.fileSize);
+      }
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err?.message || t('errors.generic', 'אירעה שגיאה'));
+    }
+  }, [t, sendPickedMedia]);
+
+  const handlePickGallery = useCallback(async () => {
+    setShowAttachSheet(false);
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(t('common.permissionDenied', 'הרשאה נדרשת'), t('chats.galleryPermission', 'יש לאפשר גישה לגלריה בהגדרות האפליקציה'));
+      return;
+    }
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'] as any, quality: 0.8 });
+      if (!result.canceled && result.assets?.[0]) {
+        const asset = result.assets[0];
+        const isVideo = asset.type === 'video' || asset.mimeType?.startsWith('video');
+        const ext = isVideo ? 'mp4' : 'jpg';
+        const mime = asset.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg');
+        sendPickedMedia(asset.uri, asset.fileName || `media_${Date.now()}.${ext}`, mime, asset.fileSize);
+      }
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err?.message || t('errors.generic', 'אירעה שגיאה'));
+    }
+  }, [t, sendPickedMedia]);
+
+  const handlePickDocument = useCallback(async () => {
+    setShowAttachSheet(false);
+    try {
+      const DocumentPicker = require('expo-document-picker');
+      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, type: '*/*' });
+      if (!result.canceled && result.assets?.[0]) {
+        const doc = result.assets[0];
+        sendPickedMedia(doc.uri, doc.name, doc.mimeType || 'application/octet-stream', doc.size);
+      }
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err?.message || t('errors.generic', 'אירעה שגיאה'));
+    }
   }, [t, sendPickedMedia]);
 
   const handleVoiceMessage = useCallback(async (uri: string, durationMs: number) => {
@@ -1080,10 +1168,12 @@ export default function ChatConversationScreen() {
           showTail={item.showTail}
           theme={theme}
           onLongPress={handleMessageLongPress}
+          onMediaPress={handleMediaPress}
+          wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers as any : undefined}
         />
       );
     },
-    [theme, handleMessageLongPress],
+    [theme, handleMessageLongPress, handleMediaPress, wabaNumbers],
   );
 
   const keyExtractor = useCallback((item: ListItem) => {
@@ -1101,7 +1191,7 @@ export default function ChatConversationScreen() {
           styles.screen,
           { backgroundColor: theme.custom.chatBackground },
         ]}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior="padding"
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
         enabled
       >
@@ -1194,6 +1284,12 @@ export default function ChatConversationScreen() {
                   </View>
                 );
               })()}
+              <IconButton
+                icon="magnify"
+                size={20}
+                iconColor={theme.custom.headerText}
+                onPress={() => { setSearchVisible((v) => !v); if (searchVisible) setSearchQuery(''); }}
+              />
               <IconButton
                 icon="phone-outgoing"
                 size={20}
@@ -1366,9 +1462,10 @@ export default function ChatConversationScreen() {
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             windowSize={11}
-            maxToRenderPerBatch={15}
-            initialNumToRender={20}
-            removeClippedSubviews={true}
+            maxToRenderPerBatch={20}
+            initialNumToRender={25}
+            removeClippedSubviews={Platform.OS === 'android'}
+            updateCellsBatchingPeriod={30}
             ListFooterComponent={
               isLoadingOlderMessages ? (
                 <View style={styles.olderMsgsLoader}>
@@ -1635,6 +1732,38 @@ export default function ChatConversationScreen() {
                 />
               </View>
 
+              {/* Default template button */}
+              <Pressable
+                onPress={handleSendDefaultTemplate}
+                disabled={isSendingTemplate}
+                style={({ pressed }) => [
+                  styles.defaultTemplateBtn,
+                  {
+                    backgroundColor: pressed ? '#1a7a5e' : '#25D366',
+                    opacity: isSendingTemplate ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />
+                <Text style={styles.defaultTemplateBtnText}>
+                  {t('chats.sendDefaultTemplate', 'שלח תבנית ברירת מחדל')}
+                </Text>
+              </Pressable>
+
+              {/* Template search */}
+              {templates.length > 3 && (
+                <View style={[styles.templateSearchWrap, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', borderColor: theme.colors.outline }]}>
+                  <MaterialCommunityIcons name="magnify" size={18} color={theme.colors.onSurfaceVariant} />
+                  <TextInput
+                    placeholder={t('chats.searchTemplates', 'חיפוש תבנית...')}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    style={[styles.templateSearchInput, { color: theme.colors.onSurface }]}
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                  />
+                </View>
+              )}
+
               {isLoadingTemplates ? (
                 <View style={styles.loadingContainer}>
                   <ActivityIndicator
@@ -1662,7 +1791,7 @@ export default function ChatConversationScreen() {
                 </View>
               ) : (
                 <FlatList
-                  data={templates}
+                  data={searchQuery.trim() ? templates.filter(tpl => (tpl.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || (getTemplateBodyText(tpl) || '').toLowerCase().includes(searchQuery.toLowerCase())) : templates}
                   keyExtractor={(item, index) =>
                     item.id || item.templateId || `${item.name}-${index}`
                   }
@@ -1879,7 +2008,7 @@ export default function ChatConversationScreen() {
                 >
                   {t('chats.pickDateTime', 'תאריך ושעה')}
                 </Text>
-                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 10 }}>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
                   {/* Date picker */}
                   <Pressable
                     onPress={() => setShowScheduleDatePicker(true)}
@@ -1961,6 +2090,49 @@ export default function ChatConversationScreen() {
               </View>
             </View>
           </View>
+        </Modal>
+
+        {/* Attachment Sheet - WhatsApp style */}
+        <Modal
+          visible={showAttachSheet}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowAttachSheet(false)}
+        >
+          <Pressable style={styles.modalOverlay} onPress={() => setShowAttachSheet(false)}>
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
+              style={[styles.attachSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}
+            >
+              <View style={styles.actionSheetHandle} />
+              <View style={styles.attachGrid}>
+                <Pressable onPress={handlePickCamera} style={({ pressed }) => [styles.attachOption, pressed && { opacity: 0.7 }]}>
+                  <View style={[styles.attachOptionIcon, { backgroundColor: '#E91E63' }]}>
+                    <MaterialCommunityIcons name="camera" size={24} color="#fff" />
+                  </View>
+                  <Text style={[styles.attachOptionLabel, { color: theme.colors.onSurface }]}>{t('chats.takePhoto', 'מצלמה')}</Text>
+                </Pressable>
+                <Pressable onPress={handlePickGallery} style={({ pressed }) => [styles.attachOption, pressed && { opacity: 0.7 }]}>
+                  <View style={[styles.attachOptionIcon, { backgroundColor: '#7C4DFF' }]}>
+                    <MaterialCommunityIcons name="image-multiple" size={24} color="#fff" />
+                  </View>
+                  <Text style={[styles.attachOptionLabel, { color: theme.colors.onSurface }]}>{t('chats.gallery', 'גלריה')}</Text>
+                </Pressable>
+                <Pressable onPress={handlePickDocument} style={({ pressed }) => [styles.attachOption, pressed && { opacity: 0.7 }]}>
+                  <View style={[styles.attachOptionIcon, { backgroundColor: '#0091EA' }]}>
+                    <MaterialCommunityIcons name="file-document-outline" size={24} color="#fff" />
+                  </View>
+                  <Text style={[styles.attachOptionLabel, { color: theme.colors.onSurface }]}>{t('chats.document', 'מסמך')}</Text>
+                </Pressable>
+                <Pressable onPress={() => { setShowAttachSheet(false); handleOpenConversation(); }} style={({ pressed }) => [styles.attachOption, pressed && { opacity: 0.7 }]}>
+                  <View style={[styles.attachOptionIcon, { backgroundColor: '#00BFA5' }]}>
+                    <MaterialCommunityIcons name="file-document-edit-outline" size={24} color="#fff" />
+                  </View>
+                  <Text style={[styles.attachOptionLabel, { color: theme.colors.onSurface }]}>{t('chats.template', 'תבנית')}</Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </Pressable>
         </Modal>
 
         {/* Message actions bottom sheet */}
@@ -2155,7 +2327,7 @@ export default function ChatConversationScreen() {
                   onPress={item.action}
                   style={({ pressed }) => [
                     styles.templateItem,
-                    { flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center' },
+                    { flexDirection: 'row', alignItems: 'center' },
                     pressed && { backgroundColor: theme.colors.surfaceVariant },
                   ]}
                 >
@@ -2178,7 +2350,7 @@ export default function ChatConversationScreen() {
           animationType="slide"
           onRequestClose={() => setShowCreateTaskModal(false)}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
             <View style={styles.modalOverlay}>
               <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
                 <View style={styles.actionSheetHandle} />
@@ -2243,7 +2415,7 @@ export default function ChatConversationScreen() {
                   <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                     {t('tasks.priority', 'עדיפות')}
                   </Text>
-                  <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginBottom: 4 }}>
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
                     {(['low', 'medium', 'high'] as const).map((p) => (
                       <Pressable
                         key={p}
@@ -2361,6 +2533,68 @@ export default function ChatConversationScreen() {
         messages={currentMessages}
         wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
       />
+
+      {/* Media Gallery Viewer (opened from message bubble tap) */}
+      {galleryVisible && mediaMessages.length > 0 && (
+        <Modal visible animationType="fade" transparent onRequestClose={() => setGalleryVisible(false)}>
+          <View style={styles.galleryOverlay}>
+            <View style={styles.galleryHeader}>
+              <IconButton icon="close" size={28} iconColor="#fff" onPress={() => setGalleryVisible(false)} />
+              <Text style={styles.galleryCounter}>
+                {galleryIndex + 1} / {mediaMessages.length}
+              </Text>
+              <IconButton
+                icon="download"
+                size={28}
+                iconColor="#fff"
+                onPress={() => {
+                  const m = mediaMessages[galleryIndex];
+                  const url = m?.gmbt_mediaUrl || m?.mediaUrl || (m as any)?.MediaUrl || '';
+                  if (url) Linking.openURL(url).catch(() => {});
+                }}
+              />
+            </View>
+            <View style={styles.galleryContent}>
+              {galleryIndex > 0 && (
+                <Pressable style={[styles.galleryNavBtn, { left: 8 }]} onPress={() => setGalleryIndex((i) => i - 1)}>
+                  <MaterialCommunityIcons name="chevron-left" size={36} color="#fff" />
+                </Pressable>
+              )}
+              {galleryIndex < mediaMessages.length - 1 && (
+                <Pressable style={[styles.galleryNavBtn, { right: 8 }]} onPress={() => setGalleryIndex((i) => i + 1)}>
+                  <MaterialCommunityIcons name="chevron-right" size={36} color="#fff" />
+                </Pressable>
+              )}
+              {(() => {
+                const m = mediaMessages[galleryIndex];
+                const url = m?.gmbt_mediaUrl || m?.mediaUrl || (m as any)?.MediaUrl || '';
+                const tp = (m?.type || m?.mediaType || '').toLowerCase();
+                const isVideo = tp === 'video' || /\.(mp4|mov|avi|webm|3gp)(\?|$)/i.test(url);
+                if (isVideo) {
+                  const VideoComp = require('expo-av').Video;
+                  const RM = require('expo-av').ResizeMode;
+                  return <VideoComp source={{ uri: url }} style={styles.galleryVideo} useNativeControls resizeMode={RM.CONTAIN} shouldPlay />;
+                }
+                return (
+                  <Image
+                    source={{ uri: url }}
+                    style={styles.galleryImage}
+                    contentFit="contain"
+                  />
+                );
+              })()}
+            </View>
+            <View style={styles.galleryFooter}>
+              <Text style={styles.galleryCaption} numberOfLines={2}>
+                {mediaMessages[galleryIndex]?.text || mediaMessages[galleryIndex]?.body || mediaMessages[galleryIndex]?.caption || ''}
+              </Text>
+              <Text style={styles.galleryTime}>
+                {formatMessageTime(getTs(mediaMessages[galleryIndex]))}
+              </Text>
+            </View>
+          </View>
+        </Modal>
+      )}
 
       <ContactInfoSheet
         visible={showContactInfoSheet}
@@ -2553,6 +2787,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 8,
   },
+  defaultTemplateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 8,
+  },
+  defaultTemplateBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
   emptyTemplates: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -2673,5 +2922,110 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+  },
+  templateSearchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  templateSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 0,
+  },
+  attachSheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 8,
+    paddingHorizontal: 16,
+    width: '100%',
+  },
+  attachGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-around',
+    paddingVertical: 20,
+    gap: 16,
+  },
+  attachOption: {
+    alignItems: 'center',
+    width: 70,
+  },
+  attachOptionIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+  },
+  attachOptionLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  galleryOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+  },
+  galleryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: Platform.OS === 'ios' ? 54 : 36,
+    paddingHorizontal: 4,
+  },
+  galleryCounter: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  galleryContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  galleryNavBtn: {
+    position: 'absolute',
+    top: '45%',
+    zIndex: 10,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: 28,
+    padding: 6,
+  },
+  galleryImage: {
+    width: '100%',
+    height: '100%',
+  },
+  galleryVideo: {
+    width: '100%',
+    height: '80%',
+  },
+  galleryFooter: {
+    paddingHorizontal: 20,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    paddingTop: 10,
+    alignItems: 'center',
+  },
+  galleryCaption: {
+    color: '#fff',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  galleryTime: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 12,
+    marginTop: 4,
   },
 });

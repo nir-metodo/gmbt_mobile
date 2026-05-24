@@ -78,20 +78,24 @@ export const useContactStore = create<ContactState>((set, get) => ({
   },
 
   updateContact: async (organization, contact, userId?: string, userName?: string) => {
+    // Optimistic update - reflect immediately in UI
+    const prevContacts = get().contacts;
+    set((state) => {
+      const exists = state.contacts.some((c) => c.id === contact.id);
+      if (exists) {
+        return {
+          contacts: state.contacts.map((c) =>
+            c.id === contact.id ? { ...c, ...contact } : c
+          ),
+        };
+      }
+      return { contacts: [contact as Contact, ...state.contacts] };
+    });
     try {
       await contactsApi.update(organization, contact, userId, userName);
-      set((state) => {
-        const exists = state.contacts.some((c) => c.id === contact.id);
-        if (exists) {
-          return {
-            contacts: state.contacts.map((c) =>
-              c.id === contact.id ? { ...c, ...contact } : c
-            ),
-          };
-        }
-        return { contacts: [contact as Contact, ...state.contacts] };
-      });
     } catch (err) {
+      // Revert on failure
+      set({ contacts: prevContacts });
       throw err;
     }
   },

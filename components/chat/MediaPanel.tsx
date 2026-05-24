@@ -10,15 +10,18 @@ import {
   TextInput,
   Linking,
   Platform,
+  Alert,
 } from 'react-native';
 import { Text, IconButton, Surface } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { Audio, Video, ResizeMode } from 'expo-av';
+import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import axiosInstance from '../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import { useAppTheme } from '../../hooks/useAppTheme';
+import { chatsApi } from '../../services/api/chats';
 import type { Message } from '../../types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -660,6 +663,62 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
           )}
         </View>
 
+        {/* Upload FAB */}
+        <View style={styles.fabRow}>
+          <Pressable
+            style={[styles.fabBtn, { backgroundColor: '#E91E63' }]}
+            onPress={async () => {
+              const { status } = await ImagePicker.requestCameraPermissionsAsync();
+              if (status !== 'granted') { Alert.alert('הרשאה נדרשת', 'יש לאפשר גישה למצלמה'); return; }
+              try {
+                const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'] as any, quality: 0.8 });
+                if (!result.canceled && result.assets?.[0]) {
+                  const asset = result.assets[0];
+                  await chatsApi.sendMediaMessage(organization, contactPhone, { uri: asset.uri, name: asset.fileName || `photo_${Date.now()}.jpg`, type: asset.mimeType || 'image/jpeg' }, '', '', '');
+                  fetchUploadedMedia();
+                }
+              } catch {}
+            }}
+          >
+            <MaterialCommunityIcons name="camera" size={20} color="#fff" />
+          </Pressable>
+          <Pressable
+            style={[styles.fabBtn, { backgroundColor: '#7C4DFF' }]}
+            onPress={async () => {
+              const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+              if (status !== 'granted') { Alert.alert('הרשאה נדרשת', 'יש לאפשר גישה לגלריה'); return; }
+              try {
+                const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'] as any, quality: 0.8 });
+                if (!result.canceled && result.assets?.[0]) {
+                  const asset = result.assets[0];
+                  const isVideo = asset.type === 'video' || asset.mimeType?.startsWith('video');
+                  const mime = asset.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg');
+                  await chatsApi.sendMediaMessage(organization, contactPhone, { uri: asset.uri, name: asset.fileName || `media_${Date.now()}.${isVideo ? 'mp4' : 'jpg'}`, type: mime }, '', '', '');
+                  fetchUploadedMedia();
+                }
+              } catch {}
+            }}
+          >
+            <MaterialCommunityIcons name="image-plus" size={20} color="#fff" />
+          </Pressable>
+          <Pressable
+            style={[styles.fabBtn, { backgroundColor: '#0091EA' }]}
+            onPress={async () => {
+              try {
+                const DocumentPicker = require('expo-document-picker');
+                const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, type: '*/*' });
+                if (!result.canceled && result.assets?.[0]) {
+                  const doc = result.assets[0];
+                  await chatsApi.sendMediaMessage(organization, contactPhone, { uri: doc.uri, name: doc.name, type: doc.mimeType || 'application/octet-stream' }, '', '', '');
+                  fetchUploadedMedia();
+                }
+              } catch {}
+            }}
+          >
+            <MaterialCommunityIcons name="file-upload-outline" size={20} color="#fff" />
+          </Pressable>
+        </View>
+
         {/* Image/Video Preview Modal */}
         {previewItem && (
           <Modal visible animationType="fade" transparent onRequestClose={() => setPreviewItem(null)}>
@@ -1023,6 +1082,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 14,
+  },
+  fabRow: {
+    position: 'absolute',
+    bottom: 20,
+    left: 16,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  fabBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
   },
 });
 

@@ -74,14 +74,14 @@ export default function ESignatureDetailScreen() {
         setDocument(result);
       } else {
         const all = await esignatureApi.getDocuments(user.organization);
-        const found = (Array.isArray(all) ? all : []).find((d) => d.id === id);
+        const found = (Array.isArray(all) ? all : []).find((d) => d.id === id || d.documentId === id);
         if (found) setDocument(found);
         else setError(t('common.noResults'));
       }
     } catch (err: any) {
       try {
         const all = await esignatureApi.getDocuments(user.organization);
-        const found = (Array.isArray(all) ? all : []).find((d) => d.id === id);
+        const found = (Array.isArray(all) ? all : []).find((d) => d.id === id || d.documentId === id);
         if (found) setDocument(found);
         else setError(err.message || t('errors.generic'));
       } catch {
@@ -358,7 +358,7 @@ export default function ESignatureDetailScreen() {
             <View style={[styles.detailIcon, { backgroundColor: '#2196F318' }]}>
               <MaterialCommunityIcons name="calendar-plus" size={20} color="#2196F3" />
             </View>
-            <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {t('esignature.createdDate')}
               </Text>
@@ -380,7 +380,7 @@ export default function ESignatureDetailScreen() {
                     color={isExpired ? '#F44336' : '#FF9800'}
                   />
                 </View>
-                <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+                <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                   <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                     {t('esignature.expiresDate')}
                   </Text>
@@ -405,7 +405,7 @@ export default function ESignatureDetailScreen() {
             <View style={[styles.detailIcon, { backgroundColor: `${statusColor}18` }]}>
               <MaterialCommunityIcons name={statusIcon as any} size={20} color={statusColor} />
             </View>
-            <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {t('esignature.status')}
               </Text>
@@ -447,7 +447,7 @@ export default function ESignatureDetailScreen() {
                         color={signerStatusColor}
                       />
                     </View>
-                    <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+                    <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                       <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
                         <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', flex: 1, textAlign }}>
                           {signer.signerName}
@@ -739,14 +739,14 @@ const styles = StyleSheet.create({
   signerActions: {
     gap: 8,
     marginTop: 10,
-    marginLeft: 52,
+    marginStart: 52,
   },
   signatureImageWrap: {
     borderWidth: 1,
     borderRadius: borderRadius.md,
     overflow: 'hidden',
     backgroundColor: '#FFFFFF',
-    marginLeft: 52,
+    marginStart: 52,
   },
   signatureImage: {
     width: '100%',

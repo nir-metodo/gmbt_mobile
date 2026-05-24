@@ -106,7 +106,7 @@ export default function ContactLookup({ visible, organization, onSelect, onDismi
           style={{ backgroundColor: theme.colors.primaryContainer }}
           labelStyle={{ color: theme.colors.primary, fontWeight: '700', fontSize: 14 }}
         />
-        <View style={[styles.contactInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+        <View style={[styles.contactInfo, { alignItems: 'flex-start' }]}>
           <Text
             variant="bodyLarge"
             style={{ color: theme.colors.onSurface, fontWeight: '600' }}

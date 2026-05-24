@@ -56,7 +56,7 @@ export interface Message {
   body?: string;
   timestamp: string;
   createdOn?: string;
-  type: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'location' | 'template' | 'internal' | 'media';
+  type: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'location' | 'template' | 'internal' | 'media' | string;
   messageType?: string;
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'pending';
   direction: 'Inbound' | 'Outbound' | 'inbound' | 'outbound';
@@ -80,6 +80,12 @@ export interface Message {
   isHistoryMediaSuccess?: boolean;
   isInternal?: boolean;
   contextMessageId?: string;
+  fromNumberId?: string;
+  isHistory?: boolean;
+  isForwarded?: boolean;
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
+  contacts?: Array<{ name?: { formatted_name?: string; first_name?: string; last_name?: string }; phones?: Array<{ phone?: string; type?: string }> }>;
+  caption?: string;
 }
 
 export interface MessageReaction {
@@ -157,6 +163,7 @@ export interface Lead {
   modifiedOn?: string;
   createdAt?: string;
   updatedAt?: string;
+  interestedProducts?: Array<{ productId: string; name: string; unitPrice?: number; sku?: string; category?: string; quantity?: number }>;
 }
 
 export interface LeadStage {
@@ -313,6 +320,7 @@ export interface ESignatureSigner {
 
 export interface ESignatureDocument {
   id: string;
+  documentId?: string;
   title: string;
   documentName?: string;
   status: 'pending' | 'partiallySigned' | 'signed' | 'expired' | 'cancelled';
@@ -391,7 +399,10 @@ export interface AppSettings {
 export interface OrgUser {
   id: string;
   uID?: string;
+  userId?: string;
   userName: string;
+  fullname?: string;
+  name?: string;
   email: string;
   phoneNumber?: string;
   securityRole: 'Admin' | 'Chat' | 'Basic' | 'Custom';

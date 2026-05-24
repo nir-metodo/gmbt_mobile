@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { AppState, AppStateStatus } from 'react-native';
+import { AppState, AppStateStatus, I18nManager } from 'react-native';
 import { Slot, router, useSegments, useRootNavigationState } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { PaperProvider } from 'react-native-paper';
@@ -15,6 +15,11 @@ import { ENDPOINTS } from '../constants/api';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { notificationService } from '../services/notifications';
 import '../i18n';
+
+I18nManager.allowRTL(true);
+if (!I18nManager.isRTL) {
+  I18nManager.forceRTL(true);
+}
 
 SplashScreen.preventAutoHideAsync();
 

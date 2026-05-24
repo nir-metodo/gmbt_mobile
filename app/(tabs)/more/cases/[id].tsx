@@ -7,6 +7,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import {
   Text,
@@ -40,6 +41,7 @@ import {
   DynamicFieldsSectionForm,
   type DynamicSection,
 } from '../../../../components/DynamicFieldsSection';
+import { NoteAttachmentRow, type NoteAttachment } from '../../../../components/NoteAttachmentRow';
 import type { Case } from '../../../../types';
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -120,9 +122,11 @@ export default function CaseDetailScreen() {
   const [formNotes, setFormNotes] = useState('');
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
+  const [noteAttachment, setNoteAttachment] = useState<NoteAttachment | null>(null);
   const [addingNote, setAddingNote] = useState(false);
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineFilter, setTimelineFilter] = useState<'all' | 'notes' | 'system'>('all');
 
   const fetchTimeline = useCallback(async () => {
     if (!user?.organization || !id || isNew) return;
@@ -130,6 +134,11 @@ export default function CaseDetailScreen() {
     try {
       const data = await contactsApi.getTimeline(user.organization, `case_${id}`);
       const arr = Array.isArray(data) ? data : (data as any)?.events || [];
+      arr.sort((a: any, b: any) => {
+        const dateA = new Date(a.CreateDateTimeUTC || a.createdOn || a.CreatedOn || a.timestamp || a.createdAt || 0).getTime();
+        const dateB = new Date(b.CreateDateTimeUTC || b.createdOn || b.CreatedOn || b.timestamp || b.createdAt || 0).getTime();
+        return dateB - dateA;
+      });
       setTimelineEvents(arr);
     } catch {
       // non-critical
@@ -318,7 +327,7 @@ export default function CaseDetailScreen() {
   }, [user?.organization, caseData, router, t]);
 
   const handleAddNote = useCallback(async () => {
-    if (!user?.organization || !caseData || !noteText.trim()) return;
+    if (!user?.organization || !caseData || (!noteText.trim() && !noteAttachment)) return;
     setAddingNote(true);
     try {
       await contactsApi.addTimelineEntry(
@@ -327,8 +336,10 @@ export default function CaseDetailScreen() {
         noteText.trim(),
         user?.uID || user?.userId || '',
         user?.fullname || '',
+        noteAttachment || undefined,
       );
       setNoteText('');
+      setNoteAttachment(null);
       setNoteModalVisible(false);
       fetchTimeline();
     } catch {
@@ -336,7 +347,7 @@ export default function CaseDetailScreen() {
     } finally {
       setAddingNote(false);
     }
-  }, [user, caseData, noteText, t, fetchTimeline]);
+  }, [user, caseData, noteText, noteAttachment, t, fetchTimeline]);
 
   const handleStatusChange = useCallback(
     async (newStatus: string) => {
@@ -373,7 +384,7 @@ export default function CaseDetailScreen() {
             </Text>
           </View>
         </View>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
           <ScrollView contentContainerStyle={styles.formScrollContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             {/* ── Contact Section ── */}
             <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
@@ -574,7 +585,7 @@ export default function CaseDetailScreen() {
           ]}
         >
           <View style={[styles.bannerRow, { flexDirection }]}>
-            <View style={[styles.bannerItem, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.bannerItem, { alignItems: 'flex-start' }]}>
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {t('cases.priority')}
               </Text>
@@ -590,7 +601,7 @@ export default function CaseDetailScreen() {
               </View>
             </View>
 
-            <View style={[styles.bannerItem, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.bannerItem, { alignItems: 'flex-start' }]}>
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {t('cases.status')}
               </Text>
@@ -679,7 +690,7 @@ export default function CaseDetailScreen() {
               <View style={[styles.detailIcon, { backgroundColor: '#9C27B018' }]}>
                 <MaterialCommunityIcons name="tag" size={20} color="#9C27B0" />
               </View>
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t('cases.category')}
                 </Text>
@@ -698,7 +709,7 @@ export default function CaseDetailScreen() {
                 <View style={[styles.detailIcon, { backgroundColor: '#2196F318' }]}>
                   <MaterialCommunityIcons name="source-branch" size={20} color="#2196F3" />
                 </View>
-                <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+                <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                   <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                     {t('leads.source')}
                   </Text>
@@ -729,7 +740,7 @@ export default function CaseDetailScreen() {
                 <View style={[styles.detailIcon, { backgroundColor: withAlpha(theme.colors.secondary, 0.094) }]}>
                   <MaterialCommunityIcons name="account" size={20} color={theme.colors.secondary} />
                 </View>
-                <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+                <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                   <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                     {t('cases.contact')}
                   </Text>
@@ -807,7 +818,7 @@ export default function CaseDetailScreen() {
                 style={{ backgroundColor: theme.colors.primaryContainer }}
                 labelStyle={{ fontSize: 13, color: theme.colors.primary, fontWeight: '700' }}
               />
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t('cases.assignedTo')}
                 </Text>
@@ -831,7 +842,7 @@ export default function CaseDetailScreen() {
               <View style={[styles.detailIcon, { backgroundColor: '#FF572218' }]}>
                 <MaterialCommunityIcons name="calendar-clock" size={20} color="#FF5722" />
               </View>
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t('cases.dueDate', 'Due Date')}
                 </Text>
@@ -915,25 +926,67 @@ export default function CaseDetailScreen() {
               {t('timeline.noEvents')}
             </Text>
           ) : (
-            timelineEvents.slice(0, 15).map((ev: any, idx: number) => (
-              <View key={ev.id || idx} style={[styles.timelineEvent, { borderLeftColor: '#2e615540' }]}>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurface, lineHeight: 20 }}>
-                  {ev.notes || ev.description || ev.text || ev.note || ''}
-                </Text>
-                <View style={[{ flexDirection: 'row', gap: 8, marginTop: 4 }]}>
-                  {ev.createdByName || ev.userName ? (
-                    <Text variant="labelSmall" style={{ color: '#2e6155', fontWeight: '600' }}>
-                      {ev.createdByName || ev.userName}
-                    </Text>
-                  ) : null}
-                  {ev.createdOn || ev.createdAt || ev.timestamp ? (
-                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                      {formatRelativeTime(ev.createdOn || ev.createdAt || ev.timestamp, lang)}
-                    </Text>
-                  ) : null}
+            <>
+              {(() => {
+                const notesCount = timelineEvents.filter((e: any) => (e.TimelineType || e.timelineType || e.type || '').toLowerCase() === 'note' || (e.TimelineType || e.timelineType || e.type || '').toLowerCase() === 'internal_mention').length;
+                const systemCount = timelineEvents.length - notesCount;
+                if (notesCount === 0 || systemCount === 0) return null;
+                const filters: { key: 'all' | 'notes' | 'system'; label: string; count?: number }[] = [
+                  { key: 'all', label: 'הכל' },
+                  { key: 'notes', label: 'הערות', count: notesCount },
+                  { key: 'system', label: 'מערכת', count: systemCount },
+                ];
+                return (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10, maxHeight: 34 }} contentContainerStyle={{ gap: 6 }}>
+                    {filters.map((f) => {
+                      const isActive = timelineFilter === f.key;
+                      return (
+                        <Pressable
+                          key={f.key}
+                          onPress={() => setTimelineFilter(f.key)}
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14, backgroundColor: isActive ? theme.colors.primary : theme.colors.surfaceVariant }}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: '600', color: isActive ? '#fff' : theme.colors.onSurfaceVariant }}>
+                            {f.label}
+                          </Text>
+                          {f.count != null && (
+                            <Text style={{ fontSize: 10, color: isActive ? '#fff' : theme.colors.onSurfaceVariant }}>
+                              {f.count}
+                            </Text>
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                );
+              })()}
+              {timelineEvents
+                .filter((ev: any) => {
+                  if (timelineFilter === 'all') return true;
+                  const evType = (ev.TimelineType || ev.timelineType || ev.type || '').toLowerCase();
+                  if (timelineFilter === 'notes') return evType === 'note' || evType === 'internal_mention';
+                  return evType !== 'note' && evType !== 'internal_mention';
+                })
+                .slice(0, 15).map((ev: any, idx: number) => (
+                <View key={ev.id || idx} style={[styles.timelineEvent, { borderStartColor: '#2e615540' }]}>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurface, lineHeight: 20 }}>
+                    {ev.notes || ev.description || ev.text || ev.note || ''}
+                  </Text>
+                  <View style={[{ flexDirection: 'row', gap: 8, marginTop: 4 }]}>
+                    {ev.createdByName || ev.userName ? (
+                      <Text variant="labelSmall" style={{ color: '#2e6155', fontWeight: '600' }}>
+                        {ev.createdByName || ev.userName}
+                      </Text>
+                    ) : null}
+                    {ev.createdOn || ev.createdAt || ev.timestamp ? (
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                        {formatRelativeTime(ev.createdOn || ev.createdAt || ev.timestamp, lang)}
+                      </Text>
+                    ) : null}
+                  </View>
                 </View>
-              </View>
-            ))
+              ))}
+            </>
           )}
         </View>
 
@@ -962,7 +1015,7 @@ export default function CaseDetailScreen() {
             { backgroundColor: theme.colors.surface },
           ]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => setEditModalVisible(false)} style={{ margin: 0 }} />
@@ -1191,13 +1244,13 @@ export default function CaseDetailScreen() {
                   <Divider />
                   {orgUsers.map((u) => (
                     <Pressable
-                      key={u.uID || u.userId}
-                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId) === formAssignedToId ? `${theme.colors.primary}15` : 'transparent' }]}
-                      onPress={() => { setFormAssignedTo(u.fullname || u.name || ''); setFormAssignedToId(u.uID || u.userId || ''); setUserPickerExpanded(false); }}
+                      key={u.uID || u.userId || u.id}
+                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId || u.id) === formAssignedToId ? `${theme.colors.primary}15` : 'transparent' }]}
+                      onPress={() => { setFormAssignedTo(u.userName || u.fullname || u.name || ''); setFormAssignedToId(u.uID || u.userId || u.id || ''); setUserPickerExpanded(false); }}
                     >
-                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId) === formAssignedToId ? theme.colors.primary : theme.colors.onSurfaceVariant} />
-                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId) === formAssignedToId ? theme.colors.primary : theme.colors.onSurface, fontWeight: (u.uID || u.userId) === formAssignedToId ? '700' : '400' }}>
-                        {u.fullname || u.name}
+                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId || u.id) === formAssignedToId ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId || u.id) === formAssignedToId ? theme.colors.primary : theme.colors.onSurface, fontWeight: (u.uID || u.userId || u.id) === formAssignedToId ? '700' : '400' }}>
+                        {u.userName || u.fullname || u.name}
                       </Text>
                     </Pressable>
                   ))}
@@ -1299,43 +1352,55 @@ export default function CaseDetailScreen() {
       <Portal>
         <Modal
           visible={noteModalVisible}
-          onDismiss={() => setNoteModalVisible(false)}
+          onDismiss={() => { Keyboard.dismiss(); setNoteModalVisible(false); }}
           contentContainerStyle={[styles.modalContainer, { backgroundColor: theme.colors.surface }]}
         >
-          <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}>
-            {t('phoneCalls.addNote')}
-          </Text>
-          <TextInput
-            label={t('phoneCalls.noteHint', 'Write a note...')}
-            value={noteText}
-            onChangeText={setNoteText}
-            mode="outlined"
-            multiline
-            numberOfLines={4}
-            style={[styles.formInput, { textAlign }]}
-            outlineColor={theme.colors.outline}
-            activeOutlineColor={theme.colors.primary}
-          />
-          <View style={[styles.modalActions, { flexDirection }]}>
-            <Button
+          <KeyboardAvoidingView
+            behavior="padding"
+            style={{ flex: 1 }}
+          >
+            <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}>
+              {t('phoneCalls.addNote')}
+            </Text>
+            <TextInput
+              label={t('phoneCalls.noteHint', 'Write a note...')}
+              value={noteText}
+              onChangeText={setNoteText}
               mode="outlined"
-              onPress={() => { setNoteModalVisible(false); setNoteText(''); }}
-              style={styles.modalButton}
-              textColor={theme.colors.onSurface}
-            >
-              {t('common.cancel')}
-            </Button>
-            <Button
-              mode="contained"
-              onPress={handleAddNote}
-              loading={addingNote}
-              disabled={!noteText.trim() || addingNote}
-              style={[styles.modalButton, { backgroundColor: theme.colors.primary }]}
-              textColor="#FFFFFF"
-            >
-              {t('common.save')}
-            </Button>
-          </View>
+              multiline
+              numberOfLines={4}
+              autoFocus
+              style={[styles.formInput, { textAlign }]}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={theme.colors.primary}
+            />
+            <NoteAttachmentRow
+              attachment={noteAttachment}
+              onAttach={setNoteAttachment}
+              onRemove={() => setNoteAttachment(null)}
+              primaryColor={theme.colors.primary}
+            />
+            <View style={[styles.modalActions, { flexDirection }]}>
+              <Button
+                mode="outlined"
+                onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }}
+                style={styles.modalButton}
+                textColor={theme.colors.onSurface}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                mode="contained"
+                onPress={() => { Keyboard.dismiss(); handleAddNote(); }}
+                loading={addingNote}
+                disabled={(!noteText.trim() && !noteAttachment) || addingNote}
+                style={[styles.modalButton, { backgroundColor: theme.colors.primary }]}
+                textColor="#FFFFFF"
+              >
+                {t('common.save')}
+              </Button>
+            </View>
+          </KeyboardAvoidingView>
         </Modal>
       </Portal>
     </View>
@@ -1502,8 +1567,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   timelineEvent: {
-    borderLeftWidth: 2,
-    paddingLeft: 12,
+    borderStartWidth: 2,
+    paddingStart: 12,
     marginBottom: 12,
   },
   sectionLabel: {

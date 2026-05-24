@@ -22,7 +22,6 @@ import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatPhoneNumber, getInitials } from '../../../utils/formatters';
 import { getDataVisibility } from '../../../constants/permissions';
-import { spacing, borderRadius, fontSize as fs } from '../../../constants/theme';
 import type { Contact } from '../../../types';
 
 type ContactFilterMode = 'all' | 'myContacts' | 'recent';
@@ -317,7 +316,7 @@ export default function ContactsListScreen() {
               },
             ]}
           >
-            <View style={[styles.avatarWrap, { marginEnd: spacing.md }]}>
+            <View style={styles.avatarWrap}>
               {item.photoURL ? (
                 <Avatar.Image size={48} source={{ uri: item.photoURL }} />
               ) : (
@@ -330,7 +329,7 @@ export default function ContactsListScreen() {
               )}
             </View>
 
-            <View style={[styles.contactBody, { alignItems: isRTL ? 'flex-end' : 'flex-start', minWidth: 0 }]}>
+            <View style={[styles.contactBody, { alignItems: 'flex-start', minWidth: 0 }]}>
               <Text
                 variant="titleMedium"
                 numberOfLines={1}
@@ -362,7 +361,7 @@ export default function ContactsListScreen() {
               </View>
 
               {tags.length > 0 ? (
-                <View style={[styles.tagsRow, { flexDirection, flexWrap: 'wrap', justifyContent: isRTL ? 'flex-end' : 'flex-start', width: '100%' }]}>
+                <View style={[styles.tagsRow, { flexDirection, flexWrap: 'wrap', justifyContent: 'flex-start', width: '100%' }]}>
                   {tags.slice(0, 3).map((tag) => (
                     <View key={tag} style={styles.tagBadge}>
                       <Text style={styles.tagBadgeText} numberOfLines={1}>#{tag}</Text>
@@ -625,7 +624,7 @@ export default function ContactsListScreen() {
                   {t('contacts.owner')}
                 </Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-                  <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 6 }}>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
                     {allOwners.map((owner) => {
                       const active = filterOwner === owner;
                       return (
@@ -652,7 +651,7 @@ export default function ContactsListScreen() {
                   {t('contacts.status', 'Status')}
                 </Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-                  <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 6 }}>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
                     {allStatuses.map((status) => {
                       const active = filterStatus === status;
                       return (
@@ -677,7 +676,7 @@ export default function ContactsListScreen() {
               {t('contacts.tags')}
             </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-              <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 6 }}>
+              <View style={{ flexDirection: 'row', gap: 6 }}>
                 {allTags.map((tag) => {
                   const active = selectedTag === tag;
                   return (
@@ -700,7 +699,7 @@ export default function ContactsListScreen() {
               {t('contacts.sortBy', 'Sort By')}
             </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-              <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 6 }}>
+              <View style={{ flexDirection: 'row', gap: 6 }}>
                 {([
                   { key: 'name' as const, label: t('contacts.name', 'Name') },
                   { key: 'createdOn' as const, label: t('contacts.createdAt', 'Created') },
@@ -724,7 +723,7 @@ export default function ContactsListScreen() {
               </View>
             </ScrollView>
 
-            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 12, justifyContent: 'flex-end' }}>
+            <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'flex-end' }}>
               <Button
                 mode="outlined"
                 onPress={() => {
@@ -798,6 +797,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 12,
+    gap: 14,
   },
   avatarWrap: { position: 'relative' },
   contactBody: { flex: 1, justifyContent: 'center', gap: 2 },

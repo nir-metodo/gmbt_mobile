@@ -163,6 +163,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messageId: m.messageId || m.id || m.Id || '',
         direction: m.direction || (m.sentFromApp ? 'Outbound' : ''),
       }));
+
+      // Resolve quotedMessage from contextMessageId if backend didn't populate it
+      const msgMap = new Map(messages.map((m: any) => [m.messageId, m]));
+      for (const msg of messages) {
+        if (!msg.quotedMessage) {
+          const ctxId = msg.contextMessageId || msg.ContextMessageId;
+          if (ctxId && msgMap.has(ctxId)) {
+            msg.quotedMessage = msgMap.get(ctxId);
+          }
+        }
+      }
+
       const displayed = messages.slice(-PAGE_SIZE);
       set({
         allMessages: messages,
@@ -307,6 +319,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         (m) => m.messageId === message.messageId
       );
       if (exists) return state;
+
+      // Resolve quotedMessage from contextMessageId
+      if (!message.quotedMessage) {
+        const ctxId = message.contextMessageId || (message as any).ContextMessageId;
+        if (ctxId) {
+          const quoted = state.allMessages.find((m) => m.messageId === ctxId);
+          if (quoted) {
+            message = { ...message, quotedMessage: quoted };
+          }
+        }
+      }
+
       return {
         currentMessages: [...state.currentMessages, message],
         allMessages: [...state.allMessages, message],

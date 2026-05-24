@@ -63,7 +63,7 @@ export default function MoreScreen() {
         <Appbar.Content title={t('more.title')} titleStyle={styles.headerTitle} />
       </Appbar.Header>
 
-      <ScrollView contentContainerStyle={styles.grid}>
+      <ScrollView contentContainerStyle={[styles.grid, { flexDirection: 'row' }]}>
         {visibleItems.map((item) => (
           <Surface
             key={item.key}

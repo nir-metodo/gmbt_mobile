@@ -161,12 +161,27 @@ export default function MediaScreen() {
     return files.filter((f) => f.name?.toLowerCase().includes(q));
   }, [files, searchQuery]);
 
-  const handleUploadFile = useCallback(async (source: 'gallery' | 'document') => {
+  const handleUploadFile = useCallback(async (source: 'gallery' | 'document' | 'camera') => {
     try {
       let result: any;
-      if (source === 'gallery') {
+      if (source === 'camera') {
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') { Alert.alert('הרשאה נדרשת', 'יש לאפשר גישה למצלמה'); return; }
+        result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'] as any, quality: 0.8 });
+        if (result.canceled) return;
+        const asset = result.assets[0];
+        const fileName = asset.fileName || `photo_${Date.now()}.jpg`;
+        const mimeType = asset.mimeType || 'image/jpeg';
+
+        setUploading(true);
+        await mediaApi.uploadFile(org, asset.uri, fileName, mimeType, {
+          folderId: currentFolderId,
+          uploadedBy: user?.uID || user?.userId,
+          uploadedByName: user?.fullname,
+        });
+      } else if (source === 'gallery') {
         result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: 'all',
+          mediaTypes: ['images', 'videos'] as any,
           quality: 0.8,
         });
         if (result.canceled) return;
@@ -372,7 +387,7 @@ export default function MediaScreen() {
       <Surface style={[styles.listItem, { backgroundColor: theme.colors.surface }]} elevation={1}>
         <Pressable
           onPress={() => openFile(item)}
-          style={[styles.listItemRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+          style={[styles.listItemRow, { flexDirection: 'row' }]}
         >
           {item.type === 'image' && item.url ? (
             <View>
@@ -387,7 +402,7 @@ export default function MediaScreen() {
             </View>
           )}
 
-          <View style={[styles.listInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+          <View style={[styles.listInfo, { alignItems: 'flex-start' }]}>
             <Text variant="titleSmall" numberOfLines={1} style={{ color: theme.colors.onSurface }}>
               {item.name}
             </Text>
@@ -474,7 +489,7 @@ export default function MediaScreen() {
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={[styles.filterRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+        contentContainerStyle={[styles.filterRow, { flexDirection: 'row' }]}
       >
         {TYPE_FILTERS.map((f) => (
           <Chip
@@ -559,6 +574,12 @@ export default function MediaScreen() {
         visible
         icon={fabOpen ? 'close' : 'plus'}
         actions={[
+          {
+            icon: 'camera',
+            label: 'צלם תמונה',
+            onPress: () => handleUploadFile('camera'),
+            color: BRAND_COLOR,
+          },
           {
             icon: 'image-plus',
             label: t('media.selectFiles'),
@@ -697,7 +718,7 @@ export default function MediaScreen() {
             </View>
           </ScrollView>
 
-          <View style={[styles.modalFooter, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View style={[styles.modalFooter, { flexDirection: 'row' }]}>
             <Button mode="outlined" onPress={() => setFolderModalVisible(false)} style={styles.modalBtn} textColor={theme.colors.onSurfaceVariant}>
               {t('common.cancel')}
             </Button>

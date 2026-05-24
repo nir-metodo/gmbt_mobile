@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { I18nManager } from 'react-native';
+import * as Updates from 'expo-updates';
 import type { AppSettings, CallRule } from '../types';
 import { appStorage } from '../services/storage';
 import { settingsApi } from '../services/api/settings';
@@ -52,6 +54,10 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     const theme = await appStorage.getTheme();
     const language = await appStorage.getLanguage();
     i18n.changeLanguage(language);
+    const shouldBeRTL = language === 'he';
+    if (I18nManager.isRTL !== shouldBeRTL) {
+      I18nManager.forceRTL(shouldBeRTL);
+    }
     set({ theme, language });
   },
 
@@ -63,6 +69,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setLanguage: async (lang) => {
     await appStorage.setLanguage(lang);
     i18n.changeLanguage(lang);
+    const shouldBeRTL = lang === 'he';
+    if (I18nManager.isRTL !== shouldBeRTL) {
+      I18nManager.forceRTL(shouldBeRTL);
+      try { await Updates.reloadAsync(); } catch { /* dev mode - manual restart needed */ }
+    }
     set({ language: lang });
   },
 

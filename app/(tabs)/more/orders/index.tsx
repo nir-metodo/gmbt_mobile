@@ -146,7 +146,7 @@ export default function OrdersScreen() {
             },
           ]}
         >
-          <View style={[styles.cardLeft, { borderLeftColor: statusColor }]}>
+          <View style={[styles.cardLeft, { borderStartColor: statusColor }]}>
             <View style={[styles.cardHeader, { flexDirection }]}>
               <Text variant="titleSmall" style={[styles.orderNumber, { color: theme.colors.onSurface, textAlign }]} numberOfLines={1}>
                 {item.orderNumber ? `#${item.orderNumber}` : `#${item.id.slice(0, 8)}`}
@@ -314,7 +314,7 @@ const styles = StyleSheet.create({
   },
   cardLeft: {
     padding: 14,
-    borderLeftWidth: 4,
+    borderStartWidth: 4,
     gap: 6,
   },
   cardHeader: {

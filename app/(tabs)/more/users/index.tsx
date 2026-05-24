@@ -227,7 +227,7 @@ export default function UsersScreen() {
         <Surface style={[s.userCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <Pressable
             onPress={() => openEditUser(item)}
-            style={[s.userRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+            style={[s.userRow, { flexDirection: 'row' }]}
           >
             {item.profilePicture ? (
               <Avatar.Image size={46} source={{ uri: item.profilePicture }} />
@@ -240,8 +240,8 @@ export default function UsersScreen() {
               />
             )}
 
-            <View style={[s.userInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
-              <View style={[s.nameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <View style={[s.userInfo, { alignItems: 'flex-start' }]}>
+              <View style={[s.nameRow, { flexDirection: 'row' }]}>
                 <Text variant="titleSmall" style={{ color: theme.colors.onSurface }}>
                   {item.userName}
                 </Text>
@@ -338,9 +338,9 @@ export default function UsersScreen() {
           onDismiss={() => { setModalVisible(false); setEditingUser(null); }}
           contentContainerStyle={[s.modal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ maxHeight: '100%' }}>
+          <KeyboardAvoidingView behavior="padding" style={{ maxHeight: '100%' }}>
           <ScrollView showsVerticalScrollIndicator={false}>
-            <View style={[s.modalHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <View style={[s.modalHeader, { flexDirection: 'row' }]}>
               <Text variant="titleLarge" style={{ color: theme.colors.onSurface, flex: 1, textAlign: isRTL ? 'right' : 'left', fontWeight: '700' }}>
                 {editingUser?.id ? t('users.editUser') : t('users.addUser')}
               </Text>
@@ -420,7 +420,7 @@ export default function UsersScreen() {
                   {t('users.permissions')}
                 </Text>
                 {PERMISSION_KEYS.map((key) => (
-                  <View key={key} style={[s.permRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <View key={key} style={[s.permRow, { flexDirection: 'row' }]}>
                     <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
                       {t(`users.perm_${key}`)}
                     </Text>
@@ -443,11 +443,11 @@ export default function UsersScreen() {
             {DATA_VISIBILITY_KEYS.map((key) => {
               const current = editingUser?.dataVisibility?.[key] || 'all';
               return (
-                <View key={key} style={[s.permRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View key={key} style={[s.permRow, { flexDirection: 'row' }]}>
                   <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
                     {t(`users.perm_${key}`)}
                   </Text>
-                  <View style={[s.visibilityChips, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <View style={[s.visibilityChips, { flexDirection: 'row' }]}>
                     <Chip
                       selected={current === 'all'}
                       onPress={() => updateDataVisibility(key, 'all')}
@@ -517,7 +517,7 @@ export default function UsersScreen() {
             <Text variant="labelLarge" style={[s.sectionLabel, { color: BRAND_COLOR, textAlign: isRTL ? 'right' : 'left' }]}>
               {t('users.status')}
             </Text>
-            <View style={[s.permRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <View style={[s.permRow, { flexDirection: 'row' }]}>
               <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
                 {editingUser?.isActive !== false ? t('users.active') : t('users.inactive')}
               </Text>
@@ -529,7 +529,7 @@ export default function UsersScreen() {
             </View>
 
             {/* Footer Buttons */}
-            <View style={[s.modalFooter, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <View style={[s.modalFooter, { flexDirection: 'row' }]}>
               {editingUser?.id && (
                 <Button
                   mode="outlined"

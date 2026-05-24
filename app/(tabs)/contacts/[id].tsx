@@ -11,6 +11,7 @@ import {
   Platform,
   Animated,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import {
   Text,
@@ -32,6 +33,8 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useLeadStore } from '../../../stores/leadStore';
 import { contactsApi } from '../../../services/api/contacts';
 import { quotesApi } from '../../../services/api/quotes';
+import axiosInstance from '../../../services/api/axiosInstance';
+import { ENDPOINTS } from '../../../constants/api';
 import { makeAppCall } from '../../../utils/phoneCall';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
@@ -48,6 +51,7 @@ import {
   type DynamicSection,
 } from '../../../components/DynamicFieldsSection';
 import { MediaPanel } from '../../../components/chat/MediaPanel';
+import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
 import type { Contact, TimelineEvent } from '../../../types';
 
 type DetailTab = 'timeline' | 'related';
@@ -106,6 +110,7 @@ export default function ContactDetailScreen() {
   const [contactFormLayout, setContactFormLayout] = useState<string[]>([]);
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
+  const [noteAttachment, setNoteAttachment] = useState<NoteAttachment | null>(null);
   const [addingNote, setAddingNote] = useState(false);
   const [formTags, setFormTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
@@ -145,15 +150,43 @@ export default function ContactDetailScreen() {
         contactsApi.getTimeline(organization, contact.phoneNumber).catch(() => []),
         contactsApi.getTimeline(organization, contact.id).catch(() => []),
       ]);
-      const all = [...(Array.isArray(timeline) ? timeline : []), ...(Array.isArray(chatTimeline) ? chatTimeline : [])];
+      let all = [...(Array.isArray(timeline) ? timeline : []), ...(Array.isArray(chatTimeline) ? chatTimeline : [])];
+
+      // Cross-entity notes: fetch lead timelines if enabled
+      try {
+        const settingRes = await axiosInstance.post(ENDPOINTS.GET_CROSS_ENTITY_NOTES_SETTING, { organization });
+        const crossEnabled = settingRes.data?.Data?.crossEntityNotesEnabled || settingRes.data?.crossEntityNotesEnabled;
+        const crossMode = settingRes.data?.Data?.crossEntityNotesMode || settingRes.data?.crossEntityNotesMode || 'notes_only';
+        if (crossEnabled) {
+          const phone = (contact.phoneNumber || '').replace(/\D/g, '').trim();
+          if (phone) {
+            const leads = await contactsApi.getLeadsByContact(organization, phone).catch(() => []);
+            const leadArr = Array.isArray(leads) ? leads : [];
+            for (const lead of leadArr) {
+              const lid = lead.LeadId || lead.leadId || lead.id;
+              if (!lid) continue;
+              try {
+                let entries = await contactsApi.getTimeline(organization, `lead_${lid}`).catch(() => []);
+                entries = Array.isArray(entries) ? entries : [];
+                if (crossMode === 'notes_only') {
+                  entries = entries.filter((e: any) => (e.TimelineType || e.timelineType) === 'note');
+                }
+                entries = entries.map((e: any) => ({ ...e, _crossEntitySource: 'lead', _crossEntityLabel: lead.Title || lead.title || lid }));
+                all = [...all, ...entries];
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+
       const unique = all.reduce((acc: any[], ev: any) => {
         const id = ev.TimelineId || ev.timelineId || ev.id;
         if (id && !acc.find((e) => (e.TimelineId || e.timelineId || e.id) === id)) acc.push(ev);
         return acc;
       }, []);
       unique.sort((a: any, b: any) => {
-        const dateA = new Date(a.createdOn || a.CreatedOn || 0).getTime();
-        const dateB = new Date(b.createdOn || b.CreatedOn || 0).getTime();
+        const dateA = new Date(a.CreateDateTimeUTC || a.createdOn || a.CreatedOn || a.timestamp || a.createdAt || 0).getTime();
+        const dateB = new Date(b.CreateDateTimeUTC || b.createdOn || b.CreatedOn || b.timestamp || b.createdAt || 0).getTime();
         return dateB - dateA;
       });
       setTimelineEvents(unique);
@@ -200,7 +233,7 @@ export default function ContactDetailScreen() {
   }, [contact, isNew, fetchTimeline, fetchRelated]);
 
   const handleAddNote = useCallback(async () => {
-    if (!organization || !contact || !noteText.trim()) return;
+    if (!organization || !contact || (!noteText.trim() && !noteAttachment)) return;
     setAddingNote(true);
     try {
       await contactsApi.addTimelineEntry(
@@ -209,8 +242,10 @@ export default function ContactDetailScreen() {
         noteText.trim(),
         user?.uID || user?.userId || '',
         user?.fullname || '',
+        noteAttachment || undefined,
       );
       setNoteText('');
+      setNoteAttachment(null);
       setNoteModalVisible(false);
       fetchTimeline();
     } catch {
@@ -218,7 +253,7 @@ export default function ContactDetailScreen() {
     } finally {
       setAddingNote(false);
     }
-  }, [organization, contact, noteText, user, t, fetchTimeline]);
+  }, [organization, contact, noteText, noteAttachment, user, t, fetchTimeline]);
 
   useEffect(() => {
     if (organization) {
@@ -654,7 +689,7 @@ export default function ContactDetailScreen() {
           onRequestClose={() => setEditVisible(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior="padding"
             style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
           >
             <View
@@ -806,59 +841,76 @@ export default function ContactDetailScreen() {
           animationType="fade"
           onRequestClose={() => setNoteModalVisible(false)}
         >
-          <Pressable
-            style={styles.noteOverlay}
-            onPress={() => setNoteModalVisible(false)}
+          <KeyboardAvoidingView
+            behavior="padding"
+            style={{ flex: 1 }}
           >
             <Pressable
-              onPress={(e) => e.stopPropagation()}
-              style={[styles.noteSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 }]}
+              style={styles.noteOverlay}
+              onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }}
             >
-              <Text
-                variant="titleMedium"
-                style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}
+              <Pressable
+                onPress={(e) => e.stopPropagation()}
+                style={[styles.noteSheet, { backgroundColor: theme.colors.surface, paddingBottom: Math.max(insets.bottom, 12) + 8 }]}
               >
-                {t('phoneCalls.addNote')}
-              </Text>
-              <TextInput
-                value={noteText}
-                onChangeText={setNoteText}
-                placeholder={t('phoneCalls.noteHint', 'Write a note...')}
-                placeholderTextColor={theme.custom?.placeholder || '#999'}
-                multiline
-                style={[
-                  styles.noteInput,
-                  {
-                    backgroundColor: theme.custom?.inputBackground || theme.colors.surfaceVariant,
-                    color: theme.colors.onSurface,
-                    borderColor: theme.colors.outline,
-                    textAlign,
-                    writingDirection,
-                  },
-                ]}
-              />
-              <View style={[styles.noteActions, { flexDirection }]}>
-                <Button
-                  mode="outlined"
-                  onPress={() => { setNoteModalVisible(false); setNoteText(''); }}
-                  style={{ minWidth: 100, borderRadius: 10 }}
-                  textColor={theme.colors.onSurface}
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={handleAddNote}
-                  loading={addingNote}
-                  disabled={!noteText.trim() || addingNote}
-                  style={{ minWidth: 100, borderRadius: 10, backgroundColor: theme.colors.primary }}
-                  textColor="#FFFFFF"
-                >
-                  {t('common.save')}
-                </Button>
-              </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <Text
+                    variant="titleMedium"
+                    style={{ color: theme.colors.onSurface, fontWeight: '700' }}
+                  >
+                    {t('phoneCalls.addNote')}
+                  </Text>
+                  <Pressable onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); setNoteText(''); }} hitSlop={8}>
+                    <MaterialCommunityIcons name="close" size={22} color={theme.colors.onSurfaceVariant} />
+                  </Pressable>
+                </View>
+                <TextInput
+                  value={noteText}
+                  onChangeText={setNoteText}
+                  placeholder={t('phoneCalls.noteHint', 'Write a note...')}
+                  placeholderTextColor={theme.custom?.placeholder || '#999'}
+                  multiline
+                  autoFocus
+                  style={[
+                    styles.noteInput,
+                    {
+                      backgroundColor: theme.custom?.inputBackground || theme.colors.surfaceVariant,
+                      color: theme.colors.onSurface,
+                      borderColor: theme.colors.outline,
+                      textAlign,
+                      writingDirection,
+                    },
+                  ]}
+                />
+                <NoteAttachmentRow
+                  attachment={noteAttachment}
+                  onAttach={setNoteAttachment}
+                  onRemove={() => setNoteAttachment(null)}
+                  primaryColor={theme.colors.primary}
+                />
+                <View style={[styles.noteActions, { flexDirection }]}>
+                  <Button
+                    mode="outlined"
+                    onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }}
+                    style={{ minWidth: 100, borderRadius: 10 }}
+                    textColor={theme.colors.onSurface}
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                  <Button
+                    mode="contained"
+                    onPress={() => { Keyboard.dismiss(); handleAddNote(); }}
+                    loading={addingNote}
+                    disabled={(!noteText.trim() && !noteAttachment) || addingNote}
+                    style={{ minWidth: 100, borderRadius: 10, backgroundColor: theme.colors.primary }}
+                    textColor="#FFFFFF"
+                  >
+                    {t('common.save')}
+                  </Button>
+                </View>
+              </Pressable>
             </Pressable>
-          </Pressable>
+          </KeyboardAvoidingView>
         </Modal>
       </Portal>
 
@@ -1001,6 +1053,28 @@ const TIMELINE_TYPE_CONFIG: Record<string, { icon: string; color: string }> = {
   outbound_phone_call_initiated: { icon: 'phone-outgoing', color: '#4CAF50' },
 };
 
+type TimelineFilterKey = 'all' | 'notes' | 'email' | 'tasks' | 'calendar' | 'lead' | 'system';
+
+const TIMELINE_FILTERS: { key: TimelineFilterKey; label: string; icon: string }[] = [
+  { key: 'all', label: 'הכל', icon: 'format-list-bulleted' },
+  { key: 'notes', label: 'הערות', icon: 'note-text' },
+  { key: 'email', label: 'מייל', icon: 'email-outline' },
+  { key: 'tasks', label: 'משימות', icon: 'clipboard-check-outline' },
+  { key: 'calendar', label: 'יומן', icon: 'calendar' },
+  { key: 'lead', label: 'ליד', icon: 'account-convert' },
+  { key: 'system', label: 'מערכת', icon: 'cog-outline' },
+];
+
+function getTimelineFilterGroup(entry: any): TimelineFilterKey {
+  const t = (entry?.TimelineType || entry?.timelineType || '').toLowerCase();
+  if (t === 'note' || t === 'internal_mention') return 'notes';
+  if (t === 'email sent' || t === 'email campaign sent') return 'email';
+  if (t.startsWith('task_')) return 'tasks';
+  if (t === 'event created') return 'calendar';
+  if (t === 'stage_change' || t.startsWith('lead_')) return 'lead';
+  return 'system';
+}
+
 function TimelineSection({
   events,
   loading,
@@ -1018,6 +1092,8 @@ function TimelineSection({
   isRTL: boolean;
   flexDirection: 'row' | 'row-reverse';
 }) {
+  const [activeFilter, setActiveFilter] = useState<TimelineFilterKey>('all');
+
   if (loading) {
     return (
       <View style={styles.sectionEmpty}>
@@ -1042,25 +1118,68 @@ function TimelineSection({
     );
   }
 
+  const counts: Record<TimelineFilterKey, number> = { all: events.length, notes: 0, email: 0, tasks: 0, calendar: 0, lead: 0, system: 0 };
+  events.forEach((e) => { counts[getTimelineFilterGroup(e)]++; });
+
+  const visibleFilters = TIMELINE_FILTERS.filter((f) => f.key === 'all' || counts[f.key] > 0);
+
+  const filtered = activeFilter === 'all' ? events : events.filter((e) => getTimelineFilterGroup(e) === activeFilter);
+
   return (
     <View style={styles.sectionContent}>
-      {events.map((event, idx) => {
+      {visibleFilters.length > 2 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.timelineFilterBar} contentContainerStyle={{ gap: 6, paddingHorizontal: 4 }}>
+          {visibleFilters.map((f) => {
+            const isActive = activeFilter === f.key;
+            return (
+              <Pressable
+                key={f.key}
+                onPress={() => setActiveFilter(f.key)}
+                style={[
+                  styles.timelineFilterChip,
+                  { backgroundColor: isActive ? theme.colors.primary : theme.colors.surfaceVariant },
+                ]}
+              >
+                <MaterialCommunityIcons name={f.icon as any} size={14} color={isActive ? '#fff' : theme.colors.onSurfaceVariant} />
+                <Text style={[styles.timelineFilterLabel, { color: isActive ? '#fff' : theme.colors.onSurfaceVariant }]}>
+                  {f.label}
+                </Text>
+                {f.key !== 'all' && (
+                  <Text style={[styles.timelineFilterCount, { color: isActive ? '#fff' : theme.colors.onSurfaceVariant }]}>
+                    {counts[f.key]}
+                  </Text>
+                )}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {filtered.map((event, idx) => {
         const id = event.TimelineId || event.timelineId || event.id || String(idx);
         const type = (event.TimelineType || event.timelineType || 'note').toLowerCase();
         const config = TIMELINE_TYPE_CONFIG[type] || { icon: 'circle-small', color: theme.colors.primary };
         const note = event.note || event.Note || '';
         const createdBy = event.createdByName || event.CreatedByName || '';
         const createdOn = event.createdOn || event.CreatedOn || '';
+        const crossLabel = event._crossEntitySource ? `[${event._crossEntityLabel || event._crossEntitySource}]` : '';
 
         return (
           <View key={id} style={[styles.timelineItem, { flexDirection }]}>
             <View style={[styles.timelineDot, { backgroundColor: config.color }]}>
               <MaterialCommunityIcons name={config.icon as any} size={12} color="#FFF" />
             </View>
-            <View style={[styles.timelineBody, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
-              <Text variant="labelSmall" style={{ color: config.color, fontWeight: '600', textTransform: 'capitalize', textAlign: isRTL ? 'right' : 'left' }}>
-                {type.replace(/_/g, ' ')}
-              </Text>
+            <View style={[styles.timelineBody, { alignItems: 'flex-start' }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text variant="labelSmall" style={{ color: config.color, fontWeight: '600', textTransform: 'capitalize', textAlign: isRTL ? 'right' : 'left' }}>
+                  {type.replace(/_/g, ' ')}
+                </Text>
+                {crossLabel ? (
+                  <Text variant="labelSmall" style={{ color: '#9C27B0', fontWeight: '500', fontSize: 10 }}>
+                    {crossLabel}
+                  </Text>
+                ) : null}
+              </View>
               {note ? (
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurface, marginTop: 2, textAlign: isRTL ? 'right' : 'left', width: '100%' }}>
                   {note}
@@ -1159,7 +1278,7 @@ function RelatedRecordsSection({
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign: isRTL ? 'right' : 'left' }}>
                   {quote.title || quote.quoteNumber || quote.id}
                 </Text>
-                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginTop: 3, flexWrap: 'wrap' }}>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 3, flexWrap: 'wrap' }}>
                   {quote.status ? (
                     <View style={{ backgroundColor: '#8b5cf620', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 }}>
                       <Text variant="labelSmall" style={{ color: '#8b5cf6', fontWeight: '600' }}>
@@ -1210,7 +1329,7 @@ function RelatedRecordsSection({
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign: isRTL ? 'right' : 'left' }}>
                   {lead.title || lead.leadTitle || t('leads.lead')}
                 </Text>
-                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginTop: 3, flexWrap: 'wrap' }}>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 3, flexWrap: 'wrap' }}>
                   {(lead.stageName || lead.stage) ? (
                     <View style={{ backgroundColor: '#2e615520', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 }}>
                       <Text variant="labelSmall" style={{ color: '#2e6155', fontWeight: '600' }}>
@@ -1286,7 +1405,7 @@ function RelatedRecordsSection({
                 >
                   {fieldEntries.length > 0 ? (
                     fieldEntries.map(([key, val]) => (
-                      <View key={key} style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 6, marginBottom: 2 }}>
+                      <View key={key} style={{ flexDirection: 'row', gap: 6, marginBottom: 2 }}>
                         <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, minWidth: 60 }}>
                           {String(key)}:
                         </Text>
@@ -1395,6 +1514,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center' as const,
   },
   timelineBody: { flex: 1 },
+  timelineFilterBar: { marginBottom: 12, maxHeight: 36 },
+  timelineFilterChip: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+  },
+  timelineFilterLabel: { fontSize: 12, fontWeight: '600' as const },
+  timelineFilterCount: { fontSize: 10, fontWeight: '500' as const, marginStart: 2 },
   noteOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',

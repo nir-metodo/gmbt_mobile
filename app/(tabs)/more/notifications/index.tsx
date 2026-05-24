@@ -47,11 +47,11 @@ function SettingRow({
   disabled,
 }: SettingRowProps) {
   return (
-    <View style={[styles.row, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+    <View style={[styles.row, { flexDirection: 'row' }]}>
       <View style={[styles.iconWrap, { backgroundColor: iconColor + '15' }]}>
         <MaterialCommunityIcons name={icon as any} size={20} color={iconColor} />
       </View>
-      <View style={[styles.textWrap, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+      <View style={[styles.textWrap, { alignItems: 'flex-start' }]}>
         <Text variant="bodyLarge" style={{ color: themeColors.onSurface }}>
           {label}
         </Text>

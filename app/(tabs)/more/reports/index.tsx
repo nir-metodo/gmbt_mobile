@@ -29,19 +29,21 @@ import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 
 const BRAND = '#2e6155';
 
-type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'sla';
+type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'contacts' | 'whatsapp' | 'sla';
 type DatePreset = 'all' | 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth' | 'lastMonth' | 'thisQuarter' | 'thisYear';
 type DataScope = 'my' | 'all';
 type SortOption = 'date_desc' | 'date_asc' | 'name' | 'status';
 
-const CATEGORIES: { key: ReportCategory; icon: string; color: string }[] = [
-  { key: 'leads', icon: 'trending-up', color: '#f59e0b' },
-  { key: 'cases', icon: 'briefcase-outline', color: '#FF6B35' },
-  { key: 'tasks', icon: 'checkbox-marked-circle-outline', color: '#10b981' },
-  { key: 'quotes', icon: 'file-document-outline', color: '#7B2D8E' },
-  { key: 'esignatures', icon: 'draw-pen', color: '#0ea5e9' },
-  { key: 'phonecalls', icon: 'phone-outline', color: '#6366f1' },
-  { key: 'sla', icon: 'shield-alert-outline', color: '#ef4444' },
+const ALL_CATEGORIES: { key: ReportCategory; icon: string; color: string; label: string }[] = [
+  { key: 'leads', icon: 'trending-up', color: '#f59e0b', label: 'לידים' },
+  { key: 'cases', icon: 'briefcase-outline', color: '#FF6B35', label: 'פניות' },
+  { key: 'tasks', icon: 'checkbox-marked-circle-outline', color: '#10b981', label: 'משימות' },
+  { key: 'quotes', icon: 'file-document-outline', color: '#7B2D8E', label: 'הצעות מחיר' },
+  { key: 'esignatures', icon: 'draw-pen', color: '#0ea5e9', label: 'חתימות' },
+  { key: 'contacts', icon: 'account-group-outline', color: '#2196F3', label: 'אנשי קשר' },
+  { key: 'whatsapp', icon: 'whatsapp', color: '#25D366', label: 'וואטסאפ' },
+  { key: 'phonecalls', icon: 'phone-outline', color: '#6366f1', label: 'שיחות' },
+  { key: 'sla', icon: 'shield-alert-outline', color: '#ef4444', label: 'SLA' },
 ];
 
 const DATE_PRESETS: DatePreset[] = ['all', 'today', 'yesterday', 'thisWeek', 'lastWeek', 'thisMonth', 'lastMonth', 'thisQuarter', 'thisYear'];
@@ -134,6 +136,10 @@ function getItemTitle(item: any, category: ReportCategory): string {
       return item.title || item.Title || item.quoteNumber || '—';
     case 'esignatures':
       return item.title || item.Title || item.documentTitle || '—';
+    case 'contacts':
+      return item.name || item.Name || item.fullName || item.contactName || '—';
+    case 'whatsapp':
+      return item.name || item.templateName || item.Name || '—';
     case 'phonecalls':
       return item.contactName || item.phoneNumber || '—';
     case 'sla':
@@ -153,6 +159,10 @@ function getItemSubtitle(item: any, category: ReportCategory): string {
       return [item.status || item.Status, item.total != null ? `₪${Number(item.total).toLocaleString()}` : null].filter(Boolean).join(' · ');
     case 'esignatures':
       return [item.status || item.Status, item.contactName].filter(Boolean).join(' · ');
+    case 'contacts':
+      return [item.phoneNumber || item.phone, item.email, item.keys ? (Array.isArray(item.keys) ? item.keys[0] : item.keys) : null].filter(Boolean).join(' · ');
+    case 'whatsapp':
+      return [item.status || item.Status, item.category || item.Category, item.language || item.Language].filter(Boolean).join(' · ');
     case 'phonecalls': {
       const dur = item.duration ? `${Math.floor(item.duration / 60)}:${String(item.duration % 60).padStart(2, '0')}` : null;
       return [item.direction, item.status, dur].filter(Boolean).join(' · ');
@@ -191,7 +201,57 @@ export default function ReportsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rawData, setRawData] = useState<any[]>([]);
+  const [availableCategories, setAvailableCategories] = useState<ReportCategory[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
   const scrollRef = useRef<ScrollView>(null);
+
+  // Smart filter: only show categories that have data
+  useEffect(() => {
+    if (!org) return;
+    const checkCategories = async () => {
+      setCategoriesLoading(true);
+      const available: ReportCategory[] = [];
+      const checks: { key: ReportCategory; endpoint: string; payload: any }[] = [
+        { key: 'leads', endpoint: ENDPOINTS.GET_LEADS, payload: { organization: org, pageNumber: 1, pageSize: 1, userId, dataVisibility: 'seeAll' } },
+        { key: 'cases', endpoint: ENDPOINTS.GET_CASES, payload: { organization: org, pageNumber: 1, pageSize: 1, userId, dataVisibility: 'seeAll' } },
+        { key: 'tasks', endpoint: ENDPOINTS.GET_TASKS, payload: { organizationName: org, userId, dataVisibility: 'seeAll' } },
+        { key: 'quotes', endpoint: ENDPOINTS.GET_ALL_QUOTES, payload: { organization: org, userId, dataVisibility: 'seeAll' } },
+        { key: 'esignatures', endpoint: ENDPOINTS.GET_ESIGNATURE_DOCS, payload: { organization: org } },
+        { key: 'contacts', endpoint: ENDPOINTS.GET_CONTACTS_PAGINATED || ENDPOINTS.GET_CONTACTS, payload: { organization: org, pageNumber: 1, pageSize: 1 } },
+        { key: 'whatsapp', endpoint: ENDPOINTS.GET_TEMPLATES, payload: { organization: org } },
+        { key: 'phonecalls', endpoint: ENDPOINTS.GET_PHONE_CALLS, payload: { organization: org, userId, dataVisibility: 'seeAll' } },
+        { key: 'sla', endpoint: ENDPOINTS.GET_SLA_BREACHES, payload: { organization: org } },
+      ];
+
+      const results = await Promise.allSettled(
+        checks.map(async (c) => {
+          const res = await axiosInstance.post(c.endpoint, c.payload);
+          const raw = res.data;
+          const items =
+            raw?.Leads || raw?.Cases || raw?.Quotes || raw?.tasks || raw?.Tasks ||
+            raw?.Data || raw?.data || raw?.Documents || raw?.documents ||
+            raw?.Calls || raw?.calls || raw?.Breaches || raw?.breaches ||
+            raw?.Contacts || raw?.contacts || raw?.Templates || raw?.templates ||
+            (Array.isArray(raw) ? raw : []);
+          const arr = Array.isArray(items) ? items : [];
+          return { key: c.key, count: arr.length };
+        })
+      );
+
+      results.forEach((r) => {
+        if (r.status === 'fulfilled' && r.value.count > 0) {
+          available.push(r.value.key);
+        }
+      });
+
+      setAvailableCategories(available.length > 0 ? available : ['leads']);
+      if (available.length > 0 && !available.includes(category)) {
+        setCategory(available[0]);
+      }
+      setCategoriesLoading(false);
+    };
+    checkCategories();
+  }, [org]);
 
   const canSeeAll = useMemo(() => {
     if (user?.SecurityRole === 'Admin') return true;
@@ -220,6 +280,8 @@ export default function ReportsScreen() {
         case 'quotes': endpoint = ENDPOINTS.GET_ALL_QUOTES; break;
         case 'esignatures': endpoint = ENDPOINTS.GET_ESIGNATURE_DOCS; break;
         case 'phonecalls': endpoint = ENDPOINTS.GET_PHONE_CALLS; break;
+        case 'contacts': endpoint = ENDPOINTS.GET_CONTACTS_PAGINATED || ENDPOINTS.GET_CONTACTS; break;
+        case 'whatsapp': endpoint = ENDPOINTS.GET_TEMPLATES; break;
         case 'sla': endpoint = ENDPOINTS.GET_SLA_BREACHES; break;
       }
 
@@ -238,6 +300,12 @@ export default function ReportsScreen() {
       } else if (cat === 'sla') {
         delete payload.pageNumber;
         delete payload.pageSize;
+      } else if (cat === 'contacts') {
+        payload.userId = userId;
+        payload.dataVisibility = dataScope === 'my' ? 'seeOwn' : 'seeAll';
+      } else if (cat === 'whatsapp') {
+        delete payload.pageNumber;
+        delete payload.pageSize;
       } else if (cat === 'phonecalls') {
         payload.userId = userId;
         payload.dataVisibility = dataScope === 'my' ? 'seeOwn' : 'seeAll';
@@ -252,6 +320,7 @@ export default function ReportsScreen() {
         raw?.Leads || raw?.Cases || raw?.Quotes || raw?.tasks || raw?.Tasks ||
         raw?.Data || raw?.data || raw?.Documents || raw?.documents ||
         raw?.Calls || raw?.calls || raw?.Breaches || raw?.breaches ||
+        raw?.Contacts || raw?.contacts || raw?.Templates || raw?.templates ||
         (Array.isArray(raw) ? raw : []);
       setRawData(Array.isArray(items) ? items : []);
     } catch {
@@ -370,6 +439,20 @@ export default function ReportsScreen() {
           avgDuration,
         };
       }
+      case 'contacts': return {
+        byTag: groupBy(items, (i) => {
+          const keys = i.keys;
+          if (Array.isArray(keys) && keys.length > 0) return keys[0];
+          if (typeof keys === 'string' && keys) return keys;
+          return 'ללא תיוג';
+        }),
+        byOwner: groupBy(items, (i) => i.ownerName || i.OwnerName || 'לא משויך'),
+      };
+      case 'whatsapp': return {
+        byStatus: groupBy(items, (i) => i.status || i.Status || 'APPROVED'),
+        byCategory: groupBy(items, (i) => i.category || i.Category || 'MARKETING'),
+        byLanguage: groupBy(items, (i) => i.language || i.Language || 'he'),
+      };
       case 'sla': return {
         byEntityType: groupBy(items, (i) => i.entityType || i.EntityType),
         byBreachType: groupBy(items, (i) => i.breachType || i.ruleType || i.BreachType),
@@ -449,6 +532,20 @@ export default function ReportsScreen() {
           { label: t('reports.kpiAvgDuration'), value: `${avgMin}:${String(avgSec).padStart(2, '0')}`, color: '#6366f1', icon: 'timer-outline' },
         ];
       }
+      case 'contacts': {
+        return [
+          { label: 'סה״כ', value: items.length, color: '#2196F3', icon: 'account-group-outline' },
+        ];
+      }
+      case 'whatsapp': {
+        const approved = items.filter(i => (i.status || '').toUpperCase() === 'APPROVED').length;
+        const pending = items.filter(i => (i.status || '').toUpperCase() === 'PENDING').length;
+        return [
+          { label: 'מאושרות', value: approved, color: '#25D366', icon: 'check-circle-outline' },
+          { label: 'ממתינות', value: pending, color: '#f59e0b', icon: 'clock-outline' },
+          { label: 'סה״כ', value: items.length, color: '#2196F3', icon: 'whatsapp' },
+        ];
+      }
       case 'sla': {
         const byType = groupBy(items, (i) => i.entityType || i.EntityType);
         const topType = sortedEntries(byType)[0];
@@ -460,7 +557,8 @@ export default function ReportsScreen() {
     }
   }, [filteredData, category, t]);
 
-  const currentCat = CATEGORIES.find((c) => c.key === category)!;
+  const CATEGORIES = useMemo(() => ALL_CATEGORIES.filter((c) => availableCategories.includes(c.key)), [availableCategories]);
+  const currentCat = ALL_CATEGORIES.find((c) => c.key === category) || ALL_CATEGORIES[0];
   const totalItems = filteredData.length;
 
   const handleExport = useCallback(async () => {
@@ -472,6 +570,8 @@ export default function ReportsScreen() {
         tasks: ['Title', 'Status', 'Priority', 'Assigned To', 'Due Date', 'Created'],
         quotes: ['Title', 'Status', 'Salesperson', 'Total', 'Contact', 'Created'],
         esignatures: ['Title', 'Status', 'Contact', 'Created'],
+        contacts: ['Name', 'Phone', 'Email', 'Owner', 'Created'],
+        whatsapp: ['Template', 'Status', 'Category', 'Language'],
         phonecalls: ['Contact', 'Phone', 'Direction', 'Status', 'Duration', 'Date'],
         sla: ['Entity', 'Type', 'Breach Type', 'Owner', 'Breached At'],
       };
@@ -529,6 +629,19 @@ export default function ReportsScreen() {
               item.startTime || item.createdAt || '',
             ];
           }
+          case 'contacts': return [
+            getItemTitle(item, category),
+            item.phoneNumber || '',
+            item.email || '',
+            item.ownerName || '',
+            item.createdOn || item.createdAt || '',
+          ];
+          case 'whatsapp': return [
+            getItemTitle(item, category),
+            item.status || '',
+            item.category || '',
+            item.language || '',
+          ];
           case 'sla': return [
             getItemTitle(item, category),
             item.entityType || '',
@@ -719,6 +832,21 @@ export default function ReportsScreen() {
           </>
         );
       }
+      case 'contacts':
+        return (
+          <>
+            {renderBarSection('לפי תיוג', s.byTag, currentCat.color)}
+            {renderBarSection('לפי בעלים', s.byOwner, '#0ea5e9')}
+          </>
+        );
+      case 'whatsapp':
+        return (
+          <>
+            {renderBarSection('לפי סטטוס', s.byStatus, currentCat.color)}
+            {renderBarSection('לפי קטגוריה', s.byCategory, '#6366f1')}
+            {renderBarSection('לפי שפה', s.byLanguage, '#FF9800')}
+          </>
+        );
       case 'sla':
         return (
           <>
@@ -807,26 +935,32 @@ export default function ReportsScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Category Tabs */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
-          {CATEGORIES.map((cat) => (
-            <Chip
-              key={cat.key}
-              selected={category === cat.key}
-              onPress={() => { setCategory(cat.key); setSearchQuery(''); }}
-              style={[styles.chip, category === cat.key && { backgroundColor: cat.color + '20', borderColor: cat.color, borderWidth: 1 }]}
-              textStyle={category === cat.key ? { color: cat.color, fontWeight: '700' } : { color: theme.colors.onSurfaceVariant }}
-              icon={() => (
-                <MaterialCommunityIcons
-                  name={cat.icon as any}
-                  size={16}
-                  color={category === cat.key ? cat.color : theme.colors.onSurfaceVariant}
-                />
-              )}
-            >
-              {t(`reports.${cat.key}`)}
-            </Chip>
-          ))}
-        </ScrollView>
+        {categoriesLoading ? (
+          <View style={{ padding: spacing.md, alignItems: 'center' }}>
+            <ActivityIndicator size="small" color={BRAND} />
+          </View>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+            {CATEGORIES.map((cat) => (
+              <Chip
+                key={cat.key}
+                selected={category === cat.key}
+                onPress={() => { setCategory(cat.key); setSearchQuery(''); }}
+                style={[styles.chip, category === cat.key && { backgroundColor: cat.color + '20', borderColor: cat.color, borderWidth: 1 }]}
+                textStyle={category === cat.key ? { color: cat.color, fontWeight: '700' } : { color: theme.colors.onSurfaceVariant }}
+                icon={() => (
+                  <MaterialCommunityIcons
+                    name={cat.icon as any}
+                    size={16}
+                    color={category === cat.key ? cat.color : theme.colors.onSurfaceVariant}
+                  />
+                )}
+              >
+                {cat.label}
+              </Chip>
+            ))}
+          </ScrollView>
+        )}
 
         {/* Date Range Presets */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>

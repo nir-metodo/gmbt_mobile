@@ -386,7 +386,7 @@ export default function QuoteDetailScreen() {
   const filteredUsers = useMemo(() => {
     if (!userSearch.trim()) return orgUsers;
     const q = userSearch.toLowerCase();
-    return orgUsers.filter((u) => (u.fullname || u.name || '').toLowerCase().includes(q));
+    return orgUsers.filter((u) => (u.userName || u.fullname || u.name || '').toLowerCase().includes(q));
   }, [orgUsers, userSearch]);
 
   const addFromInventory = useCallback((item: any) => {
@@ -641,7 +641,7 @@ export default function QuoteDetailScreen() {
 
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
         >
           <ScrollView
             style={styles.body}
@@ -1190,27 +1190,27 @@ export default function QuoteDetailScreen() {
                   <TouchableOpacity
                     style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
                     onPress={() => {
-                      setFormSalesperson(item.fullname || item.name || '');
-                      setFormSalespersonId(item.uID || item.userId || '');
+                      setFormSalesperson(item.userName || item.fullname || item.name || '');
+                      setFormSalespersonId(item.uID || item.userId || item.id || '');
                       setUserPickerVisible(false);
                       setUserSearch('');
                     }}
                   >
                     <View style={[styles.contactAvatarSm, { backgroundColor: theme.colors.primaryContainer }]}>
                       <Text style={{ color: theme.colors.primary, fontWeight: '700', fontSize: 12 }}>
-                        {getInitials(item.fullname || item.name || '')}
+                        {getInitials(item.userName || item.fullname || item.name || '')}
                       </Text>
                     </View>
                     <Text
                       variant="bodyMedium"
                       style={{
-                        color: formSalespersonId === (item.uID || item.userId) ? theme.colors.primary : theme.colors.onSurface,
-                        fontWeight: formSalespersonId === (item.uID || item.userId) ? '700' : '400',
+                        color: formSalespersonId === (item.uID || item.userId || item.id) ? theme.colors.primary : theme.colors.onSurface,
+                        fontWeight: formSalespersonId === (item.uID || item.userId || item.id) ? '700' : '400',
                         flex: 1,
                         textAlign,
                       }}
                     >
-                      {item.fullname || item.name || ''}
+                      {item.userName || item.fullname || item.name || ''}
                     </Text>
                     {formSalespersonId === (item.uID || item.userId) && (
                       <MaterialCommunityIcons name="check" size={18} color={theme.colors.primary} />
@@ -1572,7 +1572,7 @@ export default function QuoteDetailScreen() {
               <View style={[styles.detailIcon, { backgroundColor: '#FF980018' }]}>
                 <MaterialCommunityIcons name="calendar-clock" size={20} color="#FF9800" />
               </View>
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t('quotes.validUntil')}
                 </Text>
@@ -1603,7 +1603,7 @@ export default function QuoteDetailScreen() {
               <View style={[styles.detailIcon, { backgroundColor: '#2196F318' }]}>
                 <MaterialCommunityIcons name="account-tie" size={20} color="#2196F3" />
               </View>
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t('quotes.salesperson')}
                 </Text>

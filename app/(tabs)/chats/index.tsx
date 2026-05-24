@@ -82,7 +82,7 @@ export default function ChatsListScreen() {
 
   const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
   const currentUserId = user?.uID || user?.userId || '';
-  const userIsAdmin = user?.SecurityRole === 'admin' || user?.SecurityRole === 'Admin';
+  const userIsAdmin = user?.SecurityRole === 'Admin';
 
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -490,7 +490,7 @@ export default function ChatsListScreen() {
             )}
           </View>
 
-          <View style={[styles.chatContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+          <View style={[styles.chatContent, { alignItems: 'flex-start' }]}>
             <View style={[styles.chatTopRow, { flexDirection }]}>
               <Text
                 variant="titleMedium"
@@ -567,7 +567,19 @@ export default function ChatsListScreen() {
                   { color: theme.colors.onSurfaceVariant, textAlign },
                 ]}
               >
-                {item.lastMessage}
+                {(() => {
+                  const msg = (item.lastMessage || '').trim();
+                  if (!msg) return '';
+                  const lm = msg.toLowerCase();
+                  if (/^(תמונה|image|photo)$/i.test(lm)) return '📷 ' + t('chats.photo', 'תמונה');
+                  if (/^(סרטון|וידאו|video)$/i.test(lm)) return '🎬 ' + t('chats.videoMsg', 'סרטון');
+                  if (/^(אודיו|audio|voice|הקלטה)$/i.test(lm)) return '🎤 ' + t('chats.audioMsg', 'הודעה קולית');
+                  if (/^(מסמך|קובץ|document|file)$/i.test(lm)) return '📄 ' + t('chats.documentMsg', 'מסמך');
+                  if (/^(sticker|מדבקה)$/i.test(lm)) return '🏷️ ' + t('chats.sticker', 'מדבקה');
+                  if (/^(מיקום|location)$/i.test(lm)) return '📍 ' + t('chats.location', 'מיקום');
+                  if (/^(איש קשר|contact)$/i.test(lm)) return '👤 ' + t('chats.contact', 'איש קשר');
+                  return msg;
+                })()}
               </Text>
               {hasUnread && (
                 <View
@@ -1003,7 +1015,7 @@ export default function ChatsListScreen() {
             mode="outlined"
             style={{ marginBottom: 16 }}
           />
-          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', justifyContent: 'flex-end', gap: 8 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
             <Button mode="outlined" onPress={() => { setNewChatVisible(false); setNewChatPhone(''); }}>
               {t('common.cancel')}
             </Button>
@@ -1041,7 +1053,7 @@ export default function ChatsListScreen() {
             style={{ marginBottom: 12 }}
           />
           {userIsAdmin && (
-            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
               <Chip
                 selected={saveViewVisibility === 'personal'}
                 onPress={() => setSaveViewVisibility('personal')}
@@ -1060,7 +1072,7 @@ export default function ChatsListScreen() {
               </Chip>
             </View>
           )}
-          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', justifyContent: 'flex-end', gap: 8 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
             <Button mode="outlined" onPress={() => { setShowSaveViewModal(false); setNewViewName(''); }}>
               {t('common.cancel')}
             </Button>
@@ -1141,10 +1153,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 12,
+    gap: 14,
   },
   avatarWrap: {
     position: 'relative',
-    marginRight: 14,
   },
   onlineDot: {
     position: 'absolute',
@@ -1164,11 +1176,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 3,
+    gap: 8,
   },
   contactName: {
     flex: 1,
     fontSize: 16,
-    marginRight: 8,
   },
   contactNameUnread: {
     fontWeight: '700',
@@ -1197,11 +1209,11 @@ const styles = StyleSheet.create({
   chatBottomRow: {
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
   },
   lastMessage: {
     flex: 1,
     fontSize: 14,
-    marginRight: 8,
   },
   unreadBadge: {
     minWidth: 22,

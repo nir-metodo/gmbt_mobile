@@ -109,12 +109,12 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
 
   return (
     <Surface style={[itemStyles.card, { backgroundColor: themeColors.surface }]} elevation={1}>
-      <Pressable onPress={onPress} style={[itemStyles.row, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+      <Pressable onPress={onPress} style={[itemStyles.row, { flexDirection: 'row' }]}>
         <View style={[itemStyles.iconWrap, { backgroundColor: dirIcon.color + '15' }]}>
           <MaterialCommunityIcons name={dirIcon.name} size={22} color={dirIcon.color} />
         </View>
 
-        <View style={[itemStyles.info, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+        <View style={[itemStyles.info, { alignItems: 'flex-start' }]}>
           <Text variant="titleSmall" style={{ color: themeColors.onSurface }} numberOfLines={1}>
             {call.contactName || formatPhoneNumber(call.phoneNumber)}
           </Text>
@@ -124,7 +124,7 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
           </Text>
         </View>
 
-        <View style={[itemStyles.badges, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+        <View style={[itemStyles.badges, { flexDirection: 'row' }]}>
           {call.recordingUrl && (
             <MaterialCommunityIcons name="microphone" size={16} color="#FF6B35" style={{ marginHorizontal: 2 }} />
           )}
@@ -143,7 +143,7 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
         <View style={itemStyles.detail}>
           <Divider style={{ marginBottom: 12 }} />
 
-          <View style={[itemStyles.detailRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View style={[itemStyles.detailRow, { flexDirection: 'row' }]}>
             <Text variant="labelMedium" style={{ color: themeColors.onSurfaceVariant }}>
               {t('phoneCalls.status')}:
             </Text>
@@ -158,7 +158,7 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
           </View>
 
           {call.duration > 0 && (
-            <View style={[itemStyles.detailRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <View style={[itemStyles.detailRow, { flexDirection: 'row' }]}>
               <Text variant="labelMedium" style={{ color: themeColors.onSurfaceVariant }}>
                 {t('phoneCalls.duration')}:
               </Text>
@@ -184,7 +184,7 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
             <View style={itemStyles.section}>
               <Pressable
                 onPress={() => setShowFullTranscript(!showFullTranscript)}
-                style={[itemStyles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+                style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}
               >
                 <MaterialCommunityIcons name="text-box-outline" size={16} color={BRAND_COLOR} />
                 <Text variant="labelMedium" style={{ color: BRAND_COLOR, marginHorizontal: 6, flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
@@ -208,7 +208,7 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
 
           {call.aiSummary && (
             <View style={itemStyles.section}>
-              <View style={[itemStyles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
                 <MaterialCommunityIcons name="brain" size={16} color="#7B2D8E" />
                 <Text variant="labelMedium" style={{ color: '#7B2D8E', marginHorizontal: 6 }}>
                   {t('phoneCalls.aiSummary')}
@@ -222,14 +222,14 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
 
           {call.aiActionItems && call.aiActionItems.length > 0 && (
             <View style={itemStyles.section}>
-              <View style={[itemStyles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
                 <MaterialCommunityIcons name="clipboard-check-outline" size={16} color="#FF6B35" />
                 <Text variant="labelMedium" style={{ color: '#FF6B35', marginHorizontal: 6 }}>
                   {t('phoneCalls.actionItems')}
                 </Text>
               </View>
               {call.aiActionItems.map((item: string, idx: number) => (
-                <View key={idx} style={[itemStyles.actionItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View key={idx} style={[itemStyles.actionItem, { flexDirection: 'row' }]}>
                   <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }}>•</Text>
                   <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, flex: 1, marginHorizontal: 6, textAlign: isRTL ? 'right' : 'left' }}>
                     {item}
@@ -244,7 +244,7 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[itemStyles.quickActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+            contentContainerStyle={[itemStyles.quickActions, { flexDirection: 'row' }]}
           >
             <Button
               icon="calendar-plus"
@@ -316,19 +316,19 @@ function CallRuleItem({ rule, isRTL, t, themeColors, onToggle, onEdit }: RuleIte
     <Surface style={[ruleStyles.card, { backgroundColor: themeColors.surface }]} elevation={1}>
       <Pressable
         onPress={() => onEdit(rule)}
-        style={[ruleStyles.row, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+        style={[ruleStyles.row, { flexDirection: 'row' }]}
       >
-        <View style={[ruleStyles.content, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+        <View style={[ruleStyles.content, { alignItems: 'flex-start' }]}>
           <Text variant="titleSmall" style={{ color: themeColors.onSurface }}>
             {rule.name}
           </Text>
-          <View style={[ruleStyles.conditionRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View style={[ruleStyles.conditionRow, { flexDirection: 'row' }]}>
             <MaterialCommunityIcons name="lightning-bolt" size={14} color="#FF6B35" />
             <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, marginHorizontal: 4, flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
               {t(`phoneCalls.condition_${rule.condition.type}`)} {t(`phoneCalls.op_${rule.condition.operator}`)} {rule.condition.value}
             </Text>
           </View>
-          <View style={[ruleStyles.conditionRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View style={[ruleStyles.conditionRow, { flexDirection: 'row' }]}>
             <MaterialCommunityIcons name="arrow-right-bold" size={14} color={BRAND_COLOR} />
             <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, marginHorizontal: 4, flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
               {t(`phoneCalls.action_${rule.action.type}`)}
@@ -524,7 +524,7 @@ function RuleEditModal({ visible, rule, onDismiss, onSave, isRTL, t, themeColors
             textAlign={isRTL ? 'right' : 'left'}
           />
 
-          <View style={[modalStyles.footer, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View style={[modalStyles.footer, { flexDirection: 'row' }]}>
             <Button mode="outlined" onPress={onDismiss} style={modalStyles.footerBtn} textColor={themeColors.onSurfaceVariant}>
               {t('phoneCalls.cancel')}
             </Button>
@@ -762,7 +762,7 @@ export default function PhoneCallsScreen() {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.filterRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+            contentContainerStyle={[styles.filterRow, { flexDirection: 'row' }]}
           >
             {(['all', 'answered', 'missed'] as FilterKey[]).map((f) => (
               <Chip

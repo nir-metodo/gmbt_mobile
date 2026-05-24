@@ -451,7 +451,7 @@ export default function TaskDetailScreen() {
           ]}
         >
           <View style={[styles.bannerRow, { flexDirection }]}>
-            <View style={[styles.bannerItem, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.bannerItem, { alignItems: 'flex-start' }]}>
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {t('tasks.priority')}
               </Text>
@@ -467,7 +467,7 @@ export default function TaskDetailScreen() {
               </View>
             </View>
 
-            <View style={[styles.bannerItem, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.bannerItem, { alignItems: 'flex-start' }]}>
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {t('tasks.status')}
               </Text>
@@ -482,7 +482,7 @@ export default function TaskDetailScreen() {
           </View>
 
           {task.taskType ? (
-            <View style={[styles.bannerItem, { marginTop: 12, alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[styles.bannerItem, { marginTop: 12, alignItems: 'flex-start' }]}>
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {t('tasks.taskType')}
               </Text>
@@ -581,7 +581,7 @@ export default function TaskDetailScreen() {
                   color={overdue ? '#F44336' : theme.colors.primary}
                 />
               </View>
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t('tasks.dueDate')}
                 </Text>
@@ -611,7 +611,7 @@ export default function TaskDetailScreen() {
                 style={{ backgroundColor: theme.colors.primaryContainer }}
                 labelStyle={{ fontSize: 13, color: theme.colors.primary, fontWeight: '700' }}
               />
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t('tasks.assignedTo')}
                 </Text>
@@ -648,7 +648,7 @@ export default function TaskDetailScreen() {
                   color={theme.colors.secondary}
                 />
               </View>
-              <View style={[styles.detailContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {t(relatedEntity.label)}
                 </Text>
@@ -807,7 +807,7 @@ export default function TaskDetailScreen() {
             { backgroundColor: theme.colors.surface },
           ]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>

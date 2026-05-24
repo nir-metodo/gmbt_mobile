@@ -47,7 +47,7 @@ export default function WebFeatureScreen({ titleKey, path, icon = 'open-in-new',
           {
             backgroundColor: displayColor,
             paddingTop: insets.top + 4,
-            flexDirection: isRTL ? 'row-reverse' : 'row',
+            flexDirection: 'row',
           },
         ]}
       >

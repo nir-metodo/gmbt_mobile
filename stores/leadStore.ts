@@ -62,14 +62,18 @@ export const useLeadStore = create<LeadState>((set, get) => ({
   },
 
   updateLead: async (organization, lead) => {
+    // Optimistic update - reflect immediately in UI
+    const prevLeads = get().leads;
+    set((state) => ({
+      leads: state.leads.map((l) =>
+        l.id === lead.id ? { ...l, ...lead } : l
+      ),
+    }));
     try {
       await leadsApi.update(organization, lead);
-      set((state) => ({
-        leads: state.leads.map((l) =>
-          l.id === lead.id ? { ...l, ...lead } : l
-        ),
-      }));
     } catch (err) {
+      // Revert on failure
+      set({ leads: prevLeads });
       throw err;
     }
   },

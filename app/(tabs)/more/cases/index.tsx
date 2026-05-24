@@ -26,6 +26,7 @@ import {
   TouchableRipple,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -120,19 +121,8 @@ export default function CasesListScreen() {
   const [newViewName, setNewViewName] = useState('');
   const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
 
-  // ── Create form state ────────────────────────────────────────────────────────
-  const [createModalVisible, setCreateModalVisible] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [formTitle, setFormTitle] = useState('');
-  const [formDescription, setFormDescription] = useState('');
-  const [formPriority, setFormPriority] = useState<string>('medium');
-  const [formCategory, setFormCategory] = useState('');
-  const [formContactName, setFormContactName] = useState('');
-  const [formAssignedTo, setFormAssignedTo] = useState('');
+  const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
   const [statusPickerCase, setStatusPickerCase] = useState<Case | null>(null);
-  const [caseFormSections, setCaseFormSections] = useState<DynamicSection[]>([]);
-  const [caseFormLayout, setCaseFormLayout] = useState<string[]>([]);
-  const [formDynamicFields, setFormDynamicFields] = useState<Record<string, any>>({});
 
   const searchAnim = useRef(new Animated.Value(0)).current;
 
@@ -319,54 +309,6 @@ export default function CasesListScreen() {
 
   const filteredCases = cases; // server-side filtered
 
-  const resetForm = useCallback(() => {
-    setFormTitle('');
-    setFormDescription('');
-    setFormPriority('medium');
-    setFormCategory('');
-    setFormContactName('');
-    setFormAssignedTo('');
-    setFormDynamicFields({});
-    resetContactLookup();
-  }, [resetContactLookup]);
-
-  // Load case form settings for dynamic fields
-  useEffect(() => {
-    if (!user?.organization) return;
-    casesApi.getSettings(user.organization).then((settings: any) => {
-      if (Array.isArray(settings?.formSections)) setCaseFormSections(settings.formSections);
-      if (Array.isArray(settings?.formLayout)) setCaseFormLayout(settings.formLayout);
-    }).catch(() => {});
-  }, [user?.organization]);
-
-  const handleCreate = useCallback(async () => {
-    if (!user?.organization || !formTitle.trim()) return;
-    setCreating(true);
-    try {
-      await casesApi.create(user.organization, {
-        subject: formTitle.trim(),
-        description: formDescription.trim() || undefined,
-        priority: formPriority as Case['priority'],
-        category: formCategory.trim() || undefined,
-        contactName: selectedContact
-          ? (selectedContact.fullName || selectedContact.name || formContactName.trim())
-          : formContactName.trim() || undefined,
-        contactPhone: selectedContact?.phoneNumber || selectedContact?.phone || undefined,
-        contactId: selectedContact?.id || undefined,
-        assignedTo: formAssignedTo.trim() || undefined,
-        status: 'open',
-        customFields: formDynamicFields,
-        ...formDynamicFields,
-      } as any, user.fullname);
-      setCreateModalVisible(false);
-      resetForm();
-      await fetchCases();
-    } catch (err: any) {
-      setError(err.message || t('errors.generic'));
-    } finally {
-      setCreating(false);
-    }
-  }, [user?.organization, formTitle, formDescription, formPriority, formCategory, formContactName, formAssignedTo, formDynamicFields, resetForm, fetchCases, t]);
 
   const openCase = useCallback(
     (caseItem: Case) => {
@@ -379,17 +321,42 @@ export default function CasesListScreen() {
     async (caseItem: Case, newStatus: string) => {
       setStatusPickerCase(null);
       if (!user?.organization) return;
+      // Optimistic update
+      setCases((prev) =>
+        prev.map((c) => (c.id === caseItem.id ? { ...c, status: newStatus as any } : c)),
+      );
       try {
         await casesApi.update(user.organization, caseItem.id, { status: newStatus as any }, user.fullname);
-        setCases((prev) =>
-          prev.map((c) => (c.id === caseItem.id ? { ...c, status: newStatus as any } : c)),
-        );
       } catch (err: any) {
+        // Revert on failure
+        setCases((prev) =>
+          prev.map((c) => (c.id === caseItem.id ? { ...c, status: caseItem.status } : c)),
+        );
         Alert.alert(t('common.error', 'Error'), err?.message || t('errors.generic'));
       }
     },
     [user, t],
   );
+
+  const CASE_STATUSES = ['open', 'in_progress', 'resolved', 'closed'] as const;
+  const STATUS_ICONS_MAP: Record<string, string> = { open: 'folder-open', in_progress: 'progress-clock', resolved: 'check-circle', closed: 'lock' };
+
+  const casesKanbanColumns = useMemo<KanbanColumn<Case>[]>(() => {
+    return CASE_STATUSES.map((status) => {
+      const filtered = cases.filter((c) => (c.status || '').toLowerCase().replace(/\s+/g, '_') === status);
+      return {
+        id: status,
+        title: t(`cases.${status}`, status),
+        color: getStatusColor(status),
+        icon: STATUS_ICONS_MAP[status],
+        items: filtered,
+      };
+    });
+  }, [cases, t]);
+
+  const handleCasesKanbanMove = useCallback((item: Case, _from: string, toColumnId: string) => {
+    handleStatusChange(item, toColumnId);
+  }, [handleStatusChange]);
 
   const searchHeightInterp = searchAnim.interpolate({
     inputRange: [0, 1],
@@ -425,10 +392,17 @@ export default function CasesListScreen() {
             {
               backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom.cardBackground,
               borderColor: theme.colors.outlineVariant,
+              flexDirection,
             },
           ]}
         >
-          <View style={[styles.priorityBar, { backgroundColor: priorityColor }]} />
+          <View style={[styles.priorityBar, {
+            backgroundColor: priorityColor,
+            borderTopLeftRadius: isRTL ? 0 : borderRadius.lg,
+            borderBottomLeftRadius: isRTL ? 0 : borderRadius.lg,
+            borderTopRightRadius: isRTL ? borderRadius.lg : 0,
+            borderBottomRightRadius: isRTL ? borderRadius.lg : 0,
+          }]} />
 
           <View style={styles.caseContent}>
             <View style={[styles.caseTopRow, { flexDirection }]}>
@@ -563,6 +537,17 @@ export default function CasesListScreen() {
             onPress={() => router.back()}
           />
           <Text style={[styles.headerTitle, { flex: 1, textAlign }]}>{t('cases.title')}</Text>
+          <Pressable
+            onPress={() => setViewMode(viewMode === 'list' ? 'kanban' : 'list')}
+            hitSlop={8}
+            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
+          >
+            <MaterialCommunityIcons
+              name={viewMode === 'list' ? 'view-column-outline' : 'format-list-bulleted'}
+              size={24}
+              color={theme.custom.headerText}
+            />
+          </Pressable>
           <Pressable
             onPress={() => setAdvancedFilterVisible(true)}
             hitSlop={8}
@@ -741,45 +726,86 @@ export default function CasesListScreen() {
         </Pressable>
       ) : null}
 
-      {/* Case list */}
-      <FlatList
-        data={filteredCases}
-        renderItem={renderCaseCard}
-        keyExtractor={(item) => item.id}
-        ListEmptyComponent={renderEmpty}
-        onEndReached={onEndReached}
-        onEndReachedThreshold={0.3}
-        ListFooterComponent={
-          loadingMore
-            ? () => <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
-            : totalCount > 0
-              ? () => (
-                  <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
-                    {cases.length} / {totalCount}
+      {/* Case list or Kanban */}
+      {viewMode === 'kanban' ? (
+        <KanbanBoard
+          columns={casesKanbanColumns}
+          keyExtractor={(item) => item.id}
+          onMoveItem={handleCasesKanbanMove}
+          emptyLabel={t('cases.noCases', 'אין פניות')}
+          renderCard={(item) => {
+            const priorityColor = PRIORITY_COLORS[item.priority] || PRIORITY_COLORS.medium;
+            return (
+              <Pressable
+                onPress={() => openCase(item)}
+                style={({ pressed }) => ({
+                  backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
+                  borderRadius: 10,
+                  padding: 12,
+                  borderStartWidth: 3,
+                  borderStartColor: priorityColor,
+                })}
+              >
+                <Text variant="titleSmall" numberOfLines={1} style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                  {item.title || item.subject}
+                </Text>
+                {item.contactName ? (
+                  <View style={{ flexDirection, alignItems: 'center', gap: 4, marginTop: 4 }}>
+                    <MaterialCommunityIcons name="account-outline" size={13} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
+                      {item.contactName}
+                    </Text>
+                  </View>
+                ) : null}
+                {item.category ? (
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                    {item.category}
                   </Text>
-                )
-              : null
-        }
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={[theme.colors.primary]}
-            tintColor={theme.colors.primary}
-          />
-        }
-        contentContainerStyle={[
-          styles.listContent,
-          filteredCases.length === 0 && styles.listContentEmpty,
-        ]}
-        ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-        showsVerticalScrollIndicator={false}
-      />
+                ) : null}
+              </Pressable>
+            );
+          }}
+        />
+      ) : (
+        <FlatList
+          data={filteredCases}
+          renderItem={renderCaseCard}
+          keyExtractor={(item) => item.id}
+          ListEmptyComponent={renderEmpty}
+          onEndReached={onEndReached}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={
+            loadingMore
+              ? () => <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
+              : totalCount > 0
+                ? () => (
+                    <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
+                      {cases.length} / {totalCount}
+                    </Text>
+                  )
+                : null
+          }
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[theme.colors.primary]}
+              tintColor={theme.colors.primary}
+            />
+          }
+          contentContainerStyle={[
+            styles.listContent,
+            filteredCases.length === 0 && styles.listContentEmpty,
+          ]}
+          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
+          showsVerticalScrollIndicator={false}
+        />
+      )}
 
       {/* FAB */}
       <FAB
         icon="plus"
-        onPress={() => setCreateModalVisible(true)}
+        onPress={() => router.push('/more/cases/new')}
         style={[
           styles.fab,
           { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },
@@ -788,150 +814,7 @@ export default function CasesListScreen() {
         label={t('cases.addCase')}
       />
 
-      {/* Create Modal */}
       <Portal>
-        <Modal
-          visible={createModalVisible}
-          onDismiss={() => { setCreateModalVisible(false); resetForm(); }}
-          contentContainerStyle={[
-            styles.modalContainer,
-            { backgroundColor: theme.colors.surface },
-          ]}
-        >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={[styles.modalHeader, { flexDirection }]}>
-                <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-                  {t('cases.addCase')}
-                </Text>
-                <IconButton
-                  icon="close"
-                  size={22}
-                  onPress={() => { setCreateModalVisible(false); resetForm(); }}
-                />
-              </View>
-
-              <TextInput
-                label={t('cases.caseTitle')}
-                value={formTitle}
-                onChangeText={setFormTitle}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-
-              <TextInput
-                label={t('cases.description')}
-                value={formDescription}
-                onChangeText={setFormDescription}
-                mode="outlined"
-                multiline
-                numberOfLines={3}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-
-              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('cases.priority')}
-              </Text>
-              <View style={[styles.priorityRow, { flexDirection }]}>
-                {PRIORITIES.map((p) => (
-                  <Chip
-                    key={p}
-                    selected={formPriority === p}
-                    onPress={() => setFormPriority(p)}
-                    compact
-                    style={[
-                      styles.priorityChip,
-                      formPriority === p
-                        ? { backgroundColor: `${PRIORITY_COLORS[p]}20`, borderColor: PRIORITY_COLORS[p], borderWidth: 1 }
-                        : { backgroundColor: theme.colors.surfaceVariant },
-                    ]}
-                    textStyle={[
-                      styles.priorityChipText,
-                      formPriority === p && { color: PRIORITY_COLORS[p], fontWeight: '600' },
-                    ]}
-                  >
-                    {t(`tasks.${p}`)}
-                  </Chip>
-                ))}
-              </View>
-
-              <TextInput
-                label={t('cases.category')}
-                value={formCategory}
-                onChangeText={setFormCategory}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                right={<TextInput.Icon icon="tag" />}
-              />
-
-              <ContactLookupField
-                contactSearch={contactSearch}
-                contactResults={contactResults}
-                contactSearching={contactSearching}
-                selectedContact={selectedContact}
-                brandColor={theme.colors.primary}
-                onSearch={(text) => handleContactSearch(text, user?.organization || '')}
-                onSelect={(c) => { handleSelectContact(c); setFormContactName(c.fullName || c.name || ''); }}
-                onClear={() => { resetContactLookup(); setFormContactName(''); }}
-              />
-
-              <TextInput
-                label={t('cases.assignedTo')}
-                value={formAssignedTo}
-                onChangeText={setFormAssignedTo}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                right={<TextInput.Icon icon="account-check" />}
-              />
-
-              {caseFormSections.length > 0 && (
-                <View style={{ marginTop: 8 }}>
-                  <DynamicFieldsSectionForm
-                    sections={caseFormSections}
-                    values={formDynamicFields}
-                    onChange={(key: string, val: any) => setFormDynamicFields((prev) => ({ ...prev, [key]: val }))}
-                    lang={isRTL ? 'he' : 'en'}
-                    formLayout={caseFormLayout}
-                    theme={theme}
-                    textAlign={textAlign}
-                    writingDirection={isRTL ? 'rtl' : 'ltr'}
-                    flexDirection={flexDirection}
-                  />
-                </View>
-              )}
-
-              <View style={[styles.modalActions, { flexDirection }]}>
-                <Button
-                  mode="outlined"
-                  onPress={() => { setCreateModalVisible(false); resetForm(); }}
-                  style={styles.modalButton}
-                  textColor={theme.colors.onSurface}
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={handleCreate}
-                  loading={creating}
-                  disabled={!formTitle.trim() || creating}
-                  style={[styles.modalButton, { backgroundColor: theme.colors.primary }]}
-                  textColor="#FFFFFF"
-                >
-                  {t('common.create')}
-                </Button>
-              </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </Modal>
-
         <Modal
           visible={!!statusPickerCase}
           onDismiss={() => setStatusPickerCase(null)}
@@ -1120,7 +1003,7 @@ export default function CasesListScreen() {
             style={{ marginBottom: 12 }}
           />
           {userIsAdmin && (
-            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
               <Chip
                 selected={saveViewVisibility === 'personal'}
                 onPress={() => setSaveViewVisibility('personal')}
@@ -1139,7 +1022,7 @@ export default function CasesListScreen() {
               </Chip>
             </View>
           )}
-          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', justifyContent: 'flex-end', gap: 8 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
             <Button mode="outlined" onPress={() => { setShowSaveViewModal(false); setNewViewName(''); }}>
               {t('common.cancel')}
             </Button>

@@ -178,18 +178,18 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
         onDismiss={onDismiss}
         contentContainerStyle={[s.modal, { backgroundColor: theme.colors.surface }]}
       >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
           <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
             {/* ── Call Summary Header ── */}
-            <View style={[s.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <View style={[s.header, { flexDirection: 'row' }]}>
               <View style={[s.statusCircle, { backgroundColor: statusColor + '20' }]}>
                 <MaterialCommunityIcons name={statusIcon} size={28} color={statusColor} />
               </View>
-              <View style={[s.headerInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={[s.headerInfo, { alignItems: 'flex-start' }]}>
                 <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                   {call.contactName || formatPhoneNumber(call.phoneNumber)}
                 </Text>
-                <View style={[s.headerMeta, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.headerMeta, { flexDirection: 'row' }]}>
                   <Chip compact mode="flat" style={{ backgroundColor: statusColor + '15' }} textStyle={{ color: statusColor, fontSize: 11 }}>
                     {t(`phoneCalls.status_${call.status}`)}
                   </Chip>
@@ -205,7 +205,7 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
 
             {/* ── Recording Indicator ── */}
             {call.recordingUrl && (
-              <View style={[s.recordingBadge, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <View style={[s.recordingBadge, { flexDirection: 'row' }]}>
                 <MaterialCommunityIcons name="microphone" size={16} color="#FF6B35" />
                 <Text variant="bodySmall" style={{ color: '#FF6B35', marginHorizontal: 6 }}>
                   {t('phoneCalls.callRecorded')}
@@ -216,7 +216,7 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
             {/* ── Transcription Progress ── */}
             {transcribing && (
               <Surface style={s.aiSection} elevation={0}>
-                <View style={[s.aiHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.aiHeader, { flexDirection: 'row' }]}>
                   <ActivityIndicator size={16} color="#7B2D8E" />
                   <Text variant="labelMedium" style={{ color: '#7B2D8E', marginHorizontal: 8 }}>
                     {t('phoneCalls.transcribing')}
@@ -229,7 +229,7 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
             {/* ── AI Summary ── */}
             {summary && (
               <Surface style={s.aiSection} elevation={0}>
-                <View style={[s.aiHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.aiHeader, { flexDirection: 'row' }]}>
                   <MaterialCommunityIcons name="brain" size={18} color="#7B2D8E" />
                   <Text variant="labelLarge" style={{ color: '#7B2D8E', marginHorizontal: 8, fontWeight: '700' }}>
                     {t('phoneCalls.aiSummary')}
@@ -244,14 +244,14 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
             {/* ── AI Action Items ── */}
             {actionItems.length > 0 && (
               <Surface style={s.aiSection} elevation={0}>
-                <View style={[s.aiHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.aiHeader, { flexDirection: 'row' }]}>
                   <MaterialCommunityIcons name="clipboard-check-outline" size={18} color="#FF6B35" />
                   <Text variant="labelLarge" style={{ color: '#FF6B35', marginHorizontal: 8, fontWeight: '700' }}>
                     {t('phoneCalls.actionItems')}
                   </Text>
                 </View>
                 {actionItems.map((item, idx) => (
-                  <View key={idx} style={[s.actionItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <View key={idx} style={[s.actionItem, { flexDirection: 'row' }]}>
                     <MaterialCommunityIcons name="checkbox-blank-circle-outline" size={14} color={theme.colors.onSurfaceVariant} />
                     <Text variant="bodySmall" style={{ color: theme.colors.onSurface, flex: 1, marginHorizontal: 8, textAlign: isRTL ? 'right' : 'left' }}>
                       {item}
@@ -308,7 +308,7 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
             {/* ── Follow-up Panel ── */}
             {activePanel === 'followUp' && (
               <View style={s.panel}>
-                <View style={[s.panelHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.panelHeader, { flexDirection: 'row' }]}>
                   <IconButton icon="arrow-left" size={20} onPress={() => setActivePanel(null)} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
                   <Text variant="titleSmall" style={{ color: theme.colors.onSurface, flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
                     {t('phoneCalls.createFollowUp')}
@@ -347,7 +347,7 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
             {/* ── Stage Select Panel ── */}
             {activePanel === 'stageSelect' && (
               <View style={s.panel}>
-                <View style={[s.panelHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.panelHeader, { flexDirection: 'row' }]}>
                   <IconButton icon="arrow-left" size={20} onPress={() => setActivePanel(null)} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
                   <Text variant="titleSmall" style={{ color: theme.colors.onSurface, flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
                     {t('phoneCalls.updateLeadStatus')}
@@ -370,7 +370,7 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
             {/* ── Add Note Panel ── */}
             {activePanel === 'addNote' && (
               <View style={s.panel}>
-                <View style={[s.panelHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.panelHeader, { flexDirection: 'row' }]}>
                   <IconButton icon="arrow-left" size={20} onPress={() => setActivePanel(null)} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
                   <Text variant="titleSmall" style={{ color: theme.colors.onSurface, flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
                     {t('phoneCalls.addNote')}
@@ -424,7 +424,7 @@ interface ActionButtonProps {
 
 function ActionButton({ icon, label, color, isRTL, onPress, loading }: ActionButtonProps) {
   return (
-    <Pressable onPress={onPress} style={[s.actionBtn, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+    <Pressable onPress={onPress} style={[s.actionBtn, { flexDirection: 'row' }]}>
       <View style={[s.actionIcon, { backgroundColor: color + '15' }]}>
         {loading ? (
           <ActivityIndicator size={18} color={color} />

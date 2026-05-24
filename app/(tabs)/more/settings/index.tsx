@@ -43,11 +43,11 @@ interface SettingRowProps {
 
 function SettingRow({ icon, iconColor, label, description, isRTL, themeColors, right, onPress }: SettingRowProps) {
   const content = (
-    <View style={[rs.row, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+    <View style={[rs.row, { flexDirection: 'row' }]}>
       <View style={[rs.iconWrap, { backgroundColor: iconColor + '15' }]}>
         <MaterialCommunityIcons name={icon as any} size={20} color={iconColor} />
       </View>
-      <View style={[rs.textWrap, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+      <View style={[rs.textWrap, { alignItems: 'flex-start' }]}>
         <Text variant="bodyLarge" style={{ color: themeColors.onSurface }}>
           {label}
         </Text>
@@ -305,7 +305,7 @@ export default function SettingsScreen() {
         {/* ────── Account ────── */}
         <SectionHeader title={t('settings.account')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[s.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          <View style={[s.accountCard, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View style={[s.accountCard, { flexDirection: 'row' }]}>
             {user?.photoURL ? (
               <Avatar.Image size={52} source={{ uri: user.photoURL }} />
             ) : (
@@ -316,7 +316,7 @@ export default function SettingsScreen() {
                 labelStyle={{ color: BRAND_COLOR, fontWeight: '700' }}
               />
             )}
-            <View style={[s.accountInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+            <View style={[s.accountInfo, { alignItems: 'flex-start' }]}>
               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                 {user?.fullname}
               </Text>
@@ -324,7 +324,7 @@ export default function SettingsScreen() {
                 {user?.email}
               </Text>
               {user?.organization && (
-                <View style={[s.orgRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[s.orgRow, { flexDirection: 'row' }]}>
                   <MaterialCommunityIcons name="domain" size={14} color={theme.colors.onSurfaceVariant} />
                   <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginHorizontal: 4 }}>
                     {user.organization}
@@ -391,14 +391,14 @@ export default function SettingsScreen() {
           <Dialog.Title>{t('settings.selectLanguage')}</Dialog.Title>
           <Dialog.Content>
             <RadioButton.Group value={currentLanguage} onValueChange={handleLanguageChange}>
-              <Pressable onPress={() => handleLanguageChange('he')} style={[s.langRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <Pressable onPress={() => handleLanguageChange('he')} style={[s.langRow, { flexDirection: 'row' }]}>
                 <Text style={s.langFlag}>🇮🇱</Text>
                 <Text variant="bodyLarge" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
                   עברית
                 </Text>
                 <RadioButton value="he" color={BRAND_COLOR} />
               </Pressable>
-              <Pressable onPress={() => handleLanguageChange('en')} style={[s.langRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <Pressable onPress={() => handleLanguageChange('en')} style={[s.langRow, { flexDirection: 'row' }]}>
                 <Text style={s.langFlag}>🇺🇸</Text>
                 <Text variant="bodyLarge" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
                   English
@@ -421,7 +421,7 @@ export default function SettingsScreen() {
                 { value: 'dark', icon: 'moon-waning-crescent', label: t('settings.theme_dark') },
                 { value: 'system', icon: 'cellphone', label: t('settings.theme_system') },
               ] as const).map((opt) => (
-                <Pressable key={opt.value} onPress={() => handleThemeChange(opt.value)} style={[s.themeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Pressable key={opt.value} onPress={() => handleThemeChange(opt.value)} style={[s.themeRow, { flexDirection: 'row' }]}>
                   <MaterialCommunityIcons name={opt.icon} size={22} color={theme.colors.onSurface} />
                   <Text variant="bodyLarge" style={{ flex: 1, color: theme.colors.onSurface, marginHorizontal: 12, textAlign: isRTL ? 'right' : 'left' }}>
                     {opt.label}

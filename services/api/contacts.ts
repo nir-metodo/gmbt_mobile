@@ -139,6 +139,7 @@ export const contactsApi = {
     note: string,
     userId: string,
     userName: string,
+    attachment?: { uri: string; name: string; type: string },
   ): Promise<any> {
     const formData = new FormData();
     formData.append('organization', organization);
@@ -146,6 +147,9 @@ export const contactsApi = {
     formData.append('note', note);
     formData.append('userId', userId);
     formData.append('userName', userName);
+    if (attachment) {
+      formData.append('file', { uri: attachment.uri, name: attachment.name, type: attachment.type } as any);
+    }
     const response = await axiosInstance.post(ENDPOINTS.ADD_TIMELINE_ENTRY, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });

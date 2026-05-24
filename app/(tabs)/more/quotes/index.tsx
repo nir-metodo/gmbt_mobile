@@ -23,6 +23,7 @@ import {
   Menu,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -218,6 +219,20 @@ export default function QuotesListScreen() {
     }
     return grouped;
   }, [quotes, searchQuery]);
+
+  const quotesKanbanColumns = useMemo<KanbanColumn<Quote>[]>(() => {
+    return KANBAN_STATUSES.map((status) => ({
+      id: status,
+      title: t(`quotes.${status}`),
+      color: getStatusColor(status),
+      icon: STATUS_ICONS[status] || 'file-document',
+      items: kanbanData[status] || [],
+    }));
+  }, [kanbanData, t]);
+
+  const handleQuotesKanbanMove = useCallback((item: Quote, _from: string, toColumnId: string) => {
+    handleStatusChange(item, toColumnId);
+  }, [handleStatusChange]);
 
   const openQuote = useCallback(
     (quote: Quote) => {
@@ -710,7 +725,51 @@ export default function QuotesListScreen() {
 
       {/* View: List or Kanban */}
       {viewMode === 'kanban' ? (
-        renderKanbanView()
+        <KanbanBoard
+          columns={quotesKanbanColumns}
+          keyExtractor={(item) => item.id}
+          onMoveItem={handleQuotesKanbanMove}
+          columnWidth={KANBAN_COLUMN_WIDTH}
+          emptyLabel={t('quotes.noQuotesInStatus')}
+          renderCard={(item) => (
+            <Pressable
+              onPress={() => openQuote(item)}
+              android_ripple={{ color: theme.colors.surfaceVariant }}
+              style={({ pressed }) => [
+                styles.kanbanCard,
+                {
+                  backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom.cardBackground,
+                  borderColor: theme.colors.outlineVariant,
+                },
+              ]}
+            >
+              <Text variant="titleSmall" numberOfLines={1} style={[styles.cardTitle, { color: theme.colors.onSurface, textAlign }]}>
+                {item.title}
+              </Text>
+              {item.quoteNumber ? (
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                  #{item.quoteNumber}
+                </Text>
+              ) : null}
+              {item.contactName ? (
+                <View style={[styles.kanbanMeta, { flexDirection }]}>
+                  <MaterialCommunityIcons name="account" size={13} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
+                    {item.contactName}
+                  </Text>
+                </View>
+              ) : null}
+              <View style={[styles.kanbanBottom, { flexDirection }]}>
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                  {formatDate(item.createdOn || item.createdAt || '')}
+                </Text>
+                <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700' }}>
+                  {formatCurrency(item.total || 0, item.currency || '₪')}
+                </Text>
+              </View>
+            </Pressable>
+          )}
+        />
       ) : (
         <FlatList
           data={filteredAndSortedQuotes}
@@ -828,7 +887,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  headerIcon: { padding: 4, marginRight: 8 },
+  headerIcon: { padding: 4, marginEnd: 8 },
   searchWrap: {
     paddingHorizontal: 14,
     overflow: 'hidden',

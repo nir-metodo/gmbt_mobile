@@ -13,6 +13,7 @@ import {
 import { FlashList } from '@shopify/flash-list';
 import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { KanbanBoard, type KanbanColumn } from '../../../components/KanbanBoard';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -120,6 +121,7 @@ export default function LeadsListScreen() {
   const [stagePickerLead, setStagePickerLead] = useState<Lead | null>(null);
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
   const fetchingRef = useRef(false);
+  const latestLeadsRef = useRef<Lead[]>([]);
 
   // ── Saved views ─────────────────────────────────────────────────────────────
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
@@ -178,9 +180,13 @@ export default function LeadsListScreen() {
       setLeads((prev) => {
         const updated = reset ? newItems : [...prev, ...newItems];
         setHasMore(newItems.length === PAGE_SIZE && updated.length < total);
+        // Store ref for syncing to zustand store
+        latestLeadsRef.current = updated;
         return updated;
       });
       setPage(pageNum);
+      // Sync store after state update so detail screens can modify individual leads
+      setTimeout(() => useLeadStore.setState({ leads: latestLeadsRef.current }), 0);
     } catch {
       /* keep existing data on error */
     } finally {
@@ -222,6 +228,24 @@ export default function LeadsListScreen() {
       }
     }).catch(() => {});
   }, [organization, user?.uID, user?.userId]);
+
+  // Sync store changes into local state (e.g. stage change from detail screen)
+  const storeLeads = useLeadStore((s) => s.leads);
+  useEffect(() => {
+    if (storeLeads.length === 0) return;
+    setLeads((prev) => {
+      let changed = false;
+      const next = prev.map((local) => {
+        const updated = storeLeads.find((s) => s.id === local.id);
+        if (updated && (updated.stageName !== local.stageName || updated.stage !== local.stage || updated.ownerName !== (local as any).ownerName)) {
+          changed = true;
+          return { ...local, ...updated };
+        }
+        return local;
+      });
+      return changed ? next : prev;
+    });
+  }, [storeLeads]);
 
   // Refetch on screen focus (e.g. returning from detail screen)
   const didMountRef = useRef(false);
@@ -334,6 +358,19 @@ export default function LeadsListScreen() {
 
   const filteredLeads = leads; // already filtered server-side
 
+  const kanbanColumns = useMemo<KanbanColumn<Lead>[]>(() => {
+    return stageKeys.map((stage) => ({
+      id: stage,
+      title: t(STAGE_I18N[stage] ?? stage),
+      color: stageColorMap[stage] ?? theme.colors.primary,
+      items: leadsByStage.get(stage) ?? [],
+    }));
+  }, [stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary]);
+
+  const handleKanbanMove = useCallback((item: Lead, _fromColumnId: string, toColumnId: string) => {
+    handleStageChange(item, toColumnId);
+  }, [handleStageChange]);
+
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
     if (willShow) {
@@ -428,10 +465,17 @@ export default function LeadsListScreen() {
           {
             backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
             flexDirection,
+            paddingEnd: 14,
           },
         ]}
       >
-        <View style={[styles.stageStripe, { backgroundColor: stageColor(item.stageName || item.stage || 'New') }]} />
+        <View style={[styles.stageStripe, {
+          backgroundColor: stageColor(item.stageName || item.stage || 'New'),
+          borderTopRightRadius: isRTL ? 0 : 2,
+          borderBottomRightRadius: isRTL ? 0 : 2,
+          borderTopLeftRadius: isRTL ? 2 : 0,
+          borderBottomLeftRadius: isRTL ? 2 : 0,
+        }]} />
 
         <View style={styles.leadBody}>
           <View style={[styles.leadTop, { flexDirection }]}>
@@ -580,8 +624,8 @@ export default function LeadsListScreen() {
           styles.pipelineCard,
           {
             backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
-            borderLeftColor: stageColor(lead.stageName || lead.stage || 'New'),
-            borderLeftWidth: 3,
+            borderStartColor: stageColor(lead.stageName || lead.stage || 'New'),
+            borderStartWidth: 3,
           },
         ]}
       >
@@ -857,60 +901,47 @@ export default function LeadsListScreen() {
           contentContainerStyle={styles.listContent}
         />
       ) : (
-        <ScrollView
-          horizontal
-          pagingEnabled={false}
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.pipelineContainer}
-          style={{ flex: 1 }}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              colors={[theme.colors.primary]}
-              tintColor={theme.colors.primary}
-            />
-          }
-        >
-          {stageKeys.map((stage) => {
-            const stageLeads = leadsByStage.get(stage) ?? [];
-            const color = stageColor(stage);
-            return (
-              <View
-                key={stage}
-                style={[styles.pipelineColumn, { width: PIPELINE_COL_WIDTH }]}
+        <KanbanBoard
+          columns={kanbanColumns}
+          keyExtractor={(item) => item.id}
+          onMoveItem={handleKanbanMove}
+          columnWidth={PIPELINE_COL_WIDTH}
+          emptyLabel={t('leads.noLeads')}
+          renderCard={(item) => (
+            <Pressable
+              onPress={() => openLead(item)}
+              style={({ pressed }) => [
+                styles.pipelineCard,
+                {
+                  backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
+                  borderStartColor: stageColor(item.stageName || item.stage || 'New'),
+                  borderStartWidth: 3,
+                },
+              ]}
+            >
+              <Text
+                variant="titleSmall"
+                numberOfLines={1}
+                style={{ color: theme.colors.onSurface, fontWeight: '600' }}
               >
-                <View style={[styles.pipelineHeader, { flexDirection }]}>
-                  <View style={[styles.pipelineHeaderDot, { backgroundColor: color }]} />
-                  <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1 }}>
-                    {t(STAGE_I18N[stage] ?? stage)}
+                {item.title}
+              </Text>
+              {item.contactName ? (
+                <View style={[styles.pipelineCardMeta, { flexDirection }]}>
+                  <MaterialCommunityIcons name="account-outline" size={14} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
+                    {item.contactName}
                   </Text>
-                  <View
-                    style={[styles.pipelineCount, { backgroundColor: withAlpha(color, 0.12) }]}
-                  >
-                    <Text variant="labelSmall" style={{ color, fontWeight: '700' }}>
-                      {stageLeads.length}
-                    </Text>
-                  </View>
                 </View>
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.pipelineCards}
-                >
-                  {stageLeads.length === 0 ? (
-                    <View style={styles.pipelineEmpty}>
-                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                        {t('leads.noLeads')}
-                      </Text>
-                    </View>
-                  ) : (
-                    stageLeads.map(renderPipelineCard)
-                  )}
-                </ScrollView>
-              </View>
-            );
-          })}
-        </ScrollView>
+              ) : null}
+              {item.value != null && item.value > 0 ? (
+                <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700', marginTop: 4 }}>
+                  {formatCurrency(item.value, item.currency ?? '₪')}
+                </Text>
+              ) : null}
+            </Pressable>
+          )}
+        />
       )}
 
       <FAB
@@ -1047,7 +1078,7 @@ export default function LeadsListScreen() {
             </View>
           </ScrollView>
 
-          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 12, justifyContent: 'flex-end', marginTop: 16 }}>
+          <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'flex-end', marginTop: 16 }}>
             <Button
               mode="outlined"
               onPress={() => {
@@ -1152,7 +1183,7 @@ export default function LeadsListScreen() {
             style={{ marginBottom: 12 }}
           />
           {userIsAdmin && (
-            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
               <Chip
                 selected={saveViewVisibility === 'personal'}
                 onPress={() => setSaveViewVisibility('personal')}
@@ -1171,7 +1202,7 @@ export default function LeadsListScreen() {
               </Chip>
             </View>
           )}
-          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', justifyContent: 'flex-end', gap: 8 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
             <Button mode="outlined" onPress={() => { setShowSaveViewModal(false); setNewViewName(''); }}>
               {t('common.cancel')}
             </Button>
@@ -1235,7 +1266,7 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
     paddingTop: 10,
     paddingBottom: 10,
-    paddingEnd: 14,
+    gap: 14,
   },
   quickDialRow: {
     alignItems: 'center',
@@ -1248,7 +1279,6 @@ const styles = StyleSheet.create({
     width: 4,
     borderTopRightRadius: 2,
     borderBottomRightRadius: 2,
-    marginEnd: 14,
   },
   leadBody: { flex: 1, gap: 4 },
   leadTop: { alignItems: 'center', justifyContent: 'space-between' },
