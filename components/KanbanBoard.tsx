@@ -4,8 +4,8 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
-  Dimensions,
   LayoutChangeEvent,
+  useWindowDimensions,
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -25,8 +25,6 @@ import * as Haptics from 'expo-haptics';
 import { useAppTheme } from '../hooks/useAppTheme';
 import { useRTL } from '../hooks/useRTL';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const COLUMN_WIDTH = SCREEN_WIDTH * 0.72;
 const CARD_HEIGHT = 80;
 
 export interface KanbanColumn<T = any> {
@@ -52,10 +50,13 @@ export function KanbanBoard<T>({
   onMoveItem,
   keyExtractor,
   emptyLabel = 'אין פריטים',
-  columnWidth = COLUMN_WIDTH,
+  columnWidth: columnWidthProp,
 }: KanbanBoardProps<T>) {
   const theme = useAppTheme();
   const { flexDirection } = useRTL();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const isLandscape = windowWidth > windowHeight;
+  const columnWidth = columnWidthProp ?? (isLandscape ? windowWidth * 0.35 : windowWidth * 0.72);
 
   const [dragging, setDragging] = useState<{ item: T; fromColumnId: string } | null>(null);
   const [highlightColumn, setHighlightColumn] = useState<string | null>(null);
@@ -69,6 +70,7 @@ export function KanbanBoard<T>({
   const scrollRef = useRef<ScrollView>(null);
   const columnLayouts = useRef<Map<string, { x: number; width: number }>>(new Map());
   const scrollOffset = useRef(0);
+  const highlightColumnRef = useRef<string | null>(null);
 
   const handleColumnLayout = useCallback((columnId: string, event: LayoutChangeEvent) => {
     const { x, width } = event.nativeEvent.layout;
@@ -85,13 +87,17 @@ export function KanbanBoard<T>({
     return null;
   }, []);
 
-  const handleDragEnd = useCallback((item: T, fromColumnId: string, targetColumnId: string | null) => {
-    if (targetColumnId && targetColumnId !== fromColumnId) {
-      onMoveItem(item, fromColumnId, targetColumnId);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
+  const handleDragEnd = useCallback((item: T, fromColumnId: string) => {
+    const targetColumnId = highlightColumnRef.current;
+    highlightColumnRef.current = null;
     setDragging(null);
     setHighlightColumn(null);
+    if (targetColumnId && targetColumnId !== fromColumnId) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setTimeout(() => {
+        onMoveItem(item, fromColumnId, targetColumnId);
+      }, 300);
+    }
   }, [onMoveItem]);
 
   const startDrag = useCallback((item: T, fromColumnId: string) => {
@@ -101,6 +107,7 @@ export function KanbanBoard<T>({
 
   const updateHighlight = useCallback((absoluteX: number) => {
     const col = findColumnAtX(absoluteX);
+    highlightColumnRef.current = col;
     setHighlightColumn(col);
   }, [findColumnAtX]);
 
@@ -135,14 +142,13 @@ export function KanbanBoard<T>({
         translateY.value = e.translationY;
         runOnJS(updateHighlight)(e.absoluteX);
       })
-      .onEnd((e) => {
-        const targetCol = findColumnAtX(e.absoluteX + scrollOffset.current - scrollOffset.current);
+      .onEnd(() => {
         translateX.value = withSpring(0);
         translateY.value = withSpring(0);
         scale.value = withSpring(1);
         opacity.value = withTiming(1);
         dragActive.value = false;
-        runOnJS(handleDragEnd)(item, columnId, highlightColumn);
+        runOnJS(handleDragEnd)(item, columnId);
       })
       .onFinalize(() => {
         translateX.value = withSpring(0);
@@ -154,12 +160,12 @@ export function KanbanBoard<T>({
 
     return (
       <GestureDetector key={key} gesture={gesture}>
-        <Animated.View style={isDraggingThis ? [animatedCardStyle, { zIndex: 100 }] : undefined}>
+        <Animated.View style={isDraggingThis ? [animatedCardStyle, { zIndex: 9999, elevation: 10 }] : undefined}>
           {renderCard(item, columnId)}
         </Animated.View>
       </GestureDetector>
     );
-  }, [dragging, keyExtractor, renderCard, startDrag, updateHighlight, handleDragEnd, highlightColumn, animatedCardStyle, dragActive, translateX, translateY, scale, opacity, findColumnAtX]);
+  }, [dragging, keyExtractor, renderCard, startDrag, updateHighlight, handleDragEnd, animatedCardStyle, dragActive, translateX, translateY, scale, opacity]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -258,7 +264,6 @@ const styles = StyleSheet.create({
   },
   column: {
     borderRadius: 12,
-    overflow: 'hidden',
     backgroundColor: 'rgba(0,0,0,0.02)',
   },
   columnHeader: {

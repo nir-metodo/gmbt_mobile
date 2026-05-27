@@ -25,6 +25,8 @@ export const PERMISSION_FEATURES = {
   orders: 'orders',
   inventory: 'inventory',
   purchasing: 'purchasing',
+  employees: 'employees',
+  invoices: 'invoices',
 } as const;
 
 export type PermissionFeature = keyof typeof PERMISSION_FEATURES;

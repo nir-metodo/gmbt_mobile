@@ -24,6 +24,8 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useSettingsStore } from '../../../../stores/settingsStore';
 import { getInitials } from '../../../../utils/formatters';
 import { getCacheSize, clearCache, formatCacheSize } from '../../../../services/mediaCache';
+import axiosInstance from '../../../../services/api/axiosInstance';
+import { ENDPOINTS } from '../../../../constants/api';
 import Constants from 'expo-constants';
 
 const BRAND_COLOR = '#2e6155';
@@ -89,10 +91,25 @@ export default function SettingsScreen() {
   const [cacheSize, setCacheSize] = useState<string>('...');
   const [clearingCache, setClearingCache] = useState(false);
   const [clearCacheDialogVisible, setClearCacheDialogVisible] = useState(false);
+  const [reminderViaEmail, setReminderViaEmail] = useState(true);
+  const [reminderViaPush, setReminderViaPush] = useState(true);
 
   useEffect(() => {
     getCacheSize().then((bytes) => setCacheSize(formatCacheSize(bytes)));
   }, []);
+
+  useEffect(() => {
+    if (!user?.organization) return;
+    (async () => {
+      try {
+        const res = await axiosInstance.post(ENDPOINTS.GET_TASK_REMINDER_DEFAULT_SETTING, { organization: user.organization });
+        if (res.data?.Success && res.data.Data) {
+          setReminderViaEmail(res.data.Data.taskReminderViaEmail !== false);
+          setReminderViaPush(res.data.Data.taskReminderViaPush !== false);
+        }
+      } catch {}
+    })();
+  }, [user?.organization]);
 
   const handleClearCache = useCallback(async () => {
     setClearingCache(true);
@@ -138,6 +155,17 @@ export default function SettingsScreen() {
       // setting update failed — toggle already applied locally
     }
   }, [settings, user]);
+
+  const handleReminderToggle = useCallback(async (key: 'taskReminderViaEmail' | 'taskReminderViaPush', value: boolean) => {
+    if (key === 'taskReminderViaEmail') setReminderViaEmail(value);
+    else setReminderViaPush(value);
+    try {
+      await axiosInstance.post(ENDPOINTS.UPDATE_TASK_REMINDER_DEFAULT_SETTING, {
+        organization: user?.organization,
+        [key]: value,
+      });
+    } catch {}
+  }, [user?.organization]);
 
   const handleLogout = useCallback(async () => {
     setLoggingOut(true);
@@ -217,6 +245,30 @@ export default function SettingsScreen() {
             isRTL={isRTL}
             themeColors={theme.colors}
             right={<Switch value={!!settings.callNotificationsEnabled} onValueChange={(v) => handleToggle('callNotifications', v)} color={BRAND_COLOR} />}
+          />
+        </Surface>
+
+        {/* ────── Task Reminders Channel ────── */}
+        <SectionHeader title={t('settings.taskReminders', 'תזכורות משימות')} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[s.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon="email-outline"
+            iconColor="#2196F3"
+            label={t('settings.reminderViaEmail', 'שלח תזכורת במייל')}
+            description={t('settings.reminderViaEmailDesc', 'שליחת תזכורות משימות בדוא"ל למשתמשים')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={reminderViaEmail} onValueChange={(v) => handleReminderToggle('taskReminderViaEmail', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="cellphone-message"
+            iconColor="#4CAF50"
+            label={t('settings.reminderViaPush', 'שלח תזכורת באפליקציה')}
+            description={t('settings.reminderViaPushDesc', 'שליחת Push Notification לאפליקציה')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={reminderViaPush} onValueChange={(v) => handleReminderToggle('taskReminderViaPush', v)} color={BRAND_COLOR} />}
           />
         </Surface>
 

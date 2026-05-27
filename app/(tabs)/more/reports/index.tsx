@@ -29,12 +29,15 @@ import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 
 const BRAND = '#2e6155';
 
-type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'contacts' | 'whatsapp' | 'sla';
+type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'contacts' | 'whatsapp' | 'sla' | 'ctwa' | 'templates' | 'daily_conversations';
 type DatePreset = 'all' | 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth' | 'lastMonth' | 'thisQuarter' | 'thisYear';
 type DataScope = 'my' | 'all';
 type SortOption = 'date_desc' | 'date_asc' | 'name' | 'status';
 
 const ALL_CATEGORIES: { key: ReportCategory; icon: string; color: string; label: string }[] = [
+  { key: 'daily_conversations', icon: 'chart-line', color: '#0891b2', label: 'שיחות יומי' },
+  { key: 'ctwa', icon: 'cursor-default-click', color: '#7c3aed', label: 'CTWA' },
+  { key: 'templates', icon: 'file-document-check-outline', color: '#059669', label: 'תבניות WhatsApp' },
   { key: 'leads', icon: 'trending-up', color: '#f59e0b', label: 'לידים' },
   { key: 'cases', icon: 'briefcase-outline', color: '#FF6B35', label: 'פניות' },
   { key: 'tasks', icon: 'checkbox-marked-circle-outline', color: '#10b981', label: 'משימות' },
@@ -144,6 +147,12 @@ function getItemTitle(item: any, category: ReportCategory): string {
       return item.contactName || item.phoneNumber || '—';
     case 'sla':
       return item.entityTitle || item.subject || item.title || '—';
+    case 'ctwa':
+      return item.name || item.Name || item.contactName || item.phoneNumber || '—';
+    case 'templates':
+      return item.name || item.templateName || item.Name || '—';
+    case 'daily_conversations':
+      return item.name || item.contactName || item.phone || item.date || item.Date || '—';
   }
 }
 
@@ -169,12 +178,33 @@ function getItemSubtitle(item: any, category: ReportCategory): string {
     }
     case 'sla':
       return [item.entityType, item.breachType || item.ruleType, item.ownerName].filter(Boolean).join(' · ');
+    case 'ctwa':
+      return [item.phoneNumber || item.phone, item.referralPlatform || 'WhatsApp', item.referralHeadline || item.referralBody, item.referralSourceId ? `Ad: ${item.referralSourceId}` : null].filter(Boolean).join(' · ');
+    case 'templates': {
+      const sent = item.sent || item.sentCount || item.analytics?.sent || 0;
+      const delivered = item.delivered || item.deliveredCount || item.analytics?.delivered || 0;
+      const read = item.read || item.readCount || item.analytics?.read || 0;
+      const clicked = item.clicked || item.clickedCount || item.analytics?.clicked || item.urlClicks || 0;
+      const parts = [item.status || item.Status];
+      if (sent) parts.push(`נשלחו: ${sent}`);
+      if (delivered) parts.push(`הגיעו: ${delivered}`);
+      if (read) parts.push(`נקראו: ${read}`);
+      if (clicked) parts.push(`לחיצות: ${clicked}`);
+      if (!sent && !delivered) parts.push(item.category || item.Category || '', item.language || item.Language || '');
+      return parts.filter(Boolean).join(' · ');
+    }
+    case 'daily_conversations': {
+      const inbound = item.inbound || item.Inbound || item.inboundCount || 0;
+      const outbound = item.outbound || item.Outbound || item.outboundCount || 0;
+      const phone = item.phone || item.phoneNumber || '';
+      return [phone, `נכנסות: ${inbound}`, `יוצאות: ${outbound}`, `סה"כ: ${inbound + outbound}`].filter(Boolean).join(' · ');
+    }
   }
 }
 
 function getStatusColor(status: string): string {
   const s = (status || '').toLowerCase();
-  if (['completed', 'signed', 'accepted', 'paid', 'closed_won', 'won', 'answered'].includes(s)) return '#10b981';
+  if (['completed', 'signed', 'accepted', 'paid', 'closed_won', 'won', 'answered', 'approved'].includes(s)) return '#10b981';
   if (['pending', 'draft', 'open', 'new', 'voicemail'].includes(s)) return '#f59e0b';
   if (['in_progress', 'in progress', 'sent', 'viewed', 'inbound', 'outbound'].includes(s)) return '#3b82f6';
   if (['overdue', 'rejected', 'expired', 'cancelled', 'closed_lost', 'lost', 'missed', 'no_answer', 'busy', 'breached'].includes(s)) return '#ef4444';
@@ -192,7 +222,7 @@ export default function ReportsScreen() {
   const org = user?.organization || '';
   const userId = user?.uID || user?.userId || '';
 
-  const [category, setCategory] = useState<ReportCategory>('leads');
+  const [category, setCategory] = useState<ReportCategory>('daily_conversations');
   const [datePreset, setDatePreset] = useState<DatePreset>('all');
   const [dataScope, setDataScope] = useState<DataScope>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -222,6 +252,9 @@ export default function ReportsScreen() {
         { key: 'phonecalls', endpoint: ENDPOINTS.GET_PHONE_CALLS, payload: { organization: org, userId, dataVisibility: 'seeAll' } },
         { key: 'sla', endpoint: ENDPOINTS.GET_SLA_BREACHES, payload: { organization: org } },
       ];
+
+      // Always include the new report types
+      available.push('daily_conversations', 'ctwa', 'templates');
 
       const results = await Promise.allSettled(
         checks.map(async (c) => {
@@ -255,7 +288,7 @@ export default function ReportsScreen() {
 
   const canSeeAll = useMemo(() => {
     if (user?.SecurityRole === 'Admin') return true;
-    if (category === 'sla') return true;
+    if (['sla', 'ctwa', 'templates', 'daily_conversations'].includes(category)) return true;
     const vis = user?.DataVisibility;
     if (!vis) return true;
     const catKey = category === 'esignatures' ? 'esignature' : category === 'phonecalls' ? 'phoneCalls' : category;
@@ -270,6 +303,46 @@ export default function ReportsScreen() {
     if (!org) return;
     setLoading(true);
     try {
+      // Special reports with their own data structure
+      if (cat === 'daily_conversations') {
+        const { start, end } = getDateRange(datePreset);
+        const dateFrom = start ? start.toISOString().slice(0, 10) : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+        const dateTo = end ? end.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+        const res = await axiosInstance.post(ENDPOINTS.GET_DAILY_CONVERSATION_REPORT, {
+          organizationId: org, dateFrom, dateTo,
+        });
+        const data = res.data;
+        const dailySummary = data?.dailySummary || data?.DailySummary || [];
+        const contactBreakdown = data?.contactBreakdown || data?.ContactBreakdown || [];
+        // Use contactBreakdown as the list view (each contact) and dailySummary for charts
+        const items = contactBreakdown.length > 0 ? contactBreakdown : dailySummary;
+        setRawData(Array.isArray(items) ? items : []);
+        setLoading(false);
+        return;
+      }
+      if (cat === 'ctwa') {
+        const res = await axiosInstance.post(ENDPOINTS.GET_CONTACTS_PAGINATED || ENDPOINTS.GET_CONTACTS, {
+          organization: org, pageNumber: 1, pageSize: 5000,
+          userId, dataVisibility: 'seeAll',
+        });
+        const raw = res.data;
+        const contacts = raw?.Contacts || raw?.contacts || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);
+        const ctwaContacts = (Array.isArray(contacts) ? contacts : []).filter(
+          (c: any) => c.isCTWA || c.referralSourceId || c.referralPlatform || c.ctwaClid
+        );
+        setRawData(ctwaContacts);
+        setLoading(false);
+        return;
+      }
+      if (cat === 'templates') {
+        const res = await axiosInstance.post(ENDPOINTS.GET_TEMPLATES, { organization: org });
+        const raw = res.data;
+        const templates = raw?.Templates || raw?.templates || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);
+        setRawData(Array.isArray(templates) ? templates : []);
+        setLoading(false);
+        return;
+      }
+
       let endpoint = '';
       const payload: any = { organization: org, pageNumber: 1, pageSize: 5000 };
 
@@ -328,7 +401,7 @@ export default function ReportsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [org, userId, dataScope]);
+  }, [org, userId, dataScope, datePreset]);
 
   useEffect(() => { fetchReport(category); }, [category, fetchReport]);
 
@@ -458,6 +531,30 @@ export default function ReportsScreen() {
         byBreachType: groupBy(items, (i) => i.breachType || i.ruleType || i.BreachType),
         byOwner: groupBy(items, (i) => i.ownerName || i.OwnerName),
       };
+      case 'ctwa': return {
+        byPlatform: groupBy(items, (i) => i.referralPlatform || 'WhatsApp'),
+        byAdId: groupBy(items, (i) => i.referralSourceId || i.adSourceId || 'לא ידוע'),
+        byHeadline: groupBy(items, (i) => i.referralHeadline || 'ללא כותרת'),
+      };
+      case 'templates': return {
+        byStatus: groupBy(items, (i) => i.status || i.Status || 'APPROVED'),
+        byCategory: groupBy(items, (i) => i.category || i.Category || 'MARKETING'),
+        byLanguage: groupBy(items, (i) => i.language || i.Language || 'he'),
+      };
+      case 'daily_conversations': {
+        const byDirection: Record<string, number> = { 'נכנסות': 0, 'יוצאות': 0 };
+        items.forEach((i: any) => {
+          byDirection['נכנסות'] += (i.inbound || i.Inbound || i.inboundCount || 0);
+          byDirection['יוצאות'] += (i.outbound || i.Outbound || i.outboundCount || 0);
+        });
+        const topContacts: Record<string, number> = {};
+        const sorted = [...items].sort((a: any, b: any) => (b.total || 0) - (a.total || 0)).slice(0, 10);
+        sorted.forEach((i: any) => {
+          const name = i.name || i.contactName || i.phone || '—';
+          topContacts[name] = i.total || (i.inbound || 0) + (i.outbound || 0);
+        });
+        return { byDirection, byTopContacts: topContacts };
+      }
     }
   }, [filteredData, category]);
 
@@ -554,6 +651,36 @@ export default function ReportsScreen() {
           { label: t('reports.kpiTopBreachType'), value: topType ? topType[0] : '—', color: '#f59e0b', icon: 'alert-circle-outline' },
         ];
       }
+      case 'ctwa': {
+        const byPlatform = groupBy(items, (i) => i.referralPlatform || 'WhatsApp');
+        const topPlatform = sortedEntries(byPlatform)[0];
+        return [
+          { label: 'סה״כ CTWA', value: items.length, color: '#7c3aed', icon: 'cursor-default-click' },
+          { label: 'פלטפורמה מובילה', value: topPlatform ? topPlatform[0] : '—', color: '#2196F3', icon: 'star' },
+        ];
+      }
+      case 'templates': {
+        const approved = items.filter((i: any) => (i.status || '').toUpperCase() === 'APPROVED').length;
+        const pending = items.filter((i: any) => (i.status || '').toUpperCase() === 'PENDING').length;
+        const rejected = items.filter((i: any) => (i.status || '').toUpperCase() === 'REJECTED').length;
+        return [
+          { label: 'מאושרות', value: approved, color: '#25D366', icon: 'check-circle-outline' },
+          { label: 'ממתינות', value: pending, color: '#f59e0b', icon: 'clock-outline' },
+          { label: 'נדחו', value: rejected, color: '#ef4444', icon: 'close-circle-outline' },
+          { label: 'סה״כ', value: items.length, color: '#2196F3', icon: 'file-document-check-outline' },
+        ];
+      }
+      case 'daily_conversations': {
+        const totalInbound = items.reduce((s: number, i: any) => s + (i.inbound || i.Inbound || i.inboundCount || 0), 0);
+        const totalOutbound = items.reduce((s: number, i: any) => s + (i.outbound || i.Outbound || i.outboundCount || 0), 0);
+        const totalConv = items.reduce((s: number, i: any) => s + (i.total || i.Total || (i.inbound || 0) + (i.outbound || 0)), 0);
+        return [
+          { label: 'שיחות נכנסות', value: totalInbound, color: '#10b981', icon: 'arrow-down-bold' },
+          { label: 'שיחות יוצאות', value: totalOutbound, color: '#3b82f6', icon: 'arrow-up-bold' },
+          { label: 'סה״כ הודעות', value: totalConv, color: '#0891b2', icon: 'message-text-outline' },
+          { label: 'אנשי קשר', value: items.length, color: '#7c3aed', icon: 'account-group' },
+        ];
+      }
     }
   }, [filteredData, category, t]);
 
@@ -574,6 +701,9 @@ export default function ReportsScreen() {
         whatsapp: ['Template', 'Status', 'Category', 'Language'],
         phonecalls: ['Contact', 'Phone', 'Direction', 'Status', 'Duration', 'Date'],
         sla: ['Entity', 'Type', 'Breach Type', 'Owner', 'Breached At'],
+        ctwa: ['Name', 'Phone', 'Platform', 'Ad ID', 'Headline', 'CTWA Clid'],
+        templates: ['Template', 'Status', 'Category', 'Language'],
+        daily_conversations: ['Name', 'Phone', 'Inbound', 'Outbound', 'Total'],
       };
       const headers = headerMap[category];
 
@@ -649,6 +779,31 @@ export default function ReportsScreen() {
             item.ownerName || '',
             item.breachedAt || item.createdAt || '',
           ];
+          case 'ctwa': return [
+            getItemTitle(item, category),
+            item.phoneNumber || '',
+            item.referralPlatform || '',
+            item.referralSourceId || item.adSourceId || '',
+            item.referralHeadline || '',
+            item.referralCTWAClid || item.ctwaClid || '',
+          ];
+          case 'templates': return [
+            getItemTitle(item, category),
+            item.status || '',
+            item.category || '',
+            item.language || '',
+          ];
+          case 'daily_conversations': {
+            const inb = item.inbound || item.Inbound || item.inboundCount || 0;
+            const outb = item.outbound || item.Outbound || item.outboundCount || 0;
+            return [
+              item.name || item.contactName || item.phone || '',
+              item.phone || item.phoneNumber || '',
+              String(inb),
+              String(outb),
+              String(item.total || (inb + outb)),
+            ];
+          }
         }
       });
 
@@ -861,6 +1016,29 @@ export default function ReportsScreen() {
             {renderBarSection(t('reports.byEntityType'), s.byEntityType, currentCat.color)}
             {renderBarSection(t('reports.byBreachType'), s.byBreachType, '#f59e0b')}
             {renderBarSection(t('reports.byOwner'), s.byOwner, '#0ea5e9')}
+          </>
+        );
+      case 'ctwa':
+        return (
+          <>
+            {renderBarSection('לפי פלטפורמה', s.byPlatform, currentCat.color)}
+            {renderBarSection('לפי מודעה', s.byAdId, '#3b82f6')}
+            {renderBarSection('לפי כותרת', s.byHeadline, '#f59e0b')}
+          </>
+        );
+      case 'templates':
+        return (
+          <>
+            {renderBarSection('לפי סטטוס', s.byStatus, currentCat.color)}
+            {renderBarSection('לפי קטגוריה', s.byCategory, '#6366f1')}
+            {renderBarSection('לפי שפה', s.byLanguage, '#FF9800')}
+          </>
+        );
+      case 'daily_conversations':
+        return (
+          <>
+            {renderBarSection('נכנסות / יוצאות', s.byDirection, currentCat.color)}
+            {renderBarSection('אנשי קשר מובילים', s.byTopContacts, '#7c3aed')}
           </>
         );
     }

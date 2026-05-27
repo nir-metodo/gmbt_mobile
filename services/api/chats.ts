@@ -6,10 +6,12 @@ export const chatsApi = {
   async getMessages(
     organization: string,
     phoneNumber: string,
+    limit?: number,
   ): Promise<Message[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_MESSAGES, {
       organizationiD: organization,
       phoneNumber,
+      ...(limit ? { limit } : {}),
     });
     const raw = response.data;
     const items = Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
@@ -195,6 +197,27 @@ export const chatsApi = {
     return response.data;
   },
 
+  async getConversationCategories(organization: string): Promise<string[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CONVERSATION_CATEGORIES, {
+      organization,
+    });
+    const raw = response.data;
+    return Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
+  },
+
+  async updateConversationCategory(
+    organization: string,
+    phoneNumber: string,
+    category: string,
+  ): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_CONVERSATION_CATEGORY, {
+      organization,
+      phoneNumber,
+      category,
+    });
+    return response.data;
+  },
+
   async getTemplates(organization: string): Promise<Template[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_TEMPLATES, {
       organization,
@@ -269,5 +292,22 @@ export const chatsApi = {
     });
     const raw = response.data;
     return Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
+  },
+
+  async getConversationExpiration(organization: string, phoneNumber: string): Promise<string | null> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CONVERSATION_EXPIRATION, {
+      organization,
+      phoneNumber,
+    });
+    const data = response.data;
+    if (data && typeof data === 'string' && data.trim()) return data.trim();
+    return null;
+  },
+
+  async getDefaultMessageTemplates(organization: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_DEFAULT_MESSAGE_TEMPLATES, {
+      organization,
+    });
+    return response.data;
   },
 };

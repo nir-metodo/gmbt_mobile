@@ -7,7 +7,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Linking,
   Share,
   TouchableOpacity,
   FlatList,
@@ -30,10 +29,12 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import * as Clipboard from 'expo-clipboard';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { quotesApi } from '../../../../services/api/quotes';
+import { chatsApi } from '../../../../services/api/chats';
 import { contactsApi } from '../../../../services/api/contacts';
 import { usersApi } from '../../../../services/api/users';
 import { formatDate, formatCurrency, getInitials } from '../../../../utils/formatters';
@@ -497,17 +498,69 @@ export default function QuoteDetailScreen() {
       Alert.alert(t('common.error'), t('quotes.noPhoneNumber'));
       return;
     }
+    if (!user?.organization) return;
     setSending(true);
     try {
       if (quote!.status === 'draft') {
-        await quotesApi.update(user!.organization, { id: quote!.id, status: 'sent' }, user?.uID || user?.userId, user?.fullname);
+        await quotesApi.update(user.organization, { id: quote!.id, status: 'sent' }, user?.uID || user?.userId, user?.fullname);
       }
+
+      const publicUrl = `https://www.gambot.co.il/quote?org=${encodeURIComponent(user.organization)}&id=${encodeURIComponent(quote!.id || '')}`;
       const currSymbol = getCurrencySymbol(quote!.currency);
-      const message = encodeURIComponent(
-        `${t('quotes.title')}: ${quote!.title}\n${t('quotes.quoteNumber')}: ${quote!.quoteNumber}\n${t('quotes.total')}: ${formatCurrency(quote!.total || 0, currSymbol)} ${quote!.currency || ''}`.trim(),
-      );
-      const cleanPhone = phone.replace(/\D/g, '');
-      await Linking.openURL(`whatsapp://send?phone=${cleanPhone}&text=${message}`);
+
+      let isLive = false;
+      try {
+        const expStr = await chatsApi.getConversationExpiration(user.organization, phone);
+        if (expStr) {
+          const expDate = new Date(expStr);
+          isLive = !isNaN(expDate.getTime()) && expDate > new Date();
+        }
+      } catch { /* treat as closed */ }
+
+      if (isLive) {
+        const text = `שלום ${quote!.contactName || ''},\nהצעת המחיר "${quote!.title}" מוכנה עבורך 📄\n${t('quotes.quoteNumber')}: ${quote!.quoteNumber}\n${t('quotes.total')}: ${formatCurrency(quote!.total || 0, currSymbol)}\n\n${publicUrl}`;
+        await chatsApi.sendMessage(
+          user.organization,
+          phone,
+          text,
+          user.fullname,
+          user.uID || user.userId,
+          undefined,
+          user.wabaNumber,
+          user.email,
+        );
+      } else {
+        const defRes = await chatsApi.getDefaultMessageTemplates(user.organization);
+        const tplAssignment = defRes?.Data?.templates?.sendQuote;
+        const templateId = Array.isArray(tplAssignment?.templateId)
+          ? (tplAssignment.templateId[0] || '')
+          : (tplAssignment?.templateId || '');
+
+        if (!templateId) {
+          Alert.alert(t('common.error'), 'לא הוגדרה תבנית לשליחת הצעת מחיר. יש להגדיר תבנית ברירת מחדל בהגדרות.');
+          return;
+        }
+
+        const mkEntry = (idx: number, val: string, label: string) => ({
+          index: idx, bodyVarIndex: idx, Variable: `dynamic_var${idx}`,
+          variableLabel: label, dataSource1: 'data_source1_HardCoded', dataSource2: '',
+          conditionOperator: '', parameters_hardCoded_Text: val,
+          field1: [], field2: [], table1: '', table2: '', retrieveFields: [],
+        });
+
+        await chatsApi.sendTemplateMessage(
+          user.organization,
+          phone,
+          templateId,
+          user.uID || user.userId,
+          [
+            mkEntry(1, quote!.contactName || '', 'שם לקוח'),
+            mkEntry(2, quote!.title || '', 'כותרת הצעת מחיר'),
+          ],
+        );
+      }
+
+      Alert.alert('נשלח בהצלחה', isLive ? 'הצעת המחיר נשלחה בוואטסאפ' : 'תבנית הצעת מחיר נשלחה בוואטסאפ');
       await fetchQuote();
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
@@ -519,14 +572,22 @@ export default function QuoteDetailScreen() {
   const handleShare = useCallback(async () => {
     if (!quote) return;
     const currSymbol = getCurrencySymbol(quote.currency);
+    const publicUrl = `https://www.gambot.co.il/quote?org=${encodeURIComponent(user?.organization || '')}&id=${encodeURIComponent(quote.id || '')}`;
     try {
       await Share.share({
-        message: `${quote.title}\n${t('quotes.quoteNumber')}: ${quote.quoteNumber}\n${t('quotes.total')}: ${formatCurrency(quote.total || 0, currSymbol)}`,
+        message: `${quote.title}\n${t('quotes.quoteNumber')}: ${quote.quoteNumber}\n${t('quotes.total')}: ${formatCurrency(quote.total || 0, currSymbol)}\n\n${publicUrl}`,
       });
     } catch {
       // User cancelled
     }
-  }, [quote, t]);
+  }, [quote, user?.organization, t]);
+
+  const handleCopyLink = useCallback(async () => {
+    if (!quote) return;
+    const publicUrl = `https://www.gambot.co.il/quote?org=${encodeURIComponent(user?.organization || '')}&id=${encodeURIComponent(quote.id || '')}`;
+    await Clipboard.setStringAsync(publicUrl);
+    Alert.alert('הקישור הועתק', 'קישור לצפייה בהצעת המחיר הועתק ללוח');
+  }, [quote, user?.organization]);
 
   const handleSendESignature = useCallback(() => {
     if (!quote) return;
@@ -1329,6 +1390,12 @@ export default function QuoteDetailScreen() {
             onPress={handleShare}
           />
           <IconButton
+            icon="link-variant"
+            iconColor={theme.custom.headerText}
+            size={22}
+            onPress={handleCopyLink}
+          />
+          <IconButton
             icon="delete-outline"
             iconColor={theme.custom.headerText}
             size={22}
@@ -1434,7 +1501,7 @@ export default function QuoteDetailScreen() {
               textColor="#25D366"
               contentStyle={styles.actionButtonContent}
             >
-              {t('chats.viewChat')}
+              {t('quotes.openChat', 'פתח צ\'אט')}
             </Button>
           </View>
         ) : null}
@@ -1465,7 +1532,11 @@ export default function QuoteDetailScreen() {
             </Text>
           </View>
 
-          <ScrollView nestedScrollEnabled style={styles.tableBody}>
+          <ScrollView
+            nestedScrollEnabled
+            style={[styles.tableBody, (quote.items?.length ?? 0) > 8 && { maxHeight: 320 }]}
+            showsVerticalScrollIndicator={(quote.items?.length ?? 0) > 8}
+          >
             {quote.items.map((item, index) => (
               <View key={item.id || index}>
                 <View style={[styles.tableRow, { flexDirection }]}>
@@ -1678,6 +1749,70 @@ export default function QuoteDetailScreen() {
           </View>
         ) : null}
 
+        {/* Shipping Details */}
+        {quote.showShipping && quote.shipping && (quote.shipping.address || quote.shipping.city || quote.shipping.notes) ? (
+          <View
+            style={[
+              styles.sectionCard,
+              { backgroundColor: '#f0f9ff', borderColor: '#bae6fd' },
+            ]}
+          >
+            <Text variant="titleSmall" style={[styles.sectionLabel, { color: '#0284c7', textAlign }]}>
+              🚚 {t('quotes.shippingDetails', 'פרטי משלוח')}
+            </Text>
+            {(quote.shipping.address || quote.shipping.city) ? (
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign }}>
+                {[quote.shipping.address, quote.shipping.city].filter(Boolean).join(', ')}
+                {quote.shipping.floor ? `\nקומה: ${quote.shipping.floor}` : ''}
+                {quote.shipping.elevator ? ' (מעלית זמינה)' : ''}
+              </Text>
+            ) : null}
+            {quote.shipping.notes ? (
+              <Text variant="bodySmall" style={{ color: '#64748b', marginTop: 4, textAlign }}>
+                {quote.shipping.notes}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+
+        {/* Bank Details */}
+        {quote.showBankDetails && quote.bankDetails && (quote.bankDetails.bankName || quote.bankDetails.accountNumber) ? (
+          <View
+            style={[
+              styles.sectionCard,
+              { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' },
+            ]}
+          >
+            <Text variant="titleSmall" style={[styles.sectionLabel, { color: '#16a34a', textAlign }]}>
+              🏦 {t('quotes.bankDetails', 'פרטי בנק לתשלום')}
+            </Text>
+            {quote.bankDetails.bankName ? (
+              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
+                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>שם הבנק:</Text>
+                <Text variant="bodyMedium" style={{ color: '#1f2937' }}>{quote.bankDetails.bankName}</Text>
+              </View>
+            ) : null}
+            {quote.bankDetails.branchNumber ? (
+              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
+                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>מספר סניף:</Text>
+                <Text variant="bodyMedium" style={{ color: '#1f2937' }}>{quote.bankDetails.branchNumber}</Text>
+              </View>
+            ) : null}
+            {quote.bankDetails.accountNumber ? (
+              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
+                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>מספר חשבון:</Text>
+                <Text variant="bodyMedium" style={{ fontWeight: '700', color: '#1f2937' }}>{quote.bankDetails.accountNumber}</Text>
+              </View>
+            ) : null}
+            {quote.bankDetails.accountName ? (
+              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
+                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>על שם:</Text>
+                <Text variant="bodyMedium" style={{ color: '#1f2937' }}>{quote.bankDetails.accountName}</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* Action Buttons */}
         <View style={styles.actionsContainer}>
           <Button
@@ -1714,6 +1849,27 @@ export default function QuoteDetailScreen() {
               {t('quotes.sendForESignature')}
             </Button>
           </View>
+
+          <Button
+            mode="outlined"
+            icon="file-document-check-outline"
+            onPress={() => {
+              router.push({
+                pathname: '/(tabs)/more/invoices/[id]',
+                params: {
+                  id: 'new',
+                  prefillContactName: quote?.contactName || '',
+                  prefillContactPhone: quote?.contactPhone || '',
+                  prefillRelatedQuoteId: quote?.id || '',
+                },
+              });
+            }}
+            style={[styles.actionButton, { borderColor: '#0891b2' }]}
+            textColor="#0891b2"
+            contentStyle={styles.actionButtonContent}
+          >
+            {t('invoices.generateFromQuote', 'הפק חשבונית מהצעה')}
+          </Button>
 
           <View style={[styles.actionRow, { flexDirection }]}>
             <Button
@@ -1859,6 +2015,56 @@ export default function QuoteDetailScreen() {
                 <Divider style={{ marginVertical: 12 }} />
                 <Text style={styles.previewSectionLabel}>{t('quotes.terms') || 'תנאים'}</Text>
                 <Text style={styles.previewNoteText}>{quote.terms}</Text>
+              </>
+            ) : null}
+
+            {/* Shipping Details */}
+            {quote.showShipping && quote.shipping && (quote.shipping.address || quote.shipping.city || quote.shipping.notes) ? (
+              <>
+                <Divider style={{ marginVertical: 12 }} />
+                <Text style={[styles.previewSectionLabel, { color: '#0284c7' }]}>🚚 {t('quotes.shippingDetails', 'פרטי משלוח')}</Text>
+                {(quote.shipping.address || quote.shipping.city) ? (
+                  <Text style={styles.previewNoteText}>
+                    {[quote.shipping.address, quote.shipping.city].filter(Boolean).join(', ')}
+                    {quote.shipping.floor ? `\nקומה: ${quote.shipping.floor}` : ''}
+                    {quote.shipping.elevator ? ' (מעלית זמינה)' : ''}
+                  </Text>
+                ) : null}
+                {quote.shipping.notes ? (
+                  <Text style={[styles.previewNoteText, { color: '#64748b', marginTop: 4 }]}>{quote.shipping.notes}</Text>
+                ) : null}
+              </>
+            ) : null}
+
+            {/* Bank Details */}
+            {quote.showBankDetails && quote.bankDetails && (quote.bankDetails.bankName || quote.bankDetails.accountNumber) ? (
+              <>
+                <Divider style={{ marginVertical: 12 }} />
+                <Text style={[styles.previewSectionLabel, { color: '#16a34a' }]}>🏦 {t('quotes.bankDetails', 'פרטי בנק לתשלום')}</Text>
+                {quote.bankDetails.bankName ? (
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ fontWeight: '600', fontSize: 13, color: '#374151' }}>שם הבנק:</Text>
+                    <Text style={{ fontSize: 13, color: '#1f2937' }}>{quote.bankDetails.bankName}</Text>
+                  </View>
+                ) : null}
+                {quote.bankDetails.branchNumber ? (
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ fontWeight: '600', fontSize: 13, color: '#374151' }}>מספר סניף:</Text>
+                    <Text style={{ fontSize: 13, color: '#1f2937' }}>{quote.bankDetails.branchNumber}</Text>
+                  </View>
+                ) : null}
+                {quote.bankDetails.accountNumber ? (
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ fontWeight: '600', fontSize: 13, color: '#374151' }}>מספר חשבון:</Text>
+                    <Text style={{ fontWeight: '700', fontSize: 13, color: '#1f2937' }}>{quote.bankDetails.accountNumber}</Text>
+                  </View>
+                ) : null}
+                {quote.bankDetails.accountName ? (
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ fontWeight: '600', fontSize: 13, color: '#374151' }}>על שם:</Text>
+                    <Text style={{ fontSize: 13, color: '#1f2937' }}>{quote.bankDetails.accountName}</Text>
+                  </View>
+                ) : null}
               </>
             ) : null}
 

@@ -3,15 +3,21 @@ import type { User } from '../types';
 import { authApi } from '../services/api/auth';
 import { appStorage, secureStorage } from '../services/storage';
 import WebSocketService from '../services/websocket';
-import { setTokenCache } from '../services/api/axiosInstance';
+import axiosInstance, { setTokenCache } from '../services/api/axiosInstance';
+import { ENDPOINTS } from '../constants/api';
 import { pushNotificationService } from '../services/pushNotifications';
 import i18n from '../i18n';
+
+export interface OrgFeatureToggles {
+  [key: string]: boolean;
+}
 
 interface AuthState {
   user: User | null;
   isLoading: boolean;
   isInitialized: boolean;
   error: string | null;
+  orgFeatureToggles: OrgFeatureToggles;
 
   initialize: () => Promise<void>;
   login: (email: string, password: string, organization?: string) => Promise<void>;
@@ -19,6 +25,7 @@ interface AuthState {
   forgotPassword: (email: string) => Promise<boolean>;
   clearError: () => void;
   updateUser: (updates: Partial<User>) => Promise<void>;
+  fetchOrgFeatureToggles: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -26,6 +33,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isLoading: false,
   isInitialized: false,
   error: null,
+  orgFeatureToggles: {},
 
   initialize: async () => {
     try {
@@ -44,6 +52,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         pushNotificationService
           .registerPushToken(user.organization, user.userId)
           .catch(() => {});
+        get().fetchOrgFeatureToggles().catch(() => {});
       } else {
         set({ isInitialized: true });
       }
@@ -62,6 +71,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       pushNotificationService
         .registerPushToken(user.organization, user.userId)
         .catch(() => {});
+      get().fetchOrgFeatureToggles().catch(() => {});
     } catch (error: any) {
       const errorCode = error.response?.data?.ErrorCode;
       let errorMessage: string;
@@ -91,7 +101,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await authApi.logout();
     } finally {
       setTokenCache(null);
-      set({ user: null, error: null });
+      set({ user: null, error: null, orgFeatureToggles: {} });
     }
   },
 
@@ -118,5 +128,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const updatedUser = { ...currentUser, ...updates };
     await appStorage.setUser(updatedUser);
     set({ user: updatedUser });
+  },
+
+  fetchOrgFeatureToggles: async () => {
+    const user = get().user;
+    if (!user?.organization) return;
+    try {
+      const res = await axiosInstance.post(ENDPOINTS.GET_FEATURE_TOGGLES, { organization: user.organization });
+      if (res.data?.Success && res.data?.Data) {
+        set({ orgFeatureToggles: res.data.Data });
+      }
+    } catch {
+      // Silently fail - defaults will apply
+    }
   },
 }));

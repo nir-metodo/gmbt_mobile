@@ -329,7 +329,7 @@ export default function ContactsListScreen() {
               )}
             </View>
 
-            <View style={[styles.contactBody, { alignItems: 'flex-start', minWidth: 0 }]}>
+            <View style={[styles.contactBody, { alignItems: isRTL ? 'flex-end' : 'flex-start', minWidth: 0 }]}>
               <Text
                 variant="titleMedium"
                 numberOfLines={1}

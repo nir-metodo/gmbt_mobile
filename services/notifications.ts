@@ -45,7 +45,7 @@ export const notificationService = {
         name: 'Messages',
         importance: Notifications.AndroidImportance.HIGH,
         vibrationPattern: [0, 250, 250, 250],
-        sound: 'default',
+        sound: 'notification.wav',
       });
 
       await Notifications.setNotificationChannelAsync('calls', {
@@ -55,6 +55,15 @@ export const notificationService = {
         sound: 'default',
       });
     }
+
+    await Notifications.setNotificationCategoryAsync('taskReminder', [
+      { identifier: 'MARK_COMPLETE', buttonTitle: 'סמן כהושלם ✓', options: { opensAppToForeground: false } },
+    ]);
+
+    await Notifications.setNotificationCategoryAsync('taskPhoneCall', [
+      { identifier: 'MARK_COMPLETE', buttonTitle: 'סמן כהושלם ✓', options: { opensAppToForeground: false } },
+      { identifier: 'CALL', buttonTitle: 'התקשר 📞', options: { opensAppToForeground: true } },
+    ]);
 
     const tokenData = await Notifications.getExpoPushTokenAsync();
     const token = tokenData.data;

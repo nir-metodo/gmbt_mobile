@@ -47,6 +47,8 @@ interface ChatState {
   setActiveWabaNumber: (number: string | null) => void;
 }
 
+const messageIdSet = new Set<string>();
+
 export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
   allMessages: [],
@@ -111,6 +113,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           caseStageName: c.caseStageName || c.caseStage?.stageName || '',
           caseStageColor: c.caseStageColor || c.caseStage?.stageColor || c.caseStage?.color || '',
           isCTWA: !!(c.ctwaClid || c.adSourceId),
+          lastFromNumberId: c.lastFromNumberId || c.wabaPhoneNumberId || '',
+          wabaPhoneNumberId: c.wabaPhoneNumberId || c.lastFromNumberId || '',
         }));
       chatList.sort((a, b) =>
         new Date(b.lastMessageTime || 0).getTime() - new Date(a.lastMessageTime || 0).getTime()
@@ -131,16 +135,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addOrUpdateChat: (chat) => {
     set((state) => {
       const index = state.chats.findIndex((c) => c.phoneNumber === chat.phoneNumber);
+      let updatedChat: Chat;
       let newChats: Chat[];
+
       if (index >= 0) {
-        newChats = [...state.chats];
-        newChats[index] = { ...newChats[index], ...chat };
+        updatedChat = { ...state.chats[index], ...chat };
+        newChats = state.chats.filter((_, i) => i !== index);
       } else {
-        newChats = [chat, ...state.chats];
+        updatedChat = chat;
+        newChats = [...state.chats];
       }
-      newChats.sort((a, b) =>
-        new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime()
-      );
+
+      // Insert at correct position (sorted by lastMessageTime desc) using binary search
+      const chatTime = new Date(updatedChat.lastMessageTime || 0).getTime();
+      let lo = 0, hi = newChats.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (new Date(newChats[mid].lastMessageTime || 0).getTime() >= chatTime) lo = mid + 1;
+        else hi = mid;
+      }
+      newChats.splice(lo, 0, updatedChat);
+
       const totalUnread = newChats.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
       return { chats: newChats, unreadCount: totalUnread };
     });
@@ -154,15 +169,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadMessages: async (organization, phoneNumber) => {
     set({ isLoadingMessages: true, currentPhoneNumber: phoneNumber, currentMessages: [], allMessages: [], displayedCount: PAGE_SIZE });
     try {
-      const raw = await chatsApi.getMessages(organization, phoneNumber);
+      const raw = await chatsApi.getMessages(organization, phoneNumber, PAGE_SIZE * 2);
+      const normalizeTs = (val: any): string => {
+        if (!val) return '';
+        if (typeof val === 'string') return val;
+        if (typeof val === 'number') return new Date(val > 1e12 ? val : val * 1000).toISOString();
+        if (typeof val === 'object' && val._seconds) return new Date(val._seconds * 1000).toISOString();
+        if (typeof val === 'object' && val.seconds) return new Date(val.seconds * 1000).toISOString();
+        return '';
+      };
       const messages = (Array.isArray(raw) ? raw : []).map((m: any) => ({
         ...m,
-        timestamp: m.timestamp || m.createdOn || '',
-        createdOn: m.createdOn || m.timestamp || '',
+        timestamp: normalizeTs(m.timestamp || m.createdOn),
+        createdOn: normalizeTs(m.createdOn || m.timestamp),
         text: m.text || m.body || '',
         messageId: m.messageId || m.id || m.Id || '',
         direction: m.direction || (m.sentFromApp ? 'Outbound' : ''),
       }));
+
+      // Sort oldest → newest so slice(-PAGE_SIZE) gives the newest page
+      const parseTs = (raw: any): number => {
+        if (!raw) return 0;
+        if (typeof raw === 'number') return raw > 1e12 ? raw : raw * 1000;
+        if (typeof raw === 'object' && raw._seconds) return raw._seconds * 1000;
+        if (typeof raw === 'object' && raw.seconds) return raw.seconds * 1000;
+        const d = new Date(raw);
+        return isNaN(d.getTime()) ? 0 : d.getTime();
+      };
+      messages.sort((a: any, b: any) => {
+        const tsA = parseTs(a.createdOn || a.timestamp);
+        const tsB = parseTs(b.createdOn || b.timestamp);
+        return tsA - tsB;
+      });
 
       // Resolve quotedMessage from contextMessageId if backend didn't populate it
       const msgMap = new Map(messages.map((m: any) => [m.messageId, m]));
@@ -176,6 +214,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       const displayed = messages.slice(-PAGE_SIZE);
+      messageIdSet.clear();
+      messages.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
       set({
         allMessages: messages,
         currentMessages: displayed,
@@ -184,6 +224,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isLoadingMessages: false,
       });
     } catch {
+      messageIdSet.clear();
       set({ isLoadingMessages: false, currentMessages: [], allMessages: [] });
     }
   },
@@ -314,53 +355,83 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   addMessage: (message) => {
-    set((state) => {
-      const exists = state.currentMessages.some(
-        (m) => m.messageId === message.messageId
-      );
-      if (exists) return state;
+    if (!message.messageId) return;
+    if (messageIdSet.has(message.messageId)) return;
+    const { currentMessages, allMessages } = get();
+    if (currentMessages.some((m) => m.messageId === message.messageId)) return;
 
-      // Resolve quotedMessage from contextMessageId
-      if (!message.quotedMessage) {
-        const ctxId = message.contextMessageId || (message as any).ContextMessageId;
-        if (ctxId) {
-          const quoted = state.allMessages.find((m) => m.messageId === ctxId);
-          if (quoted) {
-            message = { ...message, quotedMessage: quoted };
-          }
+    if (!message.quotedMessage) {
+      const ctxId = message.contextMessageId || (message as any).ContextMessageId;
+      if (ctxId) {
+        const quoted = allMessages.find((m) => m.messageId === ctxId);
+        if (quoted) {
+          message = { ...message, quotedMessage: quoted };
         }
       }
+    }
 
-      return {
-        currentMessages: [...state.currentMessages, message],
-        allMessages: [...state.allMessages, message],
-      };
+    // Replace optimistic temp message if this is the server-confirmed version
+    const dir = (message.direction || '').toLowerCase();
+    if (dir === 'outbound' || message.sentFromApp) {
+      const tempIdx = currentMessages.findIndex(
+        (m) => m.messageId?.startsWith('temp_') && m.to === message.to &&
+          m.text === (message.text || message.body || '') && m.status !== 'failed'
+      );
+      if (tempIdx !== -1) {
+        messageIdSet.add(message.messageId);
+        set({
+          currentMessages: currentMessages.map((m, i) => i === tempIdx ? message : m),
+          allMessages: allMessages.map((m) =>
+            m.messageId === currentMessages[tempIdx].messageId ? message : m
+          ),
+        });
+        return;
+      }
+    }
+
+    messageIdSet.add(message.messageId);
+    set({
+      currentMessages: [...currentMessages, message],
+      allMessages: [...allMessages, message],
     });
   },
 
   updateMessage: (messageId, updates) => {
-    set((state) => ({
-      currentMessages: state.currentMessages.map((m) =>
-        m.messageId === messageId ? { ...m, ...updates } : m
-      ),
-      allMessages: state.allMessages.map((m) =>
-        m.messageId === messageId ? { ...m, ...updates } : m
-      ),
-    }));
+    set((state) => {
+      const merge = (msg: any) => {
+        if (msg.messageId !== messageId) return msg;
+        const merged = { ...msg, ...updates };
+        // Merge reactions instead of replacing
+        if (updates.reactions && msg.reactions) {
+          merged.reactions = { ...(typeof msg.reactions === 'object' && !Array.isArray(msg.reactions) ? msg.reactions : {}), ...updates.reactions };
+        }
+        return merged;
+      };
+      return {
+        currentMessages: state.currentMessages.map(merge),
+        allMessages: state.allMessages.map(merge),
+      };
+    });
   },
 
   updateMessageStatus: (messageId, status) => {
-    set((state) => ({
-      currentMessages: state.currentMessages.map((m) =>
-        m.messageId === messageId ? { ...m, status } : m
-      ),
-      allMessages: state.allMessages.map((m) =>
-        m.messageId === messageId ? { ...m, status } : m
-      ),
-    }));
+    const { currentMessages, allMessages } = get();
+    const idx = currentMessages.findIndex((m) => m.messageId === messageId);
+    if (idx === -1) return;
+    if (currentMessages[idx].status === status) return;
+
+    const newCurrent = [...currentMessages];
+    newCurrent[idx] = { ...newCurrent[idx], status };
+
+    const allIdx = allMessages.findIndex((m) => m.messageId === messageId);
+    const newAll = allIdx >= 0 ? [...allMessages] : allMessages;
+    if (allIdx >= 0) newAll[allIdx] = { ...newAll[allIdx], status };
+
+    set({ currentMessages: newCurrent, allMessages: newAll });
   },
 
   clearCurrentChat: () => {
+    messageIdSet.clear();
     set({ currentMessages: [], allMessages: [], currentPhoneNumber: null, displayedCount: PAGE_SIZE, hasMoreMessages: false });
   },
 

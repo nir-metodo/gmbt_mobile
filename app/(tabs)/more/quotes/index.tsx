@@ -177,13 +177,20 @@ export default function QuotesListScreen() {
       );
     }
 
+    const parseTs = (v: any): number => {
+      if (!v) return 0;
+      if (typeof v === 'number') return v;
+      if (v._seconds) return v._seconds * 1000;
+      if (v.seconds) return v.seconds * 1000;
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? 0 : d.getTime();
+    };
+
     return result.sort((a, b) => {
       let comparison = 0;
       switch (sortField) {
         case 'date':
-          comparison =
-            new Date(a.createdOn || a.createdAt || 0).getTime() -
-            new Date(b.createdOn || b.createdAt || 0).getTime();
+          comparison = parseTs(a.createdOn || a.createdAt) - parseTs(b.createdOn || b.createdAt);
           break;
         case 'amount':
           comparison = (a.total || 0) - (b.total || 0);
@@ -393,7 +400,23 @@ export default function QuotesListScreen() {
             </View>
 
             <View style={[styles.cardBottomRow, { flexDirection }]}>
-              <View style={{ flex: 1 }} />
+              {item.viewCount && item.viewCount > 0 ? (
+                <View style={[styles.viewCountBadge, { flexDirection }]}>
+                  <MaterialCommunityIcons
+                    name="eye-check-outline"
+                    size={13}
+                    color="#53bdeb"
+                  />
+                  <Text
+                    variant="labelSmall"
+                    style={{ color: '#53bdeb', fontWeight: '600', fontSize: 11 }}
+                  >
+                    {item.viewCount}
+                  </Text>
+                </View>
+              ) : (
+                <View style={{ flex: 1 }} />
+              )}
               <Text
                 variant="titleMedium"
                 style={[styles.totalAmount, { color: theme.colors.primary }]}
@@ -771,26 +794,52 @@ export default function QuotesListScreen() {
           )}
         />
       ) : (
-        <FlatList
-          data={filteredAndSortedQuotes}
-          renderItem={renderQuoteCard}
-          keyExtractor={(item) => item.id}
-          ListEmptyComponent={renderEmpty}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              colors={[theme.colors.primary]}
-              tintColor={theme.colors.primary}
-            />
-          }
-          contentContainerStyle={[
-            styles.listContent,
-            filteredAndSortedQuotes.length === 0 && styles.listContentEmpty,
-          ]}
-          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-          showsVerticalScrollIndicator={false}
-        />
+        <>
+          {/* Sort bar */}
+          <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, alignItems: 'center' }}>
+            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('quotes.sortBy', 'מיין:')}</Text>
+            {([
+              { key: 'date' as SortField, label: t('quotes.date', 'תאריך'), icon: 'calendar' },
+              { key: 'amount' as SortField, label: t('quotes.amount', 'סכום'), icon: 'cash' },
+              { key: 'status' as SortField, label: t('quotes.status', 'סטטוס'), icon: 'tag-outline' },
+            ]).map((opt) => (
+              <Pressable
+                key={opt.key}
+                onPress={() => handleSortSelect(opt.key)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortField === opt.key ? `${theme.colors.primary}15` : 'transparent' }}
+              >
+                <MaterialCommunityIcons name={opt.icon as any} size={14} color={sortField === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                <Text style={{ fontSize: 11, color: sortField === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant, fontWeight: sortField === opt.key ? '600' : '400' }}>
+                  {opt.label}
+                </Text>
+                {sortField === opt.key && (
+                  <MaterialCommunityIcons name={sortDirection === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={theme.colors.primary} />
+                )}
+              </Pressable>
+            ))}
+            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 'auto' }}>{filteredAndSortedQuotes.length} {t('quotes.items', 'פריטים')}</Text>
+          </View>
+          <FlatList
+            data={filteredAndSortedQuotes}
+            renderItem={renderQuoteCard}
+            keyExtractor={(item) => item.id}
+            ListEmptyComponent={renderEmpty}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[theme.colors.primary]}
+                tintColor={theme.colors.primary}
+              />
+            }
+            contentContainerStyle={[
+              styles.listContent,
+              filteredAndSortedQuotes.length === 0 && styles.listContentEmpty,
+            ]}
+            ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+            showsVerticalScrollIndicator={false}
+          />
+        </>
       )}
 
       {/* FAB */}
@@ -938,12 +987,15 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   statusChip: {
-    height: 24,
+    height: 26,
     borderRadius: 12,
+    flexShrink: 0,
+    maxWidth: 'auto' as any,
   },
   statusChipText: {
     fontSize: 11,
     fontWeight: '600',
+    flexShrink: 0,
   },
   cardMeta: {
     alignItems: 'center',
@@ -965,6 +1017,14 @@ const styles = StyleSheet.create({
   totalAmount: {
     fontWeight: '700',
     fontSize: 18,
+  },
+  viewCountBadge: {
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(83, 189, 235, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
   },
   emptyContainer: {
     flex: 1,

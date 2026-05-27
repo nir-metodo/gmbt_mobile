@@ -1093,8 +1093,8 @@ export default function PhoneCallsTabScreen() {
 
               <Divider style={{ marginBottom: 8 }} />
 
-              {/* Keypad */}
-              <View style={styles.dialPad}>
+              {/* Keypad - force LTR so numbers are always 1-2-3 left-to-right */}
+              <View style={[styles.dialPad, { direction: 'ltr' }]}>
                 {[
                   [{ d: '1', sub: '' }, { d: '2', sub: 'ABC' }, { d: '3', sub: 'DEF' }],
                   [{ d: '4', sub: 'GHI' }, { d: '5', sub: 'JKL' }, { d: '6', sub: 'MNO' }],
@@ -1170,8 +1170,10 @@ export default function PhoneCallsTabScreen() {
               <View style={styles.dialHints}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
                   {telSettings?.phoneNumbers?.length
-                    ? (isRTL ? 'שיחה רגילה | שיחת Gambot (מוקלטת + CRM)' : 'Regular call | Gambot call (recorded + CRM)')
-                    : (isRTL ? 'שיחה רגילה' : 'Regular call')
+                    ? (isRTL
+                        ? 'חיוג מהטלפון (מתועד) | חיוג מ-Gambot (מוקלט + CRM)'
+                        : 'Phone dial (logged) | Gambot dial (recorded + CRM)')
+                    : (isRTL ? 'חיוג מהטלפון (מתועד ב-Gambot)' : 'Phone dial (logged in Gambot)')
                   }
                 </Text>
               </View>

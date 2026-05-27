@@ -87,6 +87,8 @@ export default function TasksMoreScreen() {
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
+  const [taskSortKey, setTaskSortKey] = useState<'priority' | 'createdOn' | 'dueDate' | 'reminderDate'>('priority');
+  const [taskSortDir, setTaskSortDir] = useState<'asc' | 'desc'>('desc');
   const [priorityMenuVisible, setPriorityMenuVisible] = useState(false);
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -170,14 +172,36 @@ export default function TasksMoreScreen() {
     return result.sort((a, b) => {
       if (a.status === 'completed' && b.status !== 'completed') return 1;
       if (a.status !== 'completed' && b.status === 'completed') return -1;
-      const aOverdue = isOverdue(a);
-      const bOverdue = isOverdue(b);
-      if (aOverdue && !bOverdue) return -1;
-      if (!aOverdue && bOverdue) return 1;
-      const priorityOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
-      return (priorityOrder[a.priority] ?? 2) - (priorityOrder[b.priority] ?? 2);
+
+      const parseTs = (v: any): number => {
+        if (!v) return 0;
+        if (typeof v === 'number') return v;
+        if (v._seconds) return v._seconds * 1000;
+        if (v.seconds) return v.seconds * 1000;
+        const d = new Date(v);
+        return isNaN(d.getTime()) ? 0 : d.getTime();
+      };
+
+      let aVal: number, bVal: number;
+      if (taskSortKey === 'createdOn') {
+        aVal = parseTs(a.createdOn || (a as any).CreatedOn);
+        bVal = parseTs(b.createdOn || (b as any).CreatedOn);
+      } else if (taskSortKey === 'dueDate') {
+        aVal = parseTs(a.dueDate);
+        bVal = parseTs(b.dueDate);
+      } else if (taskSortKey === 'reminderDate') {
+        aVal = parseTs(a.reminderDate || (a as any).reminderDateUTC);
+        bVal = parseTs(b.reminderDate || (b as any).reminderDateUTC);
+      } else {
+        const priorityOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+        aVal = priorityOrder[a.priority] ?? 2;
+        bVal = priorityOrder[b.priority] ?? 2;
+      }
+      if (aVal < bVal) return taskSortDir === 'asc' ? -1 : 1;
+      if (aVal > bVal) return taskSortDir === 'asc' ? 1 : -1;
+      return 0;
     });
-  }, [tasks, statusFilter, priorityFilter, debouncedSearch]);
+  }, [tasks, statusFilter, priorityFilter, debouncedSearch, taskSortKey, taskSortDir]);
 
   const resetForm = useCallback(() => {
     setFormTitle('');
@@ -514,6 +538,34 @@ export default function TasksMoreScreen() {
         </Pressable>
       ) : null}
 
+      {/* Sort bar */}
+      <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, alignItems: 'center' }}>
+        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('tasks.sortBy', 'מיין:')}</Text>
+        {([
+          { key: 'priority' as const, label: t('tasks.priority', 'עדיפות'), icon: 'flag' },
+          { key: 'createdOn' as const, label: t('tasks.created', 'נוצר'), icon: 'calendar-plus' },
+          { key: 'dueDate' as const, label: t('tasks.dueDate', 'תאריך יעד'), icon: 'calendar-clock' },
+          { key: 'reminderDate' as const, label: t('tasks.reminder', 'תזכורת'), icon: 'bell-outline' },
+        ]).map((opt) => (
+          <Pressable
+            key={opt.key}
+            onPress={() => {
+              if (taskSortKey === opt.key) setTaskSortDir((d) => d === 'asc' ? 'desc' : 'asc');
+              else { setTaskSortKey(opt.key); setTaskSortDir(opt.key === 'priority' ? 'asc' : 'desc'); }
+            }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: taskSortKey === opt.key ? '#e8f5e9' : 'transparent' }}
+          >
+            <MaterialCommunityIcons name={opt.icon as any} size={14} color={taskSortKey === opt.key ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+            <Text style={{ fontSize: 11, color: taskSortKey === opt.key ? BRAND_COLOR : theme.colors.onSurfaceVariant, fontWeight: taskSortKey === opt.key ? '600' : '400' }}>
+              {opt.label}
+            </Text>
+            {taskSortKey === opt.key && (
+              <MaterialCommunityIcons name={taskSortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={BRAND_COLOR} />
+            )}
+          </Pressable>
+        ))}
+      </View>
+
       <FlatList
         data={filteredTasks}
         renderItem={renderTaskCard}
@@ -549,8 +601,8 @@ export default function TasksMoreScreen() {
           onDismiss={() => { setCreateModalVisible(false); resetForm(); }}
           contentContainerStyle={[styles.modalContainer, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <ScrollView showsVerticalScrollIndicator={false}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                   {t('tasks.addTask')}

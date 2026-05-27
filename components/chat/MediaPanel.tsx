@@ -22,7 +22,7 @@ import axiosInstance from '../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { chatsApi } from '../../services/api/chats';
-import type { Message } from '../../types';
+import type { Message, WabaNumberInfo } from '../../types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_COLUMNS = 3;
@@ -52,7 +52,7 @@ interface MediaPanelProps {
   contactPhone: string;
   organization: string;
   messages?: Message[];
-  wabaNumbers?: string[];
+  wabaNumbers?: WabaNumberInfo[];
 }
 
 const TAB_TYPES: TabType[] = ['all', 'image', 'video', 'audio', 'document'];
@@ -92,6 +92,7 @@ function getMediaUrl(m: any): string {
 
 export function MediaPanel({ visible, onClose, contactPhone, organization, messages = [], wabaNumbers = [] }: MediaPanelProps) {
   const theme = useAppTheme();
+  const wabaNumberIds = useMemo(() => wabaNumbers.map((n) => n.PhoneNumberId || n.phoneNumberId || '').filter(Boolean), [wabaNumbers]);
 
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [uploadedMedia, setUploadedMedia] = useState<MediaItem[]>([]);
@@ -524,12 +525,16 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
           </View>
           {/* Number filter & Sort */}
           <View style={styles.dateFilters}>
-            {wabaNumbers.length > 1 && (
+            {wabaNumberIds.length > 1 && (
               <View style={[styles.dateBtn, { backgroundColor: numberFilter ? '#d1fae5' : theme.colors.surfaceVariant, flex: 1 }]}>
                 <MaterialCommunityIcons name="phone-outline" size={14} color={numberFilter ? PRIMARY : theme.colors.onSurfaceVariant} />
-                <Pressable onPress={() => setNumberFilter(numberFilter ? '' : wabaNumbers[0])} style={{ flex: 1 }}>
+                <Pressable onPress={() => setNumberFilter(numberFilter ? '' : wabaNumberIds[0])} style={{ flex: 1 }}>
                   <Text style={[styles.dateBtnText, { color: numberFilter ? PRIMARY : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
-                    {numberFilter || 'כל המספרים'}
+                    {numberFilter
+                      ? (wabaNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === numberFilter)?.DisplayNumber
+                          || wabaNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === numberFilter)?.displayNumber
+                          || numberFilter)
+                      : 'כל המספרים'}
                   </Text>
                 </Pressable>
                 {numberFilter ? (
@@ -540,7 +545,7 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
               </View>
             )}
             <Pressable
-              style={[styles.dateBtn, { backgroundColor: theme.colors.surfaceVariant, flex: wabaNumbers.length > 1 ? 0.6 : 1 }]}
+              style={[styles.dateBtn, { backgroundColor: theme.colors.surfaceVariant, flex: wabaNumberIds.length > 1 ? 0.6 : 1 }]}
               onPress={() => setShowSortMenu(!showSortMenu)}
             >
               <MaterialCommunityIcons name="sort" size={16} color={theme.colors.onSurfaceVariant} />
@@ -562,17 +567,21 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
               ))}
             </View>
           )}
-          {wabaNumbers.length > 1 && numberFilter === '' && (
+          {wabaNumberIds.length > 1 && numberFilter === '' && (
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-              {wabaNumbers.map((num) => (
-                <Pressable
-                  key={num}
-                  onPress={() => setNumberFilter(num)}
-                  style={[styles.numberChip, { backgroundColor: theme.colors.surfaceVariant }]}
-                >
-                  <Text style={{ fontSize: 11, color: theme.colors.onSurface }}>{num}</Text>
-                </Pressable>
-              ))}
+              {wabaNumbers.map((num) => {
+                const id = num.PhoneNumberId || num.phoneNumberId || '';
+                const display = num.DisplayNumber || num.displayNumber || num.Label || num.label || id;
+                return (
+                  <Pressable
+                    key={id}
+                    onPress={() => setNumberFilter(id)}
+                    style={[styles.numberChip, { backgroundColor: theme.colors.surfaceVariant }]}
+                  >
+                    <Text style={{ fontSize: 11, color: theme.colors.onSurface }}>{display}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
           )}
         </View>

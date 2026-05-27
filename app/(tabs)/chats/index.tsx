@@ -39,10 +39,11 @@ import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatChatTime, getInitials } from '../../../utils/formatters';
 import WebSocketService from '../../../services/websocket';
+import { notificationSound } from '../../../services/notificationSound';
 import { getDataVisibility } from '../../../constants/permissions';
 import { ENDPOINTS } from '../../../constants/api';
 import axiosInstance from '../../../services/api/axiosInstance';
-import type { Chat } from '../../../types';
+import type { Chat, WabaNumberInfo } from '../../../types';
 
 const FILTER_OPTIONS = ['all', 'unread', 'open', 'closed', 'myChats', 'internal'] as const;
 
@@ -117,6 +118,11 @@ export default function ChatsListScreen() {
   const [contactGroups, setContactGroups] = useState<string[]>([]);
   const [leadStages, setLeadStages] = useState<{ id: string; name: string; color?: string }[]>([]);
 
+  // WhatsApp number filter
+  const [wabaNumbersList, setWabaNumbersList] = useState<WabaNumberInfo[]>([]);
+  const [numberFilter, setNumberFilter] = useState<string>('');
+  const [numberMenuVisible, setNumberMenuVisible] = useState(false);
+
   // Lead/case stage map for chat list badges
   const [contactLeadMap, setContactLeadMap] = useState<Record<string, { stageName: string; stageColor: string }>>({});
 
@@ -176,6 +182,30 @@ export default function ChatsListScreen() {
       }).catch(() => {});
   }, [user?.organization]);
 
+  // Fetch WhatsApp numbers for the organization
+  useEffect(() => {
+    if (!user?.organization) return;
+    axiosInstance.get(ENDPOINTS.GET_WHATSAPP_NUMBERS, { params: { organization: user.organization } })
+      .then((res) => {
+        const nums: WabaNumberInfo[] = res.data?.Numbers || res.data?.numbers || [];
+        if (Array.isArray(nums) && nums.length > 0) {
+          setWabaNumbersList(nums);
+        }
+      }).catch(() => {});
+  }, [user?.organization]);
+
+  // Determine which numbers are available to this user
+  const availableNumbers = useMemo(() => {
+    const assigned = user?.assignedWhatsAppNumbers || [];
+    if (assigned.length > 0) {
+      return wabaNumbersList.filter((n) => {
+        const id = n.PhoneNumberId || n.phoneNumberId || '';
+        return assigned.includes(id);
+      });
+    }
+    return wabaNumbersList;
+  }, [wabaNumbersList, user?.assignedWhatsAppNumbers]);
+
   const loadSavedView = useCallback((view: SavedView) => {
     const viewData = view.ViewData || {};
     const filters = viewData.filters || {};
@@ -197,6 +227,7 @@ export default function ChatsListScreen() {
     setOwnerFilter('all');
     setGroupFilter([]);
     setLeadStageFilter([]);
+    setNumberFilter('');
     setSearchInput('');
     setDebouncedSearch('');
     storeSetSearchQuery('');
@@ -260,8 +291,8 @@ export default function ChatsListScreen() {
     if (user?.organization) {
       loadChats(
         user.organization,
-        chatsDV === 'own' ? currentUserId : '',
-        chatsDV === 'own' ? 'own' : 'all',
+        currentUserId,
+        chatsDV || 'all',
       );
     }
   }, [user?.organization, chatsDV, currentUserId]);
@@ -272,8 +303,8 @@ export default function ChatsListScreen() {
     const interval = setInterval(() => {
       loadChats(
         user.organization,
-        chatsDV === 'own' ? currentUserId : '',
-        chatsDV === 'own' ? 'own' : 'all',
+        currentUserId,
+        chatsDV || 'all',
       );
     }, 60000);
     return () => clearInterval(interval);
@@ -288,6 +319,8 @@ export default function ChatsListScreen() {
       if (!data) return;
       if (data.type === 'new_message' || data.type === 'message') {
         const msg = data.message || data;
+        // Skip reactions - don't update chat list with reaction text
+        if (msg.type === 'reaction') return;
         if (msg.phoneNumber || msg.from) {
           addOrUpdateChat({
             id: msg.phoneNumber || msg.from,
@@ -304,6 +337,10 @@ export default function ChatsListScreen() {
             profilePicture: msg.profilePicture,
             status: msg.status,
           });
+          const dir = (msg.direction || '').toLowerCase();
+          if (dir === 'inbound' || (!msg.sentFromApp && msg.from !== user?.wabaNumber)) {
+            notificationSound.playMessageSound();
+          }
         }
       }
       if (data.type === 'chat_list' || data.type === 'chats') {
@@ -360,6 +397,9 @@ export default function ChatsListScreen() {
     return ['all', ...Array.from(ownerSet)];
   }, [chats]);
 
+  const CHATS_PAGE_SIZE = 50;
+  const [displayLimit, setDisplayLimit] = useState(CHATS_PAGE_SIZE);
+
   const filteredChats = useMemo(() => {
     let result = chats;
 
@@ -406,6 +446,13 @@ export default function ChatsListScreen() {
       });
     }
 
+    if (numberFilter) {
+      result = result.filter((c) => {
+        const fromId = (c as any).lastFromNumberId || (c as any).wabaPhoneNumberId || '';
+        return fromId === numberFilter;
+      });
+    }
+
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.trim().toLowerCase();
       result = result.filter(
@@ -417,15 +464,33 @@ export default function ChatsListScreen() {
     }
 
     return result;
-  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, user, contactLeadMap, leadStages]);
+  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, numberFilter, user, contactLeadMap, leadStages]);
+
+  // When searching, show all results; otherwise paginate for smooth scrolling
+  const displayedChats = useMemo(() => {
+    if (debouncedSearch.trim()) return filteredChats;
+    return filteredChats.slice(0, displayLimit);
+  }, [filteredChats, displayLimit, debouncedSearch]);
+
+  const hasMoreChats = !debouncedSearch.trim() && displayLimit < filteredChats.length;
+
+  const onEndReachedChats = useCallback(() => {
+    if (!hasMoreChats) return;
+    setDisplayLimit((prev) => prev + CHATS_PAGE_SIZE);
+  }, [hasMoreChats]);
+
+  // Reset display limit when filters change
+  useEffect(() => {
+    setDisplayLimit(CHATS_PAGE_SIZE);
+  }, [filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, numberFilter]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     if (user?.organization) {
       await loadChats(
         user.organization,
-        chatsDV === 'own' ? currentUserId : '',
-        chatsDV === 'own' ? 'own' : 'all',
+        currentUserId,
+        chatsDV || 'all',
       );
     }
     setRefreshing(false);
@@ -448,6 +513,11 @@ export default function ChatsListScreen() {
       const leadInfo = contactLeadMap[phoneNorm];
       const displayLeadStage = item.leadStageName || leadInfo?.stageName || '';
       const displayLeadColor = item.leadStageColor || leadInfo?.stageColor || '#7c3aed';
+
+      const chatNumberId = (item as any).lastFromNumberId || (item as any).wabaPhoneNumberId || '';
+      const chatNumberMatch = chatNumberId ? availableNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === chatNumberId) : null;
+      const chatNumberLabel = chatNumberMatch ? (chatNumberMatch.Label || chatNumberMatch.label || chatNumberMatch.DisplayNumber || chatNumberMatch.displayNumber || '') : '';
+      const chatNumberColor = chatNumberMatch ? (chatNumberMatch.Color || chatNumberMatch.color || '#2e6155') : '';
 
       return (
         <Pressable
@@ -490,19 +560,28 @@ export default function ChatsListScreen() {
             )}
           </View>
 
-          <View style={[styles.chatContent, { alignItems: 'flex-start' }]}>
+          <View style={[styles.chatContent, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
             <View style={[styles.chatTopRow, { flexDirection }]}>
-              <Text
-                variant="titleMedium"
-                numberOfLines={1}
-                style={[
-                  styles.contactName,
-                  hasUnread && styles.contactNameUnread,
-                  { color: theme.colors.onSurface, textAlign },
-                ]}
-              >
-                {item.contactName || item.phoneNumber}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 6 }}>
+                <Text
+                  variant="titleMedium"
+                  numberOfLines={1}
+                  style={[
+                    styles.contactName,
+                    hasUnread && styles.contactNameUnread,
+                    { color: theme.colors.onSurface, textAlign, flexShrink: 1 },
+                  ]}
+                >
+                  {item.contactName || item.phoneNumber}
+                </Text>
+                {availableNumbers.length > 1 && chatNumberLabel ? (
+                  <View style={[styles.numberBadge, { backgroundColor: (chatNumberColor || '#2e6155') + '20' }]}>
+                    <Text style={{ fontSize: 9, fontWeight: '700', color: chatNumberColor || '#2e6155' }} numberOfLines={1}>
+                      {chatNumberLabel}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
               <Text
                 variant="labelSmall"
                 style={[
@@ -571,6 +650,7 @@ export default function ChatsListScreen() {
                   const msg = (item.lastMessage || '').trim();
                   if (!msg) return '';
                   const lm = msg.toLowerCase();
+                  if (/^reacted with\s/i.test(lm)) return '👍 ' + t('chats.reaction', 'הגיב/ה');
                   if (/^(תמונה|image|photo)$/i.test(lm)) return '📷 ' + t('chats.photo', 'תמונה');
                   if (/^(סרטון|וידאו|video)$/i.test(lm)) return '🎬 ' + t('chats.videoMsg', 'סרטון');
                   if (/^(אודיו|audio|voice|הקלטה)$/i.test(lm)) return '🎤 ' + t('chats.audioMsg', 'הודעה קולית');
@@ -951,12 +1031,61 @@ export default function ChatsListScreen() {
               ))}
             </Menu>
           )}
+
+          {availableNumbers.length > 1 && (
+            <Menu
+              visible={numberMenuVisible}
+              onDismiss={() => setNumberMenuVisible(false)}
+              anchor={
+                <Chip
+                  icon="phone-outline"
+                  onPress={() => setNumberMenuVisible(true)}
+                  compact
+                  style={[
+                    styles.filterChip,
+                    numberFilter
+                      ? { backgroundColor: theme.colors.primaryContainer }
+                      : { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    numberFilter ? { color: theme.colors.primary, fontWeight: '600' } : undefined,
+                  ]}
+                >
+                  {numberFilter
+                    ? (() => {
+                        const matched = availableNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === numberFilter);
+                        return matched?.Label || matched?.label || matched?.DisplayNumber || matched?.displayNumber || numberFilter.slice(-4);
+                      })()
+                    : t('chats.phoneNumber', 'מספר')}
+                </Chip>
+              }
+            >
+              <Menu.Item
+                title={t('common.all', 'הכל')}
+                onPress={() => { setNumberFilter(''); setNumberMenuVisible(false); }}
+                leadingIcon={!numberFilter ? 'check' : undefined}
+              />
+              {availableNumbers.map((num) => {
+                const id = num.PhoneNumberId || num.phoneNumberId || '';
+                const display = num.Label || num.label || num.DisplayNumber || num.displayNumber || id;
+                return (
+                  <Menu.Item
+                    key={id}
+                    title={display}
+                    onPress={() => { setNumberFilter(id); setNumberMenuVisible(false); }}
+                    leadingIcon={numberFilter === id ? 'check' : undefined}
+                  />
+                );
+              })}
+            </Menu>
+          )}
         </ScrollView>
       </View>
 
       {/* Chat list */}
       <FlashList
-        data={filteredChats}
+        data={displayedChats}
         renderItem={renderChatItem}
         keyExtractor={chatKeyExtractor}
         ItemSeparatorComponent={ChatDivider}
@@ -972,6 +1101,11 @@ export default function ChatsListScreen() {
             renderEmpty()
           )
         }
+        ListFooterComponent={
+          hasMoreChats ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 12 }} />
+          ) : null
+        }
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -980,6 +1114,8 @@ export default function ChatsListScreen() {
             tintColor={theme.colors.primary}
           />
         }
+        onEndReached={onEndReachedChats}
+        onEndReachedThreshold={0.4}
         contentContainerStyle={styles.listContent}
       />
 
@@ -1002,19 +1138,48 @@ export default function ChatsListScreen() {
         <Modal
           visible={newChatVisible}
           onDismiss={() => { setNewChatVisible(false); setNewChatPhone(''); }}
-          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
         >
-          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 16 }}>
-            {t('chats.newChat', 'New Chat')}
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700' }}>
+            {t('chats.newChat', 'שיחה חדשה')}
           </Text>
           <PaperInput
-            label={t('chats.phoneNumber', 'Phone Number')}
+            label={t('chats.searchOrPhone', 'חפש איש קשר או הקלד מספר')}
             value={newChatPhone}
             onChangeText={setNewChatPhone}
-            keyboardType="phone-pad"
             mode="outlined"
-            style={{ marginBottom: 16 }}
+            left={<PaperInput.Icon icon="magnify" />}
+            style={{ marginBottom: 8 }}
           />
+          {/* Contact suggestions from existing chats */}
+          {newChatPhone.trim().length >= 2 && (
+            <ScrollView style={{ maxHeight: 200, marginBottom: 12 }}>
+              {chats
+                .filter(c => {
+                  const q = newChatPhone.trim().toLowerCase();
+                  return (c.contactName || '').toLowerCase().includes(q) ||
+                    (c.phoneNumber || '').includes(q);
+                })
+                .slice(0, 10)
+                .map(c => (
+                  <Pressable
+                    key={c.phoneNumber}
+                    onPress={() => {
+                      setNewChatVisible(false);
+                      setNewChatPhone('');
+                      router.push(`/(tabs)/chats/${c.phoneNumber}`);
+                    }}
+                    style={{ flexDirection, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 8, gap: 10, borderBottomWidth: 0.5, borderBottomColor: theme.colors.outlineVariant }}
+                  >
+                    <Avatar.Text size={36} label={getInitials(c.contactName)} style={{ backgroundColor: theme.colors.primaryContainer }} labelStyle={{ color: theme.colors.primary, fontSize: 14 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>{c.contactName || c.phoneNumber}</Text>
+                      <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, textAlign }}>{c.phoneNumber}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+            </ScrollView>
+          )}
           <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
             <Button mode="outlined" onPress={() => { setNewChatVisible(false); setNewChatPhone(''); }}>
               {t('common.cancel')}
@@ -1031,7 +1196,7 @@ export default function ChatsListScreen() {
                 }
               }}
             >
-              {t('chats.startChat', 'Start Chat')}
+              {t('chats.startChat', 'התחל שיחה')}
             </Button>
           </View>
         </Modal>
@@ -1205,6 +1370,12 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 10,
     fontWeight: '700',
+  },
+  numberBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    maxWidth: 80,
   },
   chatBottomRow: {
     alignItems: 'center',

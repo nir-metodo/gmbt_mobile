@@ -24,7 +24,7 @@ export interface DynamicSection {
   labelHe?: string;
   label?: string;
   collapseByDefault?: boolean;
-  fields?: Record<string, DynamicField>;
+  fields?: Record<string, DynamicField> | DynamicField[];
 }
 
 function getSectionLabel(section: DynamicSection, lang: 'en' | 'he'): string {
@@ -40,8 +40,13 @@ function getFieldLabel(field: DynamicField, lang: 'en' | 'he'): string {
 }
 
 function getOrderedFields(section: DynamicSection): [string, DynamicField][] {
-  const fields = section.fields || {};
-  return Object.entries(fields).sort(([, a], [, b]) => (a.order ?? 999) - (b.order ?? 999));
+  const raw = section.fields;
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((f: any, i: number) => [f.key || f.id || `field_${i}`, f as DynamicField])
+      .sort(([, a], [, b]) => (a.order ?? 999) - (b.order ?? 999));
+  }
+  return Object.entries(raw).sort(([, a], [, b]) => ((a as DynamicField).order ?? 999) - ((b as DynamicField).order ?? 999));
 }
 
 function InfoRow({
@@ -110,9 +115,13 @@ export function DynamicFieldsSectionView({
     return init;
   });
 
-  const sectionsWithFields = sections.filter(
-    (s) => s.fields && Object.keys(s.fields).length > 0,
-  );
+  const hasFields = (s: DynamicSection) => {
+    if (!s.fields) return false;
+    if (Array.isArray(s.fields)) return s.fields.length > 0;
+    return Object.keys(s.fields).length > 0;
+  };
+
+  const sectionsWithFields = sections.filter(hasFields);
 
   const orderedSectionIds =
     formLayout.length > 0
@@ -218,9 +227,13 @@ export function DynamicFieldsSectionForm({
   writingDirection,
   flexDirection,
 }: DynamicFieldsSectionFormProps) {
-  const sectionsWithFields = sections.filter(
-    (s) => s.fields && Object.keys(s.fields).length > 0,
-  );
+  const hasFields = (s: DynamicSection) => {
+    if (!s.fields) return false;
+    if (Array.isArray(s.fields)) return s.fields.length > 0;
+    return Object.keys(s.fields).length > 0;
+  };
+
+  const sectionsWithFields = sections.filter(hasFields);
 
   const orderedSectionIds =
     formLayout.length > 0

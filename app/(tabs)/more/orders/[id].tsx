@@ -331,11 +331,18 @@ export default function OrderDetailScreen() {
       );
       const newId = result?.order?.id || result?.id || result?.orderId;
       appCache.invalidate(`orders_${user.organization}`);
-      if (newId) {
-        router.replace({ pathname: '/(tabs)/more/orders/[id]', params: { id: newId } });
-      } else {
-        router.back();
-      }
+      Alert.alert('✓ הזמנה נוצרה', 'ההזמנה נוצרה בהצלחה', [
+        {
+          text: 'אישור',
+          onPress: () => {
+            if (newId) {
+              router.replace({ pathname: '/(tabs)/more/orders/[id]', params: { id: newId } });
+            } else {
+              router.back();
+            }
+          },
+        },
+      ]);
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
     } finally {
@@ -888,7 +895,7 @@ export default function OrderDetailScreen() {
                   {t('orders.notes')}
                 </Text>
                 <Divider style={{ marginBottom: 12 }} />
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22 }}>
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }}>
                   {order.notes}
                 </Text>
               </View>
@@ -912,50 +919,48 @@ export default function OrderDetailScreen() {
       <Portal>
         <Modal
           visible={noteModalVisible}
-          onDismiss={() => { setNoteModalVisible(false); setNoteText(''); }}
-          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+          onDismiss={() => { setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }}
+          contentContainerStyle={[styles.noteModal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <View style={[styles.modalHeader, { flexDirection }]}>
-              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-                {t('orders.addNote')}
-              </Text>
-              <IconButton icon="close" size={20} onPress={() => { setNoteModalVisible(false); setNoteText(''); }} />
-            </View>
-            <TextInput
-              mode="outlined"
-              label={t('orders.note')}
-              value={noteText}
-              onChangeText={setNoteText}
-              multiline
-              numberOfLines={4}
-              style={styles.noteInput}
-              outlineColor={theme.colors.outline}
-              activeOutlineColor={BRAND_COLOR}
-              autoFocus
-            />
-            <NoteAttachmentRow
-              attachment={noteAttachment}
-              onAttach={setNoteAttachment}
-              onRemove={() => setNoteAttachment(null)}
-              primaryColor={BRAND_COLOR}
-            />
-            <View style={[styles.modalActions, { flexDirection }]}>
-              <Button mode="outlined" onPress={() => { setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }} style={styles.modalBtn} textColor={theme.colors.onSurface}>
-                {t('common.cancel')}
-              </Button>
-              <Button
-                mode="contained"
-                onPress={handleSaveNote}
-                loading={savingNote}
-                disabled={(!noteText.trim() && !noteAttachment) || savingNote}
-                style={[styles.modalBtn, { backgroundColor: BRAND_COLOR }]}
-                textColor="#fff"
-              >
-                {t('common.save')}
-              </Button>
-            </View>
-          </KeyboardAvoidingView>
+          <View style={[styles.modalHeader, { flexDirection }]}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+              {t('orders.addNote')}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => { setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }} />
+          </View>
+          <TextInput
+            mode="outlined"
+            label={t('orders.note')}
+            value={noteText}
+            onChangeText={setNoteText}
+            multiline
+            numberOfLines={4}
+            style={styles.noteInput}
+            outlineColor={theme.colors.outline}
+            activeOutlineColor={BRAND_COLOR}
+            autoFocus
+          />
+          <NoteAttachmentRow
+            attachment={noteAttachment}
+            onAttach={setNoteAttachment}
+            onRemove={() => setNoteAttachment(null)}
+            primaryColor={BRAND_COLOR}
+          />
+          <View style={[styles.modalActions, { flexDirection }]}>
+            <Button mode="outlined" onPress={() => { setNoteModalVisible(false); setNoteText(''); setNoteAttachment(null); }} style={styles.modalBtn} textColor={theme.colors.onSurface}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              mode="contained"
+              onPress={handleSaveNote}
+              loading={savingNote}
+              disabled={(!noteText.trim() && !noteAttachment) || savingNote}
+              style={[styles.modalBtn, { backgroundColor: BRAND_COLOR }]}
+              textColor="#fff"
+            >
+              {t('common.save')}
+            </Button>
+          </View>
         </Modal>
       </Portal>
     </View>
@@ -1068,6 +1073,12 @@ const styles = StyleSheet.create({
     marginHorizontal: 20,
     borderRadius: borderRadius.xl,
     padding: 20,
+  },
+  noteModal: {
+    marginHorizontal: 20,
+    borderRadius: borderRadius.xl,
+    padding: 20,
+    maxHeight: '70%',
   },
   inventoryModal: {
     marginHorizontal: 16,

@@ -63,7 +63,14 @@ export const casesApi = {
     const response = await axiosInstance.post(ENDPOINTS.GET_CASE_SETTINGS, {
       organization,
     });
-    return response.data;
+    const data = response.data;
+    if (data?.formSections && !Array.isArray(data.formSections)) {
+      data.formSections = Object.values(data.formSections);
+    }
+    if (data?.formLayout && !Array.isArray(data.formLayout)) {
+      data.formLayout = Object.values(data.formLayout);
+    }
+    return data;
   },
 
   async create(organization: string, caseData: Partial<Case>, userName?: string, userId?: string): Promise<any> {

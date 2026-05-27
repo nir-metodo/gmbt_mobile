@@ -136,9 +136,13 @@ export const leadsApi = {
     const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_FORM_SETTINGS, { organization });
     const raw = response.data;
     if (raw?.error) return { sections: [], formLayout: [] };
+    let sections = raw?.sections;
+    if (sections && !Array.isArray(sections)) sections = Object.values(sections);
+    let formLayout = raw?.formLayout;
+    if (formLayout && !Array.isArray(formLayout)) formLayout = Object.values(formLayout);
     return {
-      sections: Array.isArray(raw?.sections) ? raw.sections : [],
-      formLayout: Array.isArray(raw?.formLayout) ? raw.formLayout : [],
+      sections: Array.isArray(sections) ? sections : [],
+      formLayout: Array.isArray(formLayout) ? formLayout : [],
     };
   },
 

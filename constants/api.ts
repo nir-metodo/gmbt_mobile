@@ -70,6 +70,9 @@ export const ENDPOINTS = {
   // Dynamic columns
   GET_DYNAMIC_COLUMNS: '/api/Webhooks/GetDynamicContactColumns',
 
+  // WhatsApp Numbers
+  GET_WHATSAPP_NUMBERS: '/api/Webhooks/GetWhatsAppNumbers',
+
   // Contacts pagination
   GET_CONTACTS_PAGINATED: '/api/Webhooks/GetAllContactsByOrg_Pagination_ByModifiedOn',
   DELETE_CONTACT_BY_ID: '/api/Webhooks/DeleteContactById',
@@ -88,6 +91,8 @@ export const ENDPOINTS = {
   CREATE_TASK: '/api/Webhooks/CreateTask',
   UPDATE_TASK: '/api/Webhooks/UpdateTask',
   DELETE_TASK: '/api/Webhooks/DeleteTask',
+  GET_TASK_REMINDER_DEFAULT_SETTING: '/api/Gambot/GetTaskReminderDefaultSetting',
+  UPDATE_TASK_REMINDER_DEFAULT_SETTING: '/api/Gambot/UpdateTaskReminderDefaultSetting',
 
   // Quotes
   GET_QUOTES: '/api/Webhooks/GetQuotesPaginated',
@@ -121,6 +126,7 @@ export const ENDPOINTS = {
   UPDATE_SETTINGS: '/api/Webhooks/UpdateSettings',
   GET_COMPANY_LOGO: '/api/Webhooks/GetCompanyLogo',
   GET_ORG_DISPLAY_NAME: '/api/Webhooks/GetOrgDisplayName',
+  GET_FEATURE_TOGGLES: '/api/Webhooks/GetFeatureToggles',
 
   // Timeline
   GET_TIMELINE: '/api/Webhooks/GetTimelineByPhoneNumber',
@@ -146,6 +152,9 @@ export const ENDPOINTS = {
   GET_SLA_BREACHES: '/api/Webhooks/GetSlaBreaches',
   DISMISS_SLA_BREACHES: '/api/Webhooks/DismissSlaBreaches',
   COMPLETE_TASK: '/api/Webhooks/CompleteTask',
+  GET_DAILY_CONVERSATION_REPORT: '/api/Webhooks/GetDailyConversationReport',
+  GET_DAILY_BOT_SUMMARY: '/api/Webhooks/GetDailyBotSummary',
+  GET_TEMPLATE_ANALYTICS: '/api/Webhooks/GetTemplateAnalytics',
 
   // Phone Calls
   GET_PHONE_CALLS: '/api/Webhooks/GetAllPhoneCallsPagination',
@@ -185,6 +194,11 @@ export const ENDPOINTS = {
   // Internal Messages
   GET_INTERNAL_MESSAGES: '/api/Webhooks/GetAllInternalMessages',
   MARK_MENTION_READ: '/api/Webhooks/MarkMentionAsRead',
+
+  // Lead Seen/Unseen tracking
+  GET_LEAD_SEEN_IDS: '/api/Webhooks/GetLeadSeenIds',
+  MARK_LEAD_SEEN: '/api/Webhooks/MarkLeadSeen',
+  CLEAR_LEAD_SEEN_IDS: '/api/Webhooks/ClearLeadSeenIds',
 
   // Saved Views
   GET_USER_VIEWS: '/api/Webhooks/GetUserViews',

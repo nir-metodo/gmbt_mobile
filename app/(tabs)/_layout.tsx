@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Tabs } from 'expo-router';
+import { Tabs, useSegments, usePathname } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 import { Badge, useTheme } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -95,6 +95,12 @@ export default function TabsLayout() {
   const visibleTabs = tabs.filter(isTabVisible);
   const hiddenTabs = tabs.filter((tab) => !isTabVisible(tab));
 
+  const segments = useSegments();
+  const pathname = usePathname();
+  const isInsideConversation = segments.includes('[phoneNumber]' as never) || 
+    (pathname.startsWith('/chats/') && pathname !== '/chats' && pathname !== '/chats/');
+
+  const hasOnlyMoreTab = visibleTabs.length === 1 && visibleTabs[0].name === 'more';
   const tabBarHeight = 60 + insets.bottom;
 
   return (
@@ -106,8 +112,9 @@ export default function TabsLayout() {
           {
             backgroundColor: theme.custom.tabBarBackground,
             borderTopColor: theme.custom.divider,
-            height: tabBarHeight,
-            paddingBottom: insets.bottom,
+            height: (isInsideConversation || hasOnlyMoreTab) ? 0 : tabBarHeight,
+            paddingBottom: (isInsideConversation || hasOnlyMoreTab) ? 0 : insets.bottom,
+            overflow: 'hidden' as const,
           },
         ],
         tabBarActiveTintColor: theme.custom.tabBarActive,

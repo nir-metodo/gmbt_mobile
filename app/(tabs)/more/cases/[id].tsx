@@ -235,6 +235,10 @@ export default function CaseDetailScreen() {
       Alert.alert(t('common.error'), t('errors.generic', 'אירעה שגיאה, נסה שוב'));
       return;
     }
+    if (!formContactName.trim()) {
+      Alert.alert(t('common.error'), t('cases.contactRequired', 'חובה לבחור איש קשר'));
+      return;
+    }
     if (!formTitle.trim()) {
       Alert.alert(t('common.error'), t('cases.titleRequired', 'יש להזין כותרת לפנייה'));
       return;
@@ -378,7 +382,7 @@ export default function CaseDetailScreen() {
       <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
         <View style={[styles.header, { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 4 }]}>
           <View style={[styles.headerRow, { flexDirection }]}>
-            <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} iconColor={theme.custom.headerText} size={24} onPress={() => router.back()} />
+            <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} iconColor={theme.custom.headerText} size={24} onPress={() => { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/more/cases'); }} />
             <Text variant="titleMedium" style={[styles.headerTitleText, { flex: 1, textAlign, color: theme.custom.headerText }]}>
               {t('cases.createCase', 'פנייה חדשה')}
             </Text>
@@ -395,20 +399,42 @@ export default function CaseDetailScreen() {
               </View>
               <Pressable
                 onPress={() => setContactLookupVisible(true)}
-                style={[styles.contactLookupBtn, { backgroundColor: withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
+                style={[styles.contactLookupBtn, { backgroundColor: formContactName ? withAlpha('#2e6155', 0.08) : withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
               >
                 <View style={[styles.contactLookupIconCircle, { backgroundColor: '#2e6155' }]}>
-                  <MaterialCommunityIcons name="account-search" size={20} color="#FFFFFF" />
+                  <MaterialCommunityIcons name={formContactName ? 'account-check' : 'account-search'} size={20} color="#FFFFFF" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ color: formContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 15, fontWeight: formContactName ? '600' : '400', textAlign }} numberOfLines={1}>
-                    {formContactName ? `${formContactName}${formContactPhone ? `  •  ${formContactPhone}` : ''}` : t('common.selectContact', 'בחר איש קשר')}
-                  </Text>
+                  {formContactName ? (
+                    <>
+                      <Text style={{ color: theme.colors.onSurface, fontSize: 15, fontWeight: '600', textAlign }} numberOfLines={1}>
+                        {formContactName}
+                      </Text>
+                      {formContactPhone ? (
+                        <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, marginTop: 2, textAlign }} numberOfLines={1}>
+                          {formContactPhone}
+                        </Text>
+                      ) : null}
+                    </>
+                  ) : (
+                    <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 15, textAlign }}>
+                      {t('common.selectContact', 'חפש ובחר איש קשר')}
+                    </Text>
+                  )}
                 </View>
-                <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+                {formContactName ? (
+                  <Pressable hitSlop={8} onPress={() => { setFormContactName(''); setFormContactPhone(''); setFormContactId(''); }}>
+                    <MaterialCommunityIcons name="close-circle" size={20} color={theme.colors.onSurfaceVariant} />
+                  </Pressable>
+                ) : (
+                  <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+                )}
               </Pressable>
-              <CaseFormField label={t('cases.contactName', 'שם איש קשר')} value={formContactName} onChangeText={setFormContactName} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
-              <CaseFormField label={t('cases.contactPhone', 'טלפון')} value={formContactPhone} onChangeText={setFormContactPhone} theme={theme} textAlign={textAlign} writingDirection={writingDirection} keyboardType="phone-pad" />
+              {!formContactName && (
+                <Text style={{ color: '#e53935', fontSize: 12, marginTop: -8, marginBottom: 8, textAlign }}>
+                  * {t('cases.contactRequired', 'חובה לבחור איש קשר')}
+                </Text>
+              )}
             </View>
 
             {/* ── Case Details Section ── */}
@@ -453,19 +479,21 @@ export default function CaseDetailScreen() {
             </View>
 
             {/* ── Custom Fields Section ── */}
-            <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
-              <DynamicFieldsSectionForm
-                sections={caseFormSections}
-                values={formDynamicFields}
-                onChange={(key, val) => setFormDynamicFields((prev) => ({ ...prev, [key]: val }))}
-                lang={lang}
-                formLayout={caseFormLayout}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-                flexDirection={flexDirection}
-              />
-            </View>
+            {caseFormSections.length > 0 && (
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <DynamicFieldsSectionForm
+                  sections={caseFormSections}
+                  values={formDynamicFields}
+                  onChange={(key, val) => setFormDynamicFields((prev) => ({ ...prev, [key]: val }))}
+                  lang={lang}
+                  formLayout={caseFormLayout}
+                  theme={theme}
+                  textAlign={textAlign}
+                  writingDirection={writingDirection}
+                  flexDirection={flexDirection}
+                />
+              </View>
+            )}
 
             <View style={{ height: 100 }} />
           </ScrollView>
@@ -473,14 +501,14 @@ export default function CaseDetailScreen() {
           {/* ── Sticky Footer ── */}
           <View style={[styles.stickyFooter, { paddingBottom: insets.bottom + 12, borderTopColor: theme.colors.outline, backgroundColor: theme.colors.surface }]}>
             <View style={{ flex: 1 }} />
-            <Button mode="outlined" onPress={() => router.back()} style={styles.footerBtn} textColor={theme.colors.onSurface}>{t('common.cancel')}</Button>
+            <Button mode="outlined" onPress={() => { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/more/cases'); }} style={styles.footerBtn} textColor={theme.colors.onSurface}>{t('common.cancel')}</Button>
             <Button
               mode="contained"
               onPress={handleCreate}
               style={[styles.footerBtn, { backgroundColor: '#2e6155' }]}
               textColor="#fff"
               loading={saving}
-              disabled={saving || !formTitle.trim()}
+              disabled={saving || !formTitle.trim() || !formContactName.trim()}
             >
               {t('common.save')}
             </Button>
@@ -969,10 +997,10 @@ export default function CaseDetailScreen() {
                 })
                 .slice(0, 15).map((ev: any, idx: number) => (
                 <View key={ev.id || idx} style={[styles.timelineEvent, { borderStartColor: '#2e615540' }]}>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurface, lineHeight: 20 }}>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurface, lineHeight: 20, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }}>
                     {ev.notes || ev.description || ev.text || ev.note || ''}
                   </Text>
-                  <View style={[{ flexDirection: 'row', gap: 8, marginTop: 4 }]}>
+                  <View style={[{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginTop: 4 }]}>
                     {ev.createdByName || ev.userName ? (
                       <Text variant="labelSmall" style={{ color: '#2e6155', fontWeight: '600' }}>
                         {ev.createdByName || ev.userName}
@@ -1034,17 +1062,36 @@ export default function CaseDetailScreen() {
                 </View>
                 <Pressable
                   onPress={() => setContactLookupVisible(true)}
-                  style={[styles.contactLookupBtn, { backgroundColor: withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
+                  style={[styles.contactLookupBtn, { backgroundColor: formContactName ? withAlpha('#2e6155', 0.08) : withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
                 >
                   <View style={[styles.contactLookupIconCircle, { backgroundColor: '#2e6155' }]}>
-                    <MaterialCommunityIcons name="account-search" size={20} color="#FFFFFF" />
+                    <MaterialCommunityIcons name={formContactName ? 'account-check' : 'account-search'} size={20} color="#FFFFFF" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={{ color: formContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 15, fontWeight: formContactName ? '600' : '400', textAlign }} numberOfLines={1}>
-                      {formContactName ? `${formContactName}${formContactPhone ? `  •  ${formContactPhone}` : ''}` : t('common.selectContact')}
-                    </Text>
+                    {formContactName ? (
+                      <>
+                        <Text style={{ color: theme.colors.onSurface, fontSize: 15, fontWeight: '600', textAlign }} numberOfLines={1}>
+                          {formContactName}
+                        </Text>
+                        {formContactPhone ? (
+                          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, marginTop: 2, textAlign }} numberOfLines={1}>
+                            {formContactPhone}
+                          </Text>
+                        ) : null}
+                      </>
+                    ) : (
+                      <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 15, textAlign }}>
+                        {t('common.selectContact', 'חפש ובחר איש קשר')}
+                      </Text>
+                    )}
                   </View>
-                  <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+                  {formContactName ? (
+                    <Pressable hitSlop={8} onPress={() => { setFormContactName(''); setFormContactPhone(''); setFormContactId(''); }}>
+                      <MaterialCommunityIcons name="close-circle" size={20} color={theme.colors.onSurfaceVariant} />
+                    </Pressable>
+                  ) : (
+                    <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+                  )}
                 </Pressable>
               </View>
 
@@ -1305,19 +1352,21 @@ export default function CaseDetailScreen() {
               </View>
 
               {/* ── Custom Fields Section ── */}
-              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
-              <DynamicFieldsSectionForm
-                sections={caseFormSections}
-                values={formDynamicFields}
-                onChange={(k, v) => setFormDynamicFields((prev) => ({ ...prev, [k]: v }))}
-                lang={lang}
-                formLayout={caseFormLayout}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-                flexDirection={flexDirection}
-              />
-              </View>
+              {caseFormSections.length > 0 && (
+                <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
+                  <DynamicFieldsSectionForm
+                    sections={caseFormSections}
+                    values={formDynamicFields}
+                    onChange={(k, v) => setFormDynamicFields((prev) => ({ ...prev, [k]: v }))}
+                    lang={lang}
+                    formLayout={caseFormLayout}
+                    theme={theme}
+                    textAlign={textAlign}
+                    writingDirection={writingDirection}
+                    flexDirection={flexDirection}
+                  />
+                </View>
+              )}
 
               <View style={[styles.editModalActions, { flexDirection }]}>
                 <Pressable onPress={handleDelete} style={[styles.deleteBtn, { backgroundColor: withAlpha(theme.colors.error, 0.08) }]}>
@@ -1370,7 +1419,7 @@ export default function CaseDetailScreen() {
               multiline
               numberOfLines={4}
               autoFocus
-              style={[styles.formInput, { textAlign }]}
+              style={[styles.formInput, { textAlign, writingDirection }]}
               outlineColor={theme.colors.outline}
               activeOutlineColor={theme.colors.primary}
             />

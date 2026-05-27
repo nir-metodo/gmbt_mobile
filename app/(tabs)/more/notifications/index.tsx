@@ -47,11 +47,11 @@ function SettingRow({
   disabled,
 }: SettingRowProps) {
   return (
-    <View style={[styles.row, { flexDirection: 'row' }]}>
+    <View style={[styles.row, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
       <View style={[styles.iconWrap, { backgroundColor: iconColor + '15' }]}>
         <MaterialCommunityIcons name={icon as any} size={20} color={iconColor} />
       </View>
-      <View style={[styles.textWrap, { alignItems: 'flex-start' }]}>
+      <View style={[styles.textWrap, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
         <Text variant="bodyLarge" style={{ color: themeColors.onSurface }}>
           {label}
         </Text>
@@ -158,6 +158,22 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('incomingMessages', v)}
             disabled={saving === 'incomingMessages'}
           />
+          {settings.incomingMessages && (
+            <>
+              <Divider style={styles.divider} />
+              <SettingRow
+                icon="account-filter-outline"
+                iconColor="#2A9D8F"
+                label={t('pushSettings.onlyMyContacts', 'רק אנשי קשר שלי')}
+                description={t('pushSettings.onlyMyContactsDesc', 'קבל התראות רק על הודעות מאנשי קשר שאני הבעלים שלהם')}
+                isRTL={isRTL}
+                themeColors={theme.colors}
+                value={settings.messagesOnlyMyContacts}
+                onToggle={(v) => handleToggle('messagesOnlyMyContacts', v)}
+                disabled={saving === 'messagesOnlyMyContacts'}
+              />
+            </>
+          )}
         </Surface>
 
         {/* Leads */}
@@ -186,6 +202,18 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('leadAssignedToMe', v)}
             disabled={saving === 'leadAssignedToMe'}
           />
+          <Divider style={styles.divider} />
+          <SettingRow
+            icon="account-filter-outline"
+            iconColor="#FF9800"
+            label={t('pushSettings.onlyMyLeads', 'רק לידים שלי')}
+            description={t('pushSettings.onlyMyLeadsDesc', 'קבל התראות רק על לידים שאני הבעלים שלהם')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.leadsOnlyMyLeads}
+            onToggle={(v) => handleToggle('leadsOnlyMyLeads', v)}
+            disabled={saving === 'leadsOnlyMyLeads'}
+          />
         </Surface>
 
         {/* Cases */}
@@ -213,6 +241,34 @@ export default function NotificationsSettingsScreen() {
             value={settings.caseAssignedToMe}
             onToggle={(v) => handleToggle('caseAssignedToMe', v)}
             disabled={saving === 'caseAssignedToMe'}
+          />
+          <Divider style={styles.divider} />
+          <SettingRow
+            icon="account-filter-outline"
+            iconColor="#FF6B35"
+            label={t('pushSettings.onlyMyCases', 'רק פניות שלי')}
+            description={t('pushSettings.onlyMyCasesDesc', 'קבל התראות רק על פניות שאני הבעלים שלהן')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.casesOnlyMyCases}
+            onToggle={(v) => handleToggle('casesOnlyMyCases', v)}
+            disabled={saving === 'casesOnlyMyCases'}
+          />
+        </Surface>
+
+        {/* Quotes & Orders */}
+        <SectionHeader title={t('pushSettings.ordersSection', 'הצעות מחיר והזמנות')} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon="file-document-outline"
+            iconColor="#0891b2"
+            label={t('pushSettings.newOrderCreated', 'הצעת מחיר / הזמנה חדשה')}
+            description={t('pushSettings.newOrderCreatedDesc', 'קבל התראה כשנוצרת הצעת מחיר או הזמנה חדשה')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.newOrderCreated}
+            onToggle={(v) => handleToggle('newOrderCreated', v)}
+            disabled={saving === 'newOrderCreated'}
           />
         </Surface>
 

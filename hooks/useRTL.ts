@@ -8,7 +8,8 @@ export function useRTL() {
   return {
     isRTL,
     textAlign: isRTL ? 'right' as const : 'left' as const,
-    flexDirection: 'row' as const,
+    flexDirection: isRTL ? 'row-reverse' as const : 'row' as const,
     writingDirection: isRTL ? 'rtl' as const : 'ltr' as const,
+    alignSelf: isRTL ? 'flex-end' as const : 'flex-start' as const,
   };
 }

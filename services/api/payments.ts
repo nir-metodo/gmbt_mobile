@@ -57,6 +57,8 @@ export interface Transaction {
   createdAt?: { _seconds: number } | string;
   paidAt?: { _seconds: number } | string;
   updatedAt?: { _seconds: number } | string;
+  viewCount?: number;
+  lastViewedAt?: string;
 }
 
 export const paymentsApi = {

@@ -1,3 +1,16 @@
+export interface WabaNumberInfo {
+  PhoneNumberId?: string;
+  phoneNumberId?: string;
+  DisplayNumber?: string;
+  displayNumber?: string;
+  Label?: string;
+  label?: string;
+  Color?: string;
+  color?: string;
+  DefaultTemplateId?: string;
+  defaultTemplateId?: string;
+}
+
 export interface User {
   fullname: string;
   email: string;
@@ -5,7 +18,8 @@ export interface User {
   userId: string;
   organization: string;
   wabaNumber: string | null;
-  wabaNumbers?: string[];
+  wabaNumbers?: WabaNumberInfo[];
+  assignedWhatsAppNumbers?: string[];
   timeZone: string | null;
   phoneNumber: string | null;
   uID: string | null;
@@ -118,6 +132,8 @@ export interface Chat {
   caseStageName?: string;
   caseStageColor?: string;
   isCTWA?: boolean;
+  lastFromNumberId?: string;
+  wabaPhoneNumberId?: string;
 }
 
 export interface Lead {
@@ -288,12 +304,18 @@ export interface Quote {
   showSignatureLine?: boolean;
   signers?: Array<{ name: string; role: string }>;
   additionalContacts?: Array<{ name: string; phone: string; email: string }>;
+  showShipping?: boolean;
+  shipping?: { address?: string; city?: string; floor?: string; elevator?: boolean; notes?: string };
+  showBankDetails?: boolean;
+  bankDetails?: { bankName?: string; branchNumber?: string; accountNumber?: string; accountName?: string };
   branding?: any;
   createdOn?: string;
   modifiedOn?: string;
   createdAt?: string;
   updatedAt?: string;
   sentAt?: string;
+  viewCount?: number;
+  lastViewedAt?: string;
 }
 
 export interface QuoteItem {

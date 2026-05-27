@@ -8,10 +8,14 @@ import { ENDPOINTS } from '../constants/api';
 
 export interface PushNotificationSettings {
   incomingMessages: boolean;
+  messagesOnlyMyContacts: boolean;
   newLeadCreated: boolean;
   leadAssignedToMe: boolean;
+  leadsOnlyMyLeads: boolean;
   newCaseCreated: boolean;
   caseAssignedToMe: boolean;
+  casesOnlyMyCases: boolean;
+  newOrderCreated: boolean;
   taskReminder: boolean;
   taskAssignedToMe: boolean;
   incomingCall: boolean;
@@ -19,10 +23,14 @@ export interface PushNotificationSettings {
 
 export const DEFAULT_PUSH_SETTINGS: PushNotificationSettings = {
   incomingMessages: true,
+  messagesOnlyMyContacts: false,
   newLeadCreated: true,
   leadAssignedToMe: true,
+  leadsOnlyMyLeads: false,
   newCaseCreated: true,
   caseAssignedToMe: true,
+  casesOnlyMyCases: false,
+  newOrderCreated: true,
   taskReminder: true,
   taskAssignedToMe: true,
   incomingCall: true,

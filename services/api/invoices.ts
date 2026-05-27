@@ -33,6 +33,8 @@ export interface Invoice {
   relatedQuoteId?: string;
   createdAt?: string;
   updatedAt?: string;
+  viewCount?: number;
+  lastViewedAt?: string;
 }
 
 export const DOCUMENT_TYPES = [

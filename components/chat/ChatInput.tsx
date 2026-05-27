@@ -22,6 +22,7 @@ import { Audio } from 'expo-av';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRTL } from '../../hooks/useRTL';
+import type { WabaNumberInfo } from '../../types';
 
 export interface ChatInputRef {
   insertText: (text: string) => void;
@@ -54,7 +55,7 @@ interface ChatInputProps {
   onCancelReply?: () => void;
   onTextChange?: (text: string) => void;
   activeWabaNumber?: string | null;
-  wabaNumbers?: string[];
+  wabaNumbers?: WabaNumberInfo[];
   onChangeWabaNumber?: (num: string) => void;
 }
 
@@ -136,16 +137,27 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
     setText('');
   }, [text, isSending, onSend]);
 
+  const permissionGrantedRef = useRef(false);
+
+  useEffect(() => {
+    Audio.requestPermissionsAsync().then(({ status }) => {
+      permissionGrantedRef.current = status === 'granted';
+    });
+  }, []);
+
   const startRecording = useCallback(async () => {
     if (!onVoiceMessage) return;
     try {
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert(
-          t('common.permissionDenied', 'הרשאה נדרשת'),
-          t('chats.micPermission', 'יש לאפשר גישה למיקרופון בהגדרות'),
-        );
-        return;
+      if (!permissionGrantedRef.current) {
+        const { status } = await Audio.requestPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert(
+            t('common.permissionDenied', 'הרשאה נדרשת'),
+            t('chats.micPermission', 'יש לאפשר גישה למיקרופון בהגדרות'),
+          );
+          return;
+        }
+        permissionGrantedRef.current = true;
       }
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
@@ -192,7 +204,8 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   }, [recordingStartMs, onVoiceMessage]);
 
   const hasMultipleNumbers = wabaNumbers && wabaNumbers.length > 1;
-  const displayNumber = activeWabaNumber ? activeWabaNumber.slice(-4) : '';
+  const activeNumInfo = wabaNumbers?.find((n) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
+  const displayNumber = activeNumInfo?.Label || activeNumInfo?.label || activeNumInfo?.DisplayNumber || activeNumInfo?.displayNumber || (activeWabaNumber ? activeWabaNumber.slice(-4) : '');
 
   return (
     <View
@@ -263,22 +276,26 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
           >
             <MaterialCommunityIcons name="phone-outline" size={13} color={theme.colors.primary} />
             <Text style={{ fontSize: 11, color: theme.colors.primary, fontWeight: '600' }}>
-              {activeWabaNumber || t('chats.selectNumber', 'בחר מספר')}
+              {displayNumber || t('chats.selectNumber', 'בחר מספר')}
             </Text>
             <MaterialCommunityIcons name="chevron-down" size={14} color={theme.colors.primary} />
           </Pressable>
           {showNumberPicker && (
             <View style={[styles.numberDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline }]}>
-              {wabaNumbers!.map((num) => (
-                <Pressable
-                  key={num}
-                  onPress={() => { onChangeWabaNumber?.(num); setShowNumberPicker(false); }}
-                  style={({ pressed }) => [styles.numberDropdownItem, pressed && { backgroundColor: theme.colors.surfaceVariant }, num === activeWabaNumber && { backgroundColor: theme.dark ? '#1e3a32' : '#d1fae5' }]}
-                >
-                  <MaterialCommunityIcons name={num === activeWabaNumber ? 'check-circle' : 'circle-outline'} size={16} color={theme.colors.primary} />
-                  <Text style={{ fontSize: 13, color: theme.colors.onSurface, marginStart: 8 }}>{num}</Text>
-                </Pressable>
-              ))}
+              {wabaNumbers!.map((num) => {
+                const id = num.PhoneNumberId || num.phoneNumberId || '';
+                const numLabel = num.Label || num.label || num.DisplayNumber || num.displayNumber || id;
+                return (
+                  <Pressable
+                    key={id}
+                    onPress={() => { onChangeWabaNumber?.(id); setShowNumberPicker(false); }}
+                    style={({ pressed }) => [styles.numberDropdownItem, pressed && { backgroundColor: theme.colors.surfaceVariant }, id === activeWabaNumber && { backgroundColor: theme.dark ? '#1e3a32' : '#d1fae5' }]}
+                  >
+                    <MaterialCommunityIcons name={id === activeWabaNumber ? 'check-circle' : 'circle-outline'} size={16} color={theme.colors.primary} />
+                    <Text style={{ fontSize: 13, color: theme.colors.onSurface, marginStart: 8 }}>{numLabel}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
           )}
         </View>
@@ -304,7 +321,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         </View>
       )}
 
-      <View style={styles.row}>
+      <View style={[styles.row, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
         {/* Note toggle */}
         {!isRecording && (
           <Pressable
@@ -330,6 +347,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             style={[
               styles.inputContainer,
               {
+                flexDirection: isRTL ? 'row-reverse' : 'row',
                 backgroundColor: isInternalNote
                   ? (theme.dark ? '#3E3500' : '#FFF9C4')
                   : (theme.dark ? '#2a3942' : '#FFFFFF'),
@@ -361,6 +379,9 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               multiline
               maxLength={4096}
               editable={!disabled}
+              blurOnSubmit={false}
+              returnKeyType="send"
+              onSubmitEditing={handleSend}
               style={[
                 styles.input,
                 {
@@ -396,7 +417,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               { backgroundColor: pressed ? '#1a7a5e' : '#2e6155', opacity: isSending ? 0.6 : 1 },
             ]}
           >
-            <MaterialCommunityIcons name="send" size={20} color="#FFFFFF" style={{ marginLeft: 2 }} />
+            <MaterialCommunityIcons name="send" size={20} color="#FFFFFF" style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
           </Pressable>
         ) : isRecording ? (
           <Pressable
@@ -426,6 +447,7 @@ ChatInput.displayName = 'ChatInput';
 
 const styles = StyleSheet.create({
   outerContainer: {
+    paddingTop: 4,
   },
   replyPreview: {
     flexDirection: 'row',
@@ -547,7 +569,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   row: {
-    flexDirection: 'row',
     alignItems: 'flex-end',
     paddingHorizontal: 6,
     paddingTop: 6,
@@ -563,7 +584,6 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     flex: 1,
-    flexDirection: 'row',
     alignItems: 'flex-end',
     borderRadius: 24,
     borderWidth: 1.5,

@@ -52,6 +52,8 @@ export const authApi = {
       userId: data.userCredential?.Uid || userData.uID,
       organization: isInfoUser ? (organization || '') : (userData.Organization || userData.organization),
       wabaNumber: userData.wabaNumber || null,
+      wabaNumbers: userData.wabaNumbers || undefined,
+      assignedWhatsAppNumbers: userData.assignedWhatsAppNumbers || undefined,
       timeZone: userData?.timeZone || null,
       phoneNumber: userData?.PhoneNumber || userData?.phoneNumber || null,
       uID: userData?.uID || null,

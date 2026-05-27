@@ -21,7 +21,6 @@ import {
   Divider,
   IconButton,
   Menu,
-  Portal,
   Surface,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -949,12 +948,11 @@ export default function LeadDetailScreen() {
       </ScrollView>
 
       {/* Stage picker modal */}
-      <Portal>
-        <Modal
-          visible={stagePickerVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setStagePickerVisible(false)}
+      <Modal
+        visible={stagePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setStagePickerVisible(false)}
         >
           <Pressable
             style={styles.stagePickerOverlay}
@@ -1007,26 +1005,24 @@ export default function LeadDetailScreen() {
               })}
             </Pressable>
           </Pressable>
-        </Modal>
-      </Portal>
+      </Modal>
 
       {/* Edit modal */}
-      <Portal>
-        <Modal
-          visible={editVisible}
-          animationType="slide"
-          presentationStyle="pageSheet"
-          onRequestClose={() => {
-            if (isNew) router.back();
-            else setEditVisible(false);
-          }}
-        >
+      <Modal
+        visible={editVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          if (isNew) { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/leads'); }
+          else setEditVisible(false);
+        }}
+      >
           <KeyboardAvoidingView
             behavior="padding"
             style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
           >
             <View style={[styles.modalHeader, { borderBottomColor: theme.colors.outline, flexDirection }]}>
-              <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => { if (isNew) router.back(); else setEditVisible(false); }} style={{ margin: 0 }} />
+              <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => { if (isNew) { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/leads'); } else setEditVisible(false); }} style={{ margin: 0 }} />
               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
                 {isNew ? t('leads.addLead') : t('leads.editLead')}
               </Text>
@@ -1548,19 +1544,21 @@ export default function LeadDetailScreen() {
               )}
 
               {/* ── Custom Fields Section ── */}
-              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
-              <DynamicFieldsSectionForm
-                sections={leadFormSections}
-                values={form as Record<string, any>}
-                onChange={(k, v) => updateField(k, v)}
-                lang={lang}
-                formLayout={leadFormLayout}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-                flexDirection={flexDirection}
-              />
-              </View>
+              {leadFormSections.length > 0 && (
+                <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                  <DynamicFieldsSectionForm
+                    sections={leadFormSections}
+                    values={form as Record<string, any>}
+                    onChange={(k, v) => updateField(k, v)}
+                    lang={lang}
+                    formLayout={leadFormLayout}
+                    theme={theme}
+                    textAlign={textAlign}
+                    writingDirection={writingDirection}
+                    flexDirection={flexDirection}
+                  />
+                </View>
+              )}
 
               {/* ── Scoring Section ── */}
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
@@ -1654,7 +1652,7 @@ export default function LeadDetailScreen() {
               <View style={{ flex: 1 }} />
               <Button
                 mode="outlined"
-                onPress={() => { if (isNew) router.back(); else setEditVisible(false); }}
+                onPress={() => { if (isNew) { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/leads'); } else setEditVisible(false); }}
                 style={styles.footerBtn}
                 textColor={theme.colors.onSurface}
               >
@@ -1672,17 +1670,15 @@ export default function LeadDetailScreen() {
               </Button>
             </View>
           </KeyboardAvoidingView>
-        </Modal>
-      </Portal>
+      </Modal>
 
       {/* Add Task modal */}
-      <Portal>
-        <Modal
-          visible={addTaskVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setAddTaskVisible(false)}
-        >
+      <Modal
+        visible={addTaskVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAddTaskVisible(false)}
+      >
           <Pressable
             style={styles.stagePickerOverlay}
             onPress={() => setAddTaskVisible(false)}
@@ -1744,8 +1740,7 @@ export default function LeadDetailScreen() {
               </View>
             </Pressable>
           </Pressable>
-        </Modal>
-      </Portal>
+      </Modal>
 
       <ContactLookup
         visible={contactLookupVisible}
@@ -1762,13 +1757,12 @@ export default function LeadDetailScreen() {
         onDismiss={() => setContactLookupVisible(false)}
       />
 
-      <Portal>
-        <Modal
-          visible={noteModalVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setNoteModalVisible(false)}
-        >
+      <Modal
+        visible={noteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNoteModalVisible(false)}
+      >
           <KeyboardAvoidingView
             behavior="padding"
             style={{ flex: 1 }}
@@ -1840,14 +1834,12 @@ export default function LeadDetailScreen() {
               </Pressable>
             </Pressable>
           </KeyboardAvoidingView>
-        </Modal>
-      </Portal>
+      </Modal>
 
       {/* Payment Modal */}
-      <Portal>
-        <Modal
-          visible={paymentModalVisible}
-          transparent
+      <Modal
+        visible={paymentModalVisible}
+        transparent
           animationType="fade"
           onRequestClose={() => setPaymentModalVisible(false)}
         >
@@ -2048,8 +2040,7 @@ export default function LeadDetailScreen() {
               )}
             </Pressable>
           </Pressable>
-        </Modal>
-      </Portal>
+      </Modal>
     </View>
   );
 }
@@ -2319,8 +2310,8 @@ function TimelineSection({
         return (
           <View key={id} style={[styles.timelineItem, { flexDirection }]}>
             <View style={[styles.timelineDot, { backgroundColor: color }]} />
-            <View style={[styles.timelineBody, { alignItems: 'flex-start' }]}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+            <View style={[styles.timelineBody, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
                 {icon ? <Text style={{ fontSize: 14 }}>{icon}</Text> : null}
                 {label ? (
                   <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
@@ -2329,7 +2320,7 @@ function TimelineSection({
                 ) : null}
               </View>
               {detail ? (
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', width: '100%' }}>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr', width: '100%' }}>
                   {detail}
                 </Text>
               ) : null}

@@ -4,7 +4,6 @@ import React, {
   useEffect,
   useRef,
   useMemo,
-  useLayoutEffect,
 } from 'react';
 import {
   View,
@@ -22,12 +21,12 @@ import {
   BackHandler,
   Keyboard,
 } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { Text, IconButton, Menu, Avatar, Button } from 'react-native-paper';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import {
   useRouter,
   useLocalSearchParams,
-  useNavigation,
   Stack,
 } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -58,8 +57,10 @@ import { tasksApi } from '../../../services/api/tasks';
 import { phoneCallsApi } from '../../../services/api/phoneCalls';
 import { makeGambotCall } from '../../../utils/phoneCall';
 import { prefetchMediaList } from '../../../services/mediaPrefetcher';
+import axiosInstance from '../../../services/api/axiosInstance';
+import { ENDPOINTS } from '../../../constants/api';
 import type { MediaType } from '../../../services/mediaCache';
-import type { Message, Template, QuickMessage } from '../../../types';
+import type { Message, Template, QuickMessage, WabaNumberInfo } from '../../../types';
 
 type ListItem =
   | {
@@ -71,17 +72,37 @@ type ListItem =
   | { kind: 'separator'; date: string; id: string }
   | { kind: 'timeline'; data: any; id: string };
 
-function getDateKey(timestamp?: string): string {
-  if (!timestamp) return '';
-  try {
-    return timestamp.split('T')[0];
-  } catch {
-    return '';
-  }
+function parseTimestamp(raw: any): number {
+  if (!raw) return 0;
+  if (typeof raw === 'number') return raw > 1e12 ? raw : raw * 1000;
+  if (typeof raw === 'object' && raw._seconds) return raw._seconds * 1000;
+  if (typeof raw === 'object' && raw.seconds) return raw.seconds * 1000;
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
 }
 
 function getTs(msg: Message): string {
-  return msg.createdOn || msg.timestamp || '';
+  const raw = (msg as any).createdOn || (msg as any).timestamp || '';
+  if (typeof raw === 'object') {
+    const ms = parseTimestamp(raw);
+    return ms > 0 ? new Date(ms).toISOString() : '';
+  }
+  return raw;
+}
+
+function getDateKey(timestamp?: string): string {
+  if (!timestamp) return '';
+  try {
+    if (typeof timestamp === 'object') {
+      const ms = parseTimestamp(timestamp);
+      return ms > 0 ? new Date(ms).toISOString().split('T')[0] : '';
+    }
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return '';
+    return d.toISOString().split('T')[0];
+  } catch {
+    return '';
+  }
 }
 
 export default function ChatConversationScreen() {
@@ -89,7 +110,6 @@ export default function ChatConversationScreen() {
     phoneNumber: string;
   }>();
   const router = useRouter();
-  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL } = useRTL();
@@ -116,6 +136,7 @@ export default function ChatConversationScreen() {
   const addMessage = useChatStore((s) => s.addMessage);
   const updateMessage = useChatStore((s) => s.updateMessage);
   const clearCurrentChat = useChatStore((s) => s.clearCurrentChat);
+  const addOrUpdateChat = useChatStore((s) => s.addOrUpdateChat);
   const activeWabaNumber = useChatStore((s) => s.activeWabaNumber);
   const setActiveWabaNumber = useChatStore((s) => s.setActiveWabaNumber);
 
@@ -140,7 +161,7 @@ export default function ChatConversationScreen() {
   const [showScheduleTimePicker, setShowScheduleTimePicker] = useState(false);
   const [selectedTemplateForVars, setSelectedTemplateForVars] = useState<Template | null>(null);
   const [templateVariableValues, setTemplateVariableValues] = useState<Record<number, string>>({});
-  const flatListRef = useRef<FlatList>(null);
+  const flatListRef = useRef<FlashList<ListItem>>(null);
   const chatInputRef = useRef<ChatInputRef>(null);
   const wsRef = useRef<WebSocketService | null>(null);
   const prevMessageCount = useRef(0);
@@ -204,17 +225,55 @@ export default function ChatConversationScreen() {
 
   const contactName = chat?.contactName || phoneNumber || '';
 
-  const wabaNumbers = user?.wabaNumbers || (user?.wabaNumber ? [user.wabaNumber] : []);
+  const [orgWabaNumbers, setOrgWabaNumbers] = useState<WabaNumberInfo[]>([]);
+  const assignedNums = user?.assignedWhatsAppNumbers || [];
+
+  // Fetch org numbers from API
+  useEffect(() => {
+    if (!user?.organization) return;
+    axiosInstance.get(ENDPOINTS.GET_WHATSAPP_NUMBERS, { params: { organization: user.organization } })
+      .then((res) => {
+        const nums: WabaNumberInfo[] = res.data?.Numbers || res.data?.numbers || [];
+        if (Array.isArray(nums) && nums.length > 0) {
+          setOrgWabaNumbers(nums);
+        }
+      }).catch(() => {});
+  }, [user?.organization]);
+
+  const allWabaNumbers: WabaNumberInfo[] = orgWabaNumbers.length > 0
+    ? orgWabaNumbers
+    : (user?.wabaNumbers || (user?.wabaNumber ? [{ PhoneNumberId: user.wabaNumber, DisplayNumber: user.wabaNumber }] : []));
+
+  // If user has assigned numbers, restrict wabaNumbers to only those they have access to
+  const wabaNumbers = useMemo((): WabaNumberInfo[] => {
+    if (assignedNums.length === 0) return allWabaNumbers;
+    return allWabaNumbers.filter((n) => {
+      const id = n.PhoneNumberId || n.phoneNumberId || '';
+      return assignedNums.includes(id);
+    });
+  }, [allWabaNumbers, assignedNums]);
 
   useEffect(() => {
-    if (!activeWabaNumber && user?.wabaNumber) {
-      setActiveWabaNumber(user.wabaNumber);
+    if (!activeWabaNumber) {
+      if (assignedNums.length > 0) {
+        setActiveWabaNumber(assignedNums[0]);
+      } else if (wabaNumbers.length > 0) {
+        setActiveWabaNumber(wabaNumbers[0].PhoneNumberId || wabaNumbers[0].phoneNumberId || user?.wabaNumber || '');
+      } else if (user?.wabaNumber) {
+        setActiveWabaNumber(user.wabaNumber);
+      }
     }
-  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber]);
+  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers]);
 
   const [conversationLive, setConversationLive] = useState<boolean | null>(null);
   const [recipientReplied24h, setRecipientReplied24h] = useState<boolean | null>(null);
   const [conversationExpiresAt, setConversationExpiresAt] = useState<string | null>(null);
+  const [countdownNow, setCountdownNow] = useState(Date.now());
+  const [chatStatus, setChatStatus] = useState<string>('');
+  const [chatCategory, setChatCategory] = useState<string>('');
+  const [orgCategories, setOrgCategories] = useState<string[]>([]);
+  const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [showCategoryMenu, setShowCategoryMenu] = useState(false);
 
   const fetchConversationStatus = useCallback(() => {
     if (!user?.organization || !phoneNumber) return;
@@ -227,6 +286,10 @@ export default function ChatConversationScreen() {
       }
       const expires = res?.ConversationExpiresAt ?? res?.conversationExpiresAt;
       setConversationExpiresAt(expires || null);
+      const status = res?.ConversationStatus ?? res?.conversationStatus ?? res?.status ?? '';
+      if (status) setChatStatus(status);
+      const cat = res?.Category ?? res?.category ?? '';
+      if (cat) setChatCategory(cat);
     }).catch(() => {
       setConversationLive(false);
       setRecipientReplied24h(false);
@@ -237,6 +300,45 @@ export default function ChatConversationScreen() {
   useEffect(() => {
     fetchConversationStatus();
   }, [fetchConversationStatus]);
+
+  // Tick countdown every second while conversation is live
+  useEffect(() => {
+    if (!conversationLive || !conversationExpiresAt) return;
+    const interval = setInterval(() => setCountdownNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [conversationLive, conversationExpiresAt]);
+
+  useEffect(() => {
+    if (chat?.lastConversationStatus && !chatStatus) setChatStatus(chat.lastConversationStatus);
+    if (chat?.lastConversationCategory && !chatCategory) setChatCategory(chat.lastConversationCategory);
+  }, [chat?.lastConversationStatus, chat?.lastConversationCategory]);
+
+  useEffect(() => {
+    if (!user?.organization) return;
+    chatsApi.getConversationCategories(user.organization)
+      .then((cats) => setOrgCategories(cats))
+      .catch(() => {});
+  }, [user?.organization]);
+
+  const handleChangeStatus = useCallback(async (newStatus: string) => {
+    if (!user?.organization || !phoneNumber) return;
+    setShowStatusMenu(false);
+    setChatStatus(newStatus);
+    addOrUpdateChat({ phoneNumber: phoneNumber as string, lastConversationStatus: newStatus, status: newStatus } as any);
+    try {
+      await chatsApi.updateConversationStatus(user.organization, phoneNumber as string, newStatus, user.uID || user.userId);
+    } catch { }
+  }, [user?.organization, phoneNumber, user?.uID, user?.userId, addOrUpdateChat]);
+
+  const handleChangeCategory = useCallback(async (newCategory: string) => {
+    if (!user?.organization || !phoneNumber) return;
+    setShowCategoryMenu(false);
+    setChatCategory(newCategory);
+    addOrUpdateChat({ phoneNumber: phoneNumber as string, lastConversationCategory: newCategory, category: newCategory } as any);
+    try {
+      await chatsApi.updateConversationCategory(user.organization, phoneNumber as string, newCategory);
+    } catch { }
+  }, [user?.organization, phoneNumber, addOrUpdateChat]);
 
   // Load telephony settings for outbound calling
   useEffect(() => {
@@ -341,20 +443,16 @@ export default function ChatConversationScreen() {
     setIsSendingTemplate(true);
     setShowTemplateSelector(false);
     try {
-      const axiosInst = require('../../../services/api/axiosInstance').default;
-      const { ENDPOINTS: EP } = require('../../../constants/api');
-
       let templateId = '';
-      const wabaArr: any[] = user?.wabaNumbers || [];
-      if (activeWabaNumber && wabaArr.length > 1) {
-        const selectedNum = wabaArr.find((n: any) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
+      if (activeWabaNumber && allWabaNumbers.length > 1) {
+        const selectedNum = allWabaNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
         if (selectedNum?.DefaultTemplateId || selectedNum?.defaultTemplateId) {
-          templateId = selectedNum.DefaultTemplateId || selectedNum.defaultTemplateId;
+          templateId = selectedNum.DefaultTemplateId || selectedNum.defaultTemplateId || '';
         }
       }
 
       if (!templateId) {
-        const defRes = await axiosInst.post(EP.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
+        const defRes = await axiosInstance.post(ENDPOINTS.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
         const tplAssignment = defRes.data?.Data?.templates?.openConversation;
         templateId = Array.isArray(tplAssignment?.templateId)
           ? (tplAssignment.templateId[0] || '')
@@ -386,7 +484,7 @@ export default function ChatConversationScreen() {
     } finally {
       setIsSendingTemplate(false);
     }
-  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, loadMessages, fetchConversationStatus, t]);
+  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, allWabaNumbers, loadMessages, fetchConversationStatus, t]);
 
   const getTemplateBodyText = useCallback((template: Template) => {
     const body = template.components?.find(
@@ -509,14 +607,7 @@ export default function ChatConversationScreen() {
     }
   }, [user, phoneNumber, scheduleText, scheduledDateTime, scheduleDate, scheduleTime, t, activeWabaNumber]);
 
-  // Hide tab bar in conversation
-  useLayoutEffect(() => {
-    const parent = navigation.getParent();
-    parent?.setOptions({ tabBarStyle: { display: 'none' } });
-    return () => {
-      parent?.setOptions({ tabBarStyle: undefined });
-    };
-  }, [navigation]);
+  // Tab bar is hidden by the layout via useSegments detection
 
   // Handle hardware back button
   useEffect(() => {
@@ -577,6 +668,20 @@ export default function ChatConversationScreen() {
         let hasInbound = false;
         msgs.forEach((msg) => {
           if (!msg?.messageId) return;
+
+          // Reactions: update original message instead of adding as separate bubble
+          if (msg.type === 'reaction') {
+            const targetId = msg.contextMessageId || msg.ContextMessageId || msg.reactionMessageId;
+            if (targetId) {
+              const emoji = msg.text || msg.body || msg.emoji || '';
+              const from = msg.from || '';
+              updateMessage(targetId, {
+                reactions: { [from]: emoji },
+              });
+            }
+            return;
+          }
+
           addMessage({
             ...msg,
             text: msg.text || msg.body || '',
@@ -616,26 +721,28 @@ export default function ChatConversationScreen() {
     };
   }, [user?.organization, phoneNumber, addMessage, updateMessage, markAsRead]);
 
-  // Auto-scroll on new messages
+  // Auto-scroll to bottom (newest) on new messages or initial load
   useEffect(() => {
     if (currentMessages.length > prevMessageCount.current) {
+      const isInitialLoad = prevMessageCount.current === 0;
       setTimeout(() => {
-        flatListRef.current?.scrollToOffset({
-          offset: 0,
-          animated: true,
-        });
-      }, 100);
+        flatListRef.current?.scrollToEnd({ animated: !isInitialLoad });
+      }, isInitialLoad ? 300 : 100);
     }
     prevMessageCount.current = currentMessages.length;
   }, [currentMessages.length]);
 
-  // Pre-cache media from visible messages in the background
+  // Pre-cache media from ALL messages in the background (without blocking message rendering)
+  const allMessages = useChatStore((s) => s.allMessages);
+  const prefetchedRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
-    if (currentMessages.length === 0) return;
+    if (allMessages.length === 0) return;
     const mediaItems: Array<{ url: string; type: MediaType }> = [];
-    for (const msg of currentMessages) {
+    for (const msg of allMessages) {
       const url = (msg as any).gmbt_mediaUrl || msg.mediaUrl || (msg as any).MediaUrl || (msg as any).media_url;
-      if (!url) continue;
+      if (!url || prefetchedRef.current.has(url)) continue;
+      prefetchedRef.current.add(url);
       const rawT = ((msg.type || (msg as any).messageType) || '').toLowerCase();
       let mediaType: MediaType = 'image';
       if (rawT === 'image' || rawT.startsWith('image/')) mediaType = 'image';
@@ -654,7 +761,7 @@ export default function ChatConversationScreen() {
     if (mediaItems.length > 0) {
       prefetchMediaList(mediaItems);
     }
-  }, [currentMessages]);
+  }, [allMessages]);
 
   // Collect all visual media messages for the gallery viewer
   const mediaMessages = useMemo(() => {
@@ -684,7 +791,7 @@ export default function ChatConversationScreen() {
     if (messageMode === 'internal') {
       msgs = msgs.filter((m) => m.type === 'internal' || (m as any).isInternalMessage === true);
     } else {
-      msgs = msgs.filter((m) => m.type !== 'internal' && (m as any).isInternalMessage !== true);
+      msgs = msgs.filter((m) => m.type !== 'internal' && (m as any).isInternalMessage !== true && m.type !== 'reaction');
     }
     if (starredFilter) {
       msgs = msgs.filter((m) => m.isStarred === true);
@@ -696,30 +803,35 @@ export default function ChatConversationScreen() {
       );
     }
 
-    // Build a combined list of messages + timeline entries sorted by timestamp
+    // Build a combined list sorted oldest first (non-inverted: data[0] = oldest = top of screen)
     type Combined =
-      | { ts: number; kind: 'message'; msg: Message }
-      | { ts: number; kind: 'timeline'; entry: any };
+      | { ts: number; idx: number; kind: 'message'; msg: Message }
+      | { ts: number; idx: number; kind: 'timeline'; entry: any };
 
     const combined: Combined[] = [
-      ...msgs.map((msg) => ({
-        ts: new Date(getTs(msg)).getTime() || 0,
+      ...msgs.map((msg, idx) => ({
+        ts: parseTimestamp((msg as any).createdOn || (msg as any).timestamp),
+        idx,
         kind: 'message' as const,
         msg,
       })),
-      ...timelineEntries.map((entry: any) => {
-        const entryTs = entry.createdOn || entry.timestamp || entry.CreatedOn || '';
+      ...timelineEntries.map((entry: any, idx: number) => {
         return {
-          ts: new Date(entryTs).getTime() || 0,
+          ts: parseTimestamp(entry.createdOn || entry.timestamp || entry.CreatedOn),
+          idx: msgs.length + idx,
           kind: 'timeline' as const,
           entry,
         };
       }),
-    ].sort((a, b) => b.ts - a.ts);
+    ].sort((a, b) => {
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      return a.idx - b.idx;
+    });
 
     const items: ListItem[] = [];
     const orgNumber = user?.wabaNumber || '';
-    let lastDateKey = '';
+
+    let lastDateKey: string | null = null;
 
     for (let i = 0; i < combined.length; i++) {
       const c = combined[i];
@@ -727,16 +839,11 @@ export default function ChatConversationScreen() {
       if (c.kind === 'timeline') {
         const entryTs = c.entry.createdOn || c.entry.timestamp || c.entry.CreatedOn || '';
         const dateKey = getDateKey(entryTs);
-        items.push({ kind: 'timeline', data: c.entry, id: `tl-${c.entry.timelineEntryId || c.entry.id || i}` });
-
-        const nextC = combined[i + 1];
-        const nextDateKey = nextC
-          ? getDateKey(nextC.kind === 'message' ? getTs(nextC.msg) : (nextC.entry.createdOn || nextC.entry.CreatedOn || ''))
-          : null;
-        if (dateKey !== nextDateKey && dateKey && !lastDateKey.includes(dateKey)) {
+        if (dateKey && dateKey !== lastDateKey) {
+          items.push({ kind: 'separator', date: formatMessageDateSeparator(entryTs, lang), id: `sep-${dateKey}` });
           lastDateKey = dateKey;
-          items.push({ kind: 'separator', date: formatMessageDateSeparator(entryTs, lang), id: `sep-${dateKey}-tl` });
         }
+        items.push({ kind: 'timeline', data: c.entry, id: `tl-${c.entry.timelineEntryId || c.entry.id || i}` });
         continue;
       }
 
@@ -748,26 +855,33 @@ export default function ChatConversationScreen() {
         msg.sentFromApp === true ||
         msg.to === phoneNumber;
 
-      const nextC = combined[i + 1];
-      const nextMsg = nextC?.kind === 'message' ? nextC.msg : null;
+      const currentDate = getDateKey(getTs(msg));
+      if (currentDate && currentDate !== lastDateKey) {
+        items.push({ kind: 'separator', date: formatMessageDateSeparator(getTs(msg), lang), id: `sep-${currentDate}` });
+        lastDateKey = currentDate;
+      }
+
+      const prevC = combined[i - 1];
+      const prevMsg = prevC?.kind === 'message' ? prevC.msg : null;
       const showTail =
-        !nextMsg ||
-        nextMsg.direction !== msg.direction ||
-        getDateKey(getTs(msg)) !== getDateKey(getTs(nextMsg));
+        !prevMsg ||
+        prevMsg.direction !== msg.direction ||
+        getDateKey(getTs(msg)) !== (prevMsg ? getDateKey(getTs(prevMsg)) : '');
 
       items.push({ kind: 'message', data: msg, isOutbound, showTail });
-
-      const currentDate = getDateKey(getTs(msg));
-      const nextDateKey = nextC
-        ? getDateKey(nextC.kind === 'message' ? getTs(nextC.msg) : (nextC.entry.createdOn || nextC.entry.CreatedOn || ''))
-        : null;
-      if (currentDate !== nextDateKey && currentDate) {
-        items.push({ kind: 'separator', date: formatMessageDateSeparator(getTs(msg), lang), id: `sep-${currentDate}` });
-      }
     }
 
     return items;
   }, [currentMessages, timelineEntries, lang, messageMode, starredFilter, searchQuery, user, phoneNumber]);
+
+  const handleQuotedPress = useCallback((contextMessageId: string) => {
+    const idx = listData.findIndex(
+      (item) => item.kind === 'message' && (item.data.messageId === contextMessageId || item.data.id === contextMessageId),
+    );
+    if (idx >= 0) {
+      flatListRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.5 });
+    }
+  }, [listData]);
 
   // Quick Actions sheet
   const handleQuickActionsPress = useCallback(() => {
@@ -839,10 +953,6 @@ export default function ChatConversationScreen() {
   const handleSend = useCallback(
     async (text: string) => {
       if (!user?.organization || !phoneNumber) return;
-      if (!isInternalNote && isWindowClosed) {
-        handleOpenConversation();
-        return;
-      }
       try {
         if (isInternalNote) {
           await sendInternalMessage(
@@ -871,7 +981,7 @@ export default function ChatConversationScreen() {
         Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
       }
     },
-    [user, phoneNumber, isInternalNote, isWindowClosed, handleOpenConversation, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber],
+    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber],
   );
 
   const sendPickedMedia = useCallback(async (uri: string, fileName: string, mimeType: string, fileSize?: number) => {
@@ -949,14 +1059,19 @@ export default function ChatConversationScreen() {
 
   const handleVoiceMessage = useCallback(async (uri: string, durationMs: number) => {
     if (!user?.organization || !phoneNumber) return;
-    const ext = Platform.OS === 'ios' ? 'm4a' : 'mp4';
-    const fileName = `voice_${Date.now()}.${ext}`;
-    const mimeType = Platform.OS === 'ios' ? 'audio/m4a' : 'audio/mp4';
+    const fileName = `voice_${Date.now()}.mp4`;
+    const mimeType = 'audio/mp4';
+    let fileSize = 0;
+    try {
+      const FileSystem = require('expo-file-system');
+      const fileInfo = await FileSystem.getInfoAsync(uri, { size: true });
+      if (fileInfo.exists && fileInfo.size) fileSize = fileInfo.size;
+    } catch {}
     try {
       await chatsApi.sendMediaMessage(
         user.organization,
         phoneNumber as string,
-        { uri, name: fileName, type: mimeType },
+        { uri, name: fileName, type: mimeType, size: fileSize },
         '',
         user?.uID || user?.userId || '',
         activeWabaNumber || user.wabaNumber || '',
@@ -1002,6 +1117,10 @@ export default function ChatConversationScreen() {
     setReplyToMessage(selectedMessage);
     setSelectedMessage(null);
   }, [selectedMessage]);
+
+  const handleSwipeToReply = useCallback((message: Message) => {
+    setReplyToMessage(message);
+  }, []);
 
   const handleSendReaction = useCallback(async (emoji: string) => {
     if (!user?.organization || !selectedMessage || !phoneNumber) return;
@@ -1082,12 +1201,10 @@ export default function ChatConversationScreen() {
   }, []);
 
   const handleScroll = useCallback((e: any) => {
-    const offsetY = e.nativeEvent.contentOffset.y;
-    setShowScrollBtn(offsetY > 400);
-  }, []);
-
-  const handleEndReached = useCallback(() => {
-    if (hasMoreMessages && !isLoadingOlderMessages) {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+    setShowScrollBtn(distanceFromBottom > 400);
+    if (contentOffset.y < 100 && hasMoreMessages && !isLoadingOlderMessages) {
       loadOlderMessages();
     }
   }, [hasMoreMessages, isLoadingOlderMessages, loadOlderMessages]);
@@ -1169,17 +1286,23 @@ export default function ChatConversationScreen() {
           theme={theme}
           onLongPress={handleMessageLongPress}
           onMediaPress={handleMediaPress}
-          wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers as any : undefined}
+          onQuotedPress={handleQuotedPress}
+          onSwipeToReply={handleSwipeToReply}
+          wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
         />
       );
     },
-    [theme, handleMessageLongPress, handleMediaPress, wabaNumbers],
+    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers],
   );
 
   const keyExtractor = useCallback((item: ListItem) => {
     if (item.kind === 'separator') return item.id;
     if (item.kind === 'timeline') return item.id;
     return item.data.messageId;
+  }, []);
+
+  const getItemType = useCallback((item: ListItem) => {
+    return item.kind;
   }, []);
 
   return (
@@ -1191,9 +1314,8 @@ export default function ChatConversationScreen() {
           styles.screen,
           { backgroundColor: theme.custom.chatBackground },
         ]}
-        behavior="padding"
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
-        enabled
       >
         {/* Header */}
         <View
@@ -1271,19 +1393,35 @@ export default function ChatConversationScreen() {
 
             <View style={styles.headerActions}>
               {conversationExpiresAt && conversationLive && (() => {
-                const diff = new Date(conversationExpiresAt).getTime() - Date.now();
+                const diff = new Date(conversationExpiresAt).getTime() - countdownNow;
                 if (diff <= 0) return null;
                 const hours = Math.floor(diff / 3600000);
                 const mins = Math.floor((diff % 3600000) / 60000);
+                const secs = Math.floor((diff % 60000) / 1000);
                 return (
                   <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, marginEnd: 2 }}>
-                    <MaterialCommunityIcons name="clock-outline" size={13} color="#90EE90" />
-                    <Text style={{ color: '#90EE90', fontSize: 11, fontWeight: '600', marginStart: 3 }}>
-                      {hours}:{mins.toString().padStart(2, '0')}
+                    <MaterialCommunityIcons name="clock-outline" size={13} color={diff < 3600000 ? '#FFA500' : '#90EE90'} />
+                    <Text style={{ color: diff < 3600000 ? '#FFA500' : '#90EE90', fontSize: 11, fontWeight: '600', marginStart: 3 }}>
+                      {hours}:{mins.toString().padStart(2, '0')}:{secs.toString().padStart(2, '0')}
                     </Text>
                   </View>
                 );
               })()}
+              <IconButton
+                icon={messageMode === 'internal' ? 'note-text' : 'note-text-outline'}
+                size={20}
+                iconColor={messageMode === 'internal' ? '#FFE082' : theme.custom.headerText}
+                onPress={() => {
+                  if (messageMode === 'internal') {
+                    setMessageMode('regular');
+                    setIsInternalNote(false);
+                  } else {
+                    setMessageMode('internal');
+                    setIsInternalNote(true);
+                  }
+                }}
+                style={messageMode === 'internal' ? { backgroundColor: 'rgba(255,224,130,0.2)' } : undefined}
+              />
               <IconButton
                 icon="magnify"
                 size={20}
@@ -1412,7 +1550,7 @@ export default function ChatConversationScreen() {
         {/* Message mode indicator */}
         {messageMode === 'internal' && (
           <Pressable
-            onPress={() => setMessageMode('regular')}
+            onPress={() => { setMessageMode('regular'); setIsInternalNote(false); }}
             style={[
               styles.modeBanner,
               { backgroundColor: theme.dark ? '#3E3500' : '#FFF3E0' },
@@ -1439,6 +1577,58 @@ export default function ChatConversationScreen() {
           </Pressable>
         )}
 
+        {/* Status / Category bar */}
+        <View style={[styles.chatMetaBar, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant || 'rgba(0,0,0,0.06)' }]}>
+          <Menu
+            visible={showStatusMenu}
+            onDismiss={() => setShowStatusMenu(false)}
+            anchor={
+              <Pressable onPress={() => setShowStatusMenu(true)} style={[styles.metaChip, { backgroundColor: chatStatus === 'Open' ? '#dcfce7' : chatStatus === 'In Process' ? '#fef9c3' : '#f1f5f9' }]}>
+                <MaterialCommunityIcons name="circle" size={8} color={chatStatus === 'Open' ? '#16a34a' : chatStatus === 'In Process' ? '#ca8a04' : '#64748b'} />
+                <Text style={{ fontSize: 11, fontWeight: '600', color: chatStatus === 'Open' ? '#16a34a' : chatStatus === 'In Process' ? '#ca8a04' : '#64748b', marginStart: 4 }}>
+                  {chatStatus === 'Open' ? t('chats.open', 'פתוח') : chatStatus === 'In Process' ? t('chats.inProcess', 'בטיפול') : chatStatus === 'Closed' ? t('chats.closed', 'סגור') : t('chats.status', 'סטטוס')}
+                </Text>
+                <MaterialCommunityIcons name="chevron-down" size={14} color="#64748b" style={{ marginStart: 2 }} />
+              </Pressable>
+            }
+            contentStyle={{ backgroundColor: theme.colors.surface }}
+          >
+            <Menu.Item title={t('chats.open', 'פתוח')} leadingIcon={chatStatus === 'Open' ? 'check' : undefined} onPress={() => handleChangeStatus('Open')} />
+            <Menu.Item title={t('chats.inProcess', 'בטיפול')} leadingIcon={chatStatus === 'In Process' ? 'check' : undefined} onPress={() => handleChangeStatus('In Process')} />
+            <Menu.Item title={t('chats.closed', 'סגור')} leadingIcon={chatStatus === 'Closed' ? 'check' : undefined} onPress={() => handleChangeStatus('Closed')} />
+          </Menu>
+
+          <Menu
+            visible={showCategoryMenu}
+            onDismiss={() => setShowCategoryMenu(false)}
+            anchor={
+              <Pressable onPress={() => setShowCategoryMenu(true)} style={[styles.metaChip, { backgroundColor: chatCategory ? '#e0e7ff' : '#f1f5f9' }]}>
+                <MaterialCommunityIcons name="tag-outline" size={12} color={chatCategory ? '#4f46e5' : '#64748b'} />
+                <Text style={{ fontSize: 11, fontWeight: '600', color: chatCategory ? '#4f46e5' : '#64748b', marginStart: 4 }} numberOfLines={1}>
+                  {chatCategory || t('chats.category', 'קטגוריה')}
+                </Text>
+                <MaterialCommunityIcons name="chevron-down" size={14} color="#64748b" style={{ marginStart: 2 }} />
+              </Pressable>
+            }
+            contentStyle={{ backgroundColor: theme.colors.surface }}
+          >
+            <Menu.Item title={t('chats.noCategory', 'ללא קטגוריה')} leadingIcon={!chatCategory ? 'check' : undefined} onPress={() => handleChangeCategory('')} />
+            {orgCategories.map((cat) => (
+              <Menu.Item key={cat} title={cat} leadingIcon={chatCategory === cat ? 'check' : undefined} onPress={() => handleChangeCategory(cat)} />
+            ))}
+          </Menu>
+
+          {chat?.tags && chat.tags.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginStart: 4, flexShrink: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 4 }}>
+              {chat.tags.map((tag) => (
+                <View key={tag} style={[styles.metaChip, { backgroundColor: '#fef3c7' }]}>
+                  <Text style={{ fontSize: 10, fontWeight: '600', color: '#92400e' }}>{tag}</Text>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+
         {/* Messages */}
         {isLoadingMessages ? (
           <View style={styles.loadingContainer}>
@@ -1448,25 +1638,21 @@ export default function ChatConversationScreen() {
             />
           </View>
         ) : (
-          <FlatList
+          <FlashList
             ref={flatListRef}
             data={listData}
             renderItem={renderItem}
             keyExtractor={keyExtractor}
-            inverted
+            getItemType={getItemType}
             onScroll={handleScroll}
             scrollEventThrottle={200}
-            onEndReached={handleEndReached}
             onEndReachedThreshold={0.3}
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
-            windowSize={11}
-            maxToRenderPerBatch={20}
-            initialNumToRender={25}
-            removeClippedSubviews={Platform.OS === 'android'}
-            updateCellsBatchingPeriod={30}
-            ListFooterComponent={
+            estimatedItemSize={72}
+            drawDistance={300}
+            ListHeaderComponent={
               isLoadingOlderMessages ? (
                 <View style={styles.olderMsgsLoader}>
                   <ActivityIndicator size="small" color={theme.colors.primary} />
@@ -1505,10 +1691,7 @@ export default function ChatConversationScreen() {
         {showScrollBtn && (
           <Pressable
             onPress={() =>
-              flatListRef.current?.scrollToOffset({
-                offset: 0,
-                animated: true,
-              })
+              flatListRef.current?.scrollToEnd({ animated: true })
             }
             style={[
               styles.scrollDownBtn,
@@ -1526,174 +1709,53 @@ export default function ChatConversationScreen() {
           </Pressable>
         )}
 
-        {/* Input / Conversation Closed Banner */}
-        {isStatusLoading ? (
-          <View
+        {/* Template send banner - when window is closed OR waiting for reply (no 24h window open) */}
+        {!isStatusLoading && (isWindowClosed || isWaitingForReply) ? (
+          <Pressable
+            onPress={handleOpenConversation}
             style={[
-              styles.closedBanner,
-              {
-                backgroundColor: theme.dark ? '#1a1a2e' : '#f8f9fa',
-                borderTopColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e2e8f0',
-                paddingBottom: Math.max(insets.bottom, 8),
-                alignItems: 'center',
-                justifyContent: 'center',
-                minHeight: 56,
-              },
+              styles.closedInlineBanner,
+              { backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1' },
             ]}
           >
-            <ActivityIndicator size="small" color={theme.colors.primary} />
-          </View>
-        ) : isWindowClosed ? (
-          <View
-            style={[
-              styles.closedBanner,
-              {
-                backgroundColor: theme.dark ? '#1a1a2e' : '#f8f9fa',
-                borderTopColor: theme.dark
-                  ? 'rgba(255,255,255,0.1)'
-                  : '#e2e8f0',
-                paddingBottom: Math.max(insets.bottom, 8),
-              },
-            ]}
-          >
-            <View style={styles.closedBannerHeader}>
-              <MaterialCommunityIcons
-                name="lock-clock"
-                size={20}
-                color={theme.dark ? '#94a3b8' : '#64748b'}
-              />
-              <Text
-                variant="bodyMedium"
-                style={{
-                  color: theme.dark ? '#94a3b8' : '#64748b',
-                  fontWeight: '600',
-                  flex: 1,
-                  textAlign: isRTL ? 'right' : 'left',
-                }}
-              >
-                {t('chats.conversationWindowClosed')}
-              </Text>
-            </View>
-            <View style={styles.closedBannerActions}>
-              <Pressable
-                onPress={handleOpenConversation}
-                style={({ pressed }) => [
-                  styles.closedBannerBtn,
-                  {
-                    backgroundColor: pressed
-                      ? '#1a7a5e'
-                      : '#25D366',
-                  },
-                ]}
-              >
-                <MaterialCommunityIcons
-                  name="message-text-outline"
-                  size={18}
-                  color="#fff"
-                />
-                <Text style={styles.closedBannerBtnText}>
-                  {t('chats.openConversation')}
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={handleOpenSchedule}
-                style={({ pressed }) => [
-                  styles.closedBannerBtn,
-                  {
-                    backgroundColor: pressed
-                      ? '#5b6370'
-                      : '#6b7280',
-                  },
-                ]}
-              >
-                <MaterialCommunityIcons
-                  name="clock-outline"
-                  size={18}
-                  color="#fff"
-                />
-                <Text style={styles.closedBannerBtnText}>
-                  {t('chats.scheduleMessage')}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : isWaitingForReply ? (
-          /* Waiting for user reply — 24h window is open but user hasn't replied yet */
-          <View
-            style={[
-              styles.closedBanner,
-              {
-                backgroundColor: theme.dark ? '#1a1f2e' : '#f8fafc',
-                borderTopColor: theme.dark ? 'rgba(255,255,255,0.08)' : '#e2e8f0',
-                paddingBottom: Math.max(insets.bottom, 8),
-              },
-            ]}
-          >
-            <View style={[styles.closedBannerHeader, { justifyContent: 'flex-start', gap: 10 }]}>
-              <Text style={{ fontSize: 24 }}>⏳</Text>
-              <View style={{ flex: 1 }}>
-                <Text
-                  variant="bodyMedium"
-                  style={{
-                    color: theme.dark ? '#94a3b8' : '#64748b',
-                    fontWeight: '600',
-                    textAlign: isRTL ? 'right' : 'left',
-                  }}
-                >
-                  {t('chats.waitingForReply') || 'ממתין לתגובת הלקוח'}
-                </Text>
-                <Text
-                  variant="bodySmall"
-                  style={{
-                    color: theme.dark ? '#64748b' : '#94a3b8',
-                    textAlign: isRTL ? 'right' : 'left',
-                    marginTop: 2,
-                  }}
-                >
-                  {t('chats.waitingForReplyDesc') || 'חלון ה-24 שעות יפתח לאחר שהלקוח יענה'}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.closedBannerActions}>
-              <Pressable
-                onPress={handleOpenSchedule}
-                style={({ pressed }) => [
-                  styles.closedBannerBtn,
-                  { backgroundColor: pressed ? '#5b6370' : '#6b7280' },
-                ]}
-              >
-                <MaterialCommunityIcons name="clock-outline" size={18} color="#fff" />
-                <Text style={styles.closedBannerBtnText}>
-                  {t('chats.scheduleMessage')}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
+            <MaterialCommunityIcons
+              name="message-text-outline"
+              size={18}
+              color={theme.dark ? '#ffd54f' : '#f57c00'}
+            />
+            <Text style={{ flex: 1, fontSize: 13, color: theme.dark ? '#ffd54f' : '#e65100', fontWeight: '600', textAlign: isRTL ? 'right' : 'left' }}>
+              {t('chats.tapToSendTemplate', 'לחץ לשליחת תבנית')}
+            </Text>
+            <MaterialCommunityIcons name="chevron-right" size={18} color={theme.dark ? '#ffd54f' : '#f57c00'} />
+          </Pressable>
         ) : (
-          <ChatInput
-            ref={chatInputRef}
-            onSend={handleSend}
-            onAttachmentPress={handleAttachment}
-            isInternalNote={isInternalNote}
-            onToggleInternalNote={() => {
-              setIsInternalNote((v) => !v);
-              setMentionedUsers([]);
-            }}
-            onQuickMessagePress={handleQuickActionsPress}
-            onVoiceMessage={handleVoiceMessage}
-            mentionedUsers={mentionedUsers}
-            onRemoveMention={(uid) => setMentionedUsers((prev) => prev.filter((u) => u.userId !== uid))}
-            isSending={isSending}
-            replyTo={replyToMessage ? {
-              text: replyToMessage.text || replyToMessage.body || '',
-              senderName: replyToMessage.senderName || replyToMessage.sentByName || (replyToMessage.direction?.toLowerCase() === 'outbound' ? (user?.fullname || '') : contactName),
-            } : null}
-            onCancelReply={() => setReplyToMessage(null)}
-            onTextChange={handleTextChange}
-            activeWabaNumber={activeWabaNumber}
-            wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
-            onChangeWabaNumber={setActiveWabaNumber}
-          />
+          <>
+            {/* Chat Input - visible only when customer replied (24h window open) */}
+            <ChatInput
+              ref={chatInputRef}
+              onSend={handleSend}
+              onAttachmentPress={handleAttachment}
+              isInternalNote={isInternalNote}
+              onToggleInternalNote={() => {
+                setIsInternalNote((v) => !v);
+                setMentionedUsers([]);
+              }}
+              onQuickMessagePress={handleQuickActionsPress}
+              onVoiceMessage={handleVoiceMessage}
+              mentionedUsers={mentionedUsers}
+              onRemoveMention={(uid) => setMentionedUsers((prev) => prev.filter((u) => u.userId !== uid))}
+              isSending={isSending}
+              replyTo={replyToMessage ? {
+                text: replyToMessage.text || replyToMessage.body || '',
+                senderName: replyToMessage.senderName || replyToMessage.sentByName || (replyToMessage.direction?.toLowerCase() === 'outbound' ? (user?.fullname || '') : contactName),
+              } : null}
+              onCancelReply={() => setReplyToMessage(null)}
+              onTextChange={handleTextChange}
+              activeWabaNumber={activeWabaNumber}
+              wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
+              onChangeWabaNumber={setActiveWabaNumber}
+            />
+          </>
         )}
 
         {/* Template Selector Modal */}
@@ -1940,8 +2002,9 @@ export default function ChatConversationScreen() {
           animationType="slide"
           onRequestClose={() => setShowScheduleModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View
+          <Pressable style={styles.modalOverlay} onPress={() => setShowScheduleModal(false)}>
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
               style={[
                 styles.templateSheet,
                 {
@@ -2088,8 +2151,8 @@ export default function ChatConversationScreen() {
                   </Text>
                 </Pressable>
               </View>
-            </View>
-          </View>
+            </Pressable>
+          </Pressable>
         </Modal>
 
         {/* Attachment Sheet - WhatsApp style */}
@@ -2306,8 +2369,8 @@ export default function ChatConversationScreen() {
           animationType="slide"
           onRequestClose={() => setShowQuickActionsSheet(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
+          <Pressable style={styles.modalOverlay} onPress={() => setShowQuickActionsSheet(false)}>
+            <Pressable style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]} onPress={(e) => e.stopPropagation()}>
               <View style={styles.actionSheetHandle} />
               <View style={styles.templateSheetHeader}>
                 <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
@@ -2339,8 +2402,8 @@ export default function ChatConversationScreen() {
                   </Text>
                 </Pressable>
               ))}
-            </View>
-          </View>
+            </Pressable>
+          </Pressable>
         </Modal>
 
         {/* Create Task Modal */}
@@ -2351,8 +2414,8 @@ export default function ChatConversationScreen() {
           onRequestClose={() => setShowCreateTaskModal(false)}
         >
           <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <View style={styles.modalOverlay}>
-              <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
+            <Pressable style={styles.modalOverlay} onPress={() => setShowCreateTaskModal(false)}>
+              <Pressable style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]} onPress={(e) => e.stopPropagation()}>
                 <View style={styles.actionSheetHandle} />
                 <View style={styles.templateSheetHeader}>
                   <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
@@ -2453,8 +2516,8 @@ export default function ChatConversationScreen() {
                     {t('tasks.addTask', 'הוסף')}
                   </Button>
                 </View>
-              </View>
-            </View>
+              </Pressable>
+            </Pressable>
           </KeyboardAvoidingView>
         </Modal>
 
@@ -2745,6 +2808,30 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontWeight: '600',
+  },
+  closedInlineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.05)',
+  },
+  chatMetaBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  metaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   closedBanner: {
     paddingHorizontal: 16,

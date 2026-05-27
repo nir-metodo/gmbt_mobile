@@ -152,6 +152,14 @@ export default function InvoicesScreen() {
                 </Text>
               </View>
             ) : null}
+            {item.viewCount && item.viewCount > 0 ? (
+              <View style={[styles.viewCountBadge, { flexDirection }]}>
+                <MaterialCommunityIcons name="eye-check-outline" size={12} color="#53bdeb" />
+                <Text variant="labelSmall" style={{ color: '#53bdeb', fontWeight: '600', fontSize: 10 }}>
+                  {item.viewCount}
+                </Text>
+              </View>
+            ) : null}
             {item.total != null ? (
               <Text variant="titleSmall" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
                 {item.currency === 'USD' ? '$' : item.currency === 'EUR' ? '€' : '₪'}
@@ -328,6 +336,7 @@ const styles = StyleSheet.create({
   },
   cardFooter: { alignItems: 'center', justifyContent: 'space-between', marginTop: 2 },
   metaRow: { alignItems: 'center', gap: 4 },
+  viewCountBadge: { alignItems: 'center', gap: 3, backgroundColor: 'rgba(83, 189, 235, 0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
   errorBanner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
   emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80, paddingHorizontal: 40 },
   fab: { position: 'absolute', borderRadius: 16 },

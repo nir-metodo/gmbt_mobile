@@ -6,6 +6,9 @@ import {
   RefreshControl,
   ScrollView,
   Linking,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import {
   Text,
@@ -18,6 +21,8 @@ import {
   Portal,
   Modal,
   Button,
+  TextInput,
+  FAB,
 } from 'react-native-paper';
 import { FlashList } from '@shopify/flash-list';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -79,6 +84,16 @@ export default function TransactionsScreen() {
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('');
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    amount: '',
+    description: '',
+    customerName: '',
+    customerPhone: '',
+    customerEmail: '',
+    payments: '1',
+  });
+  const [creating, setCreating] = useState(false);
 
   const fetchTransactions = useCallback(async () => {
     if (!organization) { setLoading(false); return; }
@@ -100,6 +115,54 @@ export default function TransactionsScreen() {
     await fetchTransactions();
     setRefreshing(false);
   }, [fetchTransactions]);
+
+  const handleCreatePayment = useCallback(async () => {
+    const amount = parseFloat(createForm.amount);
+    if (!amount || amount <= 0) {
+      Alert.alert(he ? 'שגיאה' : 'Error', he ? 'נא להזין סכום תקין' : 'Please enter a valid amount');
+      return;
+    }
+    setCreating(true);
+    try {
+      const result = await paymentsApi.createPaymentLink(organization, {
+        amount,
+        description: createForm.description,
+        customerName: createForm.customerName,
+        customerPhone: createForm.customerPhone,
+        customerEmail: createForm.customerEmail,
+        payments: parseInt(createForm.payments) || 1,
+      });
+      if (result.success) {
+        setShowCreateModal(false);
+        setCreateForm({ amount: '', description: '', customerName: '', customerPhone: '', customerEmail: '', payments: '1' });
+        await fetchTransactions();
+        if (result.gambotPaymentUrl || result.paymentUrl) {
+          Alert.alert(
+            he ? 'קישור תשלום נוצר' : 'Payment Link Created',
+            he ? 'האם לפתוח את הקישור?' : 'Open the payment link?',
+            [
+              { text: he ? 'לא' : 'No', style: 'cancel' },
+              { text: he ? 'פתח' : 'Open', onPress: () => Linking.openURL(result.gambotPaymentUrl || result.paymentUrl || '') },
+              ...(createForm.customerPhone ? [{
+                text: he ? 'שלח בוואטסאפ' : 'WhatsApp',
+                onPress: () => {
+                  const link = result.gambotPaymentUrl || result.paymentUrl || '';
+                  const text = encodeURIComponent(`${he ? 'שלום' : 'Hi'} ${createForm.customerName},\n${he ? 'קישור לתשלום' : 'Payment link'}:\n${link}\n${he ? 'סכום' : 'Amount'}: ₪${amount.toFixed(2)}`);
+                  Linking.openURL(`whatsapp://send?phone=${createForm.customerPhone}&text=${text}`);
+                },
+              }] : []),
+            ],
+          );
+        }
+      } else {
+        Alert.alert(he ? 'שגיאה' : 'Error', result.error || (he ? 'יצירת תשלום נכשלה' : 'Payment creation failed'));
+      }
+    } catch {
+      Alert.alert(he ? 'שגיאה' : 'Error', he ? 'יצירת תשלום נכשלה' : 'Payment creation failed');
+    } finally {
+      setCreating(false);
+    }
+  }, [organization, createForm, he, fetchTransactions]);
 
   const filtered = useMemo(() => {
     let list = [...transactions];
@@ -211,6 +274,14 @@ export default function TransactionsScreen() {
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                 {formatTxDate(item.createdAt, lang)}
               </Text>
+              {item.viewCount && item.viewCount > 0 ? (
+                <View style={[styles.viewCountBadge, { flexDirection: 'row' }]}>
+                  <MaterialCommunityIcons name="eye-check-outline" size={11} color="#53bdeb" />
+                  <Text variant="labelSmall" style={{ color: '#53bdeb', fontWeight: '600', fontSize: 10 }}>
+                    {item.viewCount}
+                  </Text>
+                </View>
+              ) : null}
             </View>
           </View>
 
@@ -369,29 +440,40 @@ export default function TransactionsScreen() {
       </View>
 
       {/* Content */}
-      {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={BRAND_COLOR} />
-        </View>
-      ) : (
-        <FlashList
-          data={filtered}
-          renderItem={renderItem}
-          keyExtractor={(item, idx) => item.id || item.transactionId || `tx_${idx}`}
-          ItemSeparatorComponent={() => <Divider />}
-          ListEmptyComponent={renderEmpty}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              colors={[BRAND_COLOR]}
-              tintColor={BRAND_COLOR}
-            />
-          }
-          contentContainerStyle={styles.listContent}
-          estimatedItemSize={90}
-        />
-      )}
+      <View style={{ flex: 1 }}>
+        {loading ? (
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" color={BRAND_COLOR} />
+          </View>
+        ) : (
+          <FlashList
+            data={filtered}
+            renderItem={renderItem}
+            keyExtractor={(item, idx) => item.id || item.transactionId || `tx_${idx}`}
+            ItemSeparatorComponent={() => <Divider />}
+            ListEmptyComponent={renderEmpty}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[BRAND_COLOR]}
+                tintColor={BRAND_COLOR}
+              />
+            }
+            contentContainerStyle={styles.listContent}
+            estimatedItemSize={90}
+          />
+        )}
+      </View>
+
+      {/* FAB - Create new payment */}
+      <FAB
+        icon="plus"
+        style={[styles.fab, { backgroundColor: BRAND_COLOR }]}
+        color="#FFF"
+        onPress={() => setShowCreateModal(true)}
+        label={he ? 'סליקה חדשה' : 'New Payment'}
+      />
 
       {/* Detail modal */}
       <Portal>
@@ -412,6 +494,110 @@ export default function TransactionsScreen() {
               onClose={() => setSelectedTx(null)}
             />
           ) : null}
+        </Modal>
+      </Portal>
+
+      {/* Create Payment modal */}
+      <Portal>
+        <Modal
+          visible={showCreateModal}
+          onDismiss={() => setShowCreateModal(false)}
+          contentContainerStyle={[styles.detailModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <View style={[{ flexDirection, alignItems: 'center', marginBottom: 16 }]}>
+                <MaterialCommunityIcons name="credit-card-plus-outline" size={22} color={BRAND_COLOR} />
+                <Text
+                  variant="titleMedium"
+                  style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, marginStart: 8, textAlign }}
+                >
+                  {he ? 'יצירת סליקה חדשה' : 'Create New Payment'}
+                </Text>
+              </View>
+
+              <TextInput
+                label={he ? 'סכום (₪) *' : 'Amount (₪) *'}
+                value={createForm.amount}
+                onChangeText={(v) => setCreateForm((f) => ({ ...f, amount: v }))}
+                keyboardType="decimal-pad"
+                mode="outlined"
+                style={styles.formInput}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={BRAND_COLOR}
+              />
+              <TextInput
+                label={he ? 'תיאור' : 'Description'}
+                value={createForm.description}
+                onChangeText={(v) => setCreateForm((f) => ({ ...f, description: v }))}
+                mode="outlined"
+                style={styles.formInput}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={BRAND_COLOR}
+              />
+              <TextInput
+                label={he ? 'שם לקוח' : 'Customer Name'}
+                value={createForm.customerName}
+                onChangeText={(v) => setCreateForm((f) => ({ ...f, customerName: v }))}
+                mode="outlined"
+                style={styles.formInput}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={BRAND_COLOR}
+              />
+              <TextInput
+                label={he ? 'טלפון לקוח' : 'Customer Phone'}
+                value={createForm.customerPhone}
+                onChangeText={(v) => setCreateForm((f) => ({ ...f, customerPhone: v }))}
+                keyboardType="phone-pad"
+                mode="outlined"
+                style={styles.formInput}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={BRAND_COLOR}
+              />
+              <TextInput
+                label={he ? 'מייל לקוח' : 'Customer Email'}
+                value={createForm.customerEmail}
+                onChangeText={(v) => setCreateForm((f) => ({ ...f, customerEmail: v }))}
+                keyboardType="email-address"
+                mode="outlined"
+                style={styles.formInput}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={BRAND_COLOR}
+              />
+              <TextInput
+                label={he ? 'מספר תשלומים' : 'Installments'}
+                value={createForm.payments}
+                onChangeText={(v) => setCreateForm((f) => ({ ...f, payments: v }))}
+                keyboardType="number-pad"
+                mode="outlined"
+                style={styles.formInput}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={BRAND_COLOR}
+              />
+
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+                <Button
+                  mode="contained"
+                  onPress={handleCreatePayment}
+                  loading={creating}
+                  disabled={creating}
+                  style={{ flex: 1, borderRadius: 10 }}
+                  buttonColor={BRAND_COLOR}
+                  textColor="#FFF"
+                >
+                  {he ? 'צור קישור תשלום' : 'Create Payment Link'}
+                </Button>
+                <Button
+                  mode="outlined"
+                  onPress={() => setShowCreateModal(false)}
+                  style={{ borderRadius: 10 }}
+                  textColor={theme.colors.onSurface}
+                >
+                  {he ? 'ביטול' : 'Cancel'}
+                </Button>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
         </Modal>
       </Portal>
     </View>
@@ -664,5 +850,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 8,
     gap: 4,
+  },
+  fab: {
+    position: 'absolute',
+    bottom: 24,
+    right: 16,
+    borderRadius: 28,
+  },
+  formInput: {
+    marginBottom: 10,
+    fontSize: 14,
+  },
+  viewCountBadge: {
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(83, 189, 235, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
   },
 });

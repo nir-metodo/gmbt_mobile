@@ -1169,8 +1169,8 @@ function TimelineSection({
             <View style={[styles.timelineDot, { backgroundColor: config.color }]}>
               <MaterialCommunityIcons name={config.icon as any} size={12} color="#FFF" />
             </View>
-            <View style={[styles.timelineBody, { alignItems: 'flex-start' }]}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={[styles.timelineBody, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 6 }}>
                 <Text variant="labelSmall" style={{ color: config.color, fontWeight: '600', textTransform: 'capitalize', textAlign: isRTL ? 'right' : 'left' }}>
                   {type.replace(/_/g, ' ')}
                 </Text>
@@ -1181,7 +1181,7 @@ function TimelineSection({
                 ) : null}
               </View>
               {note ? (
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurface, marginTop: 2, textAlign: isRTL ? 'right' : 'left', width: '100%' }}>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurface, marginTop: 2, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr', width: '100%' }}>
                   {note}
                 </Text>
               ) : null}

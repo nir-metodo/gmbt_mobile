@@ -2,8 +2,8 @@
   "expo": {
     "name": "Gambot",
     "slug": "gambot-mobile",
-    "version": "1.0.5",
-    "orientation": "portrait",
+    "version": "1.10.0",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "scheme": "gambot",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "4",
+      "buildNumber": "10",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -34,7 +34,7 @@
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 7,
+      "versionCode": 13,
       "minSdkVersion": 26,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
@@ -69,7 +69,8 @@
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
-          "color": "#2e6155"
+          "color": "#2e6155",
+          "sounds": ["./assets/sounds/notification.wav"]
         }
       ],
       [
@@ -78,7 +79,8 @@
           "photosPermission": "Allow Gambot to access your photos to share media in chats.",
           "cameraPermission": "Allow Gambot to access your camera to take photos and videos."
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "extra": {
       "router": {},

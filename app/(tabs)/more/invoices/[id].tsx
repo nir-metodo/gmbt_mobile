@@ -9,6 +9,8 @@ import {
   TouchableOpacity,
   Pressable,
   FlatList,
+  Share,
+  Linking,
 } from 'react-native';
 import {
   Text,
@@ -42,6 +44,7 @@ import { quotesApi } from '../../../../services/api/quotes';
 import type { Contact } from '../../../../types';
 import { borderRadius } from '../../../../constants/theme';
 import { formatDate } from '../../../../utils/formatters';
+import * as Clipboard from 'expo-clipboard';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -148,6 +151,35 @@ export default function InvoiceDetailScreen() {
   useEffect(() => {
     fetchInvoice();
   }, [fetchInvoice]);
+
+  // ── Prefill from source quote ──────────────────────────────────────
+  useEffect(() => {
+    if (!isNew || !prefillRelatedQuoteId || !user?.organization) return;
+    (async () => {
+      try {
+        const quoteData = await quotesApi.getById(user.organization, prefillRelatedQuoteId);
+        if (quoteData) {
+          if (quoteData.contactName) setFormContactName(quoteData.contactName);
+          if (quoteData.contactPhone) setFormContactPhone(quoteData.contactPhone);
+          if (quoteData.contactEmail) setFormContactEmail(quoteData.contactEmail);
+          if (quoteData.contactCompany) setFormContactCompany(quoteData.contactCompany);
+          if (quoteData.currency) setFormCurrency(quoteData.currency);
+          if (quoteData.tax != null) setFormVatRate(String(quoteData.tax));
+          if (quoteData.discount != null) setFormDiscount(String(quoteData.discount));
+          if (quoteData.notes) setFormNotes(quoteData.notes);
+          if (Array.isArray(quoteData.items) && quoteData.items.length > 0) {
+            setFormItems(quoteData.items.map((it: any) => ({
+              description: it.description || '',
+              quantity: it.quantity || 1,
+              unitPrice: it.unitPrice || 0,
+            })));
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to prefill from quote:', err);
+      }
+    })();
+  }, [isNew, prefillRelatedQuoteId, user?.organization]);
 
   // ── Contact search ────────────────────────────────────────────────
   const handleContactSearch = useCallback((text: string) => {
@@ -682,6 +714,19 @@ export default function InvoiceDetailScreen() {
           title={`${getDocLabel(invoice.type)}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}`}
           titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 16 }}
         />
+        <Appbar.Action icon="share-variant" color="#FFF" onPress={async () => {
+          const publicUrl = `https://www.gambot.co.il/invoice?org=${encodeURIComponent(user?.organization || '')}&id=${encodeURIComponent(invoice.id || '')}`;
+          try {
+            await Share.share({
+              message: `${getDocLabel(invoice.type)}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}\n${invoice.contactName ? `לקוח: ${invoice.contactName}\n` : ''}סה"כ: ₪${Number(invoice.total || 0).toFixed(2)}\n\n${publicUrl}`,
+            });
+          } catch {}
+        }} />
+        <Appbar.Action icon="link-variant" color="#FFF" onPress={async () => {
+          const publicUrl = `https://www.gambot.co.il/invoice?org=${encodeURIComponent(user?.organization || '')}&id=${encodeURIComponent(invoice.id || '')}`;
+          await Clipboard.setStringAsync(publicUrl);
+          Alert.alert('הקישור הועתק', 'קישור לצפייה בחשבונית הועתק ללוח');
+        }} />
       </Appbar.Header>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -772,17 +817,23 @@ export default function InvoiceDetailScreen() {
               פריטים ({invoice.items.length})
             </Text>
             <Divider style={{ marginBottom: 12 }} />
-            {invoice.items.map((item, idx) => (
-              <View key={idx} style={[{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: idx < invoice.items!.length - 1 ? StyleSheet.hairlineWidth : 0, borderBottomColor: theme.colors.outlineVariant }]}>
-                <View style={{ flex: 1 }}>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>{item.description}</Text>
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>×{item.quantity}</Text>
+            <ScrollView
+              style={{ maxHeight: invoice.items.length > 8 ? 320 : undefined }}
+              nestedScrollEnabled
+              showsVerticalScrollIndicator={invoice.items.length > 8}
+            >
+              {invoice.items.map((item, idx) => (
+                <View key={idx} style={[{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: idx < invoice.items!.length - 1 ? StyleSheet.hairlineWidth : 0, borderBottomColor: theme.colors.outlineVariant }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>{item.description}</Text>
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>×{item.quantity}</Text>
+                  </View>
+                  <Text variant="bodyMedium" style={{ color: docColor, fontWeight: '700' }}>
+                    ₪{((item.unitPrice || 0) * (item.quantity || 0)).toFixed(2)}
+                  </Text>
                 </View>
-                <Text variant="bodyMedium" style={{ color: docColor, fontWeight: '700' }}>
-                  ₪{((item.unitPrice || 0) * (item.quantity || 0)).toFixed(2)}
-                </Text>
-              </View>
-            ))}
+              ))}
+            </ScrollView>
           </View>
         ) : null}
 

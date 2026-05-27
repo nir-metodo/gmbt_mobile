@@ -8,6 +8,7 @@ import {
   ScrollView,
   Alert,
   Platform,
+  AppState,
 } from 'react-native';
 import {
   Appbar,
@@ -64,9 +65,26 @@ interface ClockStatus {
   todayHours: number;
 }
 
-function formatTime(dt?: string) {
-  if (!dt) return '—';
-  return new Date(dt).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+function parseTimestamp(dt: any): Date | null {
+  if (!dt) return null;
+  if (typeof dt === 'string') {
+    const d = new Date(dt);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof dt === 'object') {
+    const seconds = dt._seconds ?? dt.seconds ?? dt.Seconds;
+    if (typeof seconds === 'number') return new Date(seconds * 1000);
+    const nanos = dt._nanoseconds ?? dt.nanoseconds;
+    if (typeof nanos === 'number' && typeof seconds === 'number') return new Date(seconds * 1000);
+  }
+  if (typeof dt === 'number') return new Date(dt);
+  return null;
+}
+
+function formatTime(dt?: any) {
+  const d = parseTimestamp(dt);
+  if (!d) return '—';
+  return d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
 }
 
 function formatHours(h: number | undefined | null) {
@@ -80,8 +98,8 @@ function computeHours(rec: AttendanceRecord): number {
   if (typeof rec.totalHours === 'number' && isFinite(rec.totalHours) && rec.totalHours > 0) {
     return rec.totalHours;
   }
-  const ci = rec.clockIn ? new Date(rec.clockIn).getTime() : 0;
-  const co = rec.clockOut ? new Date(rec.clockOut).getTime() : 0;
+  const ci = parseTimestamp(rec.clockIn)?.getTime() || 0;
+  const co = parseTimestamp(rec.clockOut)?.getTime() || 0;
   if (ci && co && co > ci) return (co - ci) / 3600000;
   return 0;
 }
@@ -105,7 +123,15 @@ function useLiveTimer(clockInTime?: string) {
     const tick = () => setElapsed((Date.now() - new Date(clockInTime).getTime()) / 3600000);
     tick();
     intervalRef.current = setInterval(tick, 30000);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') tick();
+    });
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      sub.remove();
+    };
   }, [clockInTime]);
 
   return elapsed;
@@ -135,22 +161,23 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
         dateTo: today,
       });
       const todayRecs: any[] = Array.isArray(res.data) ? res.data : [];
-      const openRec = todayRecs.find((r: any) => r.clockOut === '' || r.clockOut == null);
+      const openRec = todayRecs.find((r: any) => !r.clockOut || r.clockOut === '');
       const totalHours = todayRecs.reduce((sum: number, r: any) => {
-        const ci = r.clockIn || '';
-        const co = r.clockOut || '';
-        if (ci && co) {
-          const diff = (new Date(co).getTime() - new Date(ci).getTime()) / 3600000;
+        const ciDate = parseTimestamp(r.clockIn);
+        const coDate = parseTimestamp(r.clockOut);
+        if (ciDate && coDate) {
+          const diff = (coDate.getTime() - ciDate.getTime()) / 3600000;
           return sum + Math.max(0, diff);
-        } else if (ci && !co) {
-          const diff = (Date.now() - new Date(ci).getTime()) / 3600000;
+        } else if (ciDate && !coDate) {
+          const diff = (Date.now() - ciDate.getTime()) / 3600000;
           return sum + Math.max(0, diff);
         }
         return sum;
       }, 0);
+      const clockInParsed = parseTimestamp(openRec?.clockIn);
       setStatus({
         isClockedIn: !!openRec,
-        clockInTime: openRec?.clockIn || undefined,
+        clockInTime: clockInParsed ? clockInParsed.toISOString() : undefined,
         todayHours: Math.round(totalHours * 100) / 100,
       });
     } catch { setStatus(null); } finally { setLoading(false); }
@@ -165,11 +192,21 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
       const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
         organizationName: org, userId, dateFrom: firstDay, dateTo: lastDay,
       });
-      setRecords(Array.isArray(res.data) ? res.data : []);
+      const data: AttendanceRecord[] = Array.isArray(res.data) ? res.data : [];
+      data.sort((a, b) => new Date(b.date || b.clockIn || '').getTime() - new Date(a.date || a.clockIn || '').getTime());
+      setRecords(data);
     } catch { setRecords([]); } finally { setLoadingRecords(false); }
   }, [org, userId]);
 
   useEffect(() => { fetchStatus(); fetchMyRecords(); }, [fetchStatus, fetchMyRecords]);
+
+  // Refresh clock status when app returns from background
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') { fetchStatus(); }
+    });
+    return () => sub.remove();
+  }, [fetchStatus]);
 
   const didMountRef = useRef(false);
   useFocusEffect(
@@ -332,7 +369,9 @@ function ManageTab({ org }: { org: string }) {
       const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
         organizationName: org, employeeId: emp.id, dateFrom: firstDay, dateTo: lastDay,
       });
-      setRecords(Array.isArray(res.data) ? res.data : []);
+      const data: AttendanceRecord[] = Array.isArray(res.data) ? res.data : [];
+      data.sort((a, b) => new Date(b.date || b.clockIn || '').getTime() - new Date(a.date || a.clockIn || '').getTime());
+      setRecords(data);
     } catch { setRecords([]); } finally { setLoadingRec(false); }
   };
 
@@ -539,7 +578,9 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
         dateFrom: dateFrom.toISOString().slice(0, 10),
         dateTo: dateTo.toISOString().slice(0, 10),
       });
-      setRecords(Array.isArray(res.data) ? res.data : []);
+      const data: AttendanceRecord[] = Array.isArray(res.data) ? res.data : [];
+      data.sort((a, b) => new Date(b.date || b.clockIn || '').getTime() - new Date(a.date || a.clockIn || '').getTime());
+      setRecords(data);
       setGenerated(true);
     } catch {
       Alert.alert(t('common.error'));
@@ -557,13 +598,17 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
     const minDay = records.filter((r) => computeHours(r) > 0).reduce((min, r) => computeHours(r) < computeHours(min) ? r : min, records.find((r) => computeHours(r) > 0) || records[0]);
 
     const earlyIn = records.filter((r) => r.clockIn).sort((a, b) => {
-      const timeA = new Date(a.clockIn!).getHours() * 60 + new Date(a.clockIn!).getMinutes();
-      const timeB = new Date(b.clockIn!).getHours() * 60 + new Date(b.clockIn!).getMinutes();
+      const dA = parseTimestamp(a.clockIn);
+      const dB = parseTimestamp(b.clockIn);
+      const timeA = dA ? dA.getHours() * 60 + dA.getMinutes() : 9999;
+      const timeB = dB ? dB.getHours() * 60 + dB.getMinutes() : 9999;
       return timeA - timeB;
     })[0];
     const lateOut = records.filter((r) => r.clockOut).sort((a, b) => {
-      const timeA = new Date(a.clockOut!).getHours() * 60 + new Date(a.clockOut!).getMinutes();
-      const timeB = new Date(b.clockOut!).getHours() * 60 + new Date(b.clockOut!).getMinutes();
+      const dA = parseTimestamp(a.clockOut);
+      const dB = parseTimestamp(b.clockOut);
+      const timeA = dA ? dA.getHours() * 60 + dA.getMinutes() : 0;
+      const timeB = dB ? dB.getHours() * 60 + dB.getMinutes() : 0;
       return timeB - timeA;
     })[0];
 

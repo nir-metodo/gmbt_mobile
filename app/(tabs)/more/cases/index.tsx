@@ -397,7 +397,7 @@ export default function CasesListScreen() {
           ]}
         >
           <View style={[styles.priorityBar, {
-            backgroundColor: priorityColor,
+            backgroundColor: statusColor,
             borderTopLeftRadius: isRTL ? 0 : borderRadius.lg,
             borderBottomLeftRadius: isRTL ? 0 : borderRadius.lg,
             borderTopRightRadius: isRTL ? borderRadius.lg : 0,
@@ -406,6 +406,7 @@ export default function CasesListScreen() {
 
           <View style={styles.caseContent}>
             <View style={[styles.caseTopRow, { flexDirection }]}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: statusColor, alignSelf: 'center', marginEnd: 6 }} />
               <Text
                 variant="titleSmall"
                 numberOfLines={1}
