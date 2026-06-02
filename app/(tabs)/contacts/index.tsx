@@ -129,6 +129,19 @@ export default function ContactsListScreen() {
   const filteredContacts = useMemo(() => {
     let result = contacts;
 
+    // Auto-filter by assignedWhatsAppNumbers (same as web Contacts page)
+    const assignedNums = user?.assignedWhatsAppNumbers || [];
+    if (assignedNums.length > 0) {
+      result = result.filter((c: any) => {
+        const ids = c.wabaPhoneNumberIds;
+        if (Array.isArray(ids) && ids.length > 0) return ids.some((id: string) => assignedNums.includes(id));
+        if (typeof ids === 'string' && ids) return assignedNums.includes(ids);
+        if (c.wabaPhoneNumberId) return assignedNums.includes(c.wabaPhoneNumberId);
+        if (c.lastFromNumberId) return assignedNums.includes(c.lastFromNumberId);
+        return true; // contacts without number association are visible to all
+      });
+    }
+
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.trim().toLowerCase();
       result = result.filter(
@@ -176,7 +189,7 @@ export default function ContactsListScreen() {
     }
 
     return result;
-  }, [contacts, debouncedSearch, filterMode, currentUserId, selectedTag, filterOwner, filterStatus, sortBy]);
+  }, [contacts, debouncedSearch, filterMode, currentUserId, selectedTag, filterOwner, filterStatus, sortBy, user?.assignedWhatsAppNumbers]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;

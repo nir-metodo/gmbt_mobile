@@ -231,6 +231,29 @@ export const chatsApi = {
     );
   },
 
+  async getTemplateById(organization: string, templateId: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_TEMPLATE_BY_ID, {
+      organizationId: organization,
+      templateId,
+    });
+    if (response.data && !response.data.error) {
+      return response.data;
+    }
+    return null;
+  },
+
+  async getMediaByTemplateId(organization: string, templateId: string): Promise<string> {
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_MEDIA_BY_TEMPLATE_ID, {
+        organization,
+        templateId,
+      });
+      return response.data?.mediaUrl || '';
+    } catch {
+      return '';
+    }
+  },
+
   async getQuickMessages(organization: string): Promise<QuickMessage[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_QUICK_MESSAGES, {
       organization,

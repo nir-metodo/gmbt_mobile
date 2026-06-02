@@ -257,11 +257,17 @@ export default function QuoteDetailScreen() {
 
   const closeEditMode = useCallback(() => {
     if (id === 'new') {
-      router.back();
+      if (prefillLeadId) {
+        router.replace({ pathname: '/(tabs)/leads/[id]', params: { id: prefillLeadId } });
+      } else if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(tabs)/more/quotes');
+      }
       return;
     }
     setEditMode(false);
-  }, [id, router]);
+  }, [id, router, prefillLeadId]);
 
   const calculatedTotals = useMemo(() => {
     const subtotal = formItems.reduce((sum, item) => {
@@ -449,7 +455,13 @@ export default function QuoteDetailScreen() {
           user.uID || user.userId,
           user.fullname,
         );
-        router.back();
+        if (prefillLeadId) {
+          router.replace({ pathname: '/(tabs)/leads/[id]', params: { id: prefillLeadId } });
+        } else if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/(tabs)/more/quotes');
+        }
       } else {
         await quotesApi.update(
           user.organization,
@@ -481,7 +493,11 @@ export default function QuoteDetailScreen() {
             setDeleting(true);
             try {
               await quotesApi.delete(user.organization, quote.id);
-              router.back();
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/(tabs)/more/quotes');
+              }
             } catch (err: any) {
               Alert.alert(t('common.error'), err.message || t('errors.generic'));
               setDeleting(false);

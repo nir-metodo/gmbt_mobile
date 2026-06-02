@@ -46,6 +46,8 @@ export const ENDPOINTS = {
 
   // Templates
   GET_TEMPLATES: '/api/Webhooks/GetAllTemplates',
+  GET_TEMPLATE_BY_ID: '/api/webhooks/GetTemplateById',
+  GET_MEDIA_BY_TEMPLATE_ID: '/api/webhooks/GetMediaByTemplateId',
   GET_DEFAULT_MESSAGE_TEMPLATES: '/api/Webhooks/GetDefaultMessageTemplates',
   CREATE_TEMPLATE: '/api/Webhooks/CreateTemplate',
   SEND_TEMPLATE_MESSAGE: '/api/Webhooks/SendTemplateMessage',
@@ -104,6 +106,9 @@ export const ENDPOINTS = {
   DELETE_QUOTE: '/api/Webhooks/DeleteQuote',
   GET_QUOTE_BRANDING: '/api/Webhooks/GetQuoteBranding',
 
+  GET_QUOTE_BRANDING: '/api/Webhooks/GetQuoteBranding',
+  SAVE_QUOTE_BRANDING: '/api/Webhooks/SaveQuoteBranding',
+
   // E-Signature
   GET_ESIGNATURE_DOC: '/api/Webhooks/ESignature_GetDocumentByToken',
   GET_ESIGNATURE_DOC_BY_ID: '/api/Webhooks/ESignature_GetDocumentById',
@@ -152,6 +157,9 @@ export const ENDPOINTS = {
   GET_SLA_BREACHES: '/api/Webhooks/GetSlaBreaches',
   DISMISS_SLA_BREACHES: '/api/Webhooks/DismissSlaBreaches',
   COMPLETE_TASK: '/api/Webhooks/CompleteTask',
+  GET_TASK_ACTIVITY: '/api/Webhooks/GetTaskActivity',
+  ADD_TASK_COMMENT: '/api/Webhooks/AddTaskComment',
+  GET_TASK_BY_ID: '/api/Webhooks/GetTaskById',
   GET_DAILY_CONVERSATION_REPORT: '/api/Webhooks/GetDailyConversationReport',
   GET_DAILY_BOT_SUMMARY: '/api/Webhooks/GetDailyBotSummary',
   GET_TEMPLATE_ANALYTICS: '/api/Webhooks/GetTemplateAnalytics',
@@ -266,4 +274,16 @@ export const ENDPOINTS = {
   UPDATE_INVOICE: '/api/Webhooks/UpdateInvoice',
   DELETE_INVOICE: '/api/Webhooks/DeleteInvoice',
   GET_INVOICE_BRANDING: '/api/Webhooks/GetInvoiceBranding',
+
+  // Calendar Events
+  GET_CALENDAR_EVENTS: '/api/Webhooks/GetCalendarEvents',
+  CREATE_CALENDAR_EVENT: '/api/Webhooks/CreateCalendarEvent',
+  UPDATE_CALENDAR_EVENT: '/api/Webhooks/UpdateCalendarEvent',
+  DELETE_CALENDAR_EVENT: '/api/Webhooks/DeleteCalendarEvent',
+  GET_CALENDARS: '/api/Webhooks/GetCalendars',
+  GET_CONNECTIONS: '/api/Webhooks/GetConnections',
+
+  // Email
+  SEND_EMAIL: '/api/Webhooks/contact-form/send-email',
+  GET_EMAIL_TEMPLATES: '/api/Webhooks/email-templates',
 } as const;

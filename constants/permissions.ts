@@ -64,15 +64,16 @@ export const PHONE_CALLS_VISIBILITY = {
 } as const;
 
 export const getDataVisibility = (
-  dataVisibility: Record<string, 'all' | 'own' | 'myPhoneCalls' | 'allPhoneCalls'> | null | undefined,
+  dataVisibility: Record<string, string> | null | undefined,
   securityRole: string | undefined,
   feature: string
-): 'all' | 'own' => {
+): 'all' | 'own' | 'byPhone' => {
   if (!securityRole) return 'all';
   if (securityRole.toLowerCase() === 'admin') return 'all';
   if (!dataVisibility) return 'all';
 
   const val = dataVisibility[feature];
+  if (val === 'byPhone') return 'byPhone';
   if (val === 'myPhoneCalls' || val === 'own') return 'own';
   if (val === 'allPhoneCalls' || val === 'all') return 'all';
   return 'all';

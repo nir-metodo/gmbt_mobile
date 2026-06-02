@@ -10,8 +10,10 @@ export function useCachedMedia(
   remoteUrl: string | undefined | null,
   type: MediaType = 'image'
 ): UseCachedMediaResult {
-  const [uri, setUri] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(!!remoteUrl);
+  const [state, setState] = useState<{ uri: string | null; isLoading: boolean }>({
+    uri: remoteUrl || null,
+    isLoading: false,
+  });
   const mountedRef = useRef(true);
   const urlRef = useRef(remoteUrl);
 
@@ -24,13 +26,19 @@ export function useCachedMedia(
     urlRef.current = remoteUrl;
 
     if (!remoteUrl) {
-      setUri(null);
-      setIsLoading(false);
+      setState({ uri: null, isLoading: false });
       return;
     }
 
+    // For images and video, use remote URL directly — RN Image/Video handle caching natively
+    if (type === 'image' || type === 'video') {
+      setState({ uri: remoteUrl, isLoading: false });
+      return;
+    }
+
+    // For audio/documents, check cache then download if needed
     let cancelled = false;
-    setIsLoading(true);
+    setState({ uri: remoteUrl, isLoading: true });
 
     (async () => {
       try {
@@ -38,26 +46,21 @@ export function useCachedMedia(
         if (cancelled || urlRef.current !== remoteUrl) return;
 
         if (cached) {
-          setUri(cached);
-          setIsLoading(false);
+          if (mountedRef.current) setState({ uri: cached, isLoading: false });
           return;
         }
 
         const localPath = await cacheMedia(remoteUrl, type);
         if (cancelled || urlRef.current !== remoteUrl) return;
-        setUri(localPath);
+        if (mountedRef.current) setState({ uri: localPath, isLoading: false });
       } catch {
         if (cancelled || urlRef.current !== remoteUrl) return;
-        setUri(remoteUrl);
-      } finally {
-        if (!cancelled && mountedRef.current && urlRef.current === remoteUrl) {
-          setIsLoading(false);
-        }
+        if (mountedRef.current) setState({ uri: remoteUrl, isLoading: false });
       }
     })();
 
     return () => { cancelled = true; };
   }, [remoteUrl, type]);
 
-  return { uri, isLoading };
+  return state;
 }

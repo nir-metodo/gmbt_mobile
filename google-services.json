@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "537485039696",
+    "project_id": "gambot-a383d",
+    "storage_bucket": "gambot-a383d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:537485039696:android:9cdc1adf304b6c5a545955",
+        "android_client_info": {
+          "package_name": "com.gambot.mobile"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "537485039696-6167arl73nkd7fftrnornefhrh8qve1i.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDUkm5c1rg8fhkgy1UXerjiOEFoNqPYZP0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "537485039696-6167arl73nkd7fftrnornefhrh8qve1i.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

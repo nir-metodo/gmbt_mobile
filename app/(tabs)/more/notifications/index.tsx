@@ -300,6 +300,38 @@ export default function NotificationsSettingsScreen() {
           />
         </Surface>
 
+        {/* Calendar Events */}
+        <SectionHeader title={isRTL ? 'אירועי יומן' : 'Calendar Events'} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon="calendar-clock"
+            iconColor="#059669"
+            label={isRTL ? 'תזכורת אירוע' : 'Event Reminder'}
+            description={isRTL ? 'קבל התראה לפני אירוע ביומן' : 'Get notified before calendar events'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.calendarEventReminder}
+            onToggle={(v) => handleToggle('calendarEventReminder', v)}
+            disabled={saving === 'calendarEventReminder'}
+          />
+        </Surface>
+
+        {/* Gambot AI */}
+        <SectionHeader title={isRTL ? 'Gambot AI' : 'Gambot AI'} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon="robot-outline"
+            iconColor="#8b5cf6"
+            label={isRTL ? 'העברה מ-AI' : 'AI Transfer'}
+            description={isRTL ? 'קבל התראה כשה-AI מעביר אליך לקוח לטיפול' : 'Get notified when AI transfers a customer to you'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.gambotAiTransfer}
+            onToggle={(v) => handleToggle('gambotAiTransfer', v)}
+            disabled={saving === 'gambotAiTransfer'}
+          />
+        </Surface>
+
         {/* Calls — only if telephony is enabled */}
         {hasTelephony && (
           <>

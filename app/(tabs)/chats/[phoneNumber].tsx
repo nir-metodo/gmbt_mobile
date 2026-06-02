@@ -20,6 +20,7 @@ import {
   TextInput,
   BackHandler,
   Keyboard,
+  AppState,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Text, IconButton, Menu, Avatar, Button } from 'react-native-paper';
@@ -28,6 +29,7 @@ import {
   useRouter,
   useLocalSearchParams,
   Stack,
+  useFocusEffect,
 } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -106,8 +108,9 @@ function getDateKey(timestamp?: string): string {
 }
 
 export default function ChatConversationScreen() {
-  const { phoneNumber } = useLocalSearchParams<{
+  const { phoneNumber, defaultWabaNumber } = useLocalSearchParams<{
     phoneNumber: string;
+    defaultWabaNumber?: string;
   }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -214,6 +217,21 @@ export default function ChatConversationScreen() {
   // Quick Actions sheet
   const [showQuickActionsSheet, setShowQuickActionsSheet] = useState(false);
 
+  // Add Note modal
+  const [showAddNoteModal, setShowAddNoteModal] = useState(false);
+  const [noteText, setNoteText] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+
+  // Inline tag input
+  const [showAddTagInline, setShowAddTagInline] = useState(false);
+  const [newTagText, setNewTagText] = useState('');
+
+  // Assign Owner modal
+  const [showAssignOwnerModal, setShowAssignOwnerModal] = useState(false);
+  const [availableOwners, setAvailableOwners] = useState<any[]>([]);
+  const [isLoadingOwners, setIsLoadingOwners] = useState(false);
+  const [assigningOwner, setAssigningOwner] = useState(false);
+
   // Create Task from chat
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false);
   const [createTaskTitle, setCreateTaskTitle] = useState('');
@@ -254,7 +272,9 @@ export default function ChatConversationScreen() {
   }, [allWabaNumbers, assignedNums]);
 
   useEffect(() => {
-    if (!activeWabaNumber) {
+    if (defaultWabaNumber && wabaNumbers.some((n) => (n.PhoneNumberId || n.phoneNumberId) === defaultWabaNumber)) {
+      setActiveWabaNumber(defaultWabaNumber);
+    } else if (!activeWabaNumber) {
       if (assignedNums.length > 0) {
         setActiveWabaNumber(assignedNums[0]);
       } else if (wabaNumbers.length > 0) {
@@ -263,7 +283,7 @@ export default function ChatConversationScreen() {
         setActiveWabaNumber(user.wabaNumber);
       }
     }
-  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers]);
+  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers, defaultWabaNumber]);
 
   const [conversationLive, setConversationLive] = useState<boolean | null>(null);
   const [recipientReplied24h, setRecipientReplied24h] = useState<boolean | null>(null);
@@ -275,9 +295,13 @@ export default function ChatConversationScreen() {
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showCategoryMenu, setShowCategoryMenu] = useState(false);
 
+  const statusRequestIdRef = useRef(0);
+
   const fetchConversationStatus = useCallback(() => {
     if (!user?.organization || !phoneNumber) return;
+    const requestId = ++statusRequestIdRef.current;
     chatsApi.getConversationStatus(user.organization, phoneNumber as string, activeWabaNumber || undefined).then((res) => {
+      if (requestId !== statusRequestIdRef.current) return; // ignore stale responses
       const live = res?.IsConversationLive ?? res?.IsConversationLiveByPhoneNumber ?? res?.isConversationLive ?? res?.isLive;
       setConversationLive(live === true || live === 'true');
       const replied = res?.IsRecipientReplyLast24Hours ?? res?.isRecipientReplyLast24Hours;
@@ -291,6 +315,7 @@ export default function ChatConversationScreen() {
       const cat = res?.Category ?? res?.category ?? '';
       if (cat) setChatCategory(cat);
     }).catch(() => {
+      if (requestId !== statusRequestIdRef.current) return;
       setConversationLive(false);
       setRecipientReplied24h(false);
       setConversationExpiresAt(null);
@@ -300,6 +325,13 @@ export default function ChatConversationScreen() {
   useEffect(() => {
     fetchConversationStatus();
   }, [fetchConversationStatus]);
+
+  // Reset conversation state when switching contacts or WABA numbers (match web behavior)
+  useEffect(() => {
+    setConversationLive(null);
+    setRecipientReplied24h(null);
+    setConversationExpiresAt(null);
+  }, [activeWabaNumber, phoneNumber]);
 
   // Tick countdown every second while conversation is live
   useEffect(() => {
@@ -339,6 +371,23 @@ export default function ChatConversationScreen() {
       await chatsApi.updateConversationCategory(user.organization, phoneNumber as string, newCategory);
     } catch { }
   }, [user?.organization, phoneNumber, addOrUpdateChat]);
+
+  const handleAddTag = useCallback(async (tag: string) => {
+    if (!user?.organization || !phoneNumber || !tag.trim()) return;
+    const trimmedTag = tag.trim();
+    const currentTags = chat?.tags || [];
+    if (currentTags.includes(trimmedTag)) return;
+    const newTags = [...currentTags, trimmedTag];
+    addOrUpdateChat({ phoneNumber: phoneNumber as string, tags: newTags } as any);
+    setNewTagText('');
+    setShowAddTagInline(false);
+    try {
+      const { contactsApi } = require('../../../services/api');
+      await contactsApi.update(user.organization, { phoneNumber: phoneNumber as string, tags: newTags }, user.uID || user.userId, user.fullname);
+    } catch (e) {
+      console.warn('Failed to add tag:', e);
+    }
+  }, [user?.organization, phoneNumber, chat?.tags, addOrUpdateChat, user?.uID, user?.userId, user?.fullname]);
 
   // Load telephony settings for outbound calling
   useEffect(() => {
@@ -401,17 +450,81 @@ export default function ChatConversationScreen() {
       .catch(() => setTimelineEntries([]));
   }, [user?.organization, phoneNumber]);
 
+  // Save note to timeline
+  const handleSaveNote = useCallback(async () => {
+    if (!noteText.trim() || !user?.organization || !phoneNumber) return;
+    setSavingNote(true);
+    try {
+      const { contactsApi } = await import('../../../services/api/contacts');
+      await contactsApi.addTimelineEntry(
+        user.organization,
+        phoneNumber as string,
+        noteText.trim(),
+        user.userId || user.uid || '',
+        user.fullname || user.displayName || ''
+      );
+      setNoteText('');
+      setShowAddNoteModal(false);
+      chatsApi.getChatTimeline(user.organization, phoneNumber as string)
+        .then(setTimelineEntries)
+        .catch(() => {});
+    } catch (e) {
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'שמירת ההערה נכשלה' : 'Failed to save note');
+    } finally {
+      setSavingNote(false);
+    }
+  }, [noteText, user, phoneNumber, isRTL]);
+
+  // Load available owners for assign
+  const handleOpenAssignOwner = useCallback(async () => {
+    if (!user?.organization) return;
+    setIsLoadingOwners(true);
+    try {
+      const users = await usersApi.getAll(user.organization);
+      setAvailableOwners(Array.isArray(users) ? users : []);
+    } catch {
+      setAvailableOwners([]);
+    } finally {
+      setIsLoadingOwners(false);
+    }
+  }, [user?.organization]);
+
+  useEffect(() => {
+    if (showAssignOwnerModal) handleOpenAssignOwner();
+  }, [showAssignOwnerModal, handleOpenAssignOwner]);
+
+  const handleAssignOwner = useCallback(async (ownerId: string, ownerName: string) => {
+    if (!user?.organization || !phoneNumber) return;
+    setAssigningOwner(true);
+    try {
+      await contactsApi.updateOwner(user.organization, phoneNumber as string, ownerId);
+      setShowAssignOwnerModal(false);
+      Alert.alert('✅', isRTL ? `בעלות שויכה ל-${ownerName}` : `Assigned to ${ownerName}`);
+    } catch {
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'שיוך הבעלות נכשל' : 'Failed to assign owner');
+    } finally {
+      setAssigningOwner(false);
+    }
+  }, [user?.organization, phoneNumber, isRTL]);
+
   const isStatusLoading = conversationLive === null;
 
-  // Window closed: conversation is not live at all
+  // Window closed: conversation is not live, or expiration passed
   // Default to closed while loading to prevent sending free-form messages before status is known
   const isWindowClosed = useMemo(() => {
-    if (conversationLive === true) return false;
+    if (conversationLive === null) return true; // loading state - default to closed
     if (conversationLive === false) return true;
+    // Even if live=true, check expiration like the web does
+    if (conversationExpiresAt) {
+      const now = new Date();
+      const expiresAt = new Date(conversationExpiresAt);
+      if (now >= expiresAt) return true;
+    }
+    if (conversationLive === true) return false;
     if (!chat) return true;
     const status = chat.lastConversationStatus?.toLowerCase() || '';
     return !status || status === 'closed' || status === 'expired';
-  }, [conversationLive, chat?.lastConversationStatus]);
+  }, [conversationLive, conversationExpiresAt, chat?.lastConversationStatus]);
 
   // Waiting for reply: window is open but user hasn't replied in last 24h
   const isWaitingForReply = useMemo(() => {
@@ -451,12 +564,16 @@ export default function ChatConversationScreen() {
         }
       }
 
+      let savedMappings: any[] = [];
       if (!templateId) {
         const defRes = await axiosInstance.post(ENDPOINTS.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
         const tplAssignment = defRes.data?.Data?.templates?.openConversation;
         templateId = Array.isArray(tplAssignment?.templateId)
           ? (tplAssignment.templateId[0] || '')
           : (tplAssignment?.templateId || '');
+        savedMappings = Array.isArray(tplAssignment?.varMappings)
+          ? tplAssignment.varMappings.filter((m: any) => !Array.isArray(m.index) && m.index != null)
+          : [];
       }
 
       if (!templateId) {
@@ -464,27 +581,74 @@ export default function ChatConversationScreen() {
         return;
       }
 
+      // Resolve template variables like the web does
+      const resolveVarValue = (source: string, hardcodedValue?: string) => {
+        if (source === 'hardcoded') return hardcodedValue || '';
+        if (source === 'contact.firstName') return chat?.contactName || (phoneNumber as string) || '';
+        if (source === 'contact.lastName') return '';
+        if (source === 'contact.name') return chat?.contactName || (phoneNumber as string) || '';
+        if (source === 'contact.email') return chat?.email || '';
+        if (source === 'contact.phoneNumber') return (phoneNumber as string) || '';
+        if (source === 'user.organization') return user?.organization || '';
+        if (source === 'user.UserName') return user?.fullname || user?.displayName || '';
+        return '';
+      };
+
+      const makeVarEntry = (idx: number, value: string, label?: string) => ({
+        index: idx,
+        bodyVarIndex: idx,
+        Variable: `dynamic_var${idx}`,
+        variableLabel: label || `{{${idx}}}`,
+        dataSource1: 'data_source1_HardCoded',
+        dataSource2: '',
+        conditionOperator: '',
+        parameters_hardCoded_Text: value,
+        field1: [],
+        field2: [],
+        table1: '',
+        table2: '',
+        retrieveFields: [],
+      });
+
+      let templateVariableQuery: any[];
+      if (savedMappings.length > 0) {
+        templateVariableQuery = savedMappings.map((m: any) =>
+          makeVarEntry(m.index, resolveVarValue(m.source, m.hardcodedValue), m.label || `{{${m.index}}}`)
+        );
+      } else {
+        templateVariableQuery = [
+          makeVarEntry(1, chat?.contactName || (phoneNumber as string) || '', 'שם לקוח'),
+          makeVarEntry(2, user?.fullname || user?.displayName || user?.organization || '', 'שם משתמש'),
+        ];
+      }
+
       const result = await chatsApi.sendTemplateMessage(
         user.organization,
         phoneNumber as string,
         templateId,
         user.userId,
-        [],
+        templateVariableQuery,
         activeWabaNumber || user.wabaNumber || '',
       );
       if (result?.Success === false) {
-        throw new Error(result?.Message || t('chats.templateSendError'));
+        const rawMsg = result?.Message || '';
+        const friendlyMsg = rawMsg.includes('BadRequest')
+          ? (isRTL ? 'התבנית טרם אושרה על ידי Meta — המתן לאישור ונסה שוב' : 'Template not yet approved by Meta')
+          : rawMsg || t('chats.templateSendError');
+        throw new Error(friendlyMsg);
       }
       loadMessages(user.organization, phoneNumber as string);
-      fetchConversationStatus();
-      Alert.alert(t('common.success'), t('chats.templateSent'));
+      // Don't call fetchConversationStatus - template send does NOT open the conversation window
+      // Only inbound messages from the customer open the window
+      setConversationLive(true);
+      setRecipientReplied24h(false); // Waiting for customer reply
     } catch (err: any) {
       const msg = err?.response?.data?.Message || err?.message || t('chats.templateSendError');
       Alert.alert(t('common.error'), msg);
     } finally {
       setIsSendingTemplate(false);
     }
-  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, allWabaNumbers, loadMessages, fetchConversationStatus, t]);
+  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, allWabaNumbers, chat, loadMessages, isRTL, t]);
 
   const getTemplateBodyText = useCallback((template: Template) => {
     const body = template.components?.find(
@@ -544,8 +708,9 @@ export default function ChatConversationScreen() {
         setSelectedTemplateForVars(null);
         setTemplateVariableValues({});
         loadMessages(user.organization, phoneNumber);
-        fetchConversationStatus();
-        Alert.alert(t('common.success'), t('chats.templateSent'));
+        // Template send does NOT open conversation - set waiting for reply state
+        setConversationLive(true);
+        setRecipientReplied24h(false);
       } catch (err: any) {
         const msg = err?.response?.data?.Message || err?.message || t('chats.templateSendError');
         Alert.alert(t('common.error'), msg);
@@ -641,6 +806,26 @@ export default function ChatConversationScreen() {
     };
   }, [user?.organization, phoneNumber]);
 
+  // Reload messages when app returns from background
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active' && user?.organization && phoneNumber) {
+        WebSocketService.reconnectAll();
+        loadMessages(user.organization, phoneNumber);
+      }
+    });
+    return () => subscription.remove();
+  }, [user?.organization, phoneNumber, loadMessages]);
+
+  // Reload messages when screen gains focus (navigating back)
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.organization && phoneNumber) {
+        loadMessages(user.organization, phoneNumber);
+      }
+    }, [user?.organization, phoneNumber, loadMessages])
+  );
+
   // WebSocket for live messages
   useEffect(() => {
     if (!user?.organization || !phoneNumber) return;
@@ -667,7 +852,9 @@ export default function ChatConversationScreen() {
 
         let hasInbound = false;
         msgs.forEach((msg) => {
-          if (!msg?.messageId) return;
+          const normalizedId = msg.messageId || msg.id || msg.Id || '';
+          if (!normalizedId) return;
+          msg.messageId = normalizedId;
 
           // Reactions: update original message instead of adding as separate bubble
           if (msg.type === 'reaction') {
@@ -697,8 +884,12 @@ export default function ChatConversationScreen() {
           markAsRead(user.organization, phoneNumber, user.uID || user.userId, user.fullname || user.displayName || '');
         }
         if (hasInbound) {
-          setConversationLive(true);
-          setRecipientReplied24h(true);
+          // Only update conversation status if message is for the currently active number
+          const msgFromNumberId = msgs[0]?.fromNumberId || msgs[0]?.wabaPhoneNumberId || msgs[0]?.phoneNumberId || '';
+          if (!activeWabaNumber || !msgFromNumberId || msgFromNumberId === activeWabaNumber) {
+            setConversationLive(true);
+            setRecipientReplied24h(true);
+          }
         }
       }
 
@@ -725,12 +916,24 @@ export default function ChatConversationScreen() {
   useEffect(() => {
     if (currentMessages.length > prevMessageCount.current) {
       const isInitialLoad = prevMessageCount.current === 0;
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: !isInitialLoad });
-      }, isInitialLoad ? 300 : 100);
+      const addedCount = currentMessages.length - prevMessageCount.current;
+      if (isInitialLoad) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: false });
+        }, 200);
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: false });
+        }, 600);
+      } else if (!isLoadingOlderMessages && !loadingOlderRef.current && addedCount <= 3) {
+        // Only auto-scroll for new incoming/outgoing messages (small additions)
+        // Do NOT scroll when loading older messages (large batch prepended at top)
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
     }
     prevMessageCount.current = currentMessages.length;
-  }, [currentMessages.length]);
+  }, [currentMessages.length, isLoadingOlderMessages]);
 
   // Pre-cache media from ALL messages in the background (without blocking message rendering)
   const allMessages = useChatStore((s) => s.allMessages);
@@ -1200,12 +1403,38 @@ export default function ChatConversationScreen() {
     setMentionQuery('');
   }, []);
 
+  const loadingOlderRef = useRef(false);
+  const prevListLengthRef = useRef(0);
+
+  // Maintain scroll position after loading older messages
+  useEffect(() => {
+    if (isLoadingOlderMessages) {
+      prevListLengthRef.current = listData.length;
+    }
+  }, [isLoadingOlderMessages]);
+
+  useEffect(() => {
+    if (!isLoadingOlderMessages && loadingOlderRef.current && prevListLengthRef.current > 0) {
+      const addedCount = listData.length - prevListLengthRef.current;
+      if (addedCount > 0) {
+        setTimeout(() => {
+          try {
+            flatListRef.current?.scrollToIndex({ index: addedCount, animated: false });
+          } catch {}
+        }, 50);
+      }
+      prevListLengthRef.current = 0;
+    }
+  }, [listData.length, isLoadingOlderMessages]);
+
   const handleScroll = useCallback((e: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
     setShowScrollBtn(distanceFromBottom > 400);
-    if (contentOffset.y < 100 && hasMoreMessages && !isLoadingOlderMessages) {
+    if (contentOffset.y < 150 && hasMoreMessages && !isLoadingOlderMessages && !loadingOlderRef.current) {
+      loadingOlderRef.current = true;
       loadOlderMessages();
+      setTimeout(() => { loadingOlderRef.current = false; }, 1000);
     }
   }, [hasMoreMessages, isLoadingOlderMessages, loadOlderMessages]);
 
@@ -1250,16 +1479,41 @@ export default function ChatConversationScreen() {
           task: 'clipboard-check-outline',
           meeting: 'calendar-outline',
           status_change: 'swap-horizontal',
+          tag_added: 'tag-outline',
+          tag_removed: 'tag-off-outline',
+          owner_changed: 'account-switch-outline',
+          internal_mention: 'robot-outline',
+          lead_created: 'account-plus-outline',
+          case_created: 'ticket-outline',
+          bot_action: 'robot-outline',
+          calendar_event: 'calendar-check-outline',
+        };
+        const colorMap: Record<string, string> = {
+          note: '#795548',
+          call: '#4CAF50',
+          email: '#2196F3',
+          task: '#FF9800',
+          meeting: '#009688',
+          status_change: '#607D8B',
+          tag_added: '#009688',
+          tag_removed: '#F44336',
+          owner_changed: '#3F51B5',
+          internal_mention: '#7C4DFF',
+          lead_created: '#4CAF50',
+          case_created: '#9C27B0',
+          bot_action: '#7C4DFF',
+          calendar_event: '#009688',
         };
         const entryType = (entry.timelineType || entry.TimelineType || entry.type || 'note').toLowerCase();
         const icon = iconMap[entryType] || 'information-outline';
+        const iconColor = colorMap[entryType] || '#2e6155';
         const entryText = entry.note || entry.text || entry.description || entry.Note || entry.content || '';
         const entryBy = entry.createdByName || entry.CreatedByName || entry.addedByName || '';
         const entryTs = entry.createdOn || entry.timestamp || entry.CreatedOn || '';
         return (
           <View style={[styles.timelineItem, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f0f4f8', borderColor: theme.colors.outline }]}>
-            <View style={[styles.timelineIconWrap, { backgroundColor: theme.dark ? 'rgba(46,97,85,0.3)' : '#2e615520' }]}>
-              <MaterialCommunityIcons name={icon as any} size={16} color="#2e6155" />
+            <View style={[styles.timelineIconWrap, { backgroundColor: `${iconColor}15` }]}>
+              <MaterialCommunityIcons name={icon as any} size={16} color={iconColor} />
             </View>
             <View style={{ flex: 1 }}>
               {entryText ? (
@@ -1284,6 +1538,7 @@ export default function ChatConversationScreen() {
           isOutbound={item.isOutbound}
           showTail={item.showTail}
           theme={theme}
+          organization={user?.organization}
           onLongPress={handleMessageLongPress}
           onMediaPress={handleMediaPress}
           onQuotedPress={handleQuotedPress}
@@ -1292,7 +1547,7 @@ export default function ChatConversationScreen() {
         />
       );
     },
-    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers],
+    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers, user?.organization],
   );
 
   const keyExtractor = useCallback((item: ListItem) => {
@@ -1385,7 +1640,7 @@ export default function ChatConversationScreen() {
                 >
                   {contactName}
                 </Text>
-                <Text style={styles.headerStatus}>
+                <Text style={[styles.headerStatus, { writingDirection: 'ltr', textAlign: 'left' }]}>
                   {phoneNumber}
                 </Text>
               </View>
@@ -1408,38 +1663,16 @@ export default function ChatConversationScreen() {
                 );
               })()}
               <IconButton
-                icon={messageMode === 'internal' ? 'note-text' : 'note-text-outline'}
-                size={20}
-                iconColor={messageMode === 'internal' ? '#FFE082' : theme.custom.headerText}
-                onPress={() => {
-                  if (messageMode === 'internal') {
-                    setMessageMode('regular');
-                    setIsInternalNote(false);
-                  } else {
-                    setMessageMode('internal');
-                    setIsInternalNote(true);
-                  }
-                }}
-                style={messageMode === 'internal' ? { backgroundColor: 'rgba(255,224,130,0.2)' } : undefined}
-              />
-              <IconButton
                 icon="magnify"
                 size={20}
                 iconColor={theme.custom.headerText}
                 onPress={() => { setSearchVisible((v) => !v); if (searchVisible) setSearchQuery(''); }}
               />
               <IconButton
-                icon="phone-outgoing"
+                icon="lightning-bolt"
                 size={20}
                 iconColor={theme.custom.headerText}
-                onPress={handleInitiateCall}
-                disabled={isInitiatingCall}
-              />
-              <IconButton
-                icon="image-multiple"
-                size={20}
-                iconColor={theme.custom.headerText}
-                onPress={() => setMediaPanelVisible(true)}
+                onPress={handleQuickActionsPress}
               />
               <Menu
                 visible={menuVisible}
@@ -1455,14 +1688,6 @@ export default function ChatConversationScreen() {
                 contentStyle={{ backgroundColor: theme.colors.surface }}
               >
                 <Menu.Item
-                  leadingIcon={messageMode === 'internal' ? 'note-text' : 'note-text-outline'}
-                  onPress={() => {
-                    setMenuVisible(false);
-                    setMessageMode(messageMode === 'internal' ? 'regular' : 'internal');
-                  }}
-                  title={t('chats.internalNote', 'הודעה פנימית')}
-                />
-                <Menu.Item
                   leadingIcon={starredFilter ? 'star' : 'star-outline'}
                   onPress={() => {
                     setMenuVisible(false);
@@ -1473,41 +1698,12 @@ export default function ChatConversationScreen() {
                   title={starredFilter ? t('chats.allMessages', 'All Messages') : t('chats.starredMessages')}
                 />
                 <Menu.Item
-                  leadingIcon="magnify"
-                  onPress={() => {
-                    setMenuVisible(false);
-                    setSearchVisible((v) => !v);
-                    if (searchVisible) setSearchQuery('');
-                    setStarredFilter(false);
-                  }}
-                  title={t('chats.searchPlaceholder')}
-                />
-                <Menu.Item
-                  leadingIcon="lightning-bolt"
-                  onPress={() => {
-                    setMenuVisible(false);
-                    handleQuickActionsPress();
-                  }}
-                  title={t('chats.quickActions', 'פעולות מהירות')}
-                />
-                <Menu.Item
                   leadingIcon="information-outline"
                   onPress={() => {
                     setMenuVisible(false);
                     setShowContactInfoSheet(true);
                   }}
                   title={t('chats.contactInfo', 'פרטי שיחה')}
-                />
-                <Menu.Item
-                  leadingIcon="account-arrow-left"
-                  onPress={() => {
-                    setMenuVisible(false);
-                    if (user?.organization && phoneNumber) {
-                      const userId = user.uID || user.userId || '';
-                      contactsApi.updateOwner(user.organization, phoneNumber as string, userId).catch(() => {});
-                    }
-                  }}
-                  title={t('chats.takeOwnership', 'קח בעלות')}
                 />
               </Menu>
             </View>
@@ -1547,35 +1743,7 @@ export default function ChatConversationScreen() {
           </Pressable>
         )}
 
-        {/* Message mode indicator */}
-        {messageMode === 'internal' && (
-          <Pressable
-            onPress={() => { setMessageMode('regular'); setIsInternalNote(false); }}
-            style={[
-              styles.modeBanner,
-              { backgroundColor: theme.dark ? '#3E3500' : '#FFF3E0' },
-            ]}
-          >
-            <MaterialCommunityIcons
-              name="note-text"
-              size={16}
-              color={theme.dark ? '#FFE082' : '#E65100'}
-            />
-            <Text
-              style={[
-                styles.modeBannerText,
-                { color: theme.dark ? '#FFE082' : '#E65100' },
-              ]}
-            >
-              {t('chats.internalMessages')}
-            </Text>
-            <MaterialCommunityIcons
-              name="close"
-              size={16}
-              color={theme.dark ? '#FFE082' : '#E65100'}
-            />
-          </Pressable>
-        )}
+        {/* Message mode indicator - removed internal notes UI per user request */}
 
         {/* Status / Category bar */}
         <View style={[styles.chatMetaBar, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant || 'rgba(0,0,0,0.06)' }]}>
@@ -1618,19 +1786,46 @@ export default function ChatConversationScreen() {
             ))}
           </Menu>
 
-          {chat?.tags && chat.tags.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginStart: 4, flexShrink: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 4 }}>
-              {chat.tags.map((tag) => (
-                <View key={tag} style={[styles.metaChip, { backgroundColor: '#fef3c7' }]}>
-                  <Text style={{ fontSize: 10, fontWeight: '600', color: '#92400e' }}>{tag}</Text>
-                </View>
-              ))}
-            </ScrollView>
-          )}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginStart: 4, flexShrink: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 4 }}>
+            {(chat?.tags || []).map((tag) => (
+              <View key={tag} style={[styles.metaChip, { backgroundColor: '#fef3c7' }]}>
+                <Text style={{ fontSize: 10, fontWeight: '600', color: '#92400e' }}>{tag}</Text>
+              </View>
+            ))}
+            {showAddTagInline ? (
+              <View style={[styles.metaChip, { backgroundColor: '#e0f2f1', paddingHorizontal: 4, paddingVertical: 2 }]}>
+                <TextInput
+                  value={newTagText}
+                  onChangeText={setNewTagText}
+                  onSubmitEditing={() => handleAddTag(newTagText)}
+                  placeholder={isRTL ? 'תיוג...' : 'Tag...'}
+                  placeholderTextColor="#64748b"
+                  style={{ fontSize: 11, minWidth: 60, padding: 0, color: theme.colors.onSurface }}
+                  autoFocus
+                  returnKeyType="done"
+                  onBlur={() => { if (!newTagText.trim()) setShowAddTagInline(false); }}
+                />
+              </View>
+            ) : (
+              <Pressable onPress={() => setShowAddTagInline(true)} style={[styles.metaChip, { backgroundColor: '#e0f2f1' }]}>
+                <MaterialCommunityIcons name="plus" size={12} color="#009688" />
+                <Text style={{ fontSize: 10, fontWeight: '600', color: '#009688', marginStart: 2 }}>{isRTL ? 'תיוג' : 'Tag'}</Text>
+              </Pressable>
+            )}
+          </ScrollView>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginStart: 'auto', gap: 2 }}>
+            <Pressable onPress={() => setShowAddNoteModal(true)} hitSlop={6} style={{ padding: 4 }}>
+              <MaterialCommunityIcons name="note-edit-outline" size={16} color="#795548" />
+            </Pressable>
+            <Pressable onPress={() => setShowAssignOwnerModal(true)} hitSlop={6} style={{ padding: 4 }}>
+              <MaterialCommunityIcons name="account-switch-outline" size={16} color="#3F51B5" />
+            </Pressable>
+          </View>
         </View>
 
         {/* Messages */}
-        {isLoadingMessages ? (
+        {isLoadingMessages && listData.length === 0 ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator
               size="large"
@@ -1709,25 +1904,74 @@ export default function ChatConversationScreen() {
           </Pressable>
         )}
 
-        {/* Template send banner - when window is closed OR waiting for reply (no 24h window open) */}
-        {!isStatusLoading && (isWindowClosed || isWaitingForReply) ? (
-          <Pressable
-            onPress={handleOpenConversation}
-            style={[
-              styles.closedInlineBanner,
-              { backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1' },
-            ]}
-          >
-            <MaterialCommunityIcons
-              name="message-text-outline"
-              size={18}
-              color={theme.dark ? '#ffd54f' : '#f57c00'}
-            />
-            <Text style={{ flex: 1, fontSize: 13, color: theme.dark ? '#ffd54f' : '#e65100', fontWeight: '600', textAlign: isRTL ? 'right' : 'left' }}>
-              {t('chats.tapToSendTemplate', 'לחץ לשליחת תבנית')}
-            </Text>
-            <MaterialCommunityIcons name="chevron-right" size={18} color={theme.dark ? '#ffd54f' : '#f57c00'} />
-          </Pressable>
+        {/* Template send banner - when window is closed OR waiting for reply OR still loading (default to closed) */}
+        {isStatusLoading || isWindowClosed || isWaitingForReply ? (
+          <>
+            {/* Number switcher must remain accessible even when window closed */}
+            {wabaNumbers.length > 1 && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.dark ? '#1a1a2e' : '#f9fafb' }}>
+                <MaterialCommunityIcons name="phone-outline" size={14} color={theme.colors.primary} />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginStart: 6 }}>
+                  {wabaNumbers.map((num) => {
+                    const id = num.PhoneNumberId || num.phoneNumberId || '';
+                    const numLabel = num.Label || num.label || num.DisplayNumber || num.displayNumber || id.slice(-4);
+                    const isActive = id === activeWabaNumber;
+                    return (
+                      <Pressable
+                        key={id}
+                        onPress={() => setActiveWabaNumber(id)}
+                        style={{ paddingHorizontal: 10, paddingVertical: 4, marginEnd: 6, borderRadius: 12, backgroundColor: isActive ? (theme.dark ? '#1e3a32' : '#d1fae5') : (theme.dark ? '#334155' : '#e2e8f0') }}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: isActive ? '700' : '400', color: isActive ? theme.colors.primary : theme.colors.onSurface }}>{numLabel}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
+            <View style={[styles.closedInlineBanner, { backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1', gap: 8, opacity: isStatusLoading ? 0.5 : 1 }]}>
+              <Pressable
+                onPress={handleSendDefaultTemplate}
+                disabled={isSendingTemplate || isStatusLoading}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: pressed ? '#1a7a5e' : '#25D366',
+                  paddingVertical: 10,
+                  borderRadius: 8,
+                  opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : 1,
+                })}
+              >
+                <MaterialCommunityIcons name="lightning-bolt" size={18} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                  {isRTL ? 'שלח ברירת מחדל' : 'Send Default'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={handleOpenConversation}
+                disabled={isStatusLoading}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: pressed ? '#e65100' : (theme.dark ? '#3E3500' : '#f57c00'),
+                  paddingVertical: 10,
+                  borderRadius: 8,
+                  opacity: isStatusLoading ? 0.6 : 1,
+                })}
+              >
+                <MaterialCommunityIcons name="file-document-edit-outline" size={18} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                  {isRTL ? 'בחר תבנית' : 'Choose Template'}
+                </Text>
+              </Pressable>
+            </View>
+          </>
         ) : (
           <>
             {/* Chat Input - visible only when customer replied (24h window open) */}
@@ -1735,11 +1979,8 @@ export default function ChatConversationScreen() {
               ref={chatInputRef}
               onSend={handleSend}
               onAttachmentPress={handleAttachment}
-              isInternalNote={isInternalNote}
-              onToggleInternalNote={() => {
-                setIsInternalNote((v) => !v);
-                setMentionedUsers([]);
-              }}
+              isInternalNote={false}
+              onToggleInternalNote={() => {}}
               onQuickMessagePress={handleQuickActionsPress}
               onVoiceMessage={handleVoiceMessage}
               mentionedUsers={mentionedUsers}
@@ -2379,9 +2620,14 @@ export default function ChatConversationScreen() {
                 <IconButton icon="close" size={20} onPress={() => setShowQuickActionsSheet(false)} />
               </View>
               {[
+                { icon: 'note-edit-outline', label: isRTL ? 'הוסף הערה לציר זמן' : 'Add Timeline Note', color: '#795548', action: () => { setShowQuickActionsSheet(false); setShowAddNoteModal(true); } },
+                { icon: 'tag-outline', label: isRTL ? 'הוסף תיוג' : 'Add Tag', color: '#009688', action: () => { setShowQuickActionsSheet(false); setShowAddTagInline(true); } },
+                { icon: 'account-switch-outline', label: isRTL ? 'שייך בעלים' : 'Assign Owner', color: '#3F51B5', action: () => { setShowQuickActionsSheet(false); setShowAssignOwnerModal(true); } },
+                { icon: 'account-arrow-right-outline', label: isRTL ? 'שייך איש קשר' : 'Assign Contact', color: '#00897B', action: () => { setShowQuickActionsSheet(false); setShowAssignOwnerModal(true); } },
                 { icon: 'lightning-bolt', label: t('chats.quickMessages'), color: '#FF9800', action: () => { setShowQuickActionsSheet(false); handleQuickMessagePress(); } },
                 { icon: 'clock-outline', label: t('chats.scheduleMessage', 'תזמן הודעה'), color: '#607D8B', action: () => { setShowQuickActionsSheet(false); setShowScheduleModal(true); } },
                 { icon: 'clipboard-check-outline', label: t('tasks.addTask'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setCreateTaskTitle(''); setCreateTaskDueDate(''); setCreateTaskPriority('medium'); setSelectedDate(null); setShowCreateTaskModal(true); } },
+                { icon: 'image-multiple', label: isRTL ? 'מדיה' : 'Media', color: '#7C4DFF', action: () => { setShowQuickActionsSheet(false); setMediaPanelVisible(true); } },
                 { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
                 { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
               ].map((item) => (
@@ -2402,6 +2648,58 @@ export default function ChatConversationScreen() {
                   </Text>
                 </Pressable>
               ))}
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* Assign Owner Modal */}
+        <Modal
+          visible={showAssignOwnerModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowAssignOwnerModal(false)}
+        >
+          <Pressable style={styles.modalOverlay} onPress={() => setShowAssignOwnerModal(false)}>
+            <Pressable style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]} onPress={(e) => e.stopPropagation()}>
+              <View style={styles.actionSheetHandle} />
+              <View style={styles.templateSheetHeader}>
+                <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
+                  {isRTL ? 'שייך בעלים' : 'Assign Owner'}
+                </Text>
+                <IconButton icon="close" size={20} onPress={() => setShowAssignOwnerModal(false)} />
+              </View>
+              {isLoadingOwners ? (
+                <ActivityIndicator style={{ marginVertical: 20 }} />
+              ) : (
+                <ScrollView style={{ maxHeight: 350 }}>
+                  {availableOwners.map((owner) => {
+                    const ownerId = owner.uID || owner.userId || owner.id || '';
+                    const ownerName = owner.UserName || owner.fullname || owner.displayName || owner.email || ownerId;
+                    return (
+                      <Pressable
+                        key={ownerId}
+                        onPress={() => handleAssignOwner(ownerId, ownerName)}
+                        disabled={assigningOwner}
+                        style={({ pressed }) => [
+                          styles.templateItem,
+                          { flexDirection: 'row', alignItems: 'center' },
+                          pressed && { backgroundColor: theme.colors.surfaceVariant },
+                        ]}
+                      >
+                        <Avatar.Text
+                          size={36}
+                          label={getInitials(ownerName)}
+                          style={{ backgroundColor: theme.colors.primaryContainer }}
+                          labelStyle={{ fontSize: 14, color: theme.colors.onPrimaryContainer }}
+                        />
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginStart: 12 }}>
+                          {ownerName}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
             </Pressable>
           </Pressable>
         </Modal>
@@ -2519,6 +2817,51 @@ export default function ChatConversationScreen() {
               </Pressable>
             </Pressable>
           </KeyboardAvoidingView>
+        </Modal>
+
+        {/* Add Note Modal */}
+        <Modal visible={showAddNoteModal} transparent animationType="slide" onRequestClose={() => setShowAddNoteModal(false)}>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} onPress={() => setShowAddNoteModal(false)}>
+            <Pressable style={{ backgroundColor: theme.colors.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, minHeight: 200 }} onPress={() => {}}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface }}>
+                  {isRTL ? '📝 הוסף הערה' : '📝 Add Note'}
+                </Text>
+                <IconButton icon="close" size={20} onPress={() => setShowAddNoteModal(false)} />
+              </View>
+              <TextInput
+                value={noteText}
+                onChangeText={setNoteText}
+                placeholder={isRTL ? 'כתוב הערה...' : 'Write a note...'}
+                placeholderTextColor={theme.colors.onSurfaceVariant}
+                multiline
+                autoFocus
+                style={{
+                  borderWidth: 1,
+                  borderColor: theme.colors.outline,
+                  borderRadius: 10,
+                  padding: 12,
+                  minHeight: 80,
+                  fontSize: 14,
+                  color: theme.colors.onSurface,
+                  textAlignVertical: 'top',
+                  direction: isRTL ? 'rtl' : 'ltr',
+                  textAlign: isRTL ? 'right' : 'left',
+                }}
+              />
+              <Button
+                mode="contained"
+                onPress={handleSaveNote}
+                loading={savingNote}
+                disabled={savingNote || !noteText.trim()}
+                buttonColor="#795548"
+                textColor="white"
+                style={{ marginTop: 12, borderRadius: 8 }}
+              >
+                {isRTL ? 'שמור הערה' : 'Save Note'}
+              </Button>
+            </Pressable>
+          </Pressable>
         </Modal>
 
         {/* / inline quick messages */}
@@ -2739,7 +3082,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 60,
-    transform: [{ scaleY: -1 }],
   },
   separatorWrap: {
     alignItems: 'center',

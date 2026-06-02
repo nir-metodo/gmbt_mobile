@@ -442,12 +442,13 @@ export default function UsersScreen() {
             </Text>
             {DATA_VISIBILITY_KEYS.map((key) => {
               const current = editingUser?.dataVisibility?.[key] || 'all';
+              const showByPhone = key === 'chats' || key === 'contacts';
               return (
                 <View key={key} style={[s.permRow, { flexDirection: 'row' }]}>
                   <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
                     {t(`users.perm_${key}`)}
                   </Text>
-                  <View style={[s.visibilityChips, { flexDirection: 'row' }]}>
+                  <View style={[s.visibilityChips, { flexDirection: 'row', flexWrap: 'wrap' }]}>
                     <Chip
                       selected={current === 'all'}
                       onPress={() => updateDataVisibility(key, 'all')}
@@ -466,6 +467,17 @@ export default function UsersScreen() {
                     >
                       {t('users.visibility_own')}
                     </Chip>
+                    {showByPhone && (
+                      <Chip
+                        selected={current === 'byPhone'}
+                        onPress={() => updateDataVisibility(key, 'byPhone')}
+                        compact
+                        style={[s.visibilityChip, current === 'byPhone' && { backgroundColor: BRAND_COLOR + '20' }]}
+                        textStyle={current === 'byPhone' ? { color: BRAND_COLOR, fontWeight: '600' } : {}}
+                      >
+                        {t('users.visibility_byPhone', 'לפי מספר')}
+                      </Chip>
+                    )}
                   </View>
                 </View>
               );

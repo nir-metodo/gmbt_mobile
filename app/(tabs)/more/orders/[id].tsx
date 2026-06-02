@@ -338,7 +338,8 @@ export default function OrderDetailScreen() {
             if (newId) {
               router.replace({ pathname: '/(tabs)/more/orders/[id]', params: { id: newId } });
             } else {
-              router.back();
+              if (router.canGoBack()) router.back();
+              else router.replace('/(tabs)/more/orders');
             }
           },
         },

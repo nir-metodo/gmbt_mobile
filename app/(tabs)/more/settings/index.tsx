@@ -150,6 +150,7 @@ export default function SettingsScreen() {
       else if (key === 'pushNotifications') settings.setPushNotifications(value);
       else if (key === 'messageNotifications') settings.setMessageNotifications(value);
       else if (key === 'callNotifications') settings.setCallNotifications(value);
+      else settings.setNotificationPref(key, value);
       await settingsApi.updateSettings(user?.organization || '', { [key]: value });
     } catch {
       // setting update failed — toggle already applied locally
@@ -224,6 +225,7 @@ export default function SettingsScreen() {
             icon="bell-outline"
             iconColor="#FF6B35"
             label={t('settings.pushNotifications')}
+            description={isRTL ? 'הפעלה/כיבוי כללי' : 'Master on/off'}
             isRTL={isRTL}
             themeColors={theme.colors}
             right={<Switch value={!!settings.pushNotificationsEnabled} onValueChange={(v) => handleToggle('pushNotifications', v)} color={BRAND_COLOR} />}
@@ -233,6 +235,7 @@ export default function SettingsScreen() {
             icon="message-text-outline"
             iconColor="#2A9D8F"
             label={t('settings.messageNotifications')}
+            description={isRTL ? 'הודעות נכנסות מלקוחות' : 'Incoming customer messages'}
             isRTL={isRTL}
             themeColors={theme.colors}
             right={<Switch value={!!settings.messageNotificationsEnabled} onValueChange={(v) => handleToggle('messageNotifications', v)} color={BRAND_COLOR} />}
@@ -242,9 +245,80 @@ export default function SettingsScreen() {
             icon="phone-ring-outline"
             iconColor="#E63946"
             label={t('settings.callNotifications')}
+            description={isRTL ? 'שיחות נכנסות ושיחות שהוחמצו' : 'Incoming & missed calls'}
             isRTL={isRTL}
             themeColors={theme.colors}
             right={<Switch value={!!settings.callNotificationsEnabled} onValueChange={(v) => handleToggle('callNotifications', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="account-arrow-right-outline"
+            iconColor="#3F51B5"
+            label={isRTL ? 'שויך אלי איש קשר' : 'Contact Assigned to Me'}
+            description={isRTL ? 'כשמשייכים לך איש קשר חדש' : 'When a contact is assigned to you'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.contactAssignedNotification} onValueChange={(v) => handleToggle('contactAssignedNotification', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="account-plus-outline"
+            iconColor="#4CAF50"
+            label={isRTL ? 'שויך אלי ליד' : 'Lead Assigned to Me'}
+            description={isRTL ? 'כשמשייכים לך ליד חדש לטיפול' : 'When a lead is assigned to you'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.leadAssignedNotification} onValueChange={(v) => handleToggle('leadAssignedNotification', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="at"
+            iconColor="#7C4DFF"
+            label={isRTL ? 'תיוג (@mention)' : '@Mention'}
+            description={isRTL ? 'כשמישהו מתייג אותך בהערה פנימית' : 'When someone mentions you in a note'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.mentionNotification} onValueChange={(v) => handleToggle('mentionNotification', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="clipboard-check-outline"
+            iconColor="#FF9800"
+            label={isRTL ? 'משימה שויכה אלי' : 'Task Assigned to Me'}
+            description={isRTL ? 'כשמשימה חדשה משויכת אליך' : 'When a task is assigned to you'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.taskAssignedNotification} onValueChange={(v) => handleToggle('taskAssignedNotification', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="calendar-alert"
+            iconColor="#009688"
+            label={isRTL ? 'תזכורת פגישה' : 'Calendar Reminder'}
+            description={isRTL ? 'לפני פגישה שנקבעה ביומן' : 'Before a scheduled meeting'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.calendarReminderNotification} onValueChange={(v) => handleToggle('calendarReminderNotification', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="robot-outline"
+            iconColor="#795548"
+            label={isRTL ? 'פעולת Gambot AI' : 'Gambot AI Action'}
+            description={isRTL ? 'כשהבוט ביצע פעולה (קבע פגישה, שלח הודעה)' : 'When the bot completes an action'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.botActionNotification} onValueChange={(v) => handleToggle('botActionNotification', v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="ticket-outline"
+            iconColor="#9C27B0"
+            label={isRTL ? 'פנייה שויכה אלי' : 'Case Assigned to Me'}
+            description={isRTL ? 'כשפנייה/תיק חדש משויך אליך' : 'When a case/ticket is assigned to you'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.caseAssignedNotification} onValueChange={(v) => handleToggle('caseAssignedNotification', v)} color={BRAND_COLOR} />}
           />
         </Surface>
 

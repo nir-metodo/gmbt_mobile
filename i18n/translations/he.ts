@@ -594,6 +594,7 @@ export default {
     perm_settings: 'הגדרות',
     visibility_all: 'הכל',
     visibility_own: 'שלי',
+    visibility_byPhone: 'לפי מספר',
     language: 'שפה',
     timezone: 'אזור זמן',
   },
@@ -699,6 +700,8 @@ export default {
     catalog: 'קטלוג',
     invoices: 'חשבוניות',
     transactions: 'עסקאות סליקה',
+    calendar: 'יומן',
+    email: 'מייל',
   },
   pushSettings: {
     title: 'התראות Push',

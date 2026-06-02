@@ -200,7 +200,8 @@ export default function ESignatureDetailScreen() {
             setActionLoading('cancel');
             try {
               await esignatureApi.deleteDocument(user.organization, id);
-              router.back();
+              if (router.canGoBack()) router.back();
+              else router.replace('/(tabs)/more/esignature');
             } catch (err: any) {
               Alert.alert(t('common.error'), err.message || t('errors.generic'));
             } finally {
@@ -226,7 +227,8 @@ export default function ESignatureDetailScreen() {
             setActionLoading('delete');
             try {
               await esignatureApi.deleteDocument(user.organization, id);
-              router.back();
+              if (router.canGoBack()) router.back();
+              else router.replace('/(tabs)/more/esignature');
             } catch (err: any) {
               Alert.alert(t('common.error'), err.message || t('errors.generic'));
             } finally {

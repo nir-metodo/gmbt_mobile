@@ -20,6 +20,8 @@ const MAX_BUBBLE_WIDTH = SCREEN_WIDTH * 0.78;
 const MEDIA_WIDTH = MAX_BUBBLE_WIDTH - 18;
 const STICKER_SIZE = SCREEN_WIDTH * 0.38;
 
+const templateFetchCache = new Map<string, any>();
+
 function renderFormattedText(text: string, color: string): React.ReactNode[] {
   const segments: React.ReactNode[] = [];
   const pattern = /(\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~|```[^`]+```|`[^`\n]+`)/g;
@@ -63,6 +65,7 @@ interface MessageBubbleProps {
   isOutbound: boolean;
   showTail: boolean;
   theme: AppTheme;
+  organization?: string;
   onLongPress?: (message: Message) => void;
   onMediaPress?: (message: Message) => void;
   onQuotedPress?: (contextMessageId: string) => void;
@@ -77,6 +80,7 @@ function MessageBubbleInner({
   isOutbound,
   showTail,
   theme,
+  organization,
   onLongPress,
   onMediaPress,
   onQuotedPress,
@@ -126,6 +130,16 @@ function MessageBubbleInner({
       swipeTriggered.current = false;
     });
 
+  const longPressGesture = Gesture.LongPress()
+    .minDuration(300)
+    .runOnJS(true)
+    .onStart(() => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      onLongPress?.(message);
+    });
+
+  const composedGesture = Gesture.Race(longPressGesture, panGesture);
+
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: translateX.value * swipeDirection }],
   }));
@@ -135,10 +149,7 @@ function MessageBubbleInner({
     transform: [{ scale: Math.min(translateX.value / SWIPE_THRESHOLD, 1) }],
   }));
 
-  const handleLongPress = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    onLongPress?.(message);
-  }, [message, onLongPress]);
+  // Long press is handled via composedGesture (Gesture.LongPress + Gesture.Pan)
 
   // Pre-load audio duration from message metadata or by loading the file header
   useEffect(() => {
@@ -169,6 +180,66 @@ function MessageBubbleInner({
     })();
     return () => { cancelled = true; };
   }, [message]);
+
+  // Fetch template data by templateId if not already available in templateConfig
+  const [fetchedTemplateData, setFetchedTemplateData] = useState<any>(null);
+  const [fetchedMediaUrl, setFetchedMediaUrl] = useState<string>('');
+
+  useEffect(() => {
+    const msgType = (message.type || (message as any).messageType || '').toLowerCase();
+    if (msgType !== 'template') return;
+    const templateId = (message as any).templateId || (message as any).TemplateId;
+    if (!templateId) return;
+    const rawConfig = (message as any).templateConfig;
+    const tpl = rawConfig?.template || rawConfig;
+    const components = tpl?.components || rawConfig?.components || [];
+    if (components.length > 0) return;
+
+    let cancelled = false;
+    const org = organization || (message as any).organization || (message as any).Organization || '';
+    if (!org) return;
+
+    (async () => {
+      try {
+        const { chatsApi } = await import('../../services/api/chats');
+        const cacheKey = `${org}_${templateId}`;
+        const cached = templateFetchCache.get(cacheKey);
+        if (cached) {
+          if (!cancelled) {
+            setFetchedTemplateData(cached);
+            const header = cached.components?.find((c: any) => c.type === 'HEADER');
+            if (header?.format === 'IMAGE' || header?.format === 'VIDEO' || header?.format === 'DOCUMENT') {
+              const mediaCacheKey = `${cacheKey}_media`;
+              const cachedMedia = templateFetchCache.get(mediaCacheKey);
+              if (cachedMedia) {
+                setFetchedMediaUrl(cachedMedia);
+              } else {
+                const url = await chatsApi.getMediaByTemplateId(org, templateId);
+                if (url && !cancelled) {
+                  templateFetchCache.set(mediaCacheKey, url);
+                  setFetchedMediaUrl(url);
+                }
+              }
+            }
+          }
+          return;
+        }
+        const template = await chatsApi.getTemplateById(org, templateId);
+        if (!template || cancelled) return;
+        templateFetchCache.set(cacheKey, template);
+        setFetchedTemplateData(template);
+        const header = template.components?.find((c: any) => c.type === 'HEADER');
+        if (header?.format === 'IMAGE' || header?.format === 'VIDEO' || header?.format === 'DOCUMENT') {
+          const url = await chatsApi.getMediaByTemplateId(org, templateId);
+          if (url && !cancelled) {
+            templateFetchCache.set(`${cacheKey}_media`, url);
+            setFetchedMediaUrl(url);
+          }
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [(message as any).templateId, message.type, (message as any).messageType, organization]);
 
   const bubbleColor = isInternal
     ? isDark ? '#3E3500' : '#FFF9C4'
@@ -285,24 +356,25 @@ function MessageBubbleInner({
     switch (msgType) {
       case 'image':
         if (mediaUrl && !imageError) {
-          if (mediaLoading) {
-            return (
-              <View style={[styles.mediaPlaceholder, { backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)' }]}>
-                <ActivityIndicator size="small" color={theme.colors.primary} />
-              </View>
-            );
-          }
+          const imageSource = effectiveMediaUrl || mediaUrl;
           return (
             <>
               <Pressable onPress={() => onMediaPress ? onMediaPress(message) : setImageViewerVisible(true)}>
-                <Image
-                  source={{ uri: effectiveMediaUrl! }}
-                  style={styles.mediaImage}
-                  contentFit="cover"
-                  cachePolicy="disk"
-                  recyclingKey={mediaUrl}
-                  onError={() => setImageError(true)}
-                />
+                <View style={{ position: 'relative' }}>
+                  <Image
+                    source={{ uri: imageSource }}
+                    style={styles.mediaImage}
+                    contentFit="cover"
+                    cachePolicy="disk"
+                    recyclingKey={mediaUrl}
+                    onError={() => setImageError(true)}
+                  />
+                  {mediaLoading && (
+                    <View style={[styles.mediaPlaceholder, { position: 'absolute', top: 0, left: 0, backgroundColor: isDark ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }]}>
+                      <ActivityIndicator size="small" color={theme.colors.primary} />
+                    </View>
+                  )}
+                </View>
               </Pressable>
               {!onMediaPress && (
                 <Modal visible={imageViewerVisible} transparent animationType="fade" onRequestClose={() => setImageViewerVisible(false)}>
@@ -311,7 +383,7 @@ function MessageBubbleInner({
                       <MaterialCommunityIcons name="close" size={28} color="#fff" />
                     </Pressable>
                     <Image
-                      source={{ uri: effectiveMediaUrl! }}
+                      source={{ uri: imageSource }}
                       style={styles.imageViewerImage}
                       contentFit="contain"
                       cachePolicy="disk"
@@ -330,22 +402,18 @@ function MessageBubbleInner({
 
       case 'video':
         if (mediaUrl) {
-          if (mediaLoading) {
-            return (
-              <View style={[styles.mediaPlaceholder, { backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)' }]}>
-                <ActivityIndicator size="small" color={theme.colors.primary} />
-                <Text variant="labelSmall" style={{ color: isDark ? '#8696a0' : '#667781', marginTop: 6 }}>
-                  {t('chats.downloading', 'מוריד...')}
-                </Text>
-              </View>
-            );
-          }
+          const videoSource = effectiveMediaUrl || mediaUrl;
           return (
             <>
               <Pressable onPress={() => onMediaPress ? onMediaPress(message) : setVideoFullscreen(true)} style={styles.videoThumb}>
                 <View style={[styles.mediaPlaceholder, { backgroundColor: isDark ? '#111' : '#000' }]}>
+                  {mediaLoading && (
+                    <View style={{ position: 'absolute', zIndex: 1, alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color="#fff" />
+                    </View>
+                  )}
                   <Video
-                    source={{ uri: effectiveMediaUrl! }}
+                    source={{ uri: videoSource }}
                     style={{ width: MEDIA_WIDTH, height: 180, borderRadius: 8 }}
                     resizeMode={ResizeMode.CONTAIN}
                     useNativeControls
@@ -359,7 +427,7 @@ function MessageBubbleInner({
                       <MaterialCommunityIcons name="close" size={28} color="#fff" />
                     </Pressable>
                     <Video
-                      source={{ uri: effectiveMediaUrl! }}
+                      source={{ uri: videoSource }}
                       style={{ width: '100%', height: '80%' }}
                       resizeMode={ResizeMode.CONTAIN}
                       useNativeControls
@@ -445,7 +513,7 @@ function MessageBubbleInner({
                 })}
               </View>
               <Text style={[styles.audioDuration, { color: timeColor }]}>
-                {audioPlaying ? formatSec(positionSec) : formatSec(durationSec)}
+                {audioPlaying ? formatSec(positionSec) : (durationSec > 0 ? formatSec(durationSec) : '···')}
               </Text>
             </View>
           </View>
@@ -459,17 +527,19 @@ function MessageBubbleInner({
   const renderTemplate = () => {
     const rawConfig = message.templateConfig;
     const tpl = rawConfig?.template || rawConfig;
-    const components: any[] = tpl?.components || rawConfig?.components || [];
+    // Use fetchedTemplateData as fallback if rawConfig has no components
+    const configComponents: any[] = tpl?.components || rawConfig?.components || [];
+    const components: any[] = configComponents.length > 0 ? configComponents : (fetchedTemplateData?.components || []);
 
     const headerComp = components.find((c: any) => c.type === 'HEADER');
     const bodyComp = components.find((c: any) => c.type === 'BODY');
     const footerComp = components.find((c: any) => c.type === 'FOOTER');
     const buttonsComp = components.find((c: any) => c.type === 'BUTTONS');
 
-    const bodyText = message.text || message.body || bodyComp?.text || rawConfig?.body?.text || tpl?.body || '';
-    if (!rawConfig && !message.templateName && !bodyText) return null;
+    const bodyText = message.text || message.body || bodyComp?.text || rawConfig?.body?.text || tpl?.body || fetchedTemplateData?.body || '';
+    if (!rawConfig && !message.templateName && !bodyText && !fetchedTemplateData) return null;
 
-    const headerMedia = headerComp?.example?.header_handle?.[0] || rawConfig?.header?.mediaUrl || mediaUrl;
+    const headerMedia = headerComp?.example?.header_handle?.[0] || rawConfig?.header?.mediaUrl || fetchedMediaUrl || mediaUrl;
     const headerType = (headerComp?.format || headerComp?.type || rawConfig?.header?.type || rawConfig?.header?.format || '').toUpperCase();
     const footerText = footerComp?.text || rawConfig?.footer?.text || rawConfig?.footer || '';
     const buttons = buttonsComp?.buttons || rawConfig?.buttons || [];
@@ -755,7 +825,7 @@ function MessageBubbleInner({
           showTail && styles.tailSpacing,
         ]}
       >
-        <Pressable onLongPress={handleLongPress} delayLongPress={250} style={({ pressed }) => [{ opacity: pressed ? 0.8 : 1 }]}>
+        <Pressable style={({ pressed }) => [{ opacity: pressed ? 0.8 : 1 }]}>
           {mediaLoading ? (
             <View style={[styles.stickerPlaceholder]}>
               <ActivityIndicator size="small" color={theme.colors.primary} />
@@ -802,7 +872,7 @@ function MessageBubbleInner({
   }
 
   return (
-    <GestureDetector gesture={panGesture}>
+    <GestureDetector gesture={composedGesture}>
     <View
       style={[
         styles.wrapper,
@@ -818,8 +888,6 @@ function MessageBubbleInner({
       </Animated.View>
       <Animated.View style={animatedStyle}>
       <Pressable
-        onLongPress={handleLongPress}
-        delayLongPress={250}
         style={({ pressed }) => [
           styles.bubble,
           {
@@ -884,7 +952,11 @@ function MessageBubbleInner({
           <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
             {displaySenderName ? (
               <Text style={[styles.senderName, {
-                color: isSentFromApp ? '#128C7E' : isOutbound ? '#075e54' : '#6366f1',
+                color: isSentFromApp
+                  ? (isDark ? '#4ade80' : '#128C7E')
+                  : isOutbound
+                    ? (isDark ? '#a7f3d0' : '#075e54')
+                    : (isDark ? '#a5b4fc' : '#6366f1'),
                 letterSpacing: isSentFromApp ? 0.5 : 0,
               }]}>
                 {displaySenderName}
@@ -1020,8 +1092,8 @@ const styles = StyleSheet.create({
     marginStart: 3,
   },
   senderName: {
-    fontSize: 12.5,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '800',
     marginBottom: 2,
   },
   body: {

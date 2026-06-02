@@ -36,6 +36,7 @@ import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
 import { usersApi } from '../../../services/api/users';
 import { leadsApi } from '../../../services/api/leads';
+import { quotesApi } from '../../../services/api/quotes';
 import { paymentsApi } from '../../../services/api/payments';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
@@ -191,6 +192,11 @@ export default function LeadDetailScreen() {
   const [paymentInstallments, setPaymentInstallments] = useState(1);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentResult, setPaymentResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
+
+  // Stage transition effects
+  const [wonCelebration, setWonCelebration] = useState<{ title: string; value?: number | string } | null>(null);
+  const [autoQuotePrompt, setAutoQuotePrompt] = useState<{ lead: Lead; config: NonNullable<LeadStage['autoQuote']> } | null>(null);
+  const [autoQuoteLoading, setAutoQuoteLoading] = useState(false);
   const [form, setForm] = useState<Partial<Lead>>(
     lead
       ? { ...lead }
@@ -326,6 +332,17 @@ export default function LeadDetailScreen() {
 
       try {
         await leadsApi.moveStage(organization, lead.id, newStageId, newStage, user?.fullname || '');
+
+        // Won celebration
+        if (stageObj?.isWon) {
+          setWonCelebration({ title: lead.title || '', value: lead.value });
+          setTimeout(() => setWonCelebration(null), 5000);
+        }
+
+        // Auto-quote prompt
+        if (stageObj?.autoQuote?.enabled) {
+          setAutoQuotePrompt({ lead: lead as Lead, config: stageObj.autoQuote as NonNullable<LeadStage['autoQuote']> });
+        }
       } catch {
         // Revert on error
         useLeadStore.setState((state) => ({
@@ -340,6 +357,76 @@ export default function LeadDetailScreen() {
     [organization, lead, pipelineStages, user, t],
   );
 
+  const handleAutoQuoteAction = useCallback(
+    async (action: 'create' | 'createAndSend' | 'createAndNavigate') => {
+      if (!autoQuotePrompt || !organization) return;
+      const { lead: promptLead, config } = autoQuotePrompt;
+      setAutoQuoteLoading(true);
+      try {
+        const contactName = promptLead.contactName || promptLead.title || '';
+        const contactPhone = promptLead.contactPhone || promptLead.phoneNumber || '';
+        const titleTemplate = config.quoteTitle || 'הצעת מחיר - {{leadTitle}}';
+        const leadLabel = promptLead.title || contactName || 'ליד';
+        const quoteTitle = titleTemplate.replace('{{leadTitle}}', leadLabel);
+        const validDays = config.validDays || 30;
+        const tax = config.tax ?? 18;
+        const discount = config.discount || 0;
+
+        const products = Array.isArray((promptLead as any).interestedProducts) ? (promptLead as any).interestedProducts : [];
+        const items = products.length > 0
+          ? products.map((p: any) => ({ type: 'item', description: p.name || '', quantity: p.quantity || 1, unitPrice: parseFloat(p.unitPrice) || 0 }))
+          : [{ type: 'item', description: promptLead.title || 'שירות', quantity: 1, unitPrice: parseFloat(String(promptLead.value)) || 0 }];
+
+        const subtotal = items.reduce((sum: number, it: any) => sum + (it.unitPrice || 0) * (it.quantity || 1), 0);
+        const discountAmount = Math.round(subtotal * discount / 100 * 100) / 100;
+        const afterDiscount = subtotal - discountAmount;
+        const taxAmount = Math.round(afterDiscount * tax / 100 * 100) / 100;
+        const total = Math.round((afterDiscount + taxAmount) * 100) / 100;
+
+        const quoteData = {
+          title: quoteTitle,
+          date: new Date().toISOString().split('T')[0],
+          validUntil: new Date(Date.now() + validDays * 86400000).toISOString().split('T')[0],
+          contactName,
+          contactPhone,
+          contactEmail: (promptLead as any).email || '',
+          contactCompany: (promptLead as any).companyName || '',
+          leadId: promptLead.id,
+          leadTitle: promptLead.title || contactName || '',
+          currency: (promptLead as any).currency || 'ILS',
+          items,
+          discount,
+          discountType: 'percent' as const,
+          tax,
+          notes: config.defaultNotes || '',
+          terms: '',
+          status: 'draft',
+          salespersonId: (promptLead as any).ownerId || user?.uID || '',
+          salespersonName: (promptLead as any).ownerName || user?.fullname || '',
+          subtotal,
+          discountAmount,
+          taxAmount,
+          total,
+        };
+
+        const res = await quotesApi.create(organization, quoteData, user?.uID || '', user?.fullname || '');
+        const newQuoteId = res?.Data?.id || res?.id || res?.quoteId || '';
+        setAutoQuotePrompt(null);
+
+        if (action === 'createAndNavigate' && newQuoteId) {
+          router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: newQuoteId } });
+        } else if (action === 'createAndSend' && newQuoteId) {
+          router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: newQuoteId, autoSend: '1' } });
+        }
+      } catch {
+        Alert.alert(t('common.error'), t('quotes.createError', 'שגיאה ביצירת הצעת מחיר'));
+      } finally {
+        setAutoQuoteLoading(false);
+      }
+    },
+    [autoQuotePrompt, organization, user, router, t],
+  );
+
   const handleDelete = useCallback(() => {
     setMenuVisible(false);
     Alert.alert(lead?.title ?? '', t('leads.deleteConfirm'), [
@@ -350,7 +437,8 @@ export default function LeadDetailScreen() {
         onPress: async () => {
           if (organization && lead) {
             await deleteLead(organization, lead.id);
-            router.back();
+            if (router.canGoBack()) router.back();
+            else router.replace('/(tabs)/leads');
           }
         },
       },
@@ -513,7 +601,11 @@ export default function LeadDetailScreen() {
     try {
       if (isNew) {
         await createLead(organization, form);
-        router.back();
+        if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/(tabs)/leads');
+        }
       } else {
         await updateLead(organization, { ...form, id: lead?.id ?? '' });
         setEditVisible(false);
@@ -2041,6 +2133,84 @@ export default function LeadDetailScreen() {
             </Pressable>
           </Pressable>
       </Modal>
+
+      {/* Won Celebration Overlay */}
+      <Modal
+        visible={!!wonCelebration}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setWonCelebration(null)}
+      >
+        <Pressable style={celebStyles.overlay} onPress={() => setWonCelebration(null)}>
+          <View style={celebStyles.card}>
+            <Text style={celebStyles.trophy}>🏆</Text>
+            <Text style={celebStyles.wonTitle}>Deal Won!</Text>
+            <Text style={celebStyles.wonLeadName}>{wonCelebration?.title}</Text>
+            {wonCelebration?.value ? (
+              <Text style={celebStyles.wonValue}>
+                {formatCurrency(Number(wonCelebration.value), (lead as any)?.currency || 'ILS')}
+              </Text>
+            ) : null}
+            <Button mode="contained" onPress={() => setWonCelebration(null)} style={{ marginTop: 16 }}>
+              {t('common.close', 'סגור')}
+            </Button>
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* Auto-Quote Prompt */}
+      <Modal
+        visible={!!autoQuotePrompt}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setAutoQuotePrompt(null)}
+      >
+        <Pressable style={celebStyles.overlay} onPress={() => setAutoQuotePrompt(null)}>
+          <Pressable style={celebStyles.quoteCard} onPress={() => {}}>
+            <Text style={celebStyles.quoteEmoji}>📄</Text>
+            <Text style={celebStyles.quoteTitle}>יצירת הצעת מחיר</Text>
+            <Text style={celebStyles.quoteSubtitle}>
+              {(autoQuotePrompt?.config?.quoteTitle || 'הצעת מחיר - {{leadTitle}}').replace('{{leadTitle}}', autoQuotePrompt?.lead?.title || '')}
+            </Text>
+            <View style={{ gap: 10, width: '100%', marginTop: 16 }}>
+              <Button
+                mode="contained"
+                icon="send"
+                loading={autoQuoteLoading}
+                onPress={() => handleAutoQuoteAction('createAndSend')}
+                buttonColor="#25d366"
+                textColor="#fff"
+              >
+                צור ושלח ללקוח
+              </Button>
+              <Button
+                mode="contained"
+                icon="link-variant"
+                loading={autoQuoteLoading}
+                onPress={() => handleAutoQuoteAction('createAndNavigate')}
+                buttonColor="#3b82f6"
+                textColor="#fff"
+              >
+                צור ונווט להצעה
+              </Button>
+              <Button
+                mode="outlined"
+                loading={autoQuoteLoading}
+                onPress={() => handleAutoQuoteAction('create')}
+              >
+                צור בלבד
+              </Button>
+              <Button
+                mode="text"
+                onPress={() => setAutoQuotePrompt(null)}
+                textColor="#9ca3af"
+              >
+                ביטול
+              </Button>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -2448,6 +2618,78 @@ function buildTimelineItem(event: any, lang: 'en' | 'he'): {
       };
   }
 }
+
+const celebStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 32,
+    alignItems: 'center',
+    width: '80%',
+    maxWidth: 340,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+  },
+  trophy: {
+    fontSize: 56,
+    marginBottom: 12,
+  },
+  wonTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#1f2937',
+    marginBottom: 4,
+  },
+  wonLeadName: {
+    fontSize: 16,
+    color: '#6b7280',
+    textAlign: 'center',
+  },
+  wonValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#16a34a',
+    marginTop: 8,
+  },
+  quoteCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 28,
+    alignItems: 'center',
+    width: '85%',
+    maxWidth: 380,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+  },
+  quoteEmoji: {
+    fontSize: 40,
+    marginBottom: 8,
+  },
+  quoteTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1f2937',
+    textAlign: 'center',
+  },
+  quoteSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    marginTop: 6,
+  },
+});
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },

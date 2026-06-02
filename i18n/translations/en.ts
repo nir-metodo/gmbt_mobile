@@ -592,6 +592,7 @@ export default {
     perm_settings: 'Settings',
     visibility_all: 'All',
     visibility_own: 'Own',
+    visibility_byPhone: 'By Number',
     language: 'Language',
     timezone: 'Timezone',
   },
@@ -697,6 +698,8 @@ export default {
     catalog: 'Catalog',
     invoices: 'Invoices',
     transactions: 'Transactions',
+    calendar: 'Calendar',
+    email: 'Email',
   },
   pushSettings: {
     title: 'Push Notifications',

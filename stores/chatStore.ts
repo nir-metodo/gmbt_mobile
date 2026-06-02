@@ -167,9 +167,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setOwnerFilter: (owner) => set({ ownerFilter: owner }),
 
   loadMessages: async (organization, phoneNumber) => {
-    set({ isLoadingMessages: true, currentPhoneNumber: phoneNumber, currentMessages: [], allMessages: [], displayedCount: PAGE_SIZE });
+    const { currentMessages: prevMessages } = get();
+    const isFirstLoad = prevMessages.length === 0;
+    set({ isLoadingMessages: isFirstLoad, currentPhoneNumber: phoneNumber, displayedCount: PAGE_SIZE });
     try {
-      const raw = await chatsApi.getMessages(organization, phoneNumber, PAGE_SIZE * 2);
+      const raw = await chatsApi.getMessages(organization, phoneNumber, PAGE_SIZE * 4);
       const normalizeTs = (val: any): string => {
         if (!val) return '';
         if (typeof val === 'string') return val;
@@ -187,6 +189,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         direction: m.direction || (m.sentFromApp ? 'Outbound' : ''),
       }));
 
+      // Deduplicate messages by messageId AND by content signature as fallback
+      const seenIds = new Set<string>();
+      const seenSigs = new Set<string>();
+      const deduped: typeof messages = [];
+      for (const m of messages) {
+        const id = m.messageId;
+        if (id && seenIds.has(id)) continue;
+        // Secondary dedup: same text + direction + timestamp (within 2s)
+        const ts = new Date(m.createdOn || m.timestamp || '').getTime();
+        const sig = `${(m.text || '').slice(0, 50)}|${m.direction || ''}|${Math.floor(ts / 2000)}`;
+        if (m.text && sig && seenSigs.has(sig)) continue;
+        if (id) seenIds.add(id);
+        if (m.text) seenSigs.add(sig);
+        deduped.push(m);
+      }
+
       // Sort oldest → newest so slice(-PAGE_SIZE) gives the newest page
       const parseTs = (raw: any): number => {
         if (!raw) return 0;
@@ -196,15 +214,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const d = new Date(raw);
         return isNaN(d.getTime()) ? 0 : d.getTime();
       };
-      messages.sort((a: any, b: any) => {
+      deduped.sort((a: any, b: any) => {
         const tsA = parseTs(a.createdOn || a.timestamp);
         const tsB = parseTs(b.createdOn || b.timestamp);
         return tsA - tsB;
       });
 
       // Resolve quotedMessage from contextMessageId if backend didn't populate it
-      const msgMap = new Map(messages.map((m: any) => [m.messageId, m]));
-      for (const msg of messages) {
+      const msgMap = new Map(deduped.map((m: any) => [m.messageId, m]));
+      for (const msg of deduped) {
         if (!msg.quotedMessage) {
           const ctxId = msg.contextMessageId || msg.ContextMessageId;
           if (ctxId && msgMap.has(ctxId)) {
@@ -213,36 +231,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
 
-      const displayed = messages.slice(-PAGE_SIZE);
+      const displayed = deduped.slice(-PAGE_SIZE);
       messageIdSet.clear();
-      messages.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
+      deduped.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
       set({
-        allMessages: messages,
+        allMessages: deduped,
         currentMessages: displayed,
         displayedCount: PAGE_SIZE,
-        hasMoreMessages: messages.length > PAGE_SIZE,
+        hasMoreMessages: deduped.length > PAGE_SIZE,
         isLoadingMessages: false,
       });
     } catch {
       messageIdSet.clear();
-      set({ isLoadingMessages: false, currentMessages: [], allMessages: [] });
+      set({ isLoadingMessages: false });
     }
   },
 
   loadOlderMessages: () => {
-    const { allMessages, displayedCount, hasMoreMessages } = get();
+    const { allMessages, displayedCount, hasMoreMessages, currentPhoneNumber } = get();
     if (!hasMoreMessages) return;
 
     set({ isLoadingOlderMessages: true });
 
     const newCount = displayedCount + PAGE_SIZE;
-    const displayed = allMessages.slice(-newCount);
-    set({
-      currentMessages: displayed,
-      displayedCount: newCount,
-      hasMoreMessages: allMessages.length > newCount,
-      isLoadingOlderMessages: false,
-    });
+    if (newCount <= allMessages.length) {
+      const displayed = allMessages.slice(-newCount);
+      set({
+        currentMessages: displayed,
+        displayedCount: newCount,
+        hasMoreMessages: allMessages.length > newCount,
+        isLoadingOlderMessages: false,
+      });
+    } else {
+      // All locally available messages are already displayed - no more to paginate
+      const displayed = allMessages;
+      set({
+        currentMessages: displayed,
+        displayedCount: allMessages.length,
+        hasMoreMessages: false,
+        isLoadingOlderMessages: false,
+      });
+    }
   },
 
   sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?, senderEmail?) => {
@@ -317,7 +346,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isSending: true,
     }));
     try {
-      await chatsApi.sendInternalMessage(organization, phoneNumber, message, senderName, sentById, mentionedUsers);
+      const result = await chatsApi.sendInternalMessage(organization, phoneNumber, message, senderName, sentById, mentionedUsers);
+      const realId = result?.messageId || result?.id || result?.Id;
+      if (realId) {
+        messageIdSet.add(realId);
+        set((state) => ({
+          currentMessages: state.currentMessages.map((m) =>
+            m.messageId === tempId ? { ...m, messageId: realId } : m
+          ),
+          allMessages: state.allMessages.map((m) =>
+            m.messageId === tempId ? { ...m, messageId: realId } : m
+          ),
+        }));
+      }
     } catch (err) {
       set((state) => ({
         currentMessages: state.currentMessages.filter((m) => m.messageId !== tempId),
@@ -358,7 +399,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!message.messageId) return;
     if (messageIdSet.has(message.messageId)) return;
     const { currentMessages, allMessages } = get();
+    if (allMessages.some((m) => m.messageId === message.messageId)) return;
     if (currentMessages.some((m) => m.messageId === message.messageId)) return;
+
+    // Content-based duplicate check: same text + direction within 2s window
+    const msgText = message.text || (message as any).body || '';
+    if (msgText) {
+      const msgTs = new Date(message.createdOn || message.timestamp || '').getTime();
+      const isDuplicate = currentMessages.some((m) => {
+        if (m.direction !== message.direction) return false;
+        const mText = m.text || (m as any).body || '';
+        if (mText !== msgText) return false;
+        const mTs = new Date(m.createdOn || m.timestamp || '').getTime();
+        return Math.abs(mTs - msgTs) < 2000;
+      });
+      if (isDuplicate) return;
+    }
 
     if (!message.quotedMessage) {
       const ctxId = message.contextMessageId || (message as any).ContextMessageId;

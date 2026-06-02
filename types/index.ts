@@ -189,6 +189,14 @@ export interface LeadStage {
   order: number;
   isWon?: boolean;
   isLost?: boolean;
+  autoQuote?: {
+    enabled?: boolean;
+    quoteTitle?: string;
+    validDays?: number;
+    tax?: number;
+    discount?: number;
+    defaultNotes?: string;
+  };
 }
 
 export interface Task {

@@ -8,6 +8,7 @@ import {
   ScrollView,
   Alert,
   Linking,
+  Modal as RNModal,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton, Snackbar } from 'react-native-paper';
@@ -19,6 +20,7 @@ import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { leadsApi } from '../../../services/api/leads';
+import { quotesApi } from '../../../services/api/quotes';
 import { ENDPOINTS } from '../../../constants/api';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -535,6 +537,17 @@ export default function LeadsListScreen() {
           newStageName,
           user?.fullname || user?.FullName || user?.name || '',
         );
+
+        // Won celebration
+        if (stageObj?.isWon) {
+          setWonCelebration({ title: lead.title || '', value: lead.value });
+          setTimeout(() => setWonCelebration(null), 5000);
+        }
+
+        // Auto-quote prompt
+        if (stageObj?.autoQuote?.enabled) {
+          setAutoQuotePrompt({ lead, config: stageObj.autoQuote as NonNullable<LeadStage['autoQuote']> });
+        }
       } catch (err: any) {
         setLeads((prev) =>
           prev.map((l) =>
@@ -550,6 +563,77 @@ export default function LeadsListScreen() {
   );
 
   const [ownershipSnackbar, setOwnershipSnackbar] = useState('');
+  const [wonCelebration, setWonCelebration] = useState<{ title: string; value?: number | string } | null>(null);
+  const [autoQuotePrompt, setAutoQuotePrompt] = useState<{ lead: Lead; config: NonNullable<LeadStage['autoQuote']> } | null>(null);
+  const [autoQuoteLoading, setAutoQuoteLoading] = useState(false);
+
+  const handleAutoQuoteAction = useCallback(
+    async (action: 'create' | 'createAndSend' | 'createAndNavigate') => {
+      if (!autoQuotePrompt || !organization) return;
+      const { lead: promptLead, config } = autoQuotePrompt;
+      setAutoQuoteLoading(true);
+      try {
+        const contactName = promptLead.contactName || promptLead.title || '';
+        const contactPhone = promptLead.contactPhone || promptLead.phoneNumber || '';
+        const titleTemplate = config.quoteTitle || 'הצעת מחיר - {{leadTitle}}';
+        const leadLabel = promptLead.title || contactName || 'ליד';
+        const quoteTitle = titleTemplate.replace('{{leadTitle}}', leadLabel);
+        const validDays = config.validDays || 30;
+        const tax = config.tax ?? 18;
+        const discountPct = config.discount || 0;
+
+        const products = Array.isArray((promptLead as any).interestedProducts) ? (promptLead as any).interestedProducts : [];
+        const items = products.length > 0
+          ? products.map((p: any) => ({ type: 'item', description: p.name || '', quantity: p.quantity || 1, unitPrice: parseFloat(p.unitPrice) || 0 }))
+          : [{ type: 'item', description: promptLead.title || 'שירות', quantity: 1, unitPrice: parseFloat(String(promptLead.value)) || 0 }];
+
+        const subtotal = items.reduce((sum: number, it: any) => sum + (it.unitPrice || 0) * (it.quantity || 1), 0);
+        const discountAmount = Math.round(subtotal * discountPct / 100 * 100) / 100;
+        const afterDiscount = subtotal - discountAmount;
+        const taxAmount = Math.round(afterDiscount * tax / 100 * 100) / 100;
+        const total = Math.round((afterDiscount + taxAmount) * 100) / 100;
+
+        const quoteData = {
+          title: quoteTitle,
+          date: new Date().toISOString().split('T')[0],
+          validUntil: new Date(Date.now() + validDays * 86400000).toISOString().split('T')[0],
+          contactName,
+          contactPhone,
+          contactEmail: (promptLead as any).email || '',
+          contactCompany: (promptLead as any).companyName || '',
+          leadId: promptLead.id,
+          leadTitle: promptLead.title || contactName || '',
+          currency: (promptLead as any).currency || 'ILS',
+          items,
+          discount: discountPct,
+          discountType: 'percent' as const,
+          tax,
+          notes: config.defaultNotes || '',
+          terms: '',
+          status: 'draft',
+          salespersonId: (promptLead as any).ownerId || user?.uID || '',
+          salespersonName: (promptLead as any).ownerName || user?.fullname || '',
+          subtotal,
+          discountAmount,
+          taxAmount,
+          total,
+        };
+
+        const res = await quotesApi.create(organization, quoteData, user?.uID || '', user?.fullname || '');
+        const newQuoteId = res?.Data?.id || res?.id || res?.quoteId || '';
+        setAutoQuotePrompt(null);
+
+        if ((action === 'createAndNavigate' || action === 'createAndSend') && newQuoteId) {
+          router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: newQuoteId } });
+        }
+      } catch {
+        Alert.alert(t('common.error', 'Error'), t('quotes.createError', 'שגיאה ביצירת הצעת מחיר'));
+      } finally {
+        setAutoQuoteLoading(false);
+      }
+    },
+    [autoQuotePrompt, organization, user, router, t],
+  );
 
   const handleTakeOwnership = useCallback(async (lead: Lead) => {
     if (!organization || !user) return;
@@ -813,6 +897,22 @@ export default function LeadsListScreen() {
       >
         <Text style={styles.headerTitle}>{t('leads.title')}</Text>
         <View style={[styles.headerActions, { flexDirection }]}>
+          {hasMore && (
+          <Pressable
+            onPress={() => {
+              const allPages = Math.ceil(totalCount / PAGE_SIZE);
+              for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
+            }}
+            hitSlop={8}
+            style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
+          >
+            <MaterialCommunityIcons
+              name="download"
+              size={24}
+              color={theme.custom.headerText}
+            />
+          </Pressable>
+          )}
           <Pressable
             onPress={() => setViewMode(viewMode === 'list' ? 'pipeline' : 'list')}
             hitSlop={8}
@@ -1414,9 +1514,89 @@ export default function LeadsListScreen() {
       >
         {ownershipSnackbar}
       </Snackbar>
+
+      {/* Won Celebration */}
+      <RNModal visible={!!wonCelebration} transparent animationType="fade" onRequestClose={() => setWonCelebration(null)}>
+        <Pressable style={celebStyles.overlay} onPress={() => setWonCelebration(null)}>
+          <View style={celebStyles.card}>
+            <Text style={celebStyles.trophy}>🏆</Text>
+            <Text style={celebStyles.wonTitle}>Deal Won!</Text>
+            <Text style={celebStyles.wonLeadName}>{wonCelebration?.title}</Text>
+            {wonCelebration?.value ? (
+              <Text style={celebStyles.wonValue}>
+                {formatCurrency(Number(wonCelebration.value), 'ILS')}
+              </Text>
+            ) : null}
+            <Button mode="contained" onPress={() => setWonCelebration(null)} style={{ marginTop: 16 }}>
+              {t('common.close', 'סגור')}
+            </Button>
+          </View>
+        </Pressable>
+      </RNModal>
+
+      {/* Auto-Quote Prompt */}
+      <RNModal visible={!!autoQuotePrompt} transparent animationType="slide" onRequestClose={() => setAutoQuotePrompt(null)}>
+        <Pressable style={celebStyles.overlay} onPress={() => setAutoQuotePrompt(null)}>
+          <Pressable style={celebStyles.quoteCard} onPress={() => {}}>
+            <Text style={celebStyles.quoteEmoji}>📄</Text>
+            <Text style={celebStyles.quoteTitle}>יצירת הצעת מחיר</Text>
+            <Text style={celebStyles.quoteSubtitle}>
+              {(autoQuotePrompt?.config?.quoteTitle || 'הצעת מחיר - {{leadTitle}}').replace('{{leadTitle}}', autoQuotePrompt?.lead?.title || '')}
+            </Text>
+            <View style={{ gap: 10, width: '100%', marginTop: 16 }}>
+              <Button mode="contained" icon="send" loading={autoQuoteLoading} onPress={() => handleAutoQuoteAction('createAndSend')} buttonColor="#25d366" textColor="#fff">
+                צור ושלח ללקוח
+              </Button>
+              <Button mode="contained" icon="link-variant" loading={autoQuoteLoading} onPress={() => handleAutoQuoteAction('createAndNavigate')} buttonColor="#3b82f6" textColor="#fff">
+                צור ונווט להצעה
+              </Button>
+              <Button mode="outlined" loading={autoQuoteLoading} onPress={() => handleAutoQuoteAction('create')}>
+                צור בלבד
+              </Button>
+              <Button mode="text" onPress={() => setAutoQuotePrompt(null)} textColor="#9ca3af">
+                ביטול
+              </Button>
+            </View>
+          </Pressable>
+        </Pressable>
+      </RNModal>
     </View>
   );
 }
+
+const celebStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 32,
+    alignItems: 'center',
+    width: '80%',
+    maxWidth: 340,
+    elevation: 10,
+  },
+  trophy: { fontSize: 56, marginBottom: 12 },
+  wonTitle: { fontSize: 24, fontWeight: '800', color: '#1f2937', marginBottom: 4 },
+  wonLeadName: { fontSize: 16, color: '#6b7280', textAlign: 'center' },
+  wonValue: { fontSize: 20, fontWeight: '700', color: '#16a34a', marginTop: 8 },
+  quoteCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 28,
+    alignItems: 'center',
+    width: '85%',
+    maxWidth: 380,
+    elevation: 10,
+  },
+  quoteEmoji: { fontSize: 40, marginBottom: 8 },
+  quoteTitle: { fontSize: 20, fontWeight: '700', color: '#1f2937', textAlign: 'center' },
+  quoteSubtitle: { fontSize: 14, color: '#6b7280', textAlign: 'center', marginTop: 6 },
+});
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },

@@ -265,7 +265,7 @@ export default function CaseDetailScreen() {
       Alert.alert(
         t('common.success', 'נוצר בהצלחה'),
         t('cases.caseCreated', 'הפנייה נוצרה בהצלחה'),
-        [{ text: 'OK', onPress: () => router.back() }],
+        [{ text: 'OK', onPress: () => { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/more/cases'); } }],
       );
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
@@ -319,7 +319,11 @@ export default function CaseDetailScreen() {
             setDeleting(true);
             try {
               await casesApi.delete(user.organization, caseData.id);
-              router.back();
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/(tabs)/more/cases');
+              }
             } catch (err: any) {
               Alert.alert(t('common.error'), err.message || t('errors.generic'));
               setDeleting(false);

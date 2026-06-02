@@ -24,6 +24,11 @@ function normalizeTask(raw: any): Task {
     modifiedByName:   raw.modifiedByName || raw.ModifiedByName || '',
     relatedTo:        raw.relatedTo      || raw.RelatedTo      || undefined,
     organization:     raw.organization   || raw.Organization   || '',
+    relatedContactId: raw.relatedContactId || raw.RelatedContactId || '',
+    relatedContactName: raw.relatedContactName || raw.RelatedContactName || raw.relatedEntityName || raw.RelatedEntityName || '',
+    relatedContactPhone: raw.relatedContactPhone || raw.RelatedContactPhone || raw.relatedEntityPhone || raw.RelatedEntityPhone || '',
+    reminderEnabled:  raw.reminderEnabled || raw.ReminderEnabled || false,
+    reminderDate:     raw.reminderDate || raw.ReminderDate || '',
   } as Task;
 }
 
@@ -103,6 +108,33 @@ export const tasksApi = {
     const response = await axiosInstance.post(ENDPOINTS.DELETE_TASK, {
       organizationName: organization,
       taskId,
+    });
+    return response.data;
+  },
+
+  async getById(organization: string, taskId: string): Promise<Task> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_TASK_BY_ID, {
+      organization,
+      taskId,
+    });
+    return normalizeTask(response.data);
+  },
+
+  async getActivity(organization: string, taskId: string): Promise<any[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_TASK_ACTIVITY, {
+      organizationName: organization,
+      taskId,
+    });
+    const data = response.data;
+    return data?.activities || data?.Activities || [];
+  },
+
+  async addComment(organization: string, taskId: string, text: string, userId: string, userName: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.ADD_TASK_COMMENT, {
+      organizationName: organization,
+      taskId,
+      text,
+      user: { userId, userName },
     });
     return response.data;
   },

@@ -315,7 +315,8 @@ export default function ContactDetailScreen() {
         onPress: async () => {
           if (organization && contact) {
             await deleteContact(organization, contact.id);
-            router.back();
+            if (router.canGoBack()) router.back();
+            else router.replace('/(tabs)/contacts');
           }
         },
       },
@@ -361,7 +362,11 @@ export default function ContactDetailScreen() {
           }
         }
         await createContact(organization, { ...formData, id: form.phoneNumber || '' }, userId, userName);
-        router.back();
+        if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/(tabs)/contacts');
+        }
       } else {
         await updateContact(organization, { ...formData, id: contact?.id ?? '' }, userId, userName);
         setEditVisible(false);

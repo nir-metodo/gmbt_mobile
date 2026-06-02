@@ -19,6 +19,13 @@ interface SettingsState {
   pushNotificationsEnabled: boolean;
   messageNotificationsEnabled: boolean;
   callNotificationsEnabled: boolean;
+  contactAssignedNotification: boolean;
+  leadAssignedNotification: boolean;
+  mentionNotification: boolean;
+  taskAssignedNotification: boolean;
+  calendarReminderNotification: boolean;
+  botActionNotification: boolean;
+  caseAssignedNotification: boolean;
   isLoading: boolean;
 
   initialize: () => Promise<void>;
@@ -34,6 +41,7 @@ interface SettingsState {
   setPushNotifications: (enabled: boolean) => void;
   setMessageNotifications: (enabled: boolean) => void;
   setCallNotifications: (enabled: boolean) => void;
+  setNotificationPref: (key: string, enabled: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
@@ -48,6 +56,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   pushNotificationsEnabled: true,
   messageNotificationsEnabled: true,
   callNotificationsEnabled: true,
+  contactAssignedNotification: true,
+  leadAssignedNotification: true,
+  mentionNotification: true,
+  taskAssignedNotification: true,
+  calendarReminderNotification: true,
+  botActionNotification: true,
+  caseAssignedNotification: true,
   isLoading: false,
 
   initialize: async () => {
@@ -128,5 +143,9 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
   setCallNotifications: (enabled) => {
     set({ callNotificationsEnabled: enabled });
+  },
+
+  setNotificationPref: (key, enabled) => {
+    set({ [key]: enabled } as any);
   },
 }));

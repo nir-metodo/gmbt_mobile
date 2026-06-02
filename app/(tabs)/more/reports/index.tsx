@@ -100,6 +100,8 @@ function getDateRange(preset: DatePreset): { start: Date | null; end: Date | nul
 function getItemDate(item: any): Date | null {
   const raw = item.createdOn || item.createdAt || item.startTime || item.date || item.Date || item.modifiedOn || item.breachedAt;
   if (!raw) return null;
+  if (typeof raw === 'object' && raw._seconds) return new Date(raw._seconds * 1000);
+  if (typeof raw === 'object' && raw.seconds) return new Date(raw.seconds * 1000);
   const d = new Date(raw);
   return isNaN(d.getTime()) ? null : d;
 }
@@ -305,11 +307,12 @@ export default function ReportsScreen() {
     try {
       // Special reports with their own data structure
       if (cat === 'daily_conversations') {
-        const { start, end } = getDateRange(datePreset);
+        const effectivePreset = datePreset === 'all' ? 'thisMonth' : datePreset;
+        const { start, end } = getDateRange(effectivePreset as DatePreset);
         const dateFrom = start ? start.toISOString().slice(0, 10) : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
         const dateTo = end ? end.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
         const res = await axiosInstance.post(ENDPOINTS.GET_DAILY_CONVERSATION_REPORT, {
-          organizationId: org, dateFrom, dateTo,
+          organizationId: org, dateFrom: `${dateFrom}T00:00:00Z`, dateTo: `${dateTo}T23:59:59Z`,
         });
         const data = res.data;
         const dailySummary = data?.dailySummary || data?.DailySummary || [];
@@ -361,13 +364,20 @@ export default function ReportsScreen() {
       if (cat === 'tasks') {
         payload.organizationName = org;
         payload.userId = userId;
-        payload.dataVisibility = dataScope === 'my' ? 'seeOwn' : 'seeAll';
+        payload.dataVisibility = dataScope === 'my' ? 'own' : 'seeAll';
+        delete payload.organization;
+        delete payload.pageNumber;
+        delete payload.pageSize;
+      } else if (cat === 'esignatures') {
+        payload.organizationName = org;
+        payload.userId = userId;
+        payload.dataVisibility = dataScope === 'my' ? 'own' : 'seeAll';
         delete payload.organization;
         delete payload.pageNumber;
         delete payload.pageSize;
       } else if (cat === 'quotes') {
         payload.userId = userId;
-        payload.dataVisibility = dataScope === 'my' ? 'seeOwn' : 'seeAll';
+        payload.dataVisibility = dataScope === 'my' ? 'own' : 'seeAll';
         delete payload.pageNumber;
         delete payload.pageSize;
       } else if (cat === 'sla') {
@@ -375,16 +385,16 @@ export default function ReportsScreen() {
         delete payload.pageSize;
       } else if (cat === 'contacts') {
         payload.userId = userId;
-        payload.dataVisibility = dataScope === 'my' ? 'seeOwn' : 'seeAll';
+        payload.dataVisibility = dataScope === 'my' ? 'own' : 'seeAll';
       } else if (cat === 'whatsapp') {
         delete payload.pageNumber;
         delete payload.pageSize;
       } else if (cat === 'phonecalls') {
         payload.userId = userId;
-        payload.dataVisibility = dataScope === 'my' ? 'seeOwn' : 'seeAll';
+        payload.dataVisibility = dataScope === 'my' ? 'own' : 'seeAll';
       } else {
         payload.userId = userId;
-        payload.dataVisibility = dataScope === 'my' ? 'seeOwn' : 'seeAll';
+        payload.dataVisibility = dataScope === 'my' ? 'own' : 'seeAll';
       }
 
       const res = await axiosInstance.post(endpoint, payload);

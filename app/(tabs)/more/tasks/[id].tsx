@@ -22,11 +22,13 @@ import {
   IconButton,
   Divider,
   Searchbar,
+  Switch,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
@@ -157,12 +159,36 @@ export default function TaskDetailScreen() {
   const [leadSearching, setLeadSearching] = useState(false);
   const leadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [showDueDatePicker, setShowDueDatePicker] = useState(false);
+  const [showDueTimePicker, setShowDueTimePicker] = useState(false);
+  const [dueDateObj, setDueDateObj] = useState<Date>(new Date());
+
+  const [reminderEnabled, setReminderEnabled] = useState(false);
+  const [showReminderDatePicker, setShowReminderDatePicker] = useState(false);
+  const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
+  const [reminderDateObj, setReminderDateObj] = useState<Date>(new Date());
+
+  const [activities, setActivities] = useState<any[]>([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
+  const [newComment, setNewComment] = useState('');
+  const [addingComment, setAddingComment] = useState(false);
+
   const tasksDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'tasks');
 
   const fetchTask = useCallback(async () => {
     if (!user?.organization || !id) { setLoading(false); return; }
     try {
       setError(null);
+      // Try getById first for full data including relatedTo
+      try {
+        const found = await tasksApi.getById(user.organization, id);
+        if (found && found.id) {
+          setTask(found);
+          setLoading(false);
+          return;
+        }
+      } catch {}
+      // Fallback to getAll
       const tasks = await tasksApi.getAll(
         user.organization,
         user.uID || user.userId,
@@ -185,42 +211,84 @@ export default function TaskDetailScreen() {
     fetchTask();
   }, [fetchTask]);
 
+  const fetchActivities = useCallback(async () => {
+    if (!user?.organization || !id) return;
+    setActivitiesLoading(true);
+    try {
+      const taskId = task?.taskId || task?.id || id;
+      const data = await tasksApi.getActivity(user.organization, taskId);
+      setActivities(data);
+    } catch {
+      setActivities([]);
+    } finally {
+      setActivitiesLoading(false);
+    }
+  }, [user?.organization, id, task?.taskId, task?.id]);
+
+  useEffect(() => {
+    if (task) fetchActivities();
+  }, [task, fetchActivities]);
+
+  const handleAddComment = useCallback(async () => {
+    if (!user?.organization || !newComment.trim() || !task) return;
+    setAddingComment(true);
+    try {
+      const taskId = task.taskId || task.id;
+      await tasksApi.addComment(
+        user.organization,
+        taskId,
+        newComment.trim(),
+        user.uID || user.userId || '',
+        user.fullname || user.displayName || 'User',
+      );
+      setNewComment('');
+      await fetchActivities();
+    } catch {}
+    setAddingComment(false);
+  }, [user, task, newComment, fetchActivities]);
+
   const openEditModal = useCallback(() => {
     if (!task) return;
-    setFormTitle(task.title);
-    setFormDescription(task.description || '');
-    setFormStatus(task.status);
-    setFormPriority((task as any).priority || task.priority || 'medium');
-    setFormTaskType(task.taskType || 'general');
-    setFormDueDate(task.dueDate || '');
-    setFormAssignedTo((task as any).assignedToName || task.assignedToId || '');
-    setFormAssignedToId(task.assignedToId || '');
-    const related = getRelatedEntityDisplay(task);
-    if (related?.type === 'contact') {
-      setFormRelatedEntityType('contact');
-      setFormRelatedContactName(related.name);
-      setFormRelatedContactId(related.entityId || '');
-      setFormRelatedContactPhone((task as any).relatedContactPhone || '');
-      setFormRelatedLeadName('');
-      setFormRelatedLeadId('');
-    } else if (related?.type === 'lead') {
-      setFormRelatedEntityType('lead');
-      setFormRelatedLeadName(related.name);
-      setFormRelatedLeadId(related.entityId || '');
-      setFormRelatedContactName('');
-      setFormRelatedContactId('');
-      setFormRelatedContactPhone('');
-    } else {
-      setFormRelatedEntityType('');
-      setFormRelatedContactName('');
-      setFormRelatedContactId('');
-      setFormRelatedContactPhone('');
-      setFormRelatedLeadName('');
-      setFormRelatedLeadId('');
-    }
-    setUserPickerExpanded(false);
+    try {
+      setFormTitle(task.title);
+      setFormDescription(task.description || '');
+      setFormStatus(task.status);
+      setFormPriority((task as any).priority || task.priority || 'medium');
+      setFormTaskType(task.taskType || 'general');
+      setFormDueDate(task.dueDate || '');
+      const parsedDue = task.dueDate ? new Date(task.dueDate) : null;
+      setDueDateObj(parsedDue && !isNaN(parsedDue.getTime()) ? parsedDue : new Date());
+      setReminderEnabled(!!(task as any).reminderEnabled);
+      const parsedReminder = (task as any).reminderDate ? new Date((task as any).reminderDate) : null;
+      setReminderDateObj(parsedReminder && !isNaN(parsedReminder.getTime()) ? parsedReminder : new Date());
+      setFormAssignedTo((task as any).assignedToName || task.assignedToId || '');
+      setFormAssignedToId(task.assignedToId || '');
+      const related = getRelatedEntityDisplay(task);
+      if (related?.type === 'contact') {
+        setFormRelatedEntityType('contact');
+        setFormRelatedContactName(related.name);
+        setFormRelatedContactId(related.entityId || '');
+        setFormRelatedContactPhone((task as any).relatedContactPhone || '');
+        setFormRelatedLeadName('');
+        setFormRelatedLeadId('');
+      } else if (related?.type === 'lead') {
+        setFormRelatedEntityType('lead');
+        setFormRelatedLeadName(related.name);
+        setFormRelatedLeadId(related.entityId || '');
+        setFormRelatedContactName('');
+        setFormRelatedContactId('');
+        setFormRelatedContactPhone('');
+      } else {
+        setFormRelatedEntityType('');
+        setFormRelatedContactName('');
+        setFormRelatedContactId('');
+        setFormRelatedContactPhone('');
+        setFormRelatedLeadName('');
+        setFormRelatedLeadId('');
+      }
+      setUserPickerExpanded(false);
+    } catch {}
     setEditModalVisible(true);
-    // Load users when edit modal opens
     if (orgUsers.length === 0) {
       setOrgUsersLoading(true);
       usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
@@ -243,6 +311,10 @@ export default function TaskDetailScreen() {
         assignedToId: formAssignedToId || undefined,
         assignedTo: formAssignedToId || formAssignedTo.trim() || undefined,
         assignedToName: formAssignedTo.trim() || undefined,
+        reminderEnabled: reminderEnabled || undefined,
+        reminderDate: reminderEnabled ? reminderDateObj.toISOString() : null,
+        reminderDateUTC: reminderEnabled ? reminderDateObj.toISOString() : null,
+        reminderRecipientType: reminderEnabled ? 'assigned_user' : undefined,
       };
       if (formRelatedEntityType === 'contact' && formRelatedContactId) {
         payload.relatedTo = {
@@ -312,7 +384,8 @@ export default function TaskDetailScreen() {
             setDeleting(true);
             try {
               await tasksApi.delete(user.organization, task.id);
-              router.back();
+              if (router.canGoBack()) router.back();
+              else router.replace('/(tabs)/more/tasks');
             } catch (err: any) {
               Alert.alert(t('common.error'), err.message || t('errors.generic'));
               setDeleting(false);
@@ -704,6 +777,91 @@ export default function TaskDetailScreen() {
           </View>
         )}
 
+        {/* Activity / Comments */}
+        <View
+          style={[
+            styles.sectionCard,
+            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+          ]}
+        >
+          <Text variant="labelLarge" style={[styles.sectionLabel, { color: BRAND_COLOR, textAlign: 'center', marginBottom: 12 }]}>
+            {t('tasks.activity', 'פעילות')}
+          </Text>
+
+          <View style={[styles.commentInputRow, { flexDirection }]}>
+            <TextInput
+              value={newComment}
+              onChangeText={setNewComment}
+              mode="outlined"
+              placeholder={t('tasks.addComment', 'הוסף הערה חדשה...')}
+              style={[styles.commentInput, { textAlign }]}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={BRAND_COLOR}
+              dense
+              multiline
+            />
+            <IconButton
+              icon="send"
+              iconColor="#FFFFFF"
+              size={20}
+              style={[styles.commentSendBtn, { backgroundColor: BRAND_COLOR }]}
+              onPress={handleAddComment}
+              disabled={!newComment.trim() || addingComment}
+              loading={addingComment}
+            />
+          </View>
+
+          {activitiesLoading ? (
+            <ActivityIndicator size="small" style={{ marginTop: 12 }} color={BRAND_COLOR} />
+          ) : activities.length > 0 ? (
+            <View style={styles.activitiesList}>
+              {activities.map((act, idx) => {
+                const actType = act.type || act.Type || 'comment';
+                const actText = act.text || act.Text || '';
+                const actUser = act.userName || act.UserName || '';
+                const actDate = act.createdOn || act.CreatedOn || '';
+                const isComment = actType === 'comment';
+                return (
+                  <View key={act.activityId || act.ActivityId || idx} style={[styles.activityItem, { borderColor: theme.colors.outlineVariant }]}>
+                    <View style={[styles.activityHeader, { flexDirection }]}>
+                      <View style={[styles.activityUserRow, { flexDirection }]}>
+                        <Avatar.Text
+                          size={24}
+                          label={getInitials(actUser)}
+                          style={{ backgroundColor: isComment ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+                          labelStyle={{ fontSize: 9, color: theme.colors.primary }}
+                        />
+                        <Text variant="labelSmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                          {actUser}
+                        </Text>
+                      </View>
+                      {actDate ? (
+                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }}>
+                          {formatDate(actDate)}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text
+                      variant="bodySmall"
+                      style={[
+                        styles.activityText,
+                        { color: theme.colors.onSurface, textAlign },
+                        !isComment && { fontStyle: 'italic', color: theme.colors.onSurfaceVariant },
+                      ]}
+                    >
+                      {isComment ? actText : `${t(`tasks.activityType_${actType}`, actType)}: ${actText}`}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          ) : (
+            <Text variant="bodySmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
+              {t('tasks.noActivity', 'אין פעילות עדיין')}
+            </Text>
+          )}
+        </View>
+
         {/* Complete button */}
         {task.status !== 'completed' && (
           <Button
@@ -929,17 +1087,135 @@ export default function TaskDetailScreen() {
                 })}
               </View>
 
-              <TextInput
-                label={t('tasks.dueDate')}
-                value={formDueDate}
-                onChangeText={setFormDueDate}
-                mode="outlined"
-                placeholder="YYYY-MM-DD"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="calendar" />}
-              />
+              <Pressable onPress={() => {
+                const d = formDueDate ? new Date(formDueDate) : new Date();
+                setDueDateObj(!isNaN(d.getTime()) ? d : new Date());
+                setShowDueDatePicker(true);
+              }}>
+                <View pointerEvents="none">
+                <TextInput
+                  label={t('tasks.dueDate')}
+                  value={formDueDate ? (() => { const d = new Date(formDueDate); return !isNaN(d.getTime()) ? d.toLocaleString(i18n.language === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' }) : formDueDate; })() : ''}
+                  mode="outlined"
+                  editable={false}
+                  placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
+                  style={[styles.formInput, { textAlign }]}
+                  outlineColor={theme.colors.outline}
+                  activeOutlineColor={BRAND_COLOR}
+                  right={<TextInput.Icon icon="calendar" onPress={() => {
+                    const d = formDueDate ? new Date(formDueDate) : new Date();
+                    setDueDateObj(!isNaN(d.getTime()) ? d : new Date());
+                    setShowDueDatePicker(true);
+                  }} />}
+                />
+                </View>
+              </Pressable>
+
+              {showDueDatePicker && (
+                <DateTimePicker
+                  value={dueDateObj}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_: DateTimePickerEvent, d?: Date) => {
+                    setShowDueDatePicker(false);
+                    if (d) {
+                      const merged = new Date(dueDateObj);
+                      merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+                      setDueDateObj(merged);
+                      setShowDueTimePicker(true);
+                    }
+                  }}
+                />
+              )}
+              {showDueTimePicker && (
+                <DateTimePicker
+                  value={dueDateObj}
+                  mode="time"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_: DateTimePickerEvent, d?: Date) => {
+                    setShowDueTimePicker(false);
+                    if (d) {
+                      const merged = new Date(dueDateObj);
+                      merged.setHours(d.getHours(), d.getMinutes());
+                      setDueDateObj(merged);
+                      setFormDueDate(merged.toISOString());
+                      if (reminderEnabled && !formDueDate) {
+                        setReminderDateObj(merged);
+                      }
+                    }
+                  }}
+                />
+              )}
+
+              <View style={[styles.reminderRow, { flexDirection }]}>
+                <View style={[styles.reminderLabelRow, { flexDirection }]}>
+                  <MaterialCommunityIcons name="bell-outline" size={20} color={BRAND_COLOR} />
+                  <Text style={[styles.reminderLabel, { color: theme.colors.onSurface }]}>
+                    {t('tasks.reminder', 'תזכורת')}
+                  </Text>
+                </View>
+                <Switch
+                  value={reminderEnabled}
+                  onValueChange={(val) => {
+                    setReminderEnabled(val);
+                    if (val && formDueDate) {
+                      setReminderDateObj(new Date(formDueDate));
+                    }
+                  }}
+                  color={BRAND_COLOR}
+                />
+              </View>
+
+              {reminderEnabled && (
+                <>
+                  <Pressable onPress={() => setShowReminderDatePicker(true)}>
+                    <View pointerEvents="none">
+                    <TextInput
+                      label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
+                      value={reminderDateObj.toLocaleString(i18n.language === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' })}
+                      mode="outlined"
+                      editable={false}
+                      style={[styles.formInput, { textAlign }]}
+                      outlineColor={theme.colors.outline}
+                      activeOutlineColor={BRAND_COLOR}
+                      right={<TextInput.Icon icon="bell-ring-outline" onPress={() => setShowReminderDatePicker(true)} />}
+                    />
+                    </View>
+                  </Pressable>
+
+                  {showReminderDatePicker && (
+                    <DateTimePicker
+                      value={reminderDateObj}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={(_: DateTimePickerEvent, d?: Date) => {
+                        setShowReminderDatePicker(false);
+                        if (d) {
+                          const merged = new Date(reminderDateObj);
+                          merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+                          setReminderDateObj(merged);
+                          setShowReminderTimePicker(true);
+                        }
+                      }}
+                    />
+                  )}
+                  {showReminderTimePicker && (
+                    <DateTimePicker
+                      value={reminderDateObj}
+                      mode="time"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={(_: DateTimePickerEvent, d?: Date) => {
+                        setShowReminderTimePicker(false);
+                        if (d) {
+                          const merged = new Date(reminderDateObj);
+                          merged.setHours(d.getHours(), d.getMinutes());
+                          setReminderDateObj(merged);
+                        }
+                      }}
+                    />
+                  )}
+                </>
+              )}
 
               {/* Assigned to - user picker */}
               <Pressable
@@ -1275,5 +1551,53 @@ const styles = StyleSheet.create({
   modalButton: {
     minWidth: 100,
     borderRadius: borderRadius.md,
+  },
+  reminderRow: {
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    paddingHorizontal: 4,
+  },
+  reminderLabelRow: {
+    alignItems: 'center',
+    gap: 8,
+  },
+  reminderLabel: {
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  commentInputRow: {
+    alignItems: 'center',
+    gap: 8,
+  },
+  commentInput: {
+    flex: 1,
+    maxHeight: 80,
+    fontSize: 14,
+  },
+  commentSendBtn: {
+    borderRadius: 20,
+    marginTop: 4,
+  },
+  activitiesList: {
+    marginTop: 12,
+    gap: 10,
+  },
+  activityItem: {
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    padding: 10,
+  },
+  activityHeader: {
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  activityUserRow: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  activityText: {
+    lineHeight: 20,
   },
 });

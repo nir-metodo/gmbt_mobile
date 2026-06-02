@@ -8,6 +8,7 @@ import {
   Animated,
   ScrollView,
   Dimensions,
+  Alert,
 } from 'react-native';
 import {
   Text,
@@ -96,6 +97,7 @@ export default function QuotesListScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [dateRangeFilter, setDateRangeFilter] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -167,6 +169,32 @@ export default function QuotesListScreen() {
       result = result.filter((q) => q.status === statusFilter);
     }
 
+    // Date range filter
+    if (dateRangeFilter !== 'all') {
+      const now = new Date();
+      let startDate: Date | null = null;
+      let endDate: Date | null = null;
+      if (dateRangeFilter === 'thisMonth') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      } else if (dateRangeFilter === 'lastMonth') {
+        startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+      } else if (dateRangeFilter === 'thisWeek') {
+        const day = now.getDay();
+        startDate = new Date(now);
+        startDate.setDate(now.getDate() - day);
+        startDate.setHours(0, 0, 0, 0);
+        endDate = now;
+      }
+      if (startDate && endDate) {
+        result = result.filter((q) => {
+          const d = new Date(q.createdOn || q.date || '');
+          return d >= startDate! && d <= endDate!;
+        });
+      }
+    }
+
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       result = result.filter(
@@ -201,7 +229,7 @@ export default function QuotesListScreen() {
       }
       return sortDirection === 'desc' ? -comparison : comparison;
     });
-  }, [quotes, statusFilter, searchQuery, sortField, sortDirection]);
+  }, [quotes, statusFilter, dateRangeFilter, searchQuery, sortField, sortDirection]);
 
   const kanbanData = useMemo(() => {
     const grouped: Record<string, Quote[]> = {};
@@ -330,7 +358,7 @@ export default function QuotesListScreen() {
               <Chip
                 compact
                 textStyle={[styles.statusChipText, { color: statusColor }]}
-                style={[styles.statusChip, { backgroundColor: `${statusColor}35` }]}
+                style={[styles.statusChip, { backgroundColor: withAlpha(statusColor, 0.21) }]}
               >
                 {t(`quotes.${item.status}`)}
               </Chip>
@@ -501,7 +529,7 @@ export default function QuotesListScreen() {
               <View
                 style={[
                   styles.kanbanColumnHeader,
-                  { backgroundColor: `${statusColor}15`, borderBottomColor: statusColor },
+                  { backgroundColor: withAlpha(statusColor, 0.08), borderBottomColor: statusColor },
                 ]}
               >
                 <View style={[styles.kanbanHeaderInner, { flexDirection }]}>
@@ -513,7 +541,7 @@ export default function QuotesListScreen() {
                   <Text variant="labelLarge" style={{ color: statusColor, fontWeight: '700', flex: 1 }}>
                     {t(`quotes.${status}`)}
                   </Text>
-                  <View style={[styles.kanbanBadge, { backgroundColor: `${statusColor}25` }]}>
+                  <View style={[styles.kanbanBadge, { backgroundColor: withAlpha(statusColor, 0.15) }]}>
                     <Text variant="labelSmall" style={{ color: statusColor, fontWeight: '700' }}>
                       {statusQuotes.length}
                     </Text>
@@ -597,6 +625,18 @@ export default function QuotesListScreen() {
           <Text style={[styles.headerTitle, { flex: 1, textAlign }]}>{t('quotes.title')}</Text>
 
           <Pressable
+            onPress={onRefresh}
+            hitSlop={8}
+            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
+          >
+            <MaterialCommunityIcons
+              name="download"
+              size={22}
+              color={theme.custom.headerText}
+            />
+          </Pressable>
+
+          <Pressable
             onPress={() => setViewMode((v) => (v === 'list' ? 'kanban' : 'list'))}
             hitSlop={8}
             style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
@@ -673,7 +713,7 @@ export default function QuotesListScreen() {
                   style={[
                     styles.filterChip,
                     isActive
-                      ? { backgroundColor: `${chipColor}20`, borderColor: chipColor, borderWidth: 1 }
+                      ? { backgroundColor: withAlpha(chipColor, 0.13), borderColor: chipColor, borderWidth: 1 }
                       : { backgroundColor: theme.colors.surfaceVariant },
                   ]}
                   textStyle={[
@@ -723,6 +763,37 @@ export default function QuotesListScreen() {
               />
             </Menu>
           )}
+
+          {/* Date range presets */}
+          {viewMode === 'list' && (<>
+            <View style={{ width: 1, height: 20, backgroundColor: theme.colors.outlineVariant, marginHorizontal: 6 }} />
+            {([
+              { key: 'all', label: 'הכל' },
+              { key: 'thisWeek', label: 'השבוע' },
+              { key: 'thisMonth', label: 'החודש' },
+              { key: 'lastMonth', label: 'חודש קודם' },
+            ] as const).map((preset) => (
+              <Chip
+                key={preset.key}
+                selected={dateRangeFilter === preset.key}
+                onPress={() => setDateRangeFilter(preset.key)}
+                compact
+                icon={preset.key !== 'all' ? 'calendar-range' : undefined}
+                style={[
+                  styles.filterChip,
+                  dateRangeFilter === preset.key
+                    ? { backgroundColor: withAlpha(theme.colors.tertiary, 0.13), borderColor: theme.colors.tertiary, borderWidth: 1 }
+                    : { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+                textStyle={[
+                  styles.filterChipText,
+                  dateRangeFilter === preset.key && { color: theme.colors.tertiary, fontWeight: '600' },
+                ]}
+              >
+                {preset.label}
+              </Chip>
+            ))}
+          </>)}
         </ScrollView>
       </View>
 
@@ -806,7 +877,7 @@ export default function QuotesListScreen() {
               <Pressable
                 key={opt.key}
                 onPress={() => handleSortSelect(opt.key)}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortField === opt.key ? `${theme.colors.primary}15` : 'transparent' }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortField === opt.key ? withAlpha(theme.colors.primary, 0.08) : 'transparent' }}
               >
                 <MaterialCommunityIcons name={opt.icon as any} size={14} color={sortField === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant} />
                 <Text style={{ fontSize: 11, color: sortField === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant, fontWeight: sortField === opt.key ? '600' : '400' }}>
@@ -987,15 +1058,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   statusChip: {
-    height: 26,
+    height: 'auto' as any,
+    minHeight: 26,
     borderRadius: 12,
+    paddingHorizontal: 2,
     flexShrink: 0,
-    maxWidth: 'auto' as any,
+    alignSelf: 'flex-start',
   },
   statusChipText: {
     fontSize: 11,
     fontWeight: '600',
-    flexShrink: 0,
+    marginHorizontal: 2,
   },
   cardMeta: {
     alignItems: 'center',

@@ -374,7 +374,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               ref={inputRef}
               value={text}
               onChangeText={handleChangeText}
-              placeholder={isInternalNote ? t('chats.internalNote') : t('chats.typeMessage')}
+              placeholder={isInternalNote ? (isRTL ? 'הקלד @ לאזכורים...' : 'Type @ to mention...') : (isRTL ? 'הקלד @ לאזכורים, / להודעות מהירות...' : 'Type @ to mention, / for quick messages...')}
               placeholderTextColor={theme.dark ? '#8696a0' : '#667781'}
               multiline
               maxLength={4096}

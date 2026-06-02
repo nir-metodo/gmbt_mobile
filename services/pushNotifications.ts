@@ -18,6 +18,8 @@ export interface PushNotificationSettings {
   newOrderCreated: boolean;
   taskReminder: boolean;
   taskAssignedToMe: boolean;
+  calendarEventReminder: boolean;
+  gambotAiTransfer: boolean;
   incomingCall: boolean;
 }
 
@@ -33,6 +35,8 @@ export const DEFAULT_PUSH_SETTINGS: PushNotificationSettings = {
   newOrderCreated: true,
   taskReminder: true,
   taskAssignedToMe: true,
+  calendarEventReminder: true,
+  gambotAiTransfer: true,
   incomingCall: true,
 };
 

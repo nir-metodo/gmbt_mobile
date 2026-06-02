@@ -538,6 +538,22 @@ export default function CasesListScreen() {
             onPress={() => router.back()}
           />
           <Text style={[styles.headerTitle, { flex: 1, textAlign }]}>{t('cases.title')}</Text>
+          {hasMore && (
+          <Pressable
+            onPress={() => {
+              const allPages = Math.ceil(totalCount / PAGE_SIZE);
+              for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
+            }}
+            hitSlop={8}
+            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
+          >
+            <MaterialCommunityIcons
+              name="download"
+              size={24}
+              color={theme.custom.headerText}
+            />
+          </Pressable>
+          )}
           <Pressable
             onPress={() => setViewMode(viewMode === 'list' ? 'kanban' : 'list')}
             hitSlop={8}
@@ -780,9 +796,24 @@ export default function CasesListScreen() {
               ? () => <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
               : totalCount > 0
                 ? () => (
-                    <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
-                      {cases.length} / {totalCount}
-                    </Text>
+                    <View style={{ alignItems: 'center', paddingVertical: 12, gap: 8 }}>
+                      <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
+                        {cases.length} / {totalCount}
+                      </Text>
+                      {hasMore && (
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                          <Pressable onPress={() => fetchPage(page + 1, false)} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer }}>
+                            <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadMore', 'טען עוד')}</Text>
+                          </Pressable>
+                          <Pressable onPress={() => {
+                            const allPages = Math.ceil(totalCount / PAGE_SIZE);
+                            for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
+                          }} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surfaceVariant }}>
+                            <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>{t('common.loadAll', 'טען הכול')}</Text>
+                          </Pressable>
+                        </View>
+                      )}
+                    </View>
                   )
                 : null
           }

@@ -26,6 +26,8 @@ export default function MoreLayout() {
       <Stack.Screen name="orders" />
       <Stack.Screen name="catalog" />
       <Stack.Screen name="transactions" />
+      <Stack.Screen name="calendar" />
+      <Stack.Screen name="email" />
     </Stack>
   );
 }

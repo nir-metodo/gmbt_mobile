@@ -283,7 +283,8 @@ export default function InvoiceDetailScreen() {
       if (newId) {
         router.replace({ pathname: '/(tabs)/more/invoices/[id]', params: { id: newId } });
       } else {
-        router.back();
+        if (router.canGoBack()) router.back();
+        else router.replace('/(tabs)/more/invoices');
       }
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));

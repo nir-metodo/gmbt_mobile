@@ -25,11 +25,13 @@ import {
   Menu,
   Divider,
   Appbar,
+  Switch,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
@@ -68,6 +70,14 @@ function isOverdue(task: Task): boolean {
   return new Date(task.dueDate) < new Date();
 }
 
+function getRelatedName(task: Task): string {
+  if (task.relatedTo?.entityName) return task.relatedTo.entityName;
+  if ((task as any).relatedContactName) return (task as any).relatedContactName;
+  if ((task as any).relatedEntityName) return (task as any).relatedEntityName;
+  if ((task as any).relatedLeadName) return (task as any).relatedLeadName;
+  return '';
+}
+
 export default function TasksMoreScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -100,6 +110,15 @@ export default function TasksMoreScreen() {
   const [formAssignedTo, setFormAssignedTo] = useState('');
   const [formTaskType, setFormTaskType] = useState<string>('general');
   const [formRelatedEntityName, setFormRelatedEntityName] = useState('');
+
+  const [showDueDatePicker, setShowDueDatePicker] = useState(false);
+  const [showDueTimePicker, setShowDueTimePicker] = useState(false);
+  const [dueDateObj, setDueDateObj] = useState<Date>(new Date());
+
+  const [reminderEnabled, setReminderEnabled] = useState(false);
+  const [showReminderDatePicker, setShowReminderDatePicker] = useState(false);
+  const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
+  const [reminderDateObj, setReminderDateObj] = useState<Date>(new Date());
 
   const tasksDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'tasks');
 
@@ -211,6 +230,9 @@ export default function TasksMoreScreen() {
     setFormAssignedTo('');
     setFormTaskType('general');
     setFormRelatedEntityName('');
+    setDueDateObj(new Date());
+    setReminderEnabled(false);
+    setReminderDateObj(new Date());
     resetContactLookup();
   }, [resetContactLookup]);
 
@@ -231,6 +253,10 @@ export default function TasksMoreScreen() {
         relatedEntityPhone: selectedContact?.phoneNumber || selectedContact?.phone || undefined,
         relatedContactId: selectedContact?.id || undefined,
         status: 'open',
+        reminderEnabled: reminderEnabled || undefined,
+        reminderDate: reminderEnabled ? reminderDateObj.toISOString() : undefined,
+        reminderDateUTC: reminderEnabled ? reminderDateObj.toISOString() : undefined,
+        reminderRecipientType: reminderEnabled ? 'assigned_user' : undefined,
       } as any);
       setCreateModalVisible(false);
       resetForm();
@@ -240,7 +266,7 @@ export default function TasksMoreScreen() {
     } finally {
       setCreating(false);
     }
-  }, [user?.organization, formTitle, formDescription, formPriority, formTaskType, formDueDate, formAssignedTo, formRelatedEntityName, resetForm, fetchTasks, t]);
+  }, [user?.organization, formTitle, formDescription, formPriority, formTaskType, formDueDate, formAssignedTo, formRelatedEntityName, resetForm, fetchTasks, t, reminderEnabled, reminderDateObj, selectedContact]);
 
   const openTask = useCallback(
     (task: Task) => {
@@ -381,6 +407,23 @@ export default function TasksMoreScreen() {
                     style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}
                   >
                     {item.assignedToName}
+                  </Text>
+                </View>
+              ) : null}
+
+              {getRelatedName(item) ? (
+                <View style={[styles.metaItem, { flexDirection }]}>
+                  <MaterialCommunityIcons
+                    name="link-variant"
+                    size={14}
+                    color={theme.colors.primary}
+                  />
+                  <Text
+                    variant="labelSmall"
+                    numberOfLines={1}
+                    style={[styles.metaText, { color: theme.colors.primary, fontWeight: '500' }]}
+                  >
+                    {getRelatedName(item)}
                   </Text>
                 </View>
               ) : null}
@@ -695,17 +738,135 @@ export default function TasksMoreScreen() {
                 ))}
               </View>
 
-              <TextInput
-                label={t('tasks.dueDate')}
-                value={formDueDate}
-                onChangeText={setFormDueDate}
-                mode="outlined"
-                placeholder="YYYY-MM-DD"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="calendar" />}
-              />
+              <Pressable onPress={() => {
+                setDueDateObj(formDueDate ? new Date(formDueDate) : new Date());
+                setShowDueDatePicker(true);
+              }}>
+                <View pointerEvents="none">
+                <TextInput
+                  label={t('tasks.dueDate')}
+                  value={formDueDate ? (() => { const d = new Date(formDueDate); return !isNaN(d.getTime()) ? d.toLocaleString(i18n.language === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' }) : ''; })() : ''}
+                  mode="outlined"
+                  editable={false}
+                  placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
+                  style={[styles.formInput, { textAlign }]}
+                  outlineColor={theme.colors.outline}
+                  activeOutlineColor={BRAND_COLOR}
+                  right={<TextInput.Icon icon="calendar" onPress={() => {
+                    setDueDateObj(formDueDate ? new Date(formDueDate) : new Date());
+                    setShowDueDatePicker(true);
+                  }} />}
+                />
+                </View>
+              </Pressable>
+
+              {showDueDatePicker && (
+                <DateTimePicker
+                  value={dueDateObj}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_: DateTimePickerEvent, d?: Date) => {
+                    setShowDueDatePicker(false);
+                    if (d) {
+                      const merged = new Date(dueDateObj);
+                      merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+                      setDueDateObj(merged);
+                      setShowDueTimePicker(true);
+                    }
+                  }}
+                />
+              )}
+              {showDueTimePicker && (
+                <DateTimePicker
+                  value={dueDateObj}
+                  mode="time"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_: DateTimePickerEvent, d?: Date) => {
+                    setShowDueTimePicker(false);
+                    if (d) {
+                      const merged = new Date(dueDateObj);
+                      merged.setHours(d.getHours(), d.getMinutes());
+                      setDueDateObj(merged);
+                      setFormDueDate(merged.toISOString());
+                      if (reminderEnabled && !formDueDate) {
+                        setReminderDateObj(merged);
+                      }
+                    }
+                  }}
+                />
+              )}
+
+              <View style={[styles.reminderRow, { flexDirection }]}>
+                <View style={[styles.reminderLabelRow, { flexDirection }]}>
+                  <MaterialCommunityIcons name="bell-outline" size={20} color={BRAND_COLOR} />
+                  <Text style={[styles.reminderLabel, { color: theme.colors.onSurface }]}>
+                    {t('tasks.reminder', 'תזכורת')}
+                  </Text>
+                </View>
+                <Switch
+                  value={reminderEnabled}
+                  onValueChange={(val) => {
+                    setReminderEnabled(val);
+                    if (val && formDueDate) {
+                      setReminderDateObj(new Date(formDueDate));
+                    }
+                  }}
+                  color={BRAND_COLOR}
+                />
+              </View>
+
+              {reminderEnabled && (
+                <>
+                  <Pressable onPress={() => {
+                    setShowReminderDatePicker(true);
+                  }}>
+                    <View pointerEvents="none">
+                    <TextInput
+                      label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
+                      value={reminderDateObj.toLocaleString(i18n.language === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' })}
+                      mode="outlined"
+                      editable={false}
+                      style={[styles.formInput, { textAlign }]}
+                      outlineColor={theme.colors.outline}
+                      activeOutlineColor={BRAND_COLOR}
+                      right={<TextInput.Icon icon="bell-ring-outline" onPress={() => setShowReminderDatePicker(true)} />}
+                    />
+                    </View>
+                  </Pressable>
+
+                  {showReminderDatePicker && (
+                    <DateTimePicker
+                      value={reminderDateObj}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={(_: DateTimePickerEvent, d?: Date) => {
+                        setShowReminderDatePicker(false);
+                        if (d) {
+                          const merged = new Date(reminderDateObj);
+                          merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+                          setReminderDateObj(merged);
+                          setShowReminderTimePicker(true);
+                        }
+                      }}
+                    />
+                  )}
+                  {showReminderTimePicker && (
+                    <DateTimePicker
+                      value={reminderDateObj}
+                      mode="time"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={(_: DateTimePickerEvent, d?: Date) => {
+                        setShowReminderTimePicker(false);
+                        if (d) {
+                          const merged = new Date(reminderDateObj);
+                          merged.setHours(d.getHours(), d.getMinutes());
+                          setReminderDateObj(merged);
+                        }
+                      }}
+                    />
+                  )}
+                </>
+              )}
 
               <TextInput
                 label={t('tasks.assignedTo')}
@@ -903,5 +1064,19 @@ const styles = StyleSheet.create({
   modalButton: {
     minWidth: 100,
     borderRadius: borderRadius.md,
+  },
+  reminderRow: {
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    paddingHorizontal: 4,
+  },
+  reminderLabelRow: {
+    alignItems: 'center',
+    gap: 8,
+  },
+  reminderLabel: {
+    fontSize: 15,
+    fontWeight: '500',
   },
 });

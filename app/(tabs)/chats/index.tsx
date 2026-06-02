@@ -14,6 +14,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  AppState,
+  TextInput,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import {
@@ -37,7 +39,7 @@ import { useChatStore } from '../../../stores/chatStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
-import { formatChatTime, getInitials } from '../../../utils/formatters';
+import { formatChatTime, getInitials, withAlpha } from '../../../utils/formatters';
 import WebSocketService from '../../../services/websocket';
 import { notificationSound } from '../../../services/notificationSound';
 import { getDataVisibility } from '../../../constants/permissions';
@@ -122,9 +124,16 @@ export default function ChatsListScreen() {
   const [wabaNumbersList, setWabaNumbersList] = useState<WabaNumberInfo[]>([]);
   const [numberFilter, setNumberFilter] = useState<string>('');
   const [numberMenuVisible, setNumberMenuVisible] = useState(false);
+  const [numberSearchQuery, setNumberSearchQuery] = useState('');
+
+  // Case stage filter
+  const [caseStages, setCaseStages] = useState<{ id: string; name: string; color?: string }[]>([]);
+  const [caseStageFilter, setCaseStageFilter] = useState<string[]>([]);
+  const [caseStageMenuVisible, setCaseStageMenuVisible] = useState(false);
+  const [contactCaseMap, setContactCaseMap] = useState<Record<string, { stageName: string; stageColor: string; stageId: string }[]>>({});
 
   // Lead/case stage map for chat list badges
-  const [contactLeadMap, setContactLeadMap] = useState<Record<string, { stageName: string; stageColor: string }>>({});
+  const [contactLeadMap, setContactLeadMap] = useState<Record<string, { stageName: string; stageColor: string; stageId: string }>>({});
 
   // Load saved views
   useEffect(() => {
@@ -161,23 +170,63 @@ export default function ChatsListScreen() {
         setLeadStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color })));
 
         // Build contact→lead stage map
-        axiosInstance.post(ENDPOINTS.GET_LEADS, { organization: user.organization, pageSize: 500 })
+        axiosInstance.post('/api/Webhooks/GetAllLeads', {
+          organization: user.organization,
+          userId: user.uID || user.userId,
+          dataVisibility: 'all',
+        })
           .then((leadsRes) => {
             const leads = leadsRes.data?.Data || leadsRes.data?.data || leadsRes.data || [];
             if (!Array.isArray(leads)) return;
             const stageMap: Record<string, any> = {};
             stageArr.forEach((s: any) => { stageMap[s.id || s.Id] = s; });
-            const map: Record<string, { stageName: string; stageColor: string }> = {};
+            const map: Record<string, { stageName: string; stageColor: string; stageId: string }> = {};
             leads.forEach((lead: any) => {
               const phone = (lead.contactPhone || lead.phoneNumber || '').replace(/\D/g, '');
               if (phone && lead.stageId) {
                 const stageInfo = stageMap[lead.stageId];
                 const name = stageInfo?.name || stageInfo?.Name || lead.stageName;
                 if (!name) return;
-                map[phone] = { stageName: name, stageColor: stageInfo?.color || '#7c3aed' };
+                map[phone] = { stageName: name, stageColor: stageInfo?.color || '#7c3aed', stageId: lead.stageId };
               }
             });
             setContactLeadMap(map);
+          }).catch(() => {});
+      }).catch(() => {});
+  }, [user?.organization]);
+
+  // Load case stages and contact→case map
+  useEffect(() => {
+    if (!user?.organization) return;
+    axiosInstance.post(ENDPOINTS.GET_CASE_SETTINGS, { organization: user.organization })
+      .then((res) => {
+        const raw = res.data;
+        const stages = raw?.stages || raw?.Data?.stages || raw?.pipelines?.[0]?.stages || [];
+        const stageArr = Array.isArray(stages) ? stages : [];
+        if (stageArr.length === 0) return;
+        setCaseStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color })));
+
+        const stageMap: Record<string, any> = {};
+        stageArr.forEach((s: any) => { stageMap[s.id || s.Id] = s; });
+
+        axiosInstance.post(ENDPOINTS.GET_CASES, { organization: user.organization, pageNumber: 1, pageSize: 500 })
+          .then((casesRes) => {
+            const cases = casesRes.data?.Data || casesRes.data?.data || casesRes.data || [];
+            if (!Array.isArray(cases)) return;
+            const map: Record<string, { stageName: string; stageColor: string; stageId: string }[]> = {};
+            cases.forEach((c: any) => {
+              const phone = (c.contactPhone || c.phoneNumber || '').replace(/\D/g, '');
+              if (phone && c.stageId) {
+                const stageInfo = stageMap[c.stageId];
+                const name = stageInfo?.name || stageInfo?.Name || c.stageName;
+                if (!name) return;
+                if (!map[phone]) map[phone] = [];
+                if (!map[phone].some(e => e.stageId === c.stageId)) {
+                  map[phone].push({ stageName: name, stageColor: stageInfo?.color || '#0891b2', stageId: c.stageId });
+                }
+              }
+            });
+            setContactCaseMap(map);
           }).catch(() => {});
       }).catch(() => {});
   }, [user?.organization]);
@@ -215,6 +264,7 @@ export default function ChatsListScreen() {
     setOwnerFilter(filters.owner || 'all');
     setGroupFilter(filters.contactGroup || []);
     setLeadStageFilter(filters.leadStage || []);
+    setCaseStageFilter(filters.caseStage || []);
     if (viewData.searchTerm) {
       setSearchInput(viewData.searchTerm);
     }
@@ -227,6 +277,7 @@ export default function ChatsListScreen() {
     setOwnerFilter('all');
     setGroupFilter([]);
     setLeadStageFilter([]);
+    setCaseStageFilter([]);
     setNumberFilter('');
     setSearchInput('');
     setDebouncedSearch('');
@@ -245,6 +296,7 @@ export default function ChatsListScreen() {
           owner: ownerFilter !== 'all' ? ownerFilter : '',
           contactGroup: groupFilter,
           leadStage: leadStageFilter,
+          caseStage: caseStageFilter,
         },
         searchTerm: searchInput,
       };
@@ -308,6 +360,17 @@ export default function ChatsListScreen() {
       );
     }, 60000);
     return () => clearInterval(interval);
+  }, [user?.organization, loadChats, chatsDV, currentUserId]);
+
+  // Refresh chat list when app returns from background
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active' && user?.organization) {
+        WebSocketService.reconnectAll();
+        loadChats(user.organization, currentUserId, chatsDV || 'all');
+      }
+    });
+    return () => subscription.remove();
   }, [user?.organization, loadChats, chatsDV, currentUserId]);
 
   useEffect(() => {
@@ -403,6 +466,18 @@ export default function ChatsListScreen() {
   const filteredChats = useMemo(() => {
     let result = chats;
 
+    // Auto-filter by assignedWhatsAppNumbers when DataVisibility is 'byPhone' or user has assigned numbers
+    const assignedNums = user?.assignedWhatsAppNumbers || [];
+    if (assignedNums.length > 0 && !numberFilter) {
+      result = result.filter((c) => {
+        const fromId = (c as any).lastFromNumberId || (c as any).wabaPhoneNumberId || '';
+        const ids = (c as any).wabaPhoneNumberIds;
+        if (Array.isArray(ids) && ids.length > 0) return ids.some((id: string) => assignedNums.includes(id));
+        if (fromId) return assignedNums.includes(fromId);
+        return true;
+      });
+    }
+
     if (filter === 'unread') {
       result = result.filter((c) => c.unreadCount > 0 || c.isRead === false);
     } else if (filter === 'open') {
@@ -441,8 +516,17 @@ export default function ChatsListScreen() {
       result = result.filter((c) => {
         const phoneNorm = (c.phoneNumber || '').replace(/\D/g, '');
         const leadInfo = contactLeadMap[phoneNorm];
-        const stageId = (c as any).leadStageId || (c as any).leadStage;
-        return (stageId && leadStageFilter.includes(stageId)) || (leadInfo && leadStages.some(s => leadStageFilter.includes(s.id) && s.name === leadInfo.stageName));
+        const stageId = (c as any).leadStageId || (c as any).leadStage || leadInfo?.stageId || '';
+        return stageId ? leadStageFilter.includes(stageId) : false;
+      });
+    }
+
+    if (caseStageFilter.length > 0) {
+      result = result.filter((c) => {
+        const phoneNorm = (c.phoneNumber || '').replace(/\D/g, '');
+        const caseInfoArr = contactCaseMap[phoneNorm];
+        if (!caseInfoArr || caseInfoArr.length === 0) return false;
+        return caseInfoArr.some(ci => caseStageFilter.includes(ci.stageId));
       });
     }
 
@@ -464,7 +548,7 @@ export default function ChatsListScreen() {
     }
 
     return result;
-  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, numberFilter, user, contactLeadMap, leadStages]);
+  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, user, contactLeadMap, contactCaseMap, leadStages]);
 
   // When searching, show all results; otherwise paginate for smooth scrolling
   const displayedChats = useMemo(() => {
@@ -513,11 +597,20 @@ export default function ChatsListScreen() {
       const leadInfo = contactLeadMap[phoneNorm];
       const displayLeadStage = item.leadStageName || leadInfo?.stageName || '';
       const displayLeadColor = item.leadStageColor || leadInfo?.stageColor || '#7c3aed';
+      const caseInfoArr = contactCaseMap[phoneNorm] || [];
+      const displayCaseStages = caseInfoArr.length > 0
+        ? caseInfoArr.slice(0, 2)
+        : (item.caseStageName ? [{ stageName: item.caseStageName, stageColor: item.caseStageColor || '#0891b2', stageId: '' }] : []);
 
       const chatNumberId = (item as any).lastFromNumberId || (item as any).wabaPhoneNumberId || '';
-      const chatNumberMatch = chatNumberId ? availableNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === chatNumberId) : null;
-      const chatNumberLabel = chatNumberMatch ? (chatNumberMatch.Label || chatNumberMatch.label || chatNumberMatch.DisplayNumber || chatNumberMatch.displayNumber || '') : '';
-      const chatNumberColor = chatNumberMatch ? (chatNumberMatch.Color || chatNumberMatch.color || '#2e6155') : '';
+      const chatNumberIds = new Set<string>();
+      if (chatNumberId) chatNumberIds.add(chatNumberId);
+      if ((item as any).wabaPhoneNumberId && (item as any).wabaPhoneNumberId !== chatNumberId) chatNumberIds.add((item as any).wabaPhoneNumberId);
+      const chatNumberBadges = [...chatNumberIds]
+        .map(id => availableNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === id))
+        .filter(Boolean)
+        .slice(0, 2);
+      const extraNumberCount = chatNumberIds.size > 2 ? chatNumberIds.size - 2 : 0;
 
       return (
         <Pressable
@@ -574,11 +667,22 @@ export default function ChatsListScreen() {
                 >
                   {item.contactName || item.phoneNumber}
                 </Text>
-                {availableNumbers.length > 1 && chatNumberLabel ? (
-                  <View style={[styles.numberBadge, { backgroundColor: (chatNumberColor || '#2e6155') + '20' }]}>
-                    <Text style={{ fontSize: 9, fontWeight: '700', color: chatNumberColor || '#2e6155' }} numberOfLines={1}>
-                      {chatNumberLabel}
-                    </Text>
+                {availableNumbers.length > 1 && chatNumberBadges.length > 0 ? (
+                  <View style={{ flexDirection: 'row', gap: 3, alignItems: 'center' }}>
+                    {chatNumberBadges.map((num) => {
+                      const label = num!.Label || num!.label || num!.DisplayNumber || num!.displayNumber || '';
+                      const color = num!.Color || num!.color || '#2e6155';
+                      return (
+                        <View key={num!.PhoneNumberId || num!.phoneNumberId} style={[styles.numberBadge, { backgroundColor: withAlpha(color, 0.12) }]}>
+                          <Text style={{ fontSize: 9, fontWeight: '700', color }} numberOfLines={1}>
+                            {label}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                    {extraNumberCount > 0 && (
+                      <Text style={{ fontSize: 9, color: theme.colors.onSurfaceVariant }}>+{extraNumberCount}</Text>
+                    )}
                   </View>
                 ) : null}
               </View>
@@ -598,7 +702,7 @@ export default function ChatsListScreen() {
             </View>
 
             {/* Badges row: status, lead stage, case stage, CTWA */}
-            {(item.lastConversationStatus || displayLeadStage || item.caseStageName || item.isCTWA) && (
+            {(item.lastConversationStatus || displayLeadStage || displayCaseStages.length > 0 || item.isCTWA) && (
               <View style={[styles.badgesRow, { flexDirection }]}>
                 {!!item.lastConversationStatus && (
                   <View style={[styles.badge, {
@@ -615,18 +719,21 @@ export default function ChatsListScreen() {
                   </View>
                 )}
                 {!!displayLeadStage && (
-                  <View style={[styles.badge, { backgroundColor: displayLeadColor + '20' }]}>
+                  <View style={[styles.badge, { backgroundColor: withAlpha(displayLeadColor, 0.12) }]}>
                     <Text style={[styles.badgeText, { color: displayLeadColor }]}>
                       {displayLeadStage}
                     </Text>
                   </View>
                 )}
-                {!!item.caseStageName && (
-                  <View style={[styles.badge, { backgroundColor: (item.caseStageColor || '#0891b2') + '20' }]}>
-                    <Text style={[styles.badgeText, { color: item.caseStageColor || '#0891b2' }]}>
-                      {item.caseStageName}
+                {displayCaseStages.map((cs, idx) => (
+                  <View key={`case-${idx}`} style={[styles.badge, { backgroundColor: withAlpha(cs.stageColor || '#0891b2', 0.12) }]}>
+                    <Text style={[styles.badgeText, { color: cs.stageColor || '#0891b2' }]}>
+                      {cs.stageName}
                     </Text>
                   </View>
+                ))}
+                {caseInfoArr.length > 2 && (
+                  <Text style={{ fontSize: 9, color: theme.colors.onSurfaceVariant }}>+{caseInfoArr.length - 2}</Text>
                 )}
                 {item.isCTWA && (
                   <View style={[styles.badge, { backgroundColor: '#dbeafe' }]}>
@@ -678,7 +785,7 @@ export default function ChatsListScreen() {
         </Pressable>
       );
     },
-    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, t],
+    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t],
   );
 
   const renderEmpty = useCallback(
@@ -1032,10 +1139,52 @@ export default function ChatsListScreen() {
             </Menu>
           )}
 
+          {caseStages.length > 0 && (
+            <Menu
+              visible={caseStageMenuVisible}
+              onDismiss={() => setCaseStageMenuVisible(false)}
+              anchor={
+                <Chip
+                  icon="folder-outline"
+                  onPress={() => setCaseStageMenuVisible(true)}
+                  compact
+                  style={[
+                    styles.filterChip,
+                    caseStageFilter.length > 0
+                      ? { backgroundColor: theme.colors.primaryContainer }
+                      : { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    caseStageFilter.length > 0 && { color: theme.colors.primary, fontWeight: '600' },
+                  ]}
+                >
+                  {caseStageFilter.length > 0 ? `${t('chats.caseStage', 'שלב פנייה')} (${caseStageFilter.length})` : t('chats.caseStage', 'שלב פנייה')}
+                </Chip>
+              }
+            >
+              <Menu.Item
+                title={t('common.all')}
+                onPress={() => { setCaseStageFilter([]); setCaseStageMenuVisible(false); }}
+                leadingIcon={caseStageFilter.length === 0 ? 'check' : undefined}
+              />
+              {caseStages.map((s) => (
+                <Menu.Item
+                  key={s.id}
+                  title={s.name}
+                  onPress={() => {
+                    setCaseStageFilter((prev) => prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id]);
+                  }}
+                  leadingIcon={caseStageFilter.includes(s.id) ? 'check' : undefined}
+                />
+              ))}
+            </Menu>
+          )}
+
           {availableNumbers.length > 1 && (
             <Menu
               visible={numberMenuVisible}
-              onDismiss={() => setNumberMenuVisible(false)}
+              onDismiss={() => { setNumberMenuVisible(false); setNumberSearchQuery(''); }}
               anchor={
                 <Chip
                   icon="phone-outline"
@@ -1060,24 +1209,45 @@ export default function ChatsListScreen() {
                     : t('chats.phoneNumber', 'מספר')}
                 </Chip>
               }
+              contentStyle={{ maxHeight: 300 }}
             >
-              <Menu.Item
-                title={t('common.all', 'הכל')}
-                onPress={() => { setNumberFilter(''); setNumberMenuVisible(false); }}
-                leadingIcon={!numberFilter ? 'check' : undefined}
-              />
-              {availableNumbers.map((num) => {
-                const id = num.PhoneNumberId || num.phoneNumberId || '';
-                const display = num.Label || num.label || num.DisplayNumber || num.displayNumber || id;
-                return (
-                  <Menu.Item
-                    key={id}
-                    title={display}
-                    onPress={() => { setNumberFilter(id); setNumberMenuVisible(false); }}
-                    leadingIcon={numberFilter === id ? 'check' : undefined}
+              {availableNumbers.length > 3 && (
+                <View style={{ paddingHorizontal: 12, paddingBottom: 6 }}>
+                  <TextInput
+                    placeholder={t('common.search', 'חיפוש...')}
+                    value={numberSearchQuery}
+                    onChangeText={setNumberSearchQuery}
+                    style={{ fontSize: 13, padding: 6, borderBottomWidth: 1, borderColor: theme.colors.outline }}
                   />
-                );
-              })}
+                </View>
+              )}
+              <ScrollView style={{ maxHeight: 240 }}>
+                <Menu.Item
+                  title={t('common.all', 'הכל')}
+                  onPress={() => { setNumberFilter(''); setNumberMenuVisible(false); setNumberSearchQuery(''); }}
+                  leadingIcon={!numberFilter ? 'check' : undefined}
+                />
+                {availableNumbers
+                  .filter((num) => {
+                    if (!numberSearchQuery.trim()) return true;
+                    const q = numberSearchQuery.toLowerCase();
+                    const display = (num.Label || num.label || num.DisplayNumber || num.displayNumber || '').toLowerCase();
+                    const id = (num.PhoneNumberId || num.phoneNumberId || '').toLowerCase();
+                    return display.includes(q) || id.includes(q);
+                  })
+                  .map((num) => {
+                    const id = num.PhoneNumberId || num.phoneNumberId || '';
+                    const display = num.Label || num.label || num.DisplayNumber || num.displayNumber || id;
+                    return (
+                      <Menu.Item
+                        key={id}
+                        title={display}
+                        onPress={() => { setNumberFilter(id); setNumberMenuVisible(false); setNumberSearchQuery(''); }}
+                        leadingIcon={numberFilter === id ? 'check' : undefined}
+                      />
+                    );
+                  })}
+              </ScrollView>
             </Menu>
           )}
         </ScrollView>
@@ -1167,7 +1337,7 @@ export default function ChatsListScreen() {
                     onPress={() => {
                       setNewChatVisible(false);
                       setNewChatPhone('');
-                      router.push(`/(tabs)/chats/${c.phoneNumber}`);
+                      router.push({ pathname: `/(tabs)/chats/${c.phoneNumber}`, params: numberFilter ? { defaultWabaNumber: numberFilter } : undefined });
                     }}
                     style={{ flexDirection, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 8, gap: 10, borderBottomWidth: 0.5, borderBottomColor: theme.colors.outlineVariant }}
                   >

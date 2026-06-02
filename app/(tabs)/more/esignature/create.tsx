@@ -576,7 +576,7 @@ export default function CreateESignatureScreen() {
 
         <Button
           mode="contained"
-          onPress={() => router.back()}
+          onPress={() => { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/more/esignature'); }}
           style={[styles.nextButton, { backgroundColor: theme.colors.primary }]}
           textColor="#FFFFFF"
           contentStyle={styles.nextButtonContent}

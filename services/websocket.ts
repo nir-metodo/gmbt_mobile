@@ -57,6 +57,19 @@ class WebSocketService {
     });
   }
 
+  static reconnectAll() {
+    WebSocketService.instances.forEach((instance) => {
+      if (
+        instance.websocket?.readyState !== WebSocket.OPEN &&
+        instance.websocket?.readyState !== WebSocket.CONNECTING
+      ) {
+        instance.reconnectAttempts = 0;
+        instance.isClosedManually = false;
+        instance.initWebSocket();
+      }
+    });
+  }
+
   private async initWebSocket() {
     const token = await secureStorage.getToken();
     if (!token) return;

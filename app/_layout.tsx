@@ -168,6 +168,16 @@ export default function RootLayout() {
         case 'taskReminder':
           router.push('/(tabs)/more/tasks');
           break;
+        case 'calendarEventReminder':
+          router.push('/(tabs)/more/calendar');
+          break;
+        case 'gambotAiTransfer':
+          if (data.contactPhone) {
+            router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone } });
+          } else {
+            router.push('/(tabs)/chats');
+          }
+          break;
       }
     });
     return () => sub.remove();
