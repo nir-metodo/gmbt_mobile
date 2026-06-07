@@ -234,38 +234,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         </View>
       ) : null}
 
-      {/* Internal note banner + mention pills */}
-      {isInternalNote && (
-        <View style={[styles.noteBannerWrap, { backgroundColor: theme.dark ? '#2A1F00' : '#FFF8E1' }]}>
-          <View style={styles.noteBanner}>
-            <MaterialCommunityIcons name="note-text" size={14} color={theme.dark ? '#FFE082' : '#E65100'} />
-            <Text style={[styles.noteBannerText, { color: theme.dark ? '#FFE082' : '#E65100' }]}>
-              {t('chats.internalNote', 'הערה פנימית')}
-            </Text>
-            <Text style={[styles.noteBannerHint, { color: theme.dark ? '#FFD54F' : '#BF6900' }]}>
-              {t('chats.mentionHint', 'כתוב @ להזכיר משתמש')}
-            </Text>
-            <Pressable onPress={onToggleInternalNote} hitSlop={8} style={styles.noteBannerClose}>
-              <MaterialCommunityIcons name="close" size={16} color={theme.dark ? '#FFE082' : '#E65100'} />
-            </Pressable>
-          </View>
-          {mentionedUsers && mentionedUsers.length > 0 && (
-            <View style={styles.pillsRow}>
-              {mentionedUsers.map((u) => (
-                <View key={u.userId} style={[styles.pill, { backgroundColor: theme.dark ? '#5C4800' : '#FFE0B2' }]}>
-                  <MaterialCommunityIcons name="account" size={12} color={theme.dark ? '#FFE082' : '#E65100'} />
-                  <Text style={[styles.pillText, { color: theme.dark ? '#FFE082' : '#BF6900' }]} numberOfLines={1}>
-                    {u.userName}
-                  </Text>
-                  <Pressable onPress={() => onRemoveMention?.(u.userId)} hitSlop={6}>
-                    <MaterialCommunityIcons name="close" size={12} color={theme.dark ? '#FFE082' : '#E65100'} />
-                  </Pressable>
-                </View>
-              ))}
-            </View>
-          )}
-        </View>
-      )}
+      {/* Internal note banner removed per UX cleanup */}
 
       {/* Multi-number selector chip */}
       {hasMultipleNumbers && !isRecording && (
@@ -274,7 +243,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             onPress={() => setShowNumberPicker(!showNumberPicker)}
             style={[styles.numberChip, { backgroundColor: theme.dark ? '#334155' : '#e2e8f0' }]}
           >
-            <MaterialCommunityIcons name="phone-outline" size={13} color={theme.colors.primary} />
+            <MaterialCommunityIcons name="sim-outline" size={13} color={theme.colors.primary} />
             <Text style={{ fontSize: 11, color: theme.colors.primary, fontWeight: '600' }}>
               {displayNumber || t('chats.selectNumber', 'בחר מספר')}
             </Text>
@@ -322,24 +291,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
       )}
 
       <View style={[styles.row, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-        {/* Note toggle */}
-        {!isRecording && (
-          <Pressable
-            onPress={onToggleInternalNote}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.noteToggle,
-              isInternalNote && { backgroundColor: theme.dark ? '#5C4800' : '#FFE0B2' },
-              pressed && { opacity: 0.7 },
-            ]}
-          >
-            <MaterialCommunityIcons
-              name={isInternalNote ? 'note-text' : 'note-text-outline'}
-              size={20}
-              color={isInternalNote ? '#FF8F00' : theme.colors.onSurfaceVariant}
-            />
-          </Pressable>
-        )}
+        {/* Note toggle removed — timeline note accessible from header */}
 
         {/* Input container — WhatsApp style rounded */}
         {!isRecording ? (

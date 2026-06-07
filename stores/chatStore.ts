@@ -134,7 +134,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addOrUpdateChat: (chat) => {
     set((state) => {
-      const index = state.chats.findIndex((c) => c.phoneNumber === chat.phoneNumber);
+      // Normalize phone numbers before comparing to handle format differences (0505... vs 972505...)
+      const phoneNorm = (chat.phoneNumber || '').replace(/\D/g, '');
+      const index = state.chats.findIndex((c) => (c.phoneNumber || '').replace(/\D/g, '') === phoneNorm);
       let updatedChat: Chat;
       let newChats: Chat[];
 

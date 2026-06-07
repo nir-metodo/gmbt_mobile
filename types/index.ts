@@ -489,6 +489,11 @@ export interface Template {
   status: string;
   components: any[];
   modifiedOn?: string;
+  // Gambot metadata
+  friendlyName?: string;
+  usageType?: string;
+  variableMappingJson?: string;
+  showInQuickSend?: boolean;
 }
 
 export interface QuickMessage {

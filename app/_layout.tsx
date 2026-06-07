@@ -66,6 +66,11 @@ export default function RootLayout() {
         } catch {
           // Non-critical — token refresh on foreground failed; user will get 401 on next request
         }
+
+        // Re-register push token on foreground — handles the case where the user
+        // denied the permission dialog at login but later enabled notifications in device settings.
+        const userId = currentUser.uID || currentUser.userId || '';
+        pushNotificationService.registerPushToken(currentUser.organization, userId).catch(() => {});
       }
       appStateRef.current = nextState;
     });

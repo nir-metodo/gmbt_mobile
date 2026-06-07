@@ -50,7 +50,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ user, isInitialized: true });
 
         pushNotificationService
-          .registerPushToken(user.organization, user.userId)
+          .registerPushToken(user.organization, user.uID || user.userId)
           .catch(() => {});
         get().fetchOrgFeatureToggles().catch(() => {});
       } else {
@@ -69,7 +69,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ user, isLoading: false });
 
       pushNotificationService
-        .registerPushToken(user.organization, user.userId)
+        .registerPushToken(user.organization, user.uID || user.userId)
         .catch(() => {});
       get().fetchOrgFeatureToggles().catch(() => {});
     } catch (error: any) {

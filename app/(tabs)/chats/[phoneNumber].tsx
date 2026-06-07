@@ -121,7 +121,7 @@ export default function ChatConversationScreen() {
 
   const user = useAuthStore((s) => s.user);
   const chat = useChatStore((s) =>
-    s.chats.find((c) => c.phoneNumber === phoneNumber),
+    s.chats.find((c) => (c.phoneNumber || '').replace(/\D/g, '') === (String(phoneNumber || '')).replace(/\D/g, '')),
   );
   const currentMessages = useChatStore((s) => s.currentMessages);
   const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
@@ -164,6 +164,10 @@ export default function ChatConversationScreen() {
   const [showScheduleTimePicker, setShowScheduleTimePicker] = useState(false);
   const [selectedTemplateForVars, setSelectedTemplateForVars] = useState<Template | null>(null);
   const [templateVariableValues, setTemplateVariableValues] = useState<Record<number, string>>({});
+  // Quick / Manual tab state inside template modal
+  const [templateActiveTab, setTemplateActiveTab] = useState<'quick' | 'manual'>('quick');
+  const [quickTemplateSearch, setQuickTemplateSearch] = useState('');
+  const [quickOpenVarValues, setQuickOpenVarValues] = useState<Record<string, string>>({});
   const flatListRef = useRef<FlashList<ListItem>>(null);
   const chatInputRef = useRef<ChatInputRef>(null);
   const wsRef = useRef<WebSocketService | null>(null);
@@ -326,12 +330,30 @@ export default function ChatConversationScreen() {
     fetchConversationStatus();
   }, [fetchConversationStatus]);
 
-  // Reset conversation state when switching contacts or WABA numbers (match web behavior)
+  // Reset all conversation state when switching to a different chat.
+  // Pre-fill from the store immediately so the UI shows the last known state
+  // instead of flickering blank/closed while the API call is in flight.
+  useEffect(() => {
+    setChatStatus(chat?.lastConversationStatus || '');
+    setChatCategory(chat?.lastConversationCategory || '');
+    setConversationLive(null);
+    setRecipientReplied24h(null);
+    setConversationExpiresAt(null);
+  }, [phoneNumber]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-sync status/category when the store updates (e.g. after WS push or refetch).
+  // No !chatStatus guard — always apply so switching between chats is correct.
+  useEffect(() => {
+    if (chat?.lastConversationStatus) setChatStatus(chat.lastConversationStatus);
+    if (chat?.lastConversationCategory) setChatCategory(chat.lastConversationCategory);
+  }, [chat?.lastConversationStatus, chat?.lastConversationCategory, phoneNumber]);
+
+  // Also reset WS-derived state when WABA number changes (multi-number orgs)
   useEffect(() => {
     setConversationLive(null);
     setRecipientReplied24h(null);
     setConversationExpiresAt(null);
-  }, [activeWabaNumber, phoneNumber]);
+  }, [activeWabaNumber]);
 
   // Tick countdown every second while conversation is live
   useEffect(() => {
@@ -339,11 +361,6 @@ export default function ChatConversationScreen() {
     const interval = setInterval(() => setCountdownNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [conversationLive, conversationExpiresAt]);
-
-  useEffect(() => {
-    if (chat?.lastConversationStatus && !chatStatus) setChatStatus(chat.lastConversationStatus);
-    if (chat?.lastConversationCategory && !chatCategory) setChatCategory(chat.lastConversationCategory);
-  }, [chat?.lastConversationStatus, chat?.lastConversationCategory]);
 
   useEffect(() => {
     if (!user?.organization) return;
@@ -732,6 +749,92 @@ export default function ChatConversationScreen() {
     }));
     doSendTemplate(selectedTemplateForVars, templateVariableQuery);
   }, [selectedTemplateForVars, getTemplateVariableIndices, templateVariableValues, doSendTemplate]);
+
+  // Quick send helpers
+  const resolveQuickVar = useCallback((entity: string, field: string): string => {
+    if (!entity || entity === 'open') return '';
+
+    if (entity === 'contact') {
+      if (field === 'name')       return chat?.contactName || (phoneNumber as string) || '';
+      if (field === 'firstName')  return (chat?.contactName || '').split(' ')[0] || '';
+      if (field === 'lastName')   return (chat?.contactName || '').split(' ').slice(1).join(' ') || '';
+      if (field === 'phone')      return (phoneNumber as string) || '';
+      if (field === 'email')      return (chat as any)?.email || '';
+      if (field === 'city')       return (chat as any)?.city || '';
+      if (field === 'address')    return (chat as any)?.address || '';
+      if (field === 'company')    return (chat as any)?.company || '';
+      return (chat as any)?.[field] || '';
+    }
+
+    if (entity === 'user') {
+      if (field === 'name' || field === 'displayName') return user?.fullname || user?.displayName || '';
+      if (field === 'email')   return (user as any)?.email || '';
+      if (field === 'phone')   return (user as any)?.phone || '';
+      if (field === 'role')    return (user as any)?.role || '';
+      return '';
+    }
+
+    if (entity === 'org') {
+      if (field === 'name')    return user?.organization || '';
+      if (field === 'phone')   return (user as any)?.orgPhone || '';
+      if (field === 'email')   return (user as any)?.orgEmail || '';
+      if (field === 'website') return (user as any)?.orgWebsite || '';
+      return '';
+    }
+
+    // Server-side entities — return marker for preview
+    const serverLabels: Record<string, Record<string, string>> = {
+      lead:          { price: 'מחיר ליד', status: 'סטטוס ליד', notes: 'הערות', source: 'מקור', title: 'כותרת', assignedTo: 'שויך', pipelineStage: 'שלב' },
+      case:          { subject: 'נושא', status: 'סטטוס', priority: 'עדיפות', category: 'קטגוריה', description: 'תיאור', assignedTo: 'שויך', notes: 'הערות' },
+      quote:         { number: 'מס׳ הצעה', total: 'סה"כ', status: 'סטטוס', expiryDate: 'תפוגה', notes: 'הערות', title: 'כותרת' },
+      dynamic_table: {},
+    };
+    if (serverLabels[entity]) {
+      return `[${serverLabels[entity][field] || field}]`;
+    }
+
+    return '';
+  }, [chat, phoneNumber, user]);
+
+  const quickTemplates = useMemo(() =>
+    templates.filter(t => t.showInQuickSend),
+  [templates]);
+
+  const handleQuickTemplateSend = useCallback((template: Template) => {
+    let mapping: Array<{index: number; entity: string; field: string}> = [];
+    try { mapping = JSON.parse(template.variableMappingJson || '[]'); } catch {}
+
+    const bodyComp = (template.components || []).find((c: any) => c.type === 'BODY');
+    const bodyText = bodyComp?.text || '';
+    const varMatches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)];
+    const varIndices = [...new Set(varMatches.map((m: RegExpMatchArray) => parseInt(m[1])))].sort((a, b) => a - b) as number[];
+
+    const hasOpenVars = varIndices.some(idx => {
+      const mapEntry = mapping.find(m => m.index === idx);
+      return !mapEntry || mapEntry.entity === 'open';
+    });
+
+    if (hasOpenVars) {
+      // Show variable inputs for open vars
+      setQuickOpenVarValues({});
+      setSelectedTemplateForVars({ ...template, _quickMode: true } as any);
+      return;
+    }
+
+    const templateVariableQuery = varIndices.map((idx, i) => {
+      const mapEntry = mapping.find(m => m.index === idx);
+      const entity = mapEntry?.entity || 'open';
+      const field  = mapEntry?.field  || '';
+      return {
+        index: i,
+        Variable: `{{${idx}}}`,
+        dataSource1: 'data_source1_HardCoded',
+        parameters_hardCoded_Text: resolveQuickVar(entity, field),
+      };
+    });
+
+    doSendTemplate(template, templateVariableQuery);
+  }, [resolveQuickVar, doSendTemplate]);
 
   const handleOpenSchedule = useCallback(() => {
     setScheduleText('');
@@ -1662,18 +1765,27 @@ export default function ChatConversationScreen() {
                   </View>
                 );
               })()}
+
+              {/* ✅ Direct action buttons: Tag, Note, Assign */}
               <IconButton
-                icon="magnify"
+                icon="tag-plus-outline"
                 size={20}
                 iconColor={theme.custom.headerText}
-                onPress={() => { setSearchVisible((v) => !v); if (searchVisible) setSearchQuery(''); }}
+                onPress={() => setShowAddTagInline(true)}
               />
               <IconButton
-                icon="lightning-bolt"
+                icon="note-edit-outline"
                 size={20}
                 iconColor={theme.custom.headerText}
-                onPress={handleQuickActionsPress}
+                onPress={() => setShowAddNoteModal(true)}
               />
+              <IconButton
+                icon="account-switch-outline"
+                size={20}
+                iconColor={theme.custom.headerText}
+                onPress={() => setShowAssignOwnerModal(true)}
+              />
+
               <Menu
                 visible={menuVisible}
                 onDismiss={() => setMenuVisible(false)}
@@ -1688,6 +1800,11 @@ export default function ChatConversationScreen() {
                 contentStyle={{ backgroundColor: theme.colors.surface }}
               >
                 <Menu.Item
+                  leadingIcon="magnify"
+                  onPress={() => { setMenuVisible(false); setSearchVisible((v) => !v); if (searchVisible) setSearchQuery(''); }}
+                  title={t('chats.search', 'חיפוש')}
+                />
+                <Menu.Item
                   leadingIcon={starredFilter ? 'star' : 'star-outline'}
                   onPress={() => {
                     setMenuVisible(false);
@@ -1696,6 +1813,11 @@ export default function ChatConversationScreen() {
                     setSearchQuery('');
                   }}
                   title={starredFilter ? t('chats.allMessages', 'All Messages') : t('chats.starredMessages')}
+                />
+                <Menu.Item
+                  leadingIcon="lightning-bolt"
+                  onPress={() => { setMenuVisible(false); handleQuickActionsPress(); }}
+                  title={t('chats.quickActions', 'פעולות מהירות')}
                 />
                 <Menu.Item
                   leadingIcon="information-outline"
@@ -1929,7 +2051,16 @@ export default function ChatConversationScreen() {
                 </ScrollView>
               </View>
             )}
-            <View style={[styles.closedInlineBanner, { backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1', gap: 8, opacity: isStatusLoading ? 0.5 : 1 }]}>
+            <View style={[
+              styles.closedInlineBanner,
+              {
+                backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1',
+                gap: 8,
+                opacity: isStatusLoading ? 0.5 : 1,
+                paddingBottom: Math.max(insets.bottom, 8) + 4,
+              },
+            ]}>
+              {/* ⚡ Send default template */}
               <Pressable
                 onPress={handleSendDefaultTemplate}
                 disabled={isSendingTemplate || isStatusLoading}
@@ -1938,18 +2069,22 @@ export default function ChatConversationScreen() {
                   flexDirection: 'row',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: 6,
+                  gap: 5,
                   backgroundColor: pressed ? '#1a7a5e' : '#25D366',
-                  paddingVertical: 10,
-                  borderRadius: 8,
+                  paddingVertical: 11,
+                  borderRadius: 10,
                   opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : 1,
                 })}
               >
-                <MaterialCommunityIcons name="lightning-bolt" size={18} color="#fff" />
+                {isSendingTemplate
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <MaterialCommunityIcons name="lightning-bolt" size={18} color="#fff" />}
                 <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
-                  {isRTL ? 'שלח ברירת מחדל' : 'Send Default'}
+                  {isRTL ? 'ברירת מחדל' : 'Default'}
                 </Text>
               </Pressable>
+
+              {/* 📄 Choose template (opens modal with Quick/Manual) */}
               <Pressable
                 onPress={handleOpenConversation}
                 disabled={isStatusLoading}
@@ -1958,16 +2093,38 @@ export default function ChatConversationScreen() {
                   flexDirection: 'row',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: 6,
-                  backgroundColor: pressed ? '#e65100' : (theme.dark ? '#3E3500' : '#f57c00'),
-                  paddingVertical: 10,
-                  borderRadius: 8,
+                  gap: 5,
+                  backgroundColor: pressed ? '#1d4ed8' : '#2563eb',
+                  paddingVertical: 11,
+                  borderRadius: 10,
                   opacity: isStatusLoading ? 0.6 : 1,
                 })}
               >
-                <MaterialCommunityIcons name="file-document-edit-outline" size={18} color="#fff" />
+                <MaterialCommunityIcons name="card-text-outline" size={18} color="#fff" />
                 <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
-                  {isRTL ? 'בחר תבנית' : 'Choose Template'}
+                  {isRTL ? 'בחר תבנית' : 'Template'}
+                </Text>
+              </Pressable>
+
+              {/* 🕐 Schedule message */}
+              <Pressable
+                onPress={handleOpenSchedule}
+                disabled={isStatusLoading}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 5,
+                  backgroundColor: pressed ? '#6d28d9' : '#7c3aed',
+                  paddingVertical: 11,
+                  borderRadius: 10,
+                  opacity: isStatusLoading ? 0.6 : 1,
+                })}
+              >
+                <MaterialCommunityIcons name="clock-outline" size={18} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                  {isRTL ? 'תזמן' : 'Schedule'}
                 </Text>
               </Pressable>
             </View>
@@ -1999,150 +2156,207 @@ export default function ChatConversationScreen() {
           </>
         )}
 
-        {/* Template Selector Modal */}
+        {/* Template Selector Modal — Quick / Manual tabs */}
         <Modal
           visible={showTemplateSelector}
           transparent
           animationType="slide"
-          onRequestClose={() => setShowTemplateSelector(false)}
+          onRequestClose={() => { setShowTemplateSelector(false); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }}
         >
           <View style={styles.modalOverlay}>
-            <View
-              style={[
-                styles.templateSheet,
-                {
-                  backgroundColor: theme.colors.surface,
-                  paddingBottom: insets.bottom + 12,
-                },
-              ]}
-            >
+            <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
               <View style={styles.actionSheetHandle} />
+
+              {/* Header */}
               <View style={styles.templateSheetHeader}>
-                <Text
-                  variant="titleMedium"
-                  style={{
-                    fontWeight: '700',
-                    color: theme.colors.onSurface,
-                    flex: 1,
-                  }}
-                >
-                  {t('chats.selectTemplate')}
+                <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
+                  {isRTL ? 'שלח תבנית' : 'Send Template'}
                 </Text>
-                <IconButton
-                  icon="close"
-                  size={20}
-                  onPress={() => setShowTemplateSelector(false)}
-                />
+                <IconButton icon="close" size={20} onPress={() => { setShowTemplateSelector(false); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }} />
               </View>
 
-              {/* Default template button */}
-              <Pressable
-                onPress={handleSendDefaultTemplate}
-                disabled={isSendingTemplate}
-                style={({ pressed }) => [
-                  styles.defaultTemplateBtn,
-                  {
-                    backgroundColor: pressed ? '#1a7a5e' : '#25D366',
-                    opacity: isSendingTemplate ? 0.6 : 1,
-                  },
-                ]}
-              >
-                <MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />
-                <Text style={styles.defaultTemplateBtnText}>
-                  {t('chats.sendDefaultTemplate', 'שלח תבנית ברירת מחדל')}
-                </Text>
-              </Pressable>
-
-              {/* Template search */}
-              {templates.length > 3 && (
-                <View style={[styles.templateSearchWrap, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', borderColor: theme.colors.outline }]}>
-                  <MaterialCommunityIcons name="magnify" size={18} color={theme.colors.onSurfaceVariant} />
-                  <TextInput
-                    placeholder={t('chats.searchTemplates', 'חיפוש תבנית...')}
-                    placeholderTextColor={theme.colors.onSurfaceVariant}
-                    style={[styles.templateSearchInput, { color: theme.colors.onSurface }]}
-                    value={searchQuery}
-                    onChangeText={setSearchQuery}
-                  />
-                </View>
-              )}
-
-              {isLoadingTemplates ? (
-                <View style={styles.loadingContainer}>
-                  <ActivityIndicator
-                    size="large"
-                    color={theme.colors.primary}
-                  />
-                </View>
-              ) : templates.length === 0 ? (
-                <View style={styles.emptyTemplates}>
-                  <MaterialCommunityIcons
-                    name="file-document-outline"
-                    size={48}
-                    color={theme.colors.onSurfaceVariant}
-                    style={{ opacity: 0.4 }}
-                  />
-                  <Text
-                    variant="bodyMedium"
+              {/* Tab bar */}
+              <View style={{ flexDirection: 'row', borderBottomWidth: 1.5, borderBottomColor: theme.colors.outlineVariant || '#e5e7eb', marginHorizontal: 12, marginBottom: 8 }}>
+                {([
+                  { key: 'quick',  label: isRTL ? '⚡ מהיר'  : '⚡ Quick'  },
+                  { key: 'manual', label: isRTL ? '✏️ ידני' : '✏️ Manual' },
+                ] as const).map(tab => (
+                  <Pressable
+                    key={tab.key}
+                    onPress={() => { setTemplateActiveTab(tab.key); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }}
                     style={{
-                      color: theme.colors.onSurfaceVariant,
-                      marginTop: 12,
+                      paddingVertical: 10, paddingHorizontal: 18,
+                      borderBottomWidth: 2.5,
+                      borderBottomColor: templateActiveTab === tab.key ? '#6c63ff' : 'transparent',
+                      marginBottom: -1.5,
                     }}
                   >
-                    {t('chats.noTemplatesAvailable')}
-                  </Text>
+                    <Text style={{ fontSize: 14, fontWeight: templateActiveTab === tab.key ? '700' : '400', color: templateActiveTab === tab.key ? '#6c63ff' : theme.colors.onSurfaceVariant }}>
+                      {tab.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {isLoadingTemplates ? (
+                <View style={[styles.loadingContainer, { minHeight: 140 }]}>
+                  <ActivityIndicator size="large" color={theme.colors.primary} />
                 </View>
-              ) : (
-                <FlatList
-                  data={searchQuery.trim() ? templates.filter(tpl => (tpl.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || (getTemplateBodyText(tpl) || '').toLowerCase().includes(searchQuery.toLowerCase())) : templates}
-                  keyExtractor={(item, index) =>
-                    item.id || item.templateId || `${item.name}-${index}`
-                  }
-                  style={{ maxHeight: 400 }}
-                  renderItem={({ item }) => (
-                    <Pressable
-                      onPress={() => handleSendTemplate(item)}
-                      disabled={isSendingTemplate}
-                      style={({ pressed }) => [
-                        styles.templateItem,
-                        {
-                          backgroundColor: pressed
-                            ? theme.colors.surfaceVariant
-                            : 'transparent',
-                          opacity: isSendingTemplate ? 0.6 : 1,
-                        },
-                      ]}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          variant="bodyLarge"
-                          style={{
-                            fontWeight: '600',
-                            color: theme.colors.onSurface,
-                          }}
-                        >
-                          {item.name}
-                        </Text>
-                        <Text
-                          variant="bodySmall"
-                          numberOfLines={2}
-                          style={{
-                            color: theme.colors.onSurfaceVariant,
-                            marginTop: 2,
-                          }}
-                        >
-                          {getTemplateBodyText(item) ||
-                            `${item.language} · ${item.category}`}
-                        </Text>
-                      </View>
-                      <MaterialCommunityIcons
-                        name="send"
-                        size={20}
-                        color={theme.colors.primary}
-                      />
-                    </Pressable>
+              ) : templateActiveTab === 'quick' ? (
+                /* ── Quick tab ── */
+                <>
+                  <View style={[styles.templateSearchWrap, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', borderColor: theme.colors.outline, marginHorizontal: 12, marginBottom: 6 }]}>
+                    <MaterialCommunityIcons name="magnify" size={18} color={theme.colors.onSurfaceVariant} />
+                    <TextInput
+                      placeholder={isRTL ? 'חפש לפי שם ידידותי...' : 'Search by friendly name...'}
+                      placeholderTextColor={theme.colors.onSurfaceVariant}
+                      style={[styles.templateSearchInput, { color: theme.colors.onSurface }]}
+                      value={quickTemplateSearch}
+                      onChangeText={setQuickTemplateSearch}
+                    />
+                  </View>
+                  {quickTemplates.length === 0 ? (
+                    <View style={[styles.emptyTemplates, { minHeight: 100 }]}>
+                      <MaterialCommunityIcons name="lightning-bolt-outline" size={36} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.35 }} />
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
+                        {isRTL ? 'אין תבניות מהירות.\nסמן ⚡ בהגדרות תבניות.' : 'No Quick templates.\nMark ⚡ in template settings.'}
+                      </Text>
+                    </View>
+                  ) : (
+                    <FlatList
+                      data={quickTemplateSearch.trim()
+                        ? quickTemplates.filter(t =>
+                            (t.friendlyName || '').toLowerCase().includes(quickTemplateSearch.toLowerCase()) ||
+                            (t.usageType || '').toLowerCase().includes(quickTemplateSearch.toLowerCase()) ||
+                            (t.name || '').toLowerCase().includes(quickTemplateSearch.toLowerCase()))
+                        : quickTemplates}
+                      keyExtractor={(item, i) => item.id || item.templateId || `q-${i}`}
+                      style={{ maxHeight: 380 }}
+                      renderItem={({ item }) => {
+                        let mapping: Array<{index: number; entity: string; field: string}> = [];
+                        try { mapping = JSON.parse(item.variableMappingJson || '[]'); } catch {}
+                        const bodyComp = (item.components || []).find((c: any) => c.type === 'BODY');
+                        const bodyText = bodyComp?.text || '';
+                        const varMatches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)];
+                        const varIndices = [...new Set(varMatches.map((m: any) => parseInt(m[1])))].sort((a, b) => a - b) as number[];
+                        const openVars = varIndices.filter(idx => {
+                          const me = mapping.find(m => m.index === idx);
+                          return !me || me.entity === 'open';
+                        });
+                        return (
+                          <View style={[styles.templateItem, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ fontWeight: '700', color: theme.colors.onSurface, fontSize: 14 }}>
+                                  {item.friendlyName || item.name}
+                                </Text>
+                                {item.usageType && (
+                                  <Text style={{ fontSize: 11, color: '#6c63ff', marginTop: 1 }}>{item.usageType}</Text>
+                                )}
+                                <Text numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, marginTop: 2 }}>
+                                  {getTemplateBodyText(item)}
+                                </Text>
+                              </View>
+                            </View>
+                            {/* Open variable inputs */}
+                            {openVars.map(idx => (
+                              <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Text style={{ fontSize: 12, color: '#6c63ff', minWidth: 30 }}>{`{{${idx}}}`}</Text>
+                                <TextInput
+                                  placeholder={isRTL ? 'הזן ערך...' : 'Enter value...'}
+                                  placeholderTextColor={theme.colors.onSurfaceVariant}
+                                  value={quickOpenVarValues[`${item.id}_${idx}`] || ''}
+                                  onChangeText={v => setQuickOpenVarValues(prev => ({ ...prev, [`${item.id}_${idx}`]: v }))}
+                                  style={{ flex: 1, borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, color: theme.colors.onSurface, backgroundColor: theme.colors.background }}
+                                />
+                              </View>
+                            ))}
+                            <Pressable
+                              onPress={() => {
+                                const templateVariableQuery = varIndices.map((idx, i) => {
+                                  const mapEntry = mapping.find(m => m.index === idx);
+                                  const entity = mapEntry?.entity || 'open';
+                                  const field  = mapEntry?.field  || '';
+                                  const isOpen = entity === 'open';
+                                  const val = isOpen
+                                    ? (quickOpenVarValues[`${item.id}_${idx}`] || '')
+                                    : resolveQuickVar(entity, field);
+                                  return { index: i, Variable: `{{${idx}}}`, dataSource1: 'data_source1_HardCoded', parameters_hardCoded_Text: val };
+                                });
+                                setShowTemplateSelector(false);
+                                doSendTemplate(item, templateVariableQuery);
+                              }}
+                              disabled={isSendingTemplate || openVars.some(idx => !quickOpenVarValues[`${item.id}_${idx}`]?.trim())}
+                              style={({ pressed }) => ({
+                                flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                backgroundColor: pressed ? '#1a7a5e' : '#25D366',
+                                paddingVertical: 9, borderRadius: 8,
+                                opacity: (isSendingTemplate || openVars.some(idx => !quickOpenVarValues[`${item.id}_${idx}`]?.trim())) ? 0.5 : 1,
+                              })}
+                            >
+                              <MaterialCommunityIcons name="send" size={16} color="#fff" />
+                              <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                                {isRTL ? 'שלח' : 'Send'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        );
+                      }}
+                    />
                   )}
-                />
+                </>
+              ) : (
+                /* ── Manual tab ── */
+                <>
+                  {templates.length > 3 && (
+                    <View style={[styles.templateSearchWrap, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', borderColor: theme.colors.outline, marginHorizontal: 12, marginBottom: 6 }]}>
+                      <MaterialCommunityIcons name="magnify" size={18} color={theme.colors.onSurfaceVariant} />
+                      <TextInput
+                        placeholder={t('chats.searchTemplates', 'חיפוש תבנית...')}
+                        placeholderTextColor={theme.colors.onSurfaceVariant}
+                        style={[styles.templateSearchInput, { color: theme.colors.onSurface }]}
+                        value={searchQuery}
+                        onChangeText={setSearchQuery}
+                      />
+                    </View>
+                  )}
+                  {templates.length === 0 ? (
+                    <View style={styles.emptyTemplates}>
+                      <MaterialCommunityIcons name="file-document-outline" size={48} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
+                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 12 }}>
+                        {t('chats.noTemplatesAvailable')}
+                      </Text>
+                    </View>
+                  ) : (
+                    <FlatList
+                      data={searchQuery.trim()
+                        ? templates.filter(tpl => (tpl.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || (tpl.friendlyName || '').toLowerCase().includes(searchQuery.toLowerCase()) || (getTemplateBodyText(tpl) || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                        : templates}
+                      keyExtractor={(item, index) => item.id || item.templateId || `${item.name}-${index}`}
+                      style={{ maxHeight: 400 }}
+                      renderItem={({ item }) => (
+                        <Pressable
+                          onPress={() => handleSendTemplate(item)}
+                          disabled={isSendingTemplate}
+                          style={({ pressed }) => [styles.templateItem, { backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent', opacity: isSendingTemplate ? 0.6 : 1 }]}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text variant="bodyLarge" style={{ fontWeight: '600', color: theme.colors.onSurface }}>
+                              {item.friendlyName || item.name}
+                            </Text>
+                            {item.friendlyName && (
+                              <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{item.name}</Text>
+                            )}
+                            <Text variant="bodySmall" numberOfLines={2} style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                              {getTemplateBodyText(item) || `${item.language} · ${item.category}`}
+                            </Text>
+                          </View>
+                          <MaterialCommunityIcons name="send" size={20} color={theme.colors.primary} />
+                        </Pressable>
+                      )}
+                    />
+                  )}
+                </>
               )}
             </View>
           </View>
