@@ -6,6 +6,7 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
+  Alert,
 } from 'react-native';
 import {
   Text,
@@ -14,28 +15,37 @@ import {
   ActivityIndicator,
   Appbar,
   FAB,
-  Divider,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
-import { ordersApi, Order } from '../../../../services/api/orders';
+import {
+  ordersApi,
+  Order,
+  OrderStatusConfig,
+  DEFAULT_ORDER_STATUSES,
+  normalizeOrderStatus,
+  resolveOrderStatusIcon,
+  getOrderTotal,
+} from '../../../../services/api/orders';
 import { formatDate } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
 
 const BRAND_COLOR = '#2e6155';
 
-const STATUS_FILTERS = ['all', 'pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'] as const;
+const STATUS_FILTERS = ['all', 'pending', 'confirmed', 'collected', 'shipped', 'delivered', 'cancelled'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#FF9800',
   confirmed: '#2196F3',
+  collected: '#9C27B0',
   processing: '#9C27B0',
   shipped: '#00BCD4',
   delivered: '#4CAF50',
@@ -46,12 +56,25 @@ const STATUS_COLORS: Record<string, string> = {
 const STATUS_ICONS: Record<string, string> = {
   pending: 'clock-outline',
   confirmed: 'check-circle-outline',
+  collected: 'package-variant',
   processing: 'cog-outline',
   shipped: 'truck-outline',
   delivered: 'package-variant-closed-check',
   cancelled: 'close-circle-outline',
   refunded: 'cash-refund',
 };
+
+function getStatusColor(statusId: string, statuses: OrderStatusConfig[]): string {
+  return statuses.find((s) => s.id === statusId)?.color
+    || STATUS_COLORS[statusId]
+    || '#9E9E9E';
+}
+
+function getStatusIcon(statusId: string, statuses: OrderStatusConfig[]): string {
+  return statuses.find((s) => s.id === statusId)?.icon
+    || STATUS_ICONS[statusId]
+    || resolveOrderStatusIcon(statusId);
+}
 
 export default function OrdersScreen() {
   const router = useRouter();
@@ -70,7 +93,18 @@ export default function OrdersScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
+  const [statuses, setStatuses] = useState<OrderStatusConfig[]>(DEFAULT_ORDER_STATUSES);
 
+  const loadSettings = useCallback(async () => {
+    if (!user?.organization) return;
+    try {
+      const { statuses: loaded } = await ordersApi.getSettings(user.organization);
+      if (loaded.length > 0) setStatuses(loaded);
+    } catch {
+      setStatuses(DEFAULT_ORDER_STATUSES);
+    }
+  }, [user?.organization]);
 
   const fetchOrders = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
@@ -88,7 +122,8 @@ export default function OrdersScreen() {
 
   useEffect(() => {
     fetchOrders();
-  }, [fetchOrders]);
+    loadSettings();
+  }, [fetchOrders, loadSettings]);
 
   const didMountRef = useRef(false);
   useFocusEffect(
@@ -98,7 +133,8 @@ export default function OrdersScreen() {
         return;
       }
       fetchOrders();
-    }, [fetchOrders])
+      loadSettings();
+    }, [fetchOrders, loadSettings])
   );
 
   const onRefresh = useCallback(async () => {
@@ -110,7 +146,13 @@ export default function OrdersScreen() {
   const filteredOrders = useMemo(() => {
     let result = Array.isArray(orders) ? orders : [];
     if (statusFilter !== 'all') {
-      result = result.filter((o) => o.status === statusFilter);
+      result = result.filter((o) => {
+        const normalized = normalizeOrderStatus(o.status);
+        if (statusFilter === 'collected') {
+          return normalized === 'collected';
+        }
+        return normalized === statusFilter;
+      });
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -129,10 +171,66 @@ export default function OrdersScreen() {
     });
   }, [orders, statusFilter, searchQuery]);
 
+  const getStatusLabel = useCallback((statusId: string) => {
+    const configured = statuses.find((s) => s.id === statusId);
+    return t(`orders.status_${statusId}`, { defaultValue: configured?.label || statusId });
+  }, [statuses, t]);
+
+  const handleStatusChange = useCallback(async (order: Order, newStatus: string) => {
+    if (!user?.organization || order.status === newStatus) return;
+    const prevStatus = order.status;
+    setOrders((prev) => {
+      const updated = prev.map((o) => (o.id === order.id ? { ...o, status: newStatus } : o));
+      appCache.set(CACHE_KEY, updated);
+      return updated;
+    });
+    try {
+      await ordersApi.updateStatus(
+        user.organization,
+        order.id,
+        newStatus,
+        user.uID || user.userId,
+        user.fullname,
+      );
+    } catch (err: any) {
+      setOrders((prev) => {
+        const reverted = prev.map((o) => (o.id === order.id ? { ...o, status: prevStatus } : o));
+        appCache.set(CACHE_KEY, reverted);
+        return reverted;
+      });
+      Alert.alert(t('common.error', 'שגיאה'), err?.message || t('errors.generic'));
+    }
+  }, [user?.organization, CACHE_KEY, t]);
+
+  const ordersKanbanColumns = useMemo<KanbanColumn<Order>[]>(() => {
+    const sortedStatuses = [...statuses].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const knownIds = new Set(sortedStatuses.map((s) => s.id));
+    const orphanOrders = filteredOrders.filter((o) => !knownIds.has(normalizeOrderStatus(o.status)));
+    return sortedStatuses.map((status, index) => ({
+      id: status.id,
+      title: getStatusLabel(status.id),
+      color: status.color || getStatusColor(status.id, statuses),
+      icon: status.icon || getStatusIcon(status.id, statuses),
+      items: [
+        ...filteredOrders.filter((o) => normalizeOrderStatus(o.status) === status.id),
+        ...(index === 0 ? orphanOrders : []),
+      ],
+    }));
+  }, [statuses, filteredOrders, getStatusLabel]);
+
+  const handleOrdersKanbanMove = useCallback((item: Order, _from: string, toColumnId: string) => {
+    handleStatusChange(item, toColumnId);
+  }, [handleStatusChange]);
+
+  const openOrder = useCallback((order: Order) => {
+    router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: order.id } });
+  }, [router]);
+
   const renderOrderCard = useCallback(
     ({ item }: { item: Order }) => {
-      const statusColor = STATUS_COLORS[item.status] || '#9E9E9E';
-      const statusIcon = STATUS_ICONS[item.status] || 'help-circle-outline';
+      const normalizedStatus = normalizeOrderStatus(item.status);
+      const statusColor = getStatusColor(normalizedStatus, statuses);
+      const statusIcon = getStatusIcon(normalizedStatus, statuses);
 
       return (
         <Pressable
@@ -154,7 +252,7 @@ export default function OrdersScreen() {
               <View style={[styles.statusBadge, { backgroundColor: `${statusColor}18` }]}>
                 <MaterialCommunityIcons name={statusIcon as any} size={13} color={statusColor} />
                 <Text variant="labelSmall" style={[styles.statusText, { color: statusColor }]}>
-                  {t(`orders.status_${item.status}`, { defaultValue: item.status })}
+                  {getStatusLabel(normalizedStatus)}
                 </Text>
               </View>
             </View>
@@ -178,9 +276,9 @@ export default function OrdersScreen() {
                 </View>
               ) : null}
 
-              {item.totalAmount != null ? (
+              {getOrderTotal(item) > 0 ? (
                 <Text variant="titleSmall" style={[styles.total, { color: BRAND_COLOR }]}>
-                  {item.currency || '₪'}{Number(item.totalAmount).toFixed(2)}
+                  {item.currency || '₪'}{getOrderTotal(item).toFixed(2)}
                 </Text>
               ) : null}
             </View>
@@ -188,8 +286,49 @@ export default function OrdersScreen() {
         </Pressable>
       );
     },
-    [theme, router, flexDirection, textAlign, t],
+    [theme, router, flexDirection, textAlign, statuses, getStatusLabel],
   );
+
+  const renderKanbanCard = useCallback((item: Order) => {
+    const total = getOrderTotal(item);
+    const itemCount = item.items?.length ?? 0;
+    return (
+      <Pressable
+        onPress={() => openOrder(item)}
+        style={({ pressed }) => ({
+          backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
+          borderRadius: 10,
+          padding: 12,
+          borderStartWidth: 3,
+          borderStartColor: getStatusColor(normalizeOrderStatus(item.status), statuses),
+        })}
+      >
+        <Text variant="titleSmall" numberOfLines={1} style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+          {item.orderNumber ? `#${item.orderNumber}` : `#${item.id.slice(0, 8)}`}
+        </Text>
+        {item.customerName ? (
+          <View style={{ flexDirection, alignItems: 'center', gap: 4, marginTop: 4 }}>
+            <MaterialCommunityIcons name="account-outline" size={13} color={theme.colors.onSurfaceVariant} />
+            <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
+              {item.customerName}
+            </Text>
+          </View>
+        ) : null}
+        <View style={{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
+          {itemCount > 0 ? (
+            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+              {itemCount} {t('orders.items')}
+            </Text>
+          ) : <View />}
+          {total > 0 ? (
+            <Text variant="labelMedium" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
+              {item.currency || '₪'}{total.toFixed(2)}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+    );
+  }, [theme, flexDirection, statuses, openOrder, t]);
 
   const renderEmpty = useCallback(() => {
     if (loading) return null;
@@ -269,16 +408,26 @@ export default function OrdersScreen() {
         </Pressable>
       ) : null}
 
-      <FlatList
-        data={filteredOrders}
-        renderItem={renderOrderCard}
-        keyExtractor={(item) => item.id}
-        ListEmptyComponent={renderEmpty}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />}
-        contentContainerStyle={[styles.listContent, filteredOrders.length === 0 && styles.listContentEmpty]}
-        ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-        showsVerticalScrollIndicator={false}
-      />
+      {viewMode === 'kanban' ? (
+        <KanbanBoard
+          columns={ordersKanbanColumns}
+          keyExtractor={(item) => item.id}
+          onMoveItem={handleOrdersKanbanMove}
+          emptyLabel={t('orders.kanbanEmpty', 'גרור הזמנה לכאן')}
+          renderCard={renderKanbanCard}
+        />
+      ) : (
+        <FlatList
+          data={filteredOrders}
+          renderItem={renderOrderCard}
+          keyExtractor={(item) => item.id}
+          ListEmptyComponent={renderEmpty}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />}
+          contentContainerStyle={[styles.listContent, filteredOrders.length === 0 && styles.listContentEmpty]}
+          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
+          showsVerticalScrollIndicator={false}
+        />
+      )}
 
       <FAB
         icon="plus"

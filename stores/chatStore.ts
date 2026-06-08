@@ -6,6 +6,7 @@ import { contactsApi } from '../services/api/contacts';
 
 const CHATS_CACHE_KEY = 'gambot_chats_cache';
 const PAGE_SIZE = 50;
+let messagesRequestSeq = 0;
 
 interface ChatState {
   chats: Chat[];
@@ -101,7 +102,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isOnline: false,
           category: c.lastConversationCategory || c.category || '',
           status: c.lastConversationStatus || c.conversationStatus || 'Open',
-          lastConversationStatus: c.lastConversationStatus || '',
+          lastConversationStatus: c.lastConversationStatus || c.conversationStatus || 'Open',
           lastConversationCategory: c.lastConversationCategory || '',
           lastMessageDirection: c.lastMessageDirection || '',
           ownerId: c.ownerId || '',
@@ -169,9 +170,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setOwnerFilter: (owner) => set({ ownerFilter: owner }),
 
   loadMessages: async (organization, phoneNumber) => {
-    const { currentMessages: prevMessages } = get();
-    const isFirstLoad = prevMessages.length === 0;
-    set({ isLoadingMessages: isFirstLoad, currentPhoneNumber: phoneNumber, displayedCount: PAGE_SIZE });
+    const requestId = ++messagesRequestSeq;
+    const switchingChat = get().currentPhoneNumber !== phoneNumber;
+    set({
+      isLoadingMessages: switchingChat || get().currentMessages.length === 0,
+      currentPhoneNumber: phoneNumber,
+      displayedCount: PAGE_SIZE,
+      ...(switchingChat ? {
+        currentMessages: [],
+        allMessages: [],
+        hasMoreMessages: false,
+      } : {}),
+    });
     try {
       const raw = await chatsApi.getMessages(organization, phoneNumber, PAGE_SIZE * 4);
       const normalizeTs = (val: any): string => {
@@ -233,6 +243,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
 
+      if (requestId !== messagesRequestSeq) return;
+      if (get().currentPhoneNumber !== phoneNumber) return;
+
       const displayed = deduped.slice(-PAGE_SIZE);
       messageIdSet.clear();
       deduped.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
@@ -244,6 +257,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isLoadingMessages: false,
       });
     } catch {
+      if (requestId !== messagesRequestSeq) return;
+      if (get().currentPhoneNumber !== phoneNumber) return;
       messageIdSet.clear();
       set({ isLoadingMessages: false });
     }
@@ -400,7 +415,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addMessage: (message) => {
     if (!message.messageId) return;
     if (messageIdSet.has(message.messageId)) return;
-    const { currentMessages, allMessages } = get();
+    const { currentMessages, allMessages, currentPhoneNumber } = get();
+    if (!currentPhoneNumber) return;
+    const normalizePhone = (p: string) => p.replace(/\D/g, '');
+    const samePhone = (a: string, b: string) => {
+      const na = normalizePhone(a);
+      const nb = normalizePhone(b);
+      if (!na || !nb) return false;
+      if (na === nb) return true;
+      const core = (n: string) => (n.startsWith('972') ? n.slice(3) : n.replace(/^0/, ''));
+      return core(na) === core(nb);
+    };
+    const relatedPhones = [message.phoneNumber, message.from, message.to].filter(Boolean) as string[];
+    if (relatedPhones.length > 0 && !relatedPhones.some((p) => samePhone(p, currentPhoneNumber))) return;
     if (allMessages.some((m) => m.messageId === message.messageId)) return;
     if (currentMessages.some((m) => m.messageId === message.messageId)) return;
 

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gambot",
     "slug": "gambot-mobile",
-    "version": "1.15.0",
+    "version": "1.17.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "15",
+      "buildNumber": "17",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -34,7 +34,7 @@
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 18,
+      "versionCode": 20,
       "minSdkVersion": 26,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
@@ -71,7 +71,9 @@
         {
           "icon": "./assets/android-icon-monochrome.png",
           "color": "#2e6155",
-          "sounds": ["./assets/sounds/notification.wav"]
+          "sounds": [
+            "./assets/sounds/notification.wav"
+          ]
         }
       ],
       [

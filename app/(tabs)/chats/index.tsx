@@ -40,6 +40,13 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatChatTime, getInitials, withAlpha } from '../../../utils/formatters';
+import {
+  getChatConversationStatus,
+  isChatClosed,
+  isChatOpen,
+  conversationStatusLabel,
+  conversationStatusColors,
+} from '../../../utils/conversationStatus';
 import WebSocketService from '../../../services/websocket';
 import { notificationSound } from '../../../services/notificationSound';
 import { getDataVisibility } from '../../../constants/permissions';
@@ -393,12 +400,11 @@ export default function ChatsListScreen() {
               msg.senderName ||
               msg.phoneNumber ||
               msg.from,
-            lastMessage: msg.body || msg.message || '',
+            lastMessage: msg.body || msg.message || msg.text || '',
             lastMessageTime: msg.timestamp || new Date().toISOString(),
             unreadCount: (msg.unreadCount ?? 0) + 1,
             isOnline: msg.isOnline,
             profilePicture: msg.profilePicture,
-            status: msg.status,
           });
           const dir = (msg.direction || '').toLowerCase();
           if (dir === 'inbound' || (!msg.sentFromApp && msg.from !== user?.wabaNumber)) {
@@ -481,15 +487,9 @@ export default function ChatsListScreen() {
     if (filter === 'unread') {
       result = result.filter((c) => c.unreadCount > 0 || c.isRead === false);
     } else if (filter === 'open') {
-      result = result.filter((c) => {
-        const s = (c.status || c.lastConversationStatus || '').toLowerCase();
-        return s !== 'closed';
-      });
+      result = result.filter((c) => isChatOpen(c));
     } else if (filter === 'closed') {
-      result = result.filter((c) => {
-        const s = (c.status || c.lastConversationStatus || '').toLowerCase();
-        return s === 'closed';
-      });
+      result = result.filter((c) => isChatClosed(c));
     } else if (filter === 'myChats') {
       const userId = user?.uID || user?.userId;
       result = result.filter((c) => c.ownerId === userId);
@@ -702,22 +702,20 @@ export default function ChatsListScreen() {
             </View>
 
             {/* Badges row: status, lead stage, case stage, CTWA */}
-            {(item.lastConversationStatus || displayLeadStage || displayCaseStages.length > 0 || item.isCTWA) && (
+            {(getChatConversationStatus(item) !== 'unknown' || displayLeadStage || displayCaseStages.length > 0 || item.isCTWA) && (
               <View style={[styles.badgesRow, { flexDirection }]}>
-                {!!item.lastConversationStatus && (
-                  <View style={[styles.badge, {
-                    backgroundColor: item.lastConversationStatus === 'Open' ? '#dcfce7' :
-                      item.lastConversationStatus === 'In Process' ? '#fef9c3' : '#f1f5f9',
-                  }]}>
-                    <Text style={[styles.badgeText, {
-                      color: item.lastConversationStatus === 'Open' ? '#16a34a' :
-                        item.lastConversationStatus === 'In Process' ? '#ca8a04' : '#64748b',
-                    }]}>
-                      {item.lastConversationStatus === 'Open' ? t('chats.open') :
-                        item.lastConversationStatus === 'Closed' ? t('chats.closed') : item.lastConversationStatus}
+                {(() => {
+                  const convStatus = getChatConversationStatus(item);
+                  if (convStatus === 'unknown') return null;
+                  const colors = conversationStatusColors(convStatus);
+                  return (
+                  <View style={[styles.badge, { backgroundColor: colors.bg }]}>
+                    <Text style={[styles.badgeText, { color: colors.fg }]}>
+                      {conversationStatusLabel(convStatus, t)}
                     </Text>
                   </View>
-                )}
+                  );
+                })()}
                 {!!displayLeadStage && (
                   <View style={[styles.badge, { backgroundColor: withAlpha(displayLeadColor, 0.12) }]}>
                     <Text style={[styles.badgeText, { color: displayLeadColor }]}>

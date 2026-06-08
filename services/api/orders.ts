@@ -40,6 +40,48 @@ export interface OrderNote {
   createdBy?: string;
 }
 
+export interface OrderStatusConfig {
+  id: string;
+  label: string;
+  color: string;
+  icon?: string;
+  order: number;
+}
+
+export const DEFAULT_ORDER_STATUSES: OrderStatusConfig[] = [
+  { id: 'pending', label: 'ממתין', color: '#f59e0b', icon: 'clock-outline', order: 0 },
+  { id: 'confirmed', label: 'אושר', color: '#3b82f6', icon: 'check-circle-outline', order: 1 },
+  { id: 'collected', label: 'נאסף', color: '#8b5cf6', icon: 'package-variant', order: 2 },
+  { id: 'shipped', label: 'נשלח', color: '#06b6d4', icon: 'truck-outline', order: 3 },
+  { id: 'delivered', label: 'נמסר', color: '#10b981', icon: 'package-variant-closed-check', order: 4 },
+  { id: 'cancelled', label: 'בוטל', color: '#ef4444', icon: 'close-circle-outline', order: 5 },
+];
+
+const STATUS_ICON_MAP: Record<string, string> = {
+  pending: 'clock-outline',
+  confirmed: 'check-circle-outline',
+  collected: 'package-variant',
+  processing: 'cog-outline',
+  shipped: 'truck-outline',
+  delivered: 'package-variant-closed-check',
+  cancelled: 'close-circle-outline',
+  refunded: 'cash-refund',
+};
+
+export function resolveOrderStatusIcon(statusId: string): string {
+  return STATUS_ICON_MAP[statusId] || 'circle-outline';
+}
+
+export function normalizeOrderStatus(status?: string): string {
+  if (!status) return 'pending';
+  return status === 'processing' ? 'collected' : status;
+}
+
+export function getOrderTotal(order: Order): number {
+  const raw = order.totalAmount ?? (order as { total?: number }).total;
+  return raw != null ? Number(raw) : 0;
+}
+
 export const ordersApi = {
   async getAll(organization: string, params?: { status?: string; page?: number; pageSize?: number }): Promise<Order[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_ORDERS, {
@@ -93,11 +135,13 @@ export const ordersApi = {
     return response.data;
   },
 
-  async updateStatus(organization: string, orderId: string, status: string): Promise<any> {
+  async updateStatus(organization: string, orderId: string, status: string, userId?: string, userName?: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.UPDATE_ORDER_STATUS, {
-      organizationName: organization,
+      organization,
       orderId,
       status,
+      userId: userId ?? '',
+      userName: userName ?? '',
     });
     return response.data;
   },
@@ -115,6 +159,26 @@ export const ordersApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
     return response.data;
+  },
+
+  async getSettings(organization: string): Promise<{ statuses: OrderStatusConfig[] }> {
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_ORDERS_SETTINGS, { organization });
+      const raw = response.data;
+      if (raw?.success && raw?.settings?.statuses) {
+        const statuses = (raw.settings.statuses as OrderStatusConfig[])
+          .map((s, i) => ({
+            ...s,
+            order: s.order ?? i,
+            icon: resolveOrderStatusIcon(s.id),
+          }))
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        return { statuses };
+      }
+    } catch {
+      // fall through to defaults
+    }
+    return { statuses: DEFAULT_ORDER_STATUSES };
   },
 
   async getOrderFormSettings(organization: string): Promise<{ sections: any[]; formLayout: string[] }> {

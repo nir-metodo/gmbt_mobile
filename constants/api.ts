@@ -232,6 +232,7 @@ export const ENDPOINTS = {
 
   // Orders
   GET_ORDERS: '/api/Orders/GetOrders',
+  GET_ORDERS_SETTINGS: '/api/Orders/GetOrdersSettings',
   GET_ORDER: '/api/Orders/GetOrder',
   CREATE_ORDER: '/api/Orders/CreateOrder',
   UPDATE_ORDER: '/api/Orders/UpdateOrder',

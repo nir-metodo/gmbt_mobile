@@ -47,6 +47,12 @@ import {
   formatMessageDateSeparator,
   getInitials,
 } from '../../../utils/formatters';
+import {
+  getChatConversationStatus,
+  conversationStatusLabel,
+  conversationStatusColors,
+} from '../../../utils/conversationStatus';
+
 import WebSocketService from '../../../services/websocket';
 import { MessageBubble } from '../../../components/chat/MessageBubble';
 import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/ChatInput';
@@ -292,6 +298,8 @@ export default function ChatConversationScreen() {
   const [conversationLive, setConversationLive] = useState<boolean | null>(null);
   const [recipientReplied24h, setRecipientReplied24h] = useState<boolean | null>(null);
   const [conversationExpiresAt, setConversationExpiresAt] = useState<string | null>(null);
+  const [isFreeEntryPoint, setIsFreeEntryPoint] = useState(false);
+  const [freeWindowExpiresAt, setFreeWindowExpiresAt] = useState<string | null>(null);
   const [countdownNow, setCountdownNow] = useState(Date.now());
   const [chatStatus, setChatStatus] = useState<string>('');
   const [chatCategory, setChatCategory] = useState<string>('');
@@ -309,20 +317,21 @@ export default function ChatConversationScreen() {
       const live = res?.IsConversationLive ?? res?.IsConversationLiveByPhoneNumber ?? res?.isConversationLive ?? res?.isLive;
       setConversationLive(live === true || live === 'true');
       const replied = res?.IsRecipientReplyLast24Hours ?? res?.isRecipientReplyLast24Hours;
-      if (replied !== undefined && replied !== null) {
-        setRecipientReplied24h(replied === true || replied === 'true');
-      }
+      setRecipientReplied24h(replied === true || replied === 'true');
       const expires = res?.ConversationExpiresAt ?? res?.conversationExpiresAt;
       setConversationExpiresAt(expires || null);
-      const status = res?.ConversationStatus ?? res?.conversationStatus ?? res?.status ?? '';
-      if (status) setChatStatus(status);
+      const freeEntry = res?.IsFreeEntryPoint ?? res?.isFreeEntryPoint;
+      setIsFreeEntryPoint(freeEntry === true || freeEntry === 'true');
+      const freeExpires = res?.FreeWindowExpiresAt ?? res?.freeWindowExpiresAt;
+      setFreeWindowExpiresAt(freeExpires || null);
       const cat = res?.Category ?? res?.category ?? '';
       if (cat) setChatCategory(cat);
     }).catch(() => {
       if (requestId !== statusRequestIdRef.current) return;
-      setConversationLive(false);
-      setRecipientReplied24h(false);
-      setConversationExpiresAt(null);
+      // On network/auth error, preserve any previously-known live state rather than
+      // defaulting to closed — a transient failure should not kill the chat window.
+      setConversationLive((prev) => (prev !== null ? prev : false));
+      setRecipientReplied24h((prev) => (prev !== null ? prev : false));
     });
   }, [user?.organization, phoneNumber, activeWabaNumber]);
 
@@ -339,6 +348,8 @@ export default function ChatConversationScreen() {
     setConversationLive(null);
     setRecipientReplied24h(null);
     setConversationExpiresAt(null);
+    setIsFreeEntryPoint(false);
+    setFreeWindowExpiresAt(null);
   }, [phoneNumber]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-sync status/category when the store updates (e.g. after WS push or refetch).
@@ -353,6 +364,8 @@ export default function ChatConversationScreen() {
     setConversationLive(null);
     setRecipientReplied24h(null);
     setConversationExpiresAt(null);
+    setIsFreeEntryPoint(false);
+    setFreeWindowExpiresAt(null);
   }, [activeWabaNumber]);
 
   // Tick countdown every second while conversation is live
@@ -462,6 +475,7 @@ export default function ChatConversationScreen() {
   // Load timeline entries
   useEffect(() => {
     if (!user?.organization || !phoneNumber) return;
+    setTimelineEntries([]);
     chatsApi.getChatTimeline(user.organization, phoneNumber as string)
       .then(setTimelineEntries)
       .catch(() => setTimelineEntries([]));
@@ -514,7 +528,7 @@ export default function ChatConversationScreen() {
     if (!user?.organization || !phoneNumber) return;
     setAssigningOwner(true);
     try {
-      await contactsApi.updateOwner(user.organization, phoneNumber as string, ownerId);
+      await contactsApi.updateOwner(user.organization, phoneNumber as string, ownerId, user.fullname || user.displayName || 'system');
       setShowAssignOwnerModal(false);
       Alert.alert('✅', isRTL ? `בעלות שויכה ל-${ownerName}` : `Assigned to ${ownerName}`);
     } catch {
@@ -526,29 +540,25 @@ export default function ChatConversationScreen() {
 
   const isStatusLoading = conversationLive === null;
 
-  // Window closed: conversation is not live, or expiration passed
-  // Default to closed while loading to prevent sending free-form messages before status is known
-  const isWindowClosed = useMemo(() => {
-    if (conversationLive === null) return true; // loading state - default to closed
-    if (conversationLive === false) return true;
-    // Even if live=true, check expiration like the web does
+  // Match web ChatContainer: free text only when customer replied in 24h AND window is open AND conversation is live
+  const canSendFreeText = useMemo(() => {
+    if (isStatusLoading) return false;
+    if (conversationLive !== true) return false;
+    if (recipientReplied24h !== true) return false;
     if (conversationExpiresAt) {
       const now = new Date();
       const expiresAt = new Date(conversationExpiresAt);
-      if (now >= expiresAt) return true;
+      if (now >= expiresAt) return false;
     }
-    if (conversationLive === true) return false;
-    if (!chat) return true;
-    const status = chat.lastConversationStatus?.toLowerCase() || '';
-    return !status || status === 'closed' || status === 'expired';
-  }, [conversationLive, conversationExpiresAt, chat?.lastConversationStatus]);
+    return true;
+  }, [isStatusLoading, conversationLive, recipientReplied24h, conversationExpiresAt]);
 
-  // Waiting for reply: window is open but user hasn't replied in last 24h
-  const isWaitingForReply = useMemo(() => {
-    if (isWindowClosed) return false;
-    if (recipientReplied24h === false) return true;
-    return false;
-  }, [isWindowClosed, recipientReplied24h]);
+  const isFreeWindowActive = useMemo(() => {
+    if (!freeWindowExpiresAt) return false;
+    return new Date() < new Date(freeWindowExpiresAt);
+  }, [freeWindowExpiresAt, countdownNow]);
+
+  const showFreeTemplateWindow = !canSendFreeText && isFreeEntryPoint && isFreeWindowActive;
 
   const loadTemplates = useCallback(async () => {
     if (!user?.organization || isLoadingTemplates) return;
@@ -900,33 +910,37 @@ export default function ChatConversationScreen() {
 
   // Load messages & mark as read
   useEffect(() => {
-    if (user?.organization && phoneNumber) {
-      loadMessages(user.organization, phoneNumber);
-      markAsRead(user.organization, phoneNumber, user.uID || user.userId, user.fullname || user.displayName || '');
-    }
+    if (!user?.organization || !phoneNumber) return;
+    prevMessageCount.current = 0;
+    setTimelineEntries([]);
+    loadMessages(user.organization, phoneNumber);
+    markAsRead(user.organization, phoneNumber, user.uID || user.userId, user.fullname || user.displayName || '');
     return () => {
       clearCurrentChat();
     };
   }, [user?.organization, phoneNumber]);
 
-  // Reload messages when app returns from background
+  // Reload messages + conversation status when app returns from background
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active' && user?.organization && phoneNumber) {
         WebSocketService.reconnectAll();
         loadMessages(user.organization, phoneNumber);
+        fetchConversationStatus();
       }
     });
     return () => subscription.remove();
-  }, [user?.organization, phoneNumber, loadMessages]);
+  }, [user?.organization, phoneNumber, loadMessages, fetchConversationStatus]);
 
-  // Reload messages when screen gains focus (navigating back)
+  // Reload messages + conversation status whenever the screen gains focus
+  // (navigating back from another screen, opening from push notification, etc.)
   useFocusEffect(
     useCallback(() => {
       if (user?.organization && phoneNumber) {
         loadMessages(user.organization, phoneNumber);
+        fetchConversationStatus();
       }
-    }, [user?.organization, phoneNumber, loadMessages])
+    }, [user?.organization, phoneNumber, loadMessages, fetchConversationStatus])
   );
 
   // WebSocket for live messages
@@ -992,6 +1006,8 @@ export default function ChatConversationScreen() {
           if (!activeWabaNumber || !msgFromNumberId || msgFromNumberId === activeWabaNumber) {
             setConversationLive(true);
             setRecipientReplied24h(true);
+            const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+            setConversationExpiresAt(expires);
           }
         }
       }
@@ -1015,28 +1031,25 @@ export default function ChatConversationScreen() {
     };
   }, [user?.organization, phoneNumber, addMessage, updateMessage, markAsRead]);
 
+  const scrollToBottom = useCallback((animated = false) => {
+    requestAnimationFrame(() => {
+      flatListRef.current?.scrollToEnd({ animated });
+    });
+  }, []);
+
   // Auto-scroll to bottom (newest) on new messages or initial load
   useEffect(() => {
     if (currentMessages.length > prevMessageCount.current) {
       const isInitialLoad = prevMessageCount.current === 0;
       const addedCount = currentMessages.length - prevMessageCount.current;
       if (isInitialLoad) {
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: false });
-        }, 200);
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: false });
-        }, 600);
+        scrollToBottom(false);
       } else if (!isLoadingOlderMessages && !loadingOlderRef.current && addedCount <= 3) {
-        // Only auto-scroll for new incoming/outgoing messages (small additions)
-        // Do NOT scroll when loading older messages (large batch prepended at top)
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: true });
-        }, 100);
+        scrollToBottom(true);
       }
     }
     prevMessageCount.current = currentMessages.length;
-  }, [currentMessages.length, isLoadingOlderMessages]);
+  }, [currentMessages.length, isLoadingOlderMessages, scrollToBottom]);
 
   // Pre-cache media from ALL messages in the background (without blocking message rendering)
   const allMessages = useChatStore((s) => s.allMessages);
@@ -1672,8 +1685,8 @@ export default function ChatConversationScreen() {
           styles.screen,
           { backgroundColor: theme.custom.chatBackground },
         ]}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 56 : 0}
       >
         {/* Header */}
         <View
@@ -1766,25 +1779,7 @@ export default function ChatConversationScreen() {
                 );
               })()}
 
-              {/* ✅ Direct action buttons: Tag, Note, Assign */}
-              <IconButton
-                icon="tag-plus-outline"
-                size={20}
-                iconColor={theme.custom.headerText}
-                onPress={() => setShowAddTagInline(true)}
-              />
-              <IconButton
-                icon="note-edit-outline"
-                size={20}
-                iconColor={theme.custom.headerText}
-                onPress={() => setShowAddNoteModal(true)}
-              />
-              <IconButton
-                icon="account-switch-outline"
-                size={20}
-                iconColor={theme.custom.headerText}
-                onPress={() => setShowAssignOwnerModal(true)}
-              />
+              {/* Tag / Note / Assign are all in the meta bar below — header is clean */}
 
               <Menu
                 visible={menuVisible}
@@ -1873,10 +1868,10 @@ export default function ChatConversationScreen() {
             visible={showStatusMenu}
             onDismiss={() => setShowStatusMenu(false)}
             anchor={
-              <Pressable onPress={() => setShowStatusMenu(true)} style={[styles.metaChip, { backgroundColor: chatStatus === 'Open' ? '#dcfce7' : chatStatus === 'In Process' ? '#fef9c3' : '#f1f5f9' }]}>
-                <MaterialCommunityIcons name="circle" size={8} color={chatStatus === 'Open' ? '#16a34a' : chatStatus === 'In Process' ? '#ca8a04' : '#64748b'} />
-                <Text style={{ fontSize: 11, fontWeight: '600', color: chatStatus === 'Open' ? '#16a34a' : chatStatus === 'In Process' ? '#ca8a04' : '#64748b', marginStart: 4 }}>
-                  {chatStatus === 'Open' ? t('chats.open', 'פתוח') : chatStatus === 'In Process' ? t('chats.inProcess', 'בטיפול') : chatStatus === 'Closed' ? t('chats.closed', 'סגור') : t('chats.status', 'סטטוס')}
+              <Pressable onPress={() => setShowStatusMenu(true)} style={[styles.metaChip, { backgroundColor: conversationStatusColors(getChatConversationStatus({ lastConversationStatus: chatStatus })).bg }]}>
+                <MaterialCommunityIcons name="circle" size={8} color={conversationStatusColors(getChatConversationStatus({ lastConversationStatus: chatStatus })).fg} />
+                <Text style={{ fontSize: 11, fontWeight: '600', color: conversationStatusColors(getChatConversationStatus({ lastConversationStatus: chatStatus })).fg, marginStart: 4 }}>
+                  {conversationStatusLabel(getChatConversationStatus({ lastConversationStatus: chatStatus }), t)}
                 </Text>
                 <MaterialCommunityIcons name="chevron-down" size={14} color="#64748b" style={{ marginStart: 2 }} />
               </Pressable>
@@ -1908,32 +1903,27 @@ export default function ChatConversationScreen() {
             ))}
           </Menu>
 
+          {/* Tags row — horizontal chips + "add tag" chip */}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginStart: 4, flexShrink: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 4 }}>
             {(chat?.tags || []).map((tag) => (
-              <View key={tag} style={[styles.metaChip, { backgroundColor: '#fef3c7' }]}>
+              <Pressable
+                key={tag}
+                onLongPress={() => {
+                  const newTags = (chat?.tags || []).filter((t) => t !== tag);
+                  addOrUpdateChat({ phoneNumber: phoneNumber as string, tags: newTags } as any);
+                  const { contactsApi } = require('../../../services/api');
+                  contactsApi.update(user?.organization, { phoneNumber: phoneNumber as string, tags: newTags }, user?.uID || user?.userId, user?.fullname).catch(() => {});
+                }}
+                style={[styles.metaChip, { backgroundColor: '#fef3c7' }]}
+              >
                 <Text style={{ fontSize: 10, fontWeight: '600', color: '#92400e' }}>{tag}</Text>
-              </View>
-            ))}
-            {showAddTagInline ? (
-              <View style={[styles.metaChip, { backgroundColor: '#e0f2f1', paddingHorizontal: 4, paddingVertical: 2 }]}>
-                <TextInput
-                  value={newTagText}
-                  onChangeText={setNewTagText}
-                  onSubmitEditing={() => handleAddTag(newTagText)}
-                  placeholder={isRTL ? 'תיוג...' : 'Tag...'}
-                  placeholderTextColor="#64748b"
-                  style={{ fontSize: 11, minWidth: 60, padding: 0, color: theme.colors.onSurface }}
-                  autoFocus
-                  returnKeyType="done"
-                  onBlur={() => { if (!newTagText.trim()) setShowAddTagInline(false); }}
-                />
-              </View>
-            ) : (
-              <Pressable onPress={() => setShowAddTagInline(true)} style={[styles.metaChip, { backgroundColor: '#e0f2f1' }]}>
-                <MaterialCommunityIcons name="plus" size={12} color="#009688" />
-                <Text style={{ fontSize: 10, fontWeight: '600', color: '#009688', marginStart: 2 }}>{isRTL ? 'תיוג' : 'Tag'}</Text>
               </Pressable>
-            )}
+            ))}
+            {/* + Tag chip — clicking opens the inline input row below */}
+            <Pressable onPress={() => setShowAddTagInline(true)} style={[styles.metaChip, { backgroundColor: '#e0f2f1' }]}>
+              <MaterialCommunityIcons name="plus" size={12} color="#009688" />
+              <Text style={{ fontSize: 10, fontWeight: '600', color: '#009688', marginStart: 2 }}>{isRTL ? 'הוסף תיוג' : 'Add Tag'}</Text>
+            </Pressable>
           </ScrollView>
 
           <View style={{ flexDirection: 'row', alignItems: 'center', marginStart: 'auto', gap: 2 }}>
@@ -1946,6 +1936,53 @@ export default function ChatConversationScreen() {
           </View>
         </View>
 
+        {/* Inline tag entry — full-width row below meta bar */}
+        {showAddTagInline && (
+          <View style={{
+            flexDirection: isRTL ? 'row-reverse' : 'row',
+            alignItems: 'center',
+            backgroundColor: '#f0fdf4',
+            borderBottomWidth: 1,
+            borderBottomColor: '#86efac',
+            paddingHorizontal: 12,
+            paddingVertical: 6,
+            gap: 8,
+          }}>
+            <MaterialCommunityIcons name="tag-plus-outline" size={18} color="#16a34a" />
+            <TextInput
+              value={newTagText}
+              onChangeText={setNewTagText}
+              onSubmitEditing={() => { if (newTagText.trim()) handleAddTag(newTagText); else setShowAddTagInline(false); }}
+              placeholder={isRTL ? 'הקלד שם תיוג ולחץ ✓ לסיום' : 'Type tag name and press ✓ to confirm'}
+              placeholderTextColor="#86efac"
+              style={{
+                flex: 1,
+                fontSize: 13,
+                color: theme.colors.onSurface,
+                padding: 0,
+                textAlign: isRTL ? 'right' : 'left',
+              }}
+              autoFocus
+              returnKeyType="done"
+              blurOnSubmit={false}
+            />
+            {newTagText.trim().length > 0 && (
+              <Pressable
+                onPress={() => handleAddTag(newTagText)}
+                hitSlop={8}
+                style={{ backgroundColor: '#16a34a', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 }}
+              >
+                <Text style={{ color: 'white', fontSize: 12, fontWeight: '700' }}>
+                  {isRTL ? 'הוסף' : 'Add'}
+                </Text>
+              </Pressable>
+            )}
+            <Pressable onPress={() => { setShowAddTagInline(false); setNewTagText(''); }} hitSlop={8}>
+              <MaterialCommunityIcons name="close" size={18} color="#64748b" />
+            </Pressable>
+          </View>
+        )}
+
         {/* Messages */}
         {isLoadingMessages && listData.length === 0 ? (
           <View style={styles.loadingContainer}>
@@ -1956,6 +1993,7 @@ export default function ChatConversationScreen() {
           </View>
         ) : (
           <FlashList
+            key={String(phoneNumber)}
             ref={flatListRef}
             data={listData}
             renderItem={renderItem}
@@ -1967,8 +2005,28 @@ export default function ChatConversationScreen() {
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
-            estimatedItemSize={72}
-            drawDistance={300}
+            estimatedItemSize={120}
+            drawDistance={500}
+            overrideItemLayout={(layout, item) => {
+              if (item.kind === 'separator') {
+                layout.size = 36;
+                return;
+              }
+              if (item.kind === 'timeline') {
+                layout.size = 88;
+                return;
+              }
+              const msg = item.data;
+              const rawType = ((msg.type || (msg as any).messageType) || '').toLowerCase();
+              const hasMedia = !!(msg.mediaUrl || (msg as any).gmbt_mediaUrl || (msg as any).MediaUrl);
+              if (rawType.includes('image') || rawType.includes('video') || hasMedia) {
+                layout.size = 240;
+              } else if (rawType.includes('audio') || rawType.includes('document')) {
+                layout.size = 120;
+              } else {
+                layout.size = 84;
+              }
+            }}
             ListHeaderComponent={
               isLoadingOlderMessages ? (
                 <View style={styles.olderMsgsLoader}>
@@ -2026,9 +2084,25 @@ export default function ChatConversationScreen() {
           </Pressable>
         )}
 
-        {/* Template send banner - when window is closed OR waiting for reply OR still loading (default to closed) */}
-        {isStatusLoading || isWindowClosed || isWaitingForReply ? (
+        {/* Template send banner — shown whenever free-text input is not allowed (matches web) */}
+        {!canSendFreeText ? (
           <>
+            {showFreeTemplateWindow && (
+              <View style={{
+                backgroundColor: theme.dark ? '#064e3b' : '#ecfdf5',
+                borderTopWidth: 1,
+                borderTopColor: theme.dark ? '#065f46' : '#6ee7b7',
+                paddingHorizontal: 16,
+                paddingVertical: 10,
+              }}>
+                <Text style={{ color: theme.dark ? '#6ee7b7' : '#059669', fontWeight: '700', fontSize: 14, textAlign: 'center' }}>
+                  {isRTL ? '📣 ליד ממודעה — חלון תבניות חינם ל-72 שעות!' : '📣 Lead from Ad — Free 72h template window!'}
+                </Text>
+                <Text style={{ color: theme.dark ? '#a7f3d0' : '#047857', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
+                  {isRTL ? 'ניתן לשלוח תבניות בחינם. הודעות חופשיות חסומות עד תגובת הלקוח.' : 'Templates are free. Free-form messages blocked until customer replies.'}
+                </Text>
+              </View>
+            )}
             {/* Number switcher must remain accessible even when window closed */}
             {wabaNumbers.length > 1 && (
               <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.dark ? '#1a1a2e' : '#f9fafb' }}>
@@ -2488,6 +2562,22 @@ export default function ChatConversationScreen() {
               </View>
 
               <View style={styles.scheduleForm}>
+                {!canSendFreeText && (
+                  <View style={{
+                    backgroundColor: theme.dark ? '#422006' : '#fff7ed',
+                    borderRadius: 8,
+                    padding: 10,
+                    marginBottom: 10,
+                    borderWidth: 1,
+                    borderColor: theme.dark ? '#78350f' : '#fed7aa',
+                  }}>
+                    <Text style={{ color: theme.dark ? '#fdba74' : '#9a3412', fontSize: 13, lineHeight: 18 }}>
+                      {isRTL
+                        ? 'שיחה סגורה: הודעה רגילה לא תפתח את השיחה. לפתיחה מחדש שלח תבנית וחכה לתגובת הלקוח.'
+                        : 'Conversation closed: a regular message will not reopen the chat. Send a template and wait for a reply to continue.'}
+                    </Text>
+                  </View>
+                )}
                 <Text
                   variant="labelMedium"
                   style={{
@@ -3033,49 +3123,75 @@ export default function ChatConversationScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
-        {/* Add Note Modal */}
-        <Modal visible={showAddNoteModal} transparent animationType="slide" onRequestClose={() => setShowAddNoteModal(false)}>
-          <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }} onPress={() => setShowAddNoteModal(false)}>
-            <Pressable style={{ backgroundColor: theme.colors.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, minHeight: 200 }} onPress={() => {}}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-                <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface }}>
-                  {isRTL ? '📝 הוסף הערה' : '📝 Add Note'}
-                </Text>
-                <IconButton icon="close" size={20} onPress={() => setShowAddNoteModal(false)} />
-              </View>
-              <TextInput
-                value={noteText}
-                onChangeText={setNoteText}
-                placeholder={isRTL ? 'כתוב הערה...' : 'Write a note...'}
-                placeholderTextColor={theme.colors.onSurfaceVariant}
-                multiline
-                autoFocus
+        {/* Add Note Modal — keyboard-safe bottom sheet */}
+        <Modal
+          visible={showAddNoteModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => { Keyboard.dismiss(); setShowAddNoteModal(false); }}
+        >
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+          >
+            <Pressable
+              style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }}
+              onPress={() => { Keyboard.dismiss(); setShowAddNoteModal(false); }}
+            >
+              <Pressable
                 style={{
-                  borderWidth: 1,
-                  borderColor: theme.colors.outline,
-                  borderRadius: 10,
-                  padding: 12,
-                  minHeight: 80,
-                  fontSize: 14,
-                  color: theme.colors.onSurface,
-                  textAlignVertical: 'top',
-                  direction: isRTL ? 'rtl' : 'ltr',
-                  textAlign: isRTL ? 'right' : 'left',
+                  backgroundColor: theme.colors.surface,
+                  borderTopLeftRadius: 16,
+                  borderTopRightRadius: 16,
+                  paddingBottom: Math.max(insets.bottom, 16),
                 }}
-              />
-              <Button
-                mode="contained"
-                onPress={handleSaveNote}
-                loading={savingNote}
-                disabled={savingNote || !noteText.trim()}
-                buttonColor="#795548"
-                textColor="white"
-                style={{ marginTop: 12, borderRadius: 8 }}
+                onPress={() => {}}
               >
-                {isRTL ? 'שמור הערה' : 'Save Note'}
-              </Button>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 }}>
+                  <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface }}>
+                    {isRTL ? '📝 הוסף הערה' : '📝 Add Note'}
+                  </Text>
+                  <IconButton icon="close" size={20} onPress={() => { Keyboard.dismiss(); setShowAddNoteModal(false); }} />
+                </View>
+
+                <TextInput
+                  value={noteText}
+                  onChangeText={setNoteText}
+                  placeholder={isRTL ? 'כתוב הערה...' : 'Write a note...'}
+                  placeholderTextColor={theme.colors.onSurfaceVariant}
+                  multiline
+                  autoFocus
+                  style={{
+                    borderWidth: 1,
+                    borderColor: theme.colors.outline,
+                    borderRadius: 10,
+                    padding: 12,
+                    minHeight: 100,
+                    maxHeight: 160,
+                    fontSize: 14,
+                    color: theme.colors.onSurface,
+                    textAlignVertical: 'top',
+                    direction: isRTL ? 'rtl' : 'ltr',
+                    textAlign: isRTL ? 'right' : 'left',
+                    marginHorizontal: 20,
+                  }}
+                />
+
+                <Button
+                  mode="contained"
+                  onPress={() => { Keyboard.dismiss(); handleSaveNote(); }}
+                  loading={savingNote}
+                  disabled={savingNote || !noteText.trim()}
+                  buttonColor="#795548"
+                  textColor="white"
+                  style={{ marginHorizontal: 20, marginTop: 12, marginBottom: 8, borderRadius: 8 }}
+                >
+                  {isRTL ? 'שמור הערה' : 'Save Note'}
+                </Button>
+              </Pressable>
             </Pressable>
-          </Pressable>
+          </KeyboardAvoidingView>
         </Modal>
 
         {/* / inline quick messages */}

@@ -14,7 +14,10 @@ import {
   Platform,
   Alert,
   Animated,
+  InputAccessoryView,
 } from 'react-native';
+
+const CHAT_INPUT_ACCESSORY_ID = 'gambotChatInputAccessory';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
@@ -208,6 +211,29 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   const displayNumber = activeNumInfo?.Label || activeNumInfo?.label || activeNumInfo?.DisplayNumber || activeNumInfo?.displayNumber || (activeWabaNumber ? activeWabaNumber.slice(-4) : '');
 
   return (
+    <>
+    {Platform.OS === 'ios' && (
+      <InputAccessoryView nativeID={CHAT_INPUT_ACCESSORY_ID}>
+        <View style={[styles.accessoryBar, { backgroundColor: theme.dark ? '#1e293b' : '#f0ebe3', flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View style={{ flex: 1 }} />
+          <Pressable
+            onPress={handleSend}
+            disabled={!hasText || isSending || disabled}
+            style={({ pressed }) => [
+              styles.accessorySendBtn,
+              {
+                backgroundColor: !hasText || isSending || disabled
+                  ? '#94a3b8'
+                  : (pressed ? '#1a7a5e' : '#2e6155'),
+              },
+            ]}
+          >
+            <MaterialCommunityIcons name="send" size={18} color="#fff" style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
+            <Text style={styles.accessorySendText}>{isRTL ? 'שלח' : 'Send'}</Text>
+          </Pressable>
+        </View>
+      </InputAccessoryView>
+    )}
     <View
       style={[
         styles.outerContainer,
@@ -332,8 +358,8 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               maxLength={4096}
               editable={!disabled}
               blurOnSubmit={false}
-              returnKeyType="send"
-              onSubmitEditing={handleSend}
+              returnKeyType="default"
+              inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_INPUT_ACCESSORY_ID : undefined}
               style={[
                 styles.input,
                 {
@@ -392,12 +418,33 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         )}
       </View>
     </View>
+    </>
   );
 });
 
 ChatInput.displayName = 'ChatInput';
 
 const styles = StyleSheet.create({
+  accessoryBar: {
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(0,0,0,0.1)',
+  },
+  accessorySendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  accessorySendText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
   outerContainer: {
     paddingTop: 4,
   },

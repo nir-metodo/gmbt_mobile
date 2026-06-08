@@ -45,11 +45,12 @@ import { appCache } from '../../../../services/cache';
 
 const BRAND_COLOR = '#2e6155';
 
-const ORDER_STATUSES = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'];
+const ORDER_STATUSES = ['pending', 'confirmed', 'collected', 'shipped', 'delivered', 'cancelled'];
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#FF9800',
   confirmed: '#2196F3',
+  collected: '#9C27B0',
   processing: '#9C27B0',
   shipped: '#00BCD4',
   delivered: '#4CAF50',

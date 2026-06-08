@@ -99,11 +99,12 @@ export const contactsApi = {
     return response.data;
   },
 
-  async updateOwner(organization: string, contactId: string, owner: string): Promise<any> {
+  async updateOwner(organization: string, contactId: string, owner: string, userName?: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.UPDATE_CONTACT_OWNER, {
       organization,
-      contactId,
-      owner,
+      contactPhoneNumber: contactId,
+      ownerId: owner,
+      user: { userName: userName || 'system' },
     });
     return response.data;
   },
