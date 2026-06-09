@@ -39,6 +39,8 @@ import type { OrgUser } from '../../../../types';
 import {
   DynamicFieldsSectionView,
   DynamicFieldsSectionForm,
+  ExtraFieldsSectionView,
+  getSectionFieldKeys,
   type DynamicSection,
 } from '../../../../components/DynamicFieldsSection';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../../components/NoteAttachmentRow';
@@ -933,6 +935,18 @@ export default function CaseDetailScreen() {
           data={{ ...(caseData as any).customFields, ...caseData } as Record<string, any>}
           lang={lang}
           formLayout={caseFormLayout}
+        />
+
+        <ExtraFieldsSectionView
+          data={{ ...(caseData as any).customFields, ...caseData } as Record<string, any>}
+          lang={lang}
+          excludeKeys={[
+            'description', 'category', 'source', 'contactName', 'contactPhone',
+            'contact_phone', 'assignedToName', 'assignedToId', 'dueDate', 'due_date',
+            'resolvedAt', 'title', 'subject', 'priority', 'sla',
+            'customerName', 'customerPhone', 'name', 'phone', 'email',
+            ...getSectionFieldKeys(caseFormSections),
+          ]}
         />
 
         {/* Timeline / Notes */}

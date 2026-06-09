@@ -23,7 +23,7 @@ import {
   AppState,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
-import { Text, IconButton, Menu, Avatar, Button } from 'react-native-paper';
+import { Text, IconButton, Menu, Avatar, Button, Divider } from 'react-native-paper';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import {
   useRouter,
@@ -307,6 +307,14 @@ export default function ChatConversationScreen() {
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showCategoryMenu, setShowCategoryMenu] = useState(false);
 
+  // Lead / Case (פנייה) CRM — surfaced inline in the meta bar (mirrors the web chat header)
+  const [contactLeads, setContactLeads] = useState<any[]>([]);
+  const [contactCases, setContactCases] = useState<any[]>([]);
+  const [pipelineStages, setPipelineStages] = useState<any[]>([]);
+  const [caseStages, setCaseStages] = useState<any[]>([]);
+  const [showLeadStageMenu, setShowLeadStageMenu] = useState(false);
+  const [showCaseStageMenu, setShowCaseStageMenu] = useState(false);
+
   const statusRequestIdRef = useRef(0);
 
   const fetchConversationStatus = useCallback(() => {
@@ -401,6 +409,84 @@ export default function ChatConversationScreen() {
       await chatsApi.updateConversationCategory(user.organization, phoneNumber as string, newCategory);
     } catch { }
   }, [user?.organization, phoneNumber, addOrUpdateChat]);
+
+  // ── Lead / Case (פנייה) records for this contact ──────────────────────
+  const loadCrmRecords = useCallback(async () => {
+    if (!user?.organization || !phoneNumber) return;
+    const organization = user.organization;
+    const [leadsRes, stagesRes, casesRes, caseSettingsRes] = await Promise.allSettled([
+      axiosInstance.post(ENDPOINTS.GET_LEADS_BY_CONTACT, { organization, phoneNumber }),
+      axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, { organization }),
+      axiosInstance.post(ENDPOINTS.GET_CASES_BY_CONTACT, { organization, phoneNumber }),
+      axiosInstance.post(ENDPOINTS.GET_CASE_SETTINGS, { organization }),
+    ]);
+    if (leadsRes.status === 'fulfilled') {
+      const raw = leadsRes.value.data;
+      setContactLeads(Array.isArray(raw) ? raw : raw?.Data || raw?.data || []);
+    }
+    if (stagesRes.status === 'fulfilled') {
+      const raw = stagesRes.value.data;
+      const stages = raw?.stages || raw?.Data?.stages || raw?.Stages || [];
+      setPipelineStages(Array.isArray(stages) ? stages : []);
+    }
+    if (casesRes.status === 'fulfilled') {
+      const raw = casesRes.value.data;
+      setContactCases(Array.isArray(raw) ? raw : raw?.Data || raw?.data || []);
+    }
+    if (caseSettingsRes.status === 'fulfilled') {
+      const raw = caseSettingsRes.value.data;
+      const stages = raw?.stages || raw?.Data?.stages || raw?.Stages || [];
+      setCaseStages(Array.isArray(stages) ? stages : []);
+    }
+  }, [user?.organization, phoneNumber]);
+
+  useEffect(() => {
+    setContactLeads([]);
+    setContactCases([]);
+    loadCrmRecords();
+  }, [loadCrmRecords]);
+
+  // First lead/case is the "active" one shown inline (matches web behavior).
+  const activeLead = contactLeads[0] || null;
+  const activeCase = contactCases[0] || null;
+
+  const handleMoveLeadStage = useCallback(async (stage: any) => {
+    setShowLeadStageMenu(false);
+    if (!user?.organization || !activeLead) return;
+    const stageId = stage.id || stage.Id;
+    const stageName = stage.name || stage.Name || stage.stageName;
+    setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName } : l)));
+    try {
+      await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
+        organization: user.organization, leadId: activeLead.id, stageId, stageName,
+      });
+    } catch { }
+  }, [user?.organization, activeLead]);
+
+  const handleMoveCaseStage = useCallback(async (stage: any) => {
+    setShowCaseStageMenu(false);
+    if (!user?.organization || !activeCase) return;
+    const stageId = stage.id || stage.Id;
+    const stageName = stage.name || stage.Name || stage.stageName;
+    setContactCases((prev) => prev.map((c) => (c.id === activeCase.id ? { ...c, stageId, stageName } : c)));
+    try {
+      await axiosInstance.post(ENDPOINTS.UPDATE_CASE, {
+        organization: user.organization, caseId: activeCase.id, stageId, stageName,
+      });
+    } catch { }
+  }, [user?.organization, activeCase]);
+
+  const openLeadRecord = useCallback(() => {
+    if (!activeLead?.id) return;
+    setShowLeadStageMenu(false);
+    router.push({ pathname: '/(tabs)/leads/[id]', params: { id: activeLead.id } } as any);
+  }, [activeLead, router]);
+
+  const openCaseRecord = useCallback(() => {
+    if (!activeCase?.id) return;
+    setShowCaseStageMenu(false);
+    router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: activeCase.id } } as any);
+  }, [activeCase, router]);
 
   const handleAddTag = useCallback(async (tag: string) => {
     if (!user?.organization || !phoneNumber || !tag.trim()) return;
@@ -1903,6 +1989,64 @@ export default function ChatConversationScreen() {
             ))}
           </Menu>
 
+          {/* Lead stage chip — change stage inline, or open the lead record */}
+          {activeLead && (
+            <Menu
+              visible={showLeadStageMenu}
+              onDismiss={() => setShowLeadStageMenu(false)}
+              anchor={
+                <Pressable onPress={() => setShowLeadStageMenu(true)} style={[styles.metaChip, { backgroundColor: '#dcfce7', maxWidth: 150 }]}>
+                  <MaterialCommunityIcons name="account-star-outline" size={12} color="#16a34a" />
+                  <Text style={{ fontSize: 11, fontWeight: '600', color: '#16a34a', marginStart: 4 }} numberOfLines={1}>
+                    {activeLead.stageName || activeLead.stage || (isRTL ? 'ליד' : 'Lead')}
+                  </Text>
+                  <MaterialCommunityIcons name="chevron-down" size={14} color="#16a34a" style={{ marginStart: 2 }} />
+                </Pressable>
+              }
+              contentStyle={{ backgroundColor: theme.colors.surface }}
+            >
+              {pipelineStages.map((stage: any) => (
+                <Menu.Item
+                  key={stage.id || stage.Id}
+                  title={stage.name || stage.Name || stage.stageName}
+                  leadingIcon={activeLead.stageId === (stage.id || stage.Id) ? 'check' : undefined}
+                  onPress={() => handleMoveLeadStage(stage)}
+                />
+              ))}
+              <Divider />
+              <Menu.Item leadingIcon="open-in-new" title={isRTL ? 'פתח רשומת ליד' : 'Open lead'} onPress={openLeadRecord} />
+            </Menu>
+          )}
+
+          {/* Case (פנייה) stage chip — change stage inline, or open the case record */}
+          {activeCase && (
+            <Menu
+              visible={showCaseStageMenu}
+              onDismiss={() => setShowCaseStageMenu(false)}
+              anchor={
+                <Pressable onPress={() => setShowCaseStageMenu(true)} style={[styles.metaChip, { backgroundColor: '#f3e8ff', maxWidth: 150 }]}>
+                  <MaterialCommunityIcons name="ticket-outline" size={12} color="#9333ea" />
+                  <Text style={{ fontSize: 11, fontWeight: '600', color: '#9333ea', marginStart: 4 }} numberOfLines={1}>
+                    {activeCase.stageName || activeCase.stage || (isRTL ? 'פנייה' : 'Case')}
+                  </Text>
+                  <MaterialCommunityIcons name="chevron-down" size={14} color="#9333ea" style={{ marginStart: 2 }} />
+                </Pressable>
+              }
+              contentStyle={{ backgroundColor: theme.colors.surface }}
+            >
+              {caseStages.map((stage: any) => (
+                <Menu.Item
+                  key={stage.id || stage.Id}
+                  title={stage.name || stage.Name || stage.stageName}
+                  leadingIcon={activeCase.stageId === (stage.id || stage.Id) ? 'check' : undefined}
+                  onPress={() => handleMoveCaseStage(stage)}
+                />
+              ))}
+              <Divider />
+              <Menu.Item leadingIcon="open-in-new" title={isRTL ? 'פתח רשומת פנייה' : 'Open case'} onPress={openCaseRecord} />
+            </Menu>
+          )}
+
           {/* Tags row — horizontal chips + "add tag" chip */}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginStart: 4, flexShrink: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 4 }}>
             {(chat?.tags || []).map((tag) => (
@@ -1925,15 +2069,7 @@ export default function ChatConversationScreen() {
               <Text style={{ fontSize: 10, fontWeight: '600', color: '#009688', marginStart: 2 }}>{isRTL ? 'הוסף תיוג' : 'Add Tag'}</Text>
             </Pressable>
           </ScrollView>
-
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginStart: 'auto', gap: 2 }}>
-            <Pressable onPress={() => setShowAddNoteModal(true)} hitSlop={6} style={{ padding: 4 }}>
-              <MaterialCommunityIcons name="note-edit-outline" size={16} color="#795548" />
-            </Pressable>
-            <Pressable onPress={() => setShowAssignOwnerModal(true)} hitSlop={6} style={{ padding: 4 }}>
-              <MaterialCommunityIcons name="account-switch-outline" size={16} color="#3F51B5" />
-            </Pressable>
-          </View>
+          {/* Note / Assign moved to the Quick Actions sheet (⚡) to remove header duplicates */}
         </View>
 
         {/* Inline tag entry — full-width row below meta bar */}
@@ -2212,7 +2348,7 @@ export default function ChatConversationScreen() {
               onAttachmentPress={handleAttachment}
               isInternalNote={false}
               onToggleInternalNote={() => {}}
-              onQuickMessagePress={handleQuickActionsPress}
+              onQuickMessagePress={handleQuickMessagePress}
               onVoiceMessage={handleVoiceMessage}
               mentionedUsers={mentionedUsers}
               onRemoveMention={(uid) => setMentionedUsers((prev) => prev.filter((u) => u.userId !== uid))}
@@ -2925,10 +3061,7 @@ export default function ChatConversationScreen() {
               </View>
               {[
                 { icon: 'note-edit-outline', label: isRTL ? 'הוסף הערה לציר זמן' : 'Add Timeline Note', color: '#795548', action: () => { setShowQuickActionsSheet(false); setShowAddNoteModal(true); } },
-                { icon: 'tag-outline', label: isRTL ? 'הוסף תיוג' : 'Add Tag', color: '#009688', action: () => { setShowQuickActionsSheet(false); setShowAddTagInline(true); } },
                 { icon: 'account-switch-outline', label: isRTL ? 'שייך בעלים' : 'Assign Owner', color: '#3F51B5', action: () => { setShowQuickActionsSheet(false); setShowAssignOwnerModal(true); } },
-                { icon: 'account-arrow-right-outline', label: isRTL ? 'שייך איש קשר' : 'Assign Contact', color: '#00897B', action: () => { setShowQuickActionsSheet(false); setShowAssignOwnerModal(true); } },
-                { icon: 'lightning-bolt', label: t('chats.quickMessages'), color: '#FF9800', action: () => { setShowQuickActionsSheet(false); handleQuickMessagePress(); } },
                 { icon: 'clock-outline', label: t('chats.scheduleMessage', 'תזמן הודעה'), color: '#607D8B', action: () => { setShowQuickActionsSheet(false); setShowScheduleModal(true); } },
                 { icon: 'clipboard-check-outline', label: t('tasks.addTask'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setCreateTaskTitle(''); setCreateTaskDueDate(''); setCreateTaskPriority('medium'); setSelectedDate(null); setShowCreateTaskModal(true); } },
                 { icon: 'image-multiple', label: isRTL ? 'מדיה' : 'Media', color: '#7C4DFF', action: () => { setShowQuickActionsSheet(false); setMediaPanelVisible(true); } },

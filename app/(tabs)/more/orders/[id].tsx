@@ -37,6 +37,8 @@ import { borderRadius } from '../../../../constants/theme';
 import {
   DynamicFieldsSectionView,
   DynamicFieldsSectionForm,
+  ExtraFieldsSectionView,
+  getSectionFieldKeys,
   type DynamicSection,
 } from '../../../../components/DynamicFieldsSection';
 import type { Contact } from '../../../../types';
@@ -888,6 +890,18 @@ export default function OrderDetailScreen() {
               data={order as Record<string, any>}
               lang={lang}
               formLayout={orderFormLayout}
+            />
+
+            <ExtraFieldsSectionView
+              data={order as Record<string, any>}
+              lang={lang}
+              excludeKeys={[
+                'customerName', 'customerPhone', 'customerEmail', 'shippingAddress',
+                'items', 'totalAmount', 'subtotal', 'tax', 'shipping', 'currency',
+                'source', 'paymentMethod', 'createdAt', 'notes',
+                'orderNumber', 'orderStatus', 'name', 'phone', 'email',
+                ...getSectionFieldKeys(orderFormSections),
+              ]}
             />
 
             {/* Notes */}

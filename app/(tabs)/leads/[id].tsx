@@ -52,6 +52,8 @@ import ContactLookup from '../../../components/ContactLookup';
 import {
   DynamicFieldsSectionView,
   DynamicFieldsSectionForm,
+  ExtraFieldsSectionView,
+  getSectionFieldKeys,
   type DynamicSection,
 } from '../../../components/DynamicFieldsSection';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
@@ -908,6 +910,21 @@ export default function LeadDetailScreen() {
             data={lead as Record<string, any>}
             lang={lang}
             formLayout={leadFormLayout}
+          />
+        ) : null}
+
+        {lead ? (
+          <ExtraFieldsSectionView
+            data={lead as Record<string, any>}
+            lang={lang}
+            excludeKeys={[
+              'value', 'currency', 'source', 'medium', 'status',
+              'expectedCloseDate', 'nextFollowUp', 'owner', 'ownerName',
+              'jobTitle', 'tags', 'score', 'lostReason', 'description',
+              'title', 'name', 'contactName', 'contactPhone', 'phoneNumber',
+              'contactEmail', 'email', 'phone',
+              ...getSectionFieldKeys(leadFormSections),
+            ]}
           />
         ) : null}
 

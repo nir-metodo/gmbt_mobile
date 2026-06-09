@@ -204,6 +204,122 @@ export function DynamicFieldsSectionView({
   );
 }
 
+// Collect every field key declared across the custom sections, so a generic
+// "additional details" view can avoid re-rendering fields already shown.
+export function getSectionFieldKeys(sections: DynamicSection[] | null | undefined): string[] {
+  if (!sections) return [];
+  const keys: string[] = [];
+  sections.forEach((s) => {
+    getOrderedFields(s).forEach(([k]) => keys.push(k));
+  });
+  return keys;
+}
+
+// Technical/internal keys that should never be surfaced to the user, regardless of value.
+const SYSTEM_KEYS = new Set<string>([
+  'id', 'Id', 'ID', '_id', 'docId', 'key', 'uid',
+  'orgId', 'organization', 'organizationId', 'companyId', 'tenantId',
+  'ownerId', 'assignedToId', 'assignedTo', 'contactId', 'userId',
+  'createdBy', 'createdById', 'updatedBy', 'updatedById',
+  'createdAt', 'created_at', 'createdOn', 'updatedAt', 'updated_at', 'updatedOn',
+  'deletedAt', 'timestamp', '__v', 'v', 'version', 'isDeleted', 'deleted',
+  'type', 'entityType', 'stage', 'stageName', 'stageId', 'stageColor',
+  'pipeline', 'pipelineId', 'color', 'icon', 'avatar', 'photoUrl', 'photoURL',
+  'history', 'timeline', 'events', 'metadata', 'raw', 'customFields',
+  'formSections', 'formLayout', 'sections', 'layout', 'settings',
+]);
+
+function humanizeKey(key: string): string {
+  const withSpaces = key
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim();
+  if (!withSpaces) return key;
+  return withSpaces.charAt(0).toUpperCase() + withSpaces.slice(1);
+}
+
+function isDisplayableExtraValue(v: any): boolean {
+  if (v == null || v === '') return false;
+  if (Array.isArray(v)) return v.length > 0 && v.every((x) => x != null && typeof x !== 'object');
+  if (typeof v === 'object') return false; // skip nested objects / complex structures
+  return true;
+}
+
+function formatExtraValue(v: any): string {
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+  if (Array.isArray(v)) return v.join(', ');
+  return String(v);
+}
+
+interface ExtraFieldsSectionViewProps {
+  data: Record<string, any> | null | undefined;
+  // Keys already rendered elsewhere on the screen (built-in fields, contact header, etc.)
+  excludeKeys?: string[];
+  lang?: 'en' | 'he';
+  title?: string;
+  // Whether to expand by default. Defaults to collapsed (matches large-app "show more" pattern).
+  defaultExpanded?: boolean;
+}
+
+// Generic catch-all: shows any populated, simple field that isn't already displayed and
+// isn't an internal/system key. Collapsed by default to keep the view tidy.
+export function ExtraFieldsSectionView({
+  data,
+  excludeKeys = [],
+  lang = 'en',
+  title,
+  defaultExpanded = false,
+}: ExtraFieldsSectionViewProps) {
+  const theme = useAppTheme();
+  const { flexDirection, textAlign } = useRTL();
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
+  const safeData: Record<string, any> = data ?? {};
+  const exclude = new Set<string>([...SYSTEM_KEYS, ...excludeKeys]);
+  const entries = Object.entries(safeData).filter(
+    ([k, v]) => !exclude.has(k) && isDisplayableExtraValue(v),
+  );
+
+  if (entries.length === 0) return null;
+
+  const heading = title || (lang === 'he' ? 'פרטים נוספים' : 'Additional details');
+
+  return (
+    <View style={[styles.sectionCard, { backgroundColor: theme.colors.surface }]}>
+      <Pressable
+        onPress={() => setExpanded((e) => !e)}
+        style={[styles.sectionHeader, { flexDirection }]}
+      >
+        <Text
+          variant="titleSmall"
+          style={{ color: theme.colors.onSurface, fontWeight: '600', flex: 1 }}
+        >
+          {`${heading} (${entries.length})`}
+        </Text>
+        <MaterialCommunityIcons
+          name={expanded ? 'chevron-up' : 'chevron-down'}
+          size={20}
+          color={theme.colors.onSurfaceVariant}
+        />
+      </Pressable>
+      {expanded &&
+        entries.map(([fieldKey, value], idx) => (
+          <React.Fragment key={fieldKey}>
+            {idx > 0 ? <Divider style={styles.cardDivider} /> : null}
+            <InfoRow
+              icon="information-outline"
+              label={humanizeKey(fieldKey)}
+              value={formatExtraValue(value)}
+              theme={theme}
+              flexDirection={flexDirection}
+              textAlign={textAlign}
+            />
+          </React.Fragment>
+        ))}
+    </View>
+  );
+}
+
 interface DynamicFieldsSectionFormProps {
   sections: DynamicSection[];
   values: Record<string, any>;
