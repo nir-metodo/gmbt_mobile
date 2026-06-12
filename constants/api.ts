@@ -30,8 +30,9 @@ export const ENDPOINTS = {
   CREATE_MEDIA_MESSAGE: '/api/Webhooks/CreateWabaMediaMessages',
   SCHEDULE_MESSAGE: '/api/Webhooks/ScheduleMessage',
   UPDATE_SCHEDULED_MESSAGE: '/api/Webhooks/UpdateScheduledMessage',
-  CANCEL_SCHEDULED_MESSAGE: '/api/Gambot/CancelScheduledMessage',
+  CANCEL_SCHEDULED_MESSAGE: '/api/Webhooks/CancelScheduledMessage',
   MARK_AS_READ: '/api/Webhooks/MarkMessagesAsRead',
+  MARK_AS_UNREAD: '/api/Webhooks/MarkMessagesAsUnread',
   TOGGLE_STARRED: '/api/Webhooks/ToggleStarredMessage',
   CREATE_INTERNAL_MESSAGE: '/api/Webhooks/CreateInternalMessage',
   GET_CONVERSATION_STATUS: '/api/Webhooks/GetConversationStatusDetailed',
@@ -54,6 +55,7 @@ export const ENDPOINTS = {
 
   // Leads
   GET_LEADS: '/api/Webhooks/GetLeadsPaginated',
+  GET_LEAD_FILTER_OPTIONS: '/api/Webhooks/GetLeadFilterOptions',
   GET_LEADS_BY_CONTACT: '/api/Webhooks/GetLeadsByContact',
   CREATE_LEAD: '/api/Webhooks/CreateLead',
   UPDATE_LEAD: '/api/Webhooks/UpdateLead',
@@ -140,6 +142,7 @@ export const ENDPOINTS = {
   ADD_TIMELINE_ENTRY: '/api/Webhooks/AddTimelineEntryForm',
   UPDATE_TIMELINE_ENTRY: '/api/Webhooks/UpdateTimelineEntry',
   DELETE_TIMELINE_ENTRY: '/api/Webhooks/DeleteTimelineEntry',
+  TOGGLE_TIMELINE_ENTRY_PIN: '/api/Webhooks/ToggleTimelineEntryPin',
   GET_LEADS_BY_CONTACT: '/api/Webhooks/GetLeadsByContact',
   GET_CROSS_ENTITY_NOTES_SETTING: '/api/Webhooks/GetCrossEntityNotesSetting',
 
@@ -201,6 +204,7 @@ export const ENDPOINTS = {
 
   // Internal Messages
   GET_INTERNAL_MESSAGES: '/api/Webhooks/GetAllInternalMessages',
+  GET_INTERNAL_MESSAGES_HUB: '/api/Webhooks/GetInternalMessagesHub',
   MARK_MENTION_READ: '/api/Webhooks/MarkMentionAsRead',
 
   // Lead Seen/Unseen tracking

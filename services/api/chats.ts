@@ -115,11 +115,76 @@ export const chatsApi = {
     return response.data;
   },
 
+  async getInternalMessagesHub(params: {
+    organization: string;
+    scope: 'org' | 'user' | 'contact';
+    targetUserId?: string | null;
+    contactId?: string | null;
+    searchTerm?: string | null;
+    currentUserId: string;
+    canViewAll?: boolean;
+    limit?: number;
+  }): Promise<any[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_INTERNAL_MESSAGES_HUB, {
+      organizationName: params.organization,
+      scope: params.scope,
+      targetUserId: params.scope === 'user' ? (params.targetUserId || params.currentUserId) : null,
+      contactId: params.scope === 'contact' ? (params.contactId || '').trim() : null,
+      searchTerm: params.searchTerm?.trim() || null,
+      currentUserId: params.currentUserId,
+      canViewAll: !!params.canViewAll,
+      limit: params.limit ?? 150,
+    });
+    const list = response.data?.messages || [];
+    return Array.isArray(list) ? list : [];
+  },
+
+  async createInternalMessage(params: {
+    organization: string;
+    messageText: string;
+    mentionedUsers: { userId: string; userName: string }[];
+    relatedContactPhone?: string;
+    generalLabel: string;
+    sentById: string;
+    sentByName: string;
+  }): Promise<any> {
+    const isContact = !!params.relatedContactPhone?.trim();
+    const response = await axiosInstance.post(ENDPOINTS.CREATE_INTERNAL_MESSAGE, {
+      organizationName: params.organization,
+      messageText: params.messageText.trim(),
+      mentionedUsers: params.mentionedUsers || [],
+      relatedEntityType: isContact ? 'contact' : 'general',
+      relatedEntityId: isContact ? params.relatedContactPhone!.trim() : '',
+      relatedEntityName: isContact ? params.relatedContactPhone!.trim() : params.generalLabel,
+      sentById: params.sentById,
+      sentByName: params.sentByName,
+      createdFrom: 'internalHub',
+    });
+    return response.data;
+  },
+
+  async markMentionAsRead(organization: string, messageId: string, userId: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.MARK_MENTION_READ, {
+      organizationName: organization,
+      messageId,
+      userId,
+    });
+    return response.data;
+  },
+
   async markAsRead(organization: string, phoneNumber: string, userId?: string, userName?: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.MARK_AS_READ, {
       organization,
       phoneNumber,
       user: { userId: userId || '', fullname: userName || '' },
+    });
+    return response.data;
+  },
+
+  async markAsUnread(organization: string, phoneNumber: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.MARK_AS_UNREAD, {
+      organization,
+      phoneNumber,
     });
     return response.data;
   },
@@ -159,18 +224,57 @@ export const chatsApi = {
   async scheduleMessage(
     organization: string,
     to: string,
-    message: string,
     scheduledTime: string,
-    fromNumberId?: string,
+    opts: {
+      messageType?: 'text' | 'template';
+      text?: string;
+      templateConfig?: any;
+      timezone?: string;
+      fromNumberId?: string;
+    } = {},
   ): Promise<any> {
+    // Backend (ScheduleMessage) reads: organization, to, sendAt, timezone, messageType,
+    // text, templateConfig, fromNumberId. (The old payload used wrong field names, so
+    // scheduling silently failed with "Missing required fields".)
     const response = await axiosInstance.post(ENDPOINTS.SCHEDULE_MESSAGE, {
-      organizationiD: organization,
+      organization,
       to,
-      message,
-      scheduledTime,
-      fromNumberId: fromNumberId || undefined,
+      sendAt: scheduledTime,
+      timezone: opts.timezone || 'Asia/Jerusalem',
+      messageType: opts.messageType || 'text',
+      text: opts.text || '',
+      ...(opts.templateConfig ? { templateConfig: opts.templateConfig } : {}),
+      fromNumberId: opts.fromNumberId || undefined,
     });
-    return response.data;
+    const data = response.data;
+    // Backend returns { success: false, error } on validation failures without HTTP error.
+    if (data && (data.success === false || data.Success === false)) {
+      throw new Error(data.error || data.Error || data.Message || 'Failed to schedule message');
+    }
+    return data;
+  },
+
+  // Cancel a scheduled message (matches web's /api/Webhooks/CancelScheduledMessage).
+  async cancelScheduledMessage(organization: string, scheduledMessageId: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.CANCEL_SCHEDULED_MESSAGE, {
+      organization,
+      scheduledMessageId,
+    });
+    const data = response.data;
+    if (data && (data.success === false || data.Success === false)) {
+      throw new Error(data.error || data.Error || data.Message || 'Failed to cancel scheduled message');
+    }
+    return data;
+  },
+
+  // List scheduled messages for a contact.
+  async getScheduledMessages(organization: string, to: string): Promise<any[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_SCHEDULED_MESSAGES, {
+      organization,
+      to,
+    });
+    const raw = response.data;
+    return Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
   },
 
   async getConversationStatus(organization: string, phoneNumber: string, fromNumberId?: string): Promise<any> {
@@ -255,7 +359,9 @@ export const chatsApi = {
   },
 
   async getQuickMessages(organization: string): Promise<QuickMessage[]> {
+    // Backend (GetQuickMessages) reads `organizationName`, not `organization`.
     const response = await axiosInstance.post(ENDPOINTS.GET_QUICK_MESSAGES, {
+      organizationName: organization,
       organization,
     });
     const raw = response.data;

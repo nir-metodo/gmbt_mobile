@@ -71,6 +71,7 @@ interface MessageBubbleProps {
   onQuotedPress?: (contextMessageId: string) => void;
   onSwipeToReply?: (message: Message) => void;
   wabaNumbers?: WabaNumberInfo[];
+  onCancelScheduled?: (scheduledMessageId: string) => void;
 }
 
 const SWIPE_THRESHOLD = 60;
@@ -86,10 +87,30 @@ function MessageBubbleInner({
   onQuotedPress,
   onSwipeToReply,
   wabaNumbers,
+  onCancelScheduled,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isInternal = message.type === 'internal';
   const isDark = theme.dark;
+
+  const m = message as any;
+  const isScheduled =
+    m.isScheduledMessage === true ||
+    m.status === 'scheduled' ||
+    (!m.isStarred && !!(m.scheduledFor || m.scheduledDateTime) && m.status !== 'sent' && m.status !== 'delivered' && m.status !== 'read');
+  const scheduledForRaw = m.scheduledFor || m.sendAt || m.scheduledTime || m.scheduledDateTime;
+  const scheduledMessageId = m.scheduledMessageId || m.scheduledId || m.id || m.messageId;
+  const formatScheduledTime = (val: any): string => {
+    if (!val) return '';
+    let d: Date;
+    if (typeof val === 'object' && (val._seconds || val.seconds)) {
+      d = new Date((val._seconds || val.seconds) * 1000);
+    } else {
+      d = new Date(val);
+    }
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
 
   const [imageViewerVisible, setImageViewerVisible] = useState(false);
   const [videoFullscreen, setVideoFullscreen] = useState(false);
@@ -992,14 +1013,31 @@ function MessageBubbleInner({
           </>
         )}
 
+        {isScheduled && isOutbound && (
+          <View style={[styles.scheduledBanner, { backgroundColor: isDark ? 'rgba(245,158,11,0.18)' : '#FFF7ED', borderColor: isDark ? 'rgba(245,158,11,0.4)' : '#FCD9A5' }]}>
+            <MaterialCommunityIcons name="clock-outline" size={13} color={isDark ? '#FBBF24' : '#B45309'} />
+            <Text style={[styles.scheduledText, { color: isDark ? '#FBBF24' : '#B45309' }]} numberOfLines={1}>
+              {t('chats.scheduledFor', 'תישלח')}{scheduledForRaw ? ` · ${formatScheduledTime(scheduledForRaw)}` : ''}
+            </Text>
+            {onCancelScheduled && scheduledMessageId ? (
+              <Pressable onPress={() => onCancelScheduled(String(scheduledMessageId))} hitSlop={8} style={styles.scheduledCancelBtn}>
+                <MaterialCommunityIcons name="close-circle" size={15} color={isDark ? '#FCA5A5' : '#DC2626'} />
+                <Text style={[styles.scheduledCancelText, { color: isDark ? '#FCA5A5' : '#DC2626' }]}>
+                  {t('common.cancel', 'בטל')}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
+
         <View style={[styles.meta, { justifyContent: isOutbound ? 'flex-end' : 'flex-start' }]}>
           {message.isStarred && (
             <MaterialCommunityIcons name="star" size={11} color="#FFB300" style={{ marginRight: 3 }} />
           )}
           <Text style={[styles.time, { color: timeColor }]}>
-            {formatMessageTime(message.createdOn || message.timestamp)}
+            {isScheduled ? formatScheduledTime(scheduledForRaw) || formatMessageTime(message.createdOn || message.timestamp) : formatMessageTime(message.createdOn || message.timestamp)}
           </Text>
-          {renderStatus()}
+          {!isScheduled && renderStatus()}
         </View>
       </Pressable>
 
@@ -1099,6 +1137,31 @@ const styles = StyleSheet.create({
   body: {
     fontSize: 15,
     lineHeight: 20,
+  },
+  scheduledBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 6,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  scheduledText: {
+    fontSize: 11,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  scheduledCancelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginStart: 'auto',
+  },
+  scheduledCancelText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
   meta: {
     flexDirection: 'row',

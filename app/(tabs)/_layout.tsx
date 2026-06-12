@@ -71,7 +71,7 @@ export default function TabsLayout() {
       titleKey: 'tabs.phoneCalls',
       icon: 'phone-outline',
       iconFocused: 'phone',
-      permission: null,
+      permission: 'phoneCalls',
       requiresTelephony: true,
     },
     {
@@ -100,7 +100,10 @@ export default function TabsLayout() {
   const isInsideConversation = segments.includes('[phoneNumber]' as never) || 
     (pathname.startsWith('/chats/') && pathname !== '/chats' && pathname !== '/chats/');
 
-  const hasOnlyMoreTab = visibleTabs.length === 1 && visibleTabs[0].name === 'more';
+  // The bottom tab bar must ALWAYS be visible (so every user can reach "More" →
+  // Settings / Push Notifications / Logout), even if their only permitted features
+  // live inside the "More" screen. We only collapse it while inside a full-screen
+  // chat conversation.
   const tabBarHeight = 60 + insets.bottom;
 
   return (
@@ -112,8 +115,8 @@ export default function TabsLayout() {
           {
             backgroundColor: theme.custom.tabBarBackground,
             borderTopColor: theme.custom.divider,
-            height: (isInsideConversation || hasOnlyMoreTab) ? 0 : tabBarHeight,
-            paddingBottom: (isInsideConversation || hasOnlyMoreTab) ? 0 : insets.bottom,
+            height: isInsideConversation ? 0 : tabBarHeight,
+            paddingBottom: isInsideConversation ? 0 : insets.bottom,
             overflow: 'hidden' as const,
           },
         ],

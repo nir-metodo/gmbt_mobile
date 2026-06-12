@@ -39,6 +39,7 @@ interface ChatState {
   sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string, wabaNumber?: string, senderEmail?: string) => Promise<void>;
   sendInternalMessage: (organization: string, phoneNumber: string, message: string, senderName: string, sentById?: string, mentionedUsers?: { userId: string; userName: string }[]) => Promise<void>;
   markAsRead: (organization: string, phoneNumber: string, userId?: string, userName?: string) => Promise<void>;
+  markAsUnread: (organization: string, phoneNumber: string) => Promise<void>;
   toggleStarred: (organization: string, messageId: string, phoneNumber: string, isStarred: boolean) => Promise<void>;
   addMessage: (message: Message) => void;
   updateMessage: (messageId: string, updates: Partial<Message>) => void;
@@ -49,6 +50,67 @@ interface ChatState {
 }
 
 const messageIdSet = new Set<string>();
+
+// How many messages we last requested from the server, and whether the server returned a
+// full page (meaning older history likely exists). Used for real server-side pagination:
+// when the user scrolls past everything we've fetched, we grow the limit and re-fetch.
+let currentServerLimit = PAGE_SIZE * 4;
+let serverMayHaveMore = false;
+let currentOrg = '';
+
+// Normalize, dedupe (by id + content signature), sort oldest→newest, and resolve quoted
+// messages. Shared by the initial load and the "load older" deeper fetch.
+function normalizeAndDedupeMessages(raw: any): any[] {
+  const normalizeTs = (val: any): string => {
+    if (!val) return '';
+    if (typeof val === 'string') return val;
+    if (typeof val === 'number') return new Date(val > 1e12 ? val : val * 1000).toISOString();
+    if (typeof val === 'object' && val._seconds) return new Date(val._seconds * 1000).toISOString();
+    if (typeof val === 'object' && val.seconds) return new Date(val.seconds * 1000).toISOString();
+    return '';
+  };
+  const messages = (Array.isArray(raw) ? raw : []).map((m: any) => ({
+    ...m,
+    timestamp: normalizeTs(m.timestamp || m.createdOn),
+    createdOn: normalizeTs(m.createdOn || m.timestamp),
+    text: m.text || m.body || '',
+    messageId: m.messageId || m.id || m.Id || '',
+    direction: m.direction || (m.sentFromApp ? 'Outbound' : ''),
+  }));
+
+  const seenIds = new Set<string>();
+  const seenSigs = new Set<string>();
+  const deduped: typeof messages = [];
+  for (const m of messages) {
+    const id = m.messageId;
+    if (id && seenIds.has(id)) continue;
+    const ts = new Date(m.createdOn || m.timestamp || '').getTime();
+    const sig = `${(m.text || '').slice(0, 50)}|${m.direction || ''}|${Math.floor(ts / 2000)}`;
+    if (m.text && sig && seenSigs.has(sig)) continue;
+    if (id) seenIds.add(id);
+    if (m.text) seenSigs.add(sig);
+    deduped.push(m);
+  }
+
+  const parseTs = (r: any): number => {
+    if (!r) return 0;
+    if (typeof r === 'number') return r > 1e12 ? r : r * 1000;
+    if (typeof r === 'object' && r._seconds) return r._seconds * 1000;
+    if (typeof r === 'object' && r.seconds) return r.seconds * 1000;
+    const d = new Date(r);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  };
+  deduped.sort((a: any, b: any) => parseTs(a.createdOn || a.timestamp) - parseTs(b.createdOn || b.timestamp));
+
+  const msgMap = new Map(deduped.map((m: any) => [m.messageId, m]));
+  for (const msg of deduped) {
+    if (!msg.quotedMessage) {
+      const ctxId = msg.contextMessageId || msg.ContextMessageId;
+      if (ctxId && msgMap.has(ctxId)) msg.quotedMessage = msgMap.get(ctxId);
+    }
+  }
+  return deduped;
+}
 
 export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
@@ -182,66 +244,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         hasMoreMessages: false,
       } : {}),
     });
+    currentServerLimit = PAGE_SIZE * 4;
+    currentOrg = organization;
     try {
-      const raw = await chatsApi.getMessages(organization, phoneNumber, PAGE_SIZE * 4);
-      const normalizeTs = (val: any): string => {
-        if (!val) return '';
-        if (typeof val === 'string') return val;
-        if (typeof val === 'number') return new Date(val > 1e12 ? val : val * 1000).toISOString();
-        if (typeof val === 'object' && val._seconds) return new Date(val._seconds * 1000).toISOString();
-        if (typeof val === 'object' && val.seconds) return new Date(val.seconds * 1000).toISOString();
-        return '';
-      };
-      const messages = (Array.isArray(raw) ? raw : []).map((m: any) => ({
-        ...m,
-        timestamp: normalizeTs(m.timestamp || m.createdOn),
-        createdOn: normalizeTs(m.createdOn || m.timestamp),
-        text: m.text || m.body || '',
-        messageId: m.messageId || m.id || m.Id || '',
-        direction: m.direction || (m.sentFromApp ? 'Outbound' : ''),
-      }));
+      const raw = await chatsApi.getMessages(organization, phoneNumber, currentServerLimit);
+      const rawCount = Array.isArray(raw) ? raw.length : 0;
+      // Server returned a full page → older history likely exists beyond what we fetched.
+      serverMayHaveMore = rawCount >= currentServerLimit;
 
-      // Deduplicate messages by messageId AND by content signature as fallback
-      const seenIds = new Set<string>();
-      const seenSigs = new Set<string>();
-      const deduped: typeof messages = [];
-      for (const m of messages) {
-        const id = m.messageId;
-        if (id && seenIds.has(id)) continue;
-        // Secondary dedup: same text + direction + timestamp (within 2s)
-        const ts = new Date(m.createdOn || m.timestamp || '').getTime();
-        const sig = `${(m.text || '').slice(0, 50)}|${m.direction || ''}|${Math.floor(ts / 2000)}`;
-        if (m.text && sig && seenSigs.has(sig)) continue;
-        if (id) seenIds.add(id);
-        if (m.text) seenSigs.add(sig);
-        deduped.push(m);
-      }
-
-      // Sort oldest → newest so slice(-PAGE_SIZE) gives the newest page
-      const parseTs = (raw: any): number => {
-        if (!raw) return 0;
-        if (typeof raw === 'number') return raw > 1e12 ? raw : raw * 1000;
-        if (typeof raw === 'object' && raw._seconds) return raw._seconds * 1000;
-        if (typeof raw === 'object' && raw.seconds) return raw.seconds * 1000;
-        const d = new Date(raw);
-        return isNaN(d.getTime()) ? 0 : d.getTime();
-      };
-      deduped.sort((a: any, b: any) => {
-        const tsA = parseTs(a.createdOn || a.timestamp);
-        const tsB = parseTs(b.createdOn || b.timestamp);
-        return tsA - tsB;
-      });
-
-      // Resolve quotedMessage from contextMessageId if backend didn't populate it
-      const msgMap = new Map(deduped.map((m: any) => [m.messageId, m]));
-      for (const msg of deduped) {
-        if (!msg.quotedMessage) {
-          const ctxId = msg.contextMessageId || msg.ContextMessageId;
-          if (ctxId && msgMap.has(ctxId)) {
-            msg.quotedMessage = msgMap.get(ctxId);
-          }
-        }
-      }
+      const deduped = normalizeAndDedupeMessages(raw);
 
       if (requestId !== messagesRequestSeq) return;
       if (get().currentPhoneNumber !== phoneNumber) return;
@@ -253,7 +264,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         allMessages: deduped,
         currentMessages: displayed,
         displayedCount: PAGE_SIZE,
-        hasMoreMessages: deduped.length > PAGE_SIZE,
+        hasMoreMessages: deduped.length > PAGE_SIZE || serverMayHaveMore,
         isLoadingMessages: false,
       });
     } catch {
@@ -264,31 +275,59 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  loadOlderMessages: () => {
-    const { allMessages, displayedCount, hasMoreMessages, currentPhoneNumber } = get();
-    if (!hasMoreMessages) return;
-
-    set({ isLoadingOlderMessages: true });
+  loadOlderMessages: async () => {
+    const { allMessages, displayedCount, hasMoreMessages, currentPhoneNumber, isLoadingOlderMessages } = get();
+    if (!hasMoreMessages || isLoadingOlderMessages) return;
 
     const newCount = displayedCount + PAGE_SIZE;
+
+    // Case 1: we still have locally-cached messages to reveal — just show more.
     if (newCount <= allMessages.length) {
       const displayed = allMessages.slice(-newCount);
       set({
         currentMessages: displayed,
         displayedCount: newCount,
-        hasMoreMessages: allMessages.length > newCount,
+        hasMoreMessages: allMessages.length > newCount || serverMayHaveMore,
         isLoadingOlderMessages: false,
       });
-    } else {
-      // All locally available messages are already displayed - no more to paginate
-      const displayed = allMessages;
-      set({
-        currentMessages: displayed,
-        displayedCount: allMessages.length,
-        hasMoreMessages: false,
-        isLoadingOlderMessages: false,
-      });
+      return;
     }
+
+    // Case 2: local cache exhausted but the server has more → fetch a bigger batch.
+    if (serverMayHaveMore && currentPhoneNumber && currentOrg) {
+      const org = currentOrg;
+      set({ isLoadingOlderMessages: true });
+      const phoneAtRequest = currentPhoneNumber;
+      try {
+        const nextLimit = currentServerLimit + PAGE_SIZE * 4;
+        const raw = await chatsApi.getMessages(org, phoneAtRequest, nextLimit);
+        if (get().currentPhoneNumber !== phoneAtRequest) return;
+        const rawCount = Array.isArray(raw) ? raw.length : 0;
+        serverMayHaveMore = rawCount >= nextLimit;
+        currentServerLimit = nextLimit;
+        const deduped = normalizeAndDedupeMessages(raw);
+        deduped.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
+        const revealed = Math.min(newCount, deduped.length);
+        set({
+          allMessages: deduped,
+          currentMessages: deduped.slice(-revealed),
+          displayedCount: revealed,
+          hasMoreMessages: deduped.length > revealed || serverMayHaveMore,
+          isLoadingOlderMessages: false,
+        });
+      } catch {
+        set({ isLoadingOlderMessages: false });
+      }
+      return;
+    }
+
+    // Case 3: nothing more to load anywhere.
+    set({
+      currentMessages: allMessages,
+      displayedCount: allMessages.length,
+      hasMoreMessages: false,
+      isLoadingOlderMessages: false,
+    });
   },
 
   sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?, senderEmail?) => {
@@ -398,6 +437,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {}
   },
 
+  // Inverse of markAsRead: flip a conversation back to unread so it resurfaces in
+  // the unread filter and tab badge. Optimistic; recomputes the unread badge from
+  // the updated list so the tab count stays accurate.
+  markAsUnread: async (organization, phoneNumber) => {
+    let prevChats: Chat[] = [];
+    set((state) => {
+      prevChats = state.chats;
+      const chats = state.chats.map((c) =>
+        c.phoneNumber === phoneNumber ? { ...c, unreadCount: c.unreadCount > 0 ? c.unreadCount : 1, isRead: false } : c
+      );
+      return { chats, unreadCount: chats.filter((c) => c.isRead === false).length };
+    });
+    try {
+      await chatsApi.markAsUnread(organization, phoneNumber);
+    } catch {
+      // Revert on failure.
+      set({ chats: prevChats, unreadCount: prevChats.filter((c) => c.isRead === false).length });
+    }
+  },
+
   toggleStarred: async (organization, messageId, phoneNumber, isStarred) => {
     try {
       await chatsApi.toggleStarred(organization, messageId, phoneNumber, isStarred);
@@ -426,7 +485,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const core = (n: string) => (n.startsWith('972') ? n.slice(3) : n.replace(/^0/, ''));
       return core(na) === core(nb);
     };
-    const relatedPhones = [message.phoneNumber, message.from, message.to].filter(Boolean) as string[];
+    const relatedPhones = [(message as any).phoneNumber, message.from, message.to].filter(Boolean) as string[];
     if (relatedPhones.length > 0 && !relatedPhones.some((p) => samePhone(p, currentPhoneNumber))) return;
     if (allMessages.some((m) => m.messageId === message.messageId)) return;
     if (currentMessages.some((m) => m.messageId === message.messageId)) return;

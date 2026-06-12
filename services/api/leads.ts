@@ -12,7 +12,16 @@ export interface LeadFilters {
   dateFrom?: string;
   dateTo?: string;
   dateRangePreset?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  campaignId?: string;
+  formId?: string;
+  adId?: string;
 }
+
+/** Distinct values that exist in the org's leads, keyed by field name. */
+export type LeadFilterOptions = Record<string, string[]>;
 
 export const leadsApi = {
   async getAll(
@@ -41,6 +50,12 @@ export const leadsApi = {
       dateFrom: filters.dateFrom || '',
       dateTo: filters.dateTo || '',
       dateRangePreset: filters.dateRangePreset || '',
+      utmSource: filters.utmSource || '',
+      utmMedium: filters.utmMedium || '',
+      utmCampaign: filters.utmCampaign || '',
+      campaignId: filters.campaignId || '',
+      formId: filters.formId || '',
+      adId: filters.adId || '',
     });
     const raw = response.data;
     const items = raw?.Leads || raw?.Data || raw?.data || raw?.leads || (Array.isArray(raw) ? raw : []);
@@ -54,6 +69,16 @@ export const leadsApi = {
       data: withIds,
       total: raw?.TotalCount || raw?.totalCount || parsed.length,
     };
+  },
+
+  async getFilterOptions(organization: string): Promise<LeadFilterOptions> {
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_FILTER_OPTIONS, { organization });
+      const raw = response.data;
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    } catch {
+      return {};
+    }
   },
 
   async getByContact(organization: string, contactId: string): Promise<Lead[]> {

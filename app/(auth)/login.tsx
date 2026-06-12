@@ -23,6 +23,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { router } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
+import { getLandingRoute } from '../../constants/permissions';
 import { secureStorage } from '../../services/storage';
 import { useRTL } from '../../hooks/useRTL';
 import { borderRadius, spacing, fontSize } from '../../constants/theme';
@@ -141,7 +142,8 @@ export default function LoginScreen() {
       } else {
         await secureStorage.clearSavedCredentials();
       }
-      router.replace('/(tabs)/chats');
+      const loggedInUser = useAuthStore.getState().user;
+      router.replace(getLandingRoute(loggedInUser?.Permissions, loggedInUser?.SecurityRole) as any);
     } catch {
       // error displayed via store state
     }

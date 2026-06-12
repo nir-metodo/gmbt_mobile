@@ -27,6 +27,7 @@ export const PERMISSION_FEATURES = {
   purchasing: 'purchasing',
   employees: 'employees',
   invoices: 'invoices',
+  emailInbox: 'emailInbox',
 } as const;
 
 export type PermissionFeature = keyof typeof PERMISSION_FEATURES;
@@ -40,6 +41,27 @@ const BASIC_ROLE_DEFAULTS: Record<string, boolean> = {
   phoneCalls: true,
 };
 
+/**
+ * Case-insensitive lookup of a permission value. The backend serializes permissions from a
+ * typed class whose properties are PascalCase (e.g. `Chats`, `PhoneCalls`), while our feature
+ * keys are camelCase (`chats`, `phoneCalls`). Normalizing both sides to lowercase makes the
+ * check correct regardless of the JSON casing the API returns.
+ */
+const lookupPermission = (
+  userPermissions: Record<string, boolean> | null | undefined,
+  feature: PermissionFeature
+): boolean | undefined => {
+  if (!userPermissions) return undefined;
+  const target = feature.toLowerCase();
+  for (const key of Object.keys(userPermissions)) {
+    if (key.toLowerCase() === target) {
+      const v = userPermissions[key];
+      return v === true || v === ('true' as any);
+    }
+  }
+  return undefined;
+};
+
 export const hasPermission = (
   userPermissions: Record<string, boolean> | null | undefined,
   securityRole: string | undefined,
@@ -48,13 +70,29 @@ export const hasPermission = (
   if (!securityRole) return true;
   const role = securityRole.toLowerCase();
   if (role === 'admin') return true;
-  if (userPermissions && feature in userPermissions) {
-    return userPermissions[feature] === true;
+  const explicit = lookupPermission(userPermissions, feature);
+  if (explicit !== undefined) {
+    return explicit;
   }
   if (role === 'basic' || role === 'chat') {
     return BASIC_ROLE_DEFAULTS[feature] === true;
   }
   return true;
+};
+
+/**
+ * Returns the first tab route the user is actually allowed to see, following the same order
+ * as the tab bar. Used as the post-login landing route so a user without `chats` permission
+ * never lands on the (hidden) chats screen.
+ */
+export const getLandingRoute = (
+  userPermissions: Record<string, boolean> | null | undefined,
+  securityRole: string | undefined
+): string => {
+  if (hasPermission(userPermissions, securityRole, 'chats')) return '/(tabs)/chats';
+  if (hasPermission(userPermissions, securityRole, 'contacts')) return '/(tabs)/contacts';
+  if (hasPermission(userPermissions, securityRole, 'leads')) return '/(tabs)/leads';
+  return '/(tabs)/more';
 };
 
 /** Data visibility values for phoneCalls: 'myPhoneCalls' (own) | 'allPhoneCalls' (all) */

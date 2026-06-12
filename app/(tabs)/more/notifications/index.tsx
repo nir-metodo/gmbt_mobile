@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { useAuthStore } from '../../../../stores/authStore';
+import { hasPermission } from '../../../../constants/permissions';
 import {
   pushNotificationService,
   DEFAULT_PUSH_SETTINGS,
@@ -136,6 +137,19 @@ export default function NotificationsSettingsScreen() {
 
   const hasTelephony = !!user?.hasItsOwnSim;
 
+  // Only surface notification settings the user can actually act on. If a user has no
+  // visibility into a feature (e.g. can't see chats/messages), the matching push section
+  // is irrelevant to them and is hidden. The screen itself stays reachable so the user
+  // can always manage the settings that DO apply to them.
+  const canChats = hasPermission(user?.Permissions, user?.SecurityRole, 'chats' as any);
+  const canLeads = hasPermission(user?.Permissions, user?.SecurityRole, 'leads' as any);
+  const canCases = hasPermission(user?.Permissions, user?.SecurityRole, 'cases' as any);
+  const canOrders =
+    hasPermission(user?.Permissions, user?.SecurityRole, 'orders' as any) ||
+    hasPermission(user?.Permissions, user?.SecurityRole, 'quotes' as any);
+  const canTasks = hasPermission(user?.Permissions, user?.SecurityRole, 'tasks' as any);
+  const canGambotAI = hasPermission(user?.Permissions, user?.SecurityRole, 'gambotAI' as any);
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
@@ -145,7 +159,8 @@ export default function NotificationsSettingsScreen() {
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Messages */}
-        <SectionHeader title={t('pushSettings.messagesSection')} isRTL={isRTL} themeColors={theme.colors} />
+        {canChats && (
+        <><SectionHeader title={t('pushSettings.messagesSection')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <SettingRow
             icon="message-text-outline"
@@ -174,10 +189,12 @@ export default function NotificationsSettingsScreen() {
               />
             </>
           )}
-        </Surface>
+        </Surface></>
+        )}
 
         {/* Leads */}
-        <SectionHeader title={t('pushSettings.leadsSection')} isRTL={isRTL} themeColors={theme.colors} />
+        {canLeads && (
+        <><SectionHeader title={t('pushSettings.leadsSection')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <SettingRow
             icon="account-plus-outline"
@@ -214,10 +231,12 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('leadsOnlyMyLeads', v)}
             disabled={saving === 'leadsOnlyMyLeads'}
           />
-        </Surface>
+        </Surface></>
+        )}
 
         {/* Cases */}
-        <SectionHeader title={t('pushSettings.casesSection')} isRTL={isRTL} themeColors={theme.colors} />
+        {canCases && (
+        <><SectionHeader title={t('pushSettings.casesSection')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <SettingRow
             icon="briefcase-plus-outline"
@@ -254,10 +273,12 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('casesOnlyMyCases', v)}
             disabled={saving === 'casesOnlyMyCases'}
           />
-        </Surface>
+        </Surface></>
+        )}
 
         {/* Quotes & Orders */}
-        <SectionHeader title={t('pushSettings.ordersSection', 'הצעות מחיר והזמנות')} isRTL={isRTL} themeColors={theme.colors} />
+        {canOrders && (
+        <><SectionHeader title={t('pushSettings.ordersSection', 'הצעות מחיר והזמנות')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <SettingRow
             icon="file-document-outline"
@@ -270,10 +291,12 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('newOrderCreated', v)}
             disabled={saving === 'newOrderCreated'}
           />
-        </Surface>
+        </Surface></>
+        )}
 
         {/* Tasks */}
-        <SectionHeader title={t('pushSettings.tasksSection')} isRTL={isRTL} themeColors={theme.colors} />
+        {canTasks && (
+        <><SectionHeader title={t('pushSettings.tasksSection')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <SettingRow
             icon="bell-ring-outline"
@@ -298,7 +321,8 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('taskAssignedToMe', v)}
             disabled={saving === 'taskAssignedToMe'}
           />
-        </Surface>
+        </Surface></>
+        )}
 
         {/* Calendar Events */}
         <SectionHeader title={isRTL ? 'אירועי יומן' : 'Calendar Events'} isRTL={isRTL} themeColors={theme.colors} />
@@ -317,7 +341,8 @@ export default function NotificationsSettingsScreen() {
         </Surface>
 
         {/* Gambot AI */}
-        <SectionHeader title={isRTL ? 'Gambot AI' : 'Gambot AI'} isRTL={isRTL} themeColors={theme.colors} />
+        {canGambotAI && (
+        <><SectionHeader title={isRTL ? 'Gambot AI' : 'Gambot AI'} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <SettingRow
             icon="robot-outline"
@@ -330,7 +355,8 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('gambotAiTransfer', v)}
             disabled={saving === 'gambotAiTransfer'}
           />
-        </Surface>
+        </Surface></>
+        )}
 
         {/* Calls — only if telephony is enabled */}
         {hasTelephony && (

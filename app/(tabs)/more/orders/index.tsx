@@ -15,6 +15,10 @@ import {
   ActivityIndicator,
   Appbar,
   FAB,
+  Portal,
+  Modal,
+  Button,
+  TextInput,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
@@ -81,7 +85,8 @@ export default function OrdersScreen() {
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const lang: 'en' | 'he' = (i18n.language || 'he').startsWith('he') ? 'he' : 'en';
   const user = useAuthStore((s) => s.user);
 
   const CACHE_KEY = `orders_${user?.organization}`;
@@ -96,6 +101,15 @@ export default function OrdersScreen() {
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
   const [statuses, setStatuses] = useState<OrderStatusConfig[]>(DEFAULT_ORDER_STATUSES);
 
+  // Advanced filters
+  const [advancedVisible, setAdvancedVisible] = useState(false);
+  const [filterSource, setFilterSource] = useState('');
+  const [filterOwner, setFilterOwner] = useState('');
+  const [filterProduct, setFilterProduct] = useState('');
+  const [filterPayment, setFilterPayment] = useState('');
+  const [filterCustom, setFilterCustom] = useState<Record<string, string>>({});
+  const [customFieldDefs, setCustomFieldDefs] = useState<{ key: string; label: string }[]>([]);
+
   const loadSettings = useCallback(async () => {
     if (!user?.organization) return;
     try {
@@ -104,7 +118,23 @@ export default function OrdersScreen() {
     } catch {
       setStatuses(DEFAULT_ORDER_STATUSES);
     }
-  }, [user?.organization]);
+    // Load custom field definitions so we can offer custom-field filters.
+    try {
+      const { sections } = await ordersApi.getOrderFormSettings(user.organization);
+      const defs: { key: string; label: string }[] = [];
+      (sections || []).forEach((section: any) => {
+        const raw = section?.fields;
+        const entries = Array.isArray(raw)
+          ? raw.map((f: any, i: number) => [f.key || f.id || `field_${i}`, f])
+          : Object.entries(raw || {});
+        entries.forEach(([key, f]: any) => {
+          const label = (lang === 'he' ? f?.labelHe : f?.labelEn) || f?.label || key;
+          if (!defs.some((d) => d.key === key)) defs.push({ key, label });
+        });
+      });
+      setCustomFieldDefs(defs);
+    } catch { /* settings optional */ }
+  }, [user?.organization, lang]);
 
   const fetchOrders = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
@@ -143,6 +173,46 @@ export default function OrdersScreen() {
     setRefreshing(false);
   }, [fetchOrders]);
 
+  // Distinct values present in the loaded orders, for selectable advanced filters
+  const orderOptions = useMemo(() => {
+    const sources = new Set<string>();
+    const owners = new Set<string>();
+    const products = new Set<string>();
+    (Array.isArray(orders) ? orders : []).forEach((o) => {
+      if (o.source) sources.add(o.source);
+      const assignee = (o as any).assignedTo;
+      if (assignee) owners.add(String(assignee));
+      (o.items || []).forEach((i: any) => {
+        const n = i.productName || i.name;
+        if (n) products.add(String(n));
+      });
+    });
+    const sortFn = (a: string, b: string) => a.localeCompare(b);
+    return {
+      sources: [...sources].sort(sortFn),
+      owners: [...owners].sort(sortFn),
+      products: [...products].sort(sortFn),
+    };
+  }, [orders]);
+
+  const activeAdvancedCount = useMemo(() => {
+    let c = 0;
+    if (filterSource) c++;
+    if (filterOwner) c++;
+    if (filterProduct) c++;
+    if (filterPayment) c++;
+    c += Object.values(filterCustom).filter((v) => v && String(v).trim() !== '').length;
+    return c;
+  }, [filterSource, filterOwner, filterProduct, filterPayment, filterCustom]);
+
+  const clearAdvancedFilters = useCallback(() => {
+    setFilterSource('');
+    setFilterOwner('');
+    setFilterProduct('');
+    setFilterPayment('');
+    setFilterCustom({});
+  }, []);
+
   const filteredOrders = useMemo(() => {
     let result = Array.isArray(orders) ? orders : [];
     if (statusFilter !== 'all') {
@@ -164,12 +234,27 @@ export default function OrdersScreen() {
           o.customerEmail?.toLowerCase().includes(q),
       );
     }
+    if (filterSource) result = result.filter((o) => (o.source || 'manual') === filterSource);
+    if (filterOwner) result = result.filter((o) => String((o as any).assignedTo || '') === filterOwner);
+    if (filterPayment) result = result.filter((o) => String((o as any).paymentStatus || 'unpaid') === filterPayment);
+    if (filterProduct) {
+      result = result.filter((o) =>
+        (o.items || []).some((i: any) => String(i.productName || i.name || '') === filterProduct),
+      );
+    }
+    Object.entries(filterCustom).forEach(([key, val]) => {
+      if (!val || String(val).trim() === '') return;
+      const needle = String(val).toLowerCase();
+      result = result.filter((o) =>
+        String((o as any).customFields?.[key] ?? (o as any)[key] ?? '').toLowerCase().includes(needle),
+      );
+    });
     return result.sort((a, b) => {
       const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return bDate - aDate;
     });
-  }, [orders, statusFilter, searchQuery]);
+  }, [orders, statusFilter, searchQuery, filterSource, filterOwner, filterPayment, filterProduct, filterCustom]);
 
   const getStatusLabel = useCallback((statusId: string) => {
     const configured = statuses.find((s) => s.id === statusId);
@@ -356,11 +441,25 @@ export default function OrdersScreen() {
         <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
         <Appbar.Content title={t('orders.title')} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 18 }} />
         <Appbar.Action
+          icon={viewMode === 'kanban' ? 'view-list' : 'view-column'}
+          color="#FFF"
+          onPress={() => setViewMode((m) => (m === 'kanban' ? 'list' : 'kanban'))}
+        />
+        <Appbar.Action
+          icon={activeAdvancedCount > 0 ? 'filter-variant-plus' : 'filter-variant'}
+          color="#FFF"
+          onPress={() => setAdvancedVisible(true)}
+        />
+        <Appbar.Action
           icon={searchVisible ? 'close' : 'magnify'}
           color="#FFF"
           onPress={() => { setSearchVisible(!searchVisible); if (searchVisible) setSearchQuery(''); }}
         />
-        <Appbar.Action icon="plus" color="#FFF" onPress={() => setCreateVisible(true)} />
+        <Appbar.Action
+          icon="plus"
+          color="#FFF"
+          onPress={() => router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: 'new' } })}
+        />
       </Appbar.Header>
 
       {searchVisible && (
@@ -437,6 +536,126 @@ export default function OrdersScreen() {
         color="#FFF"
       />
 
+      <Portal>
+        <Modal
+          visible={advancedVisible}
+          onDismiss={() => setAdvancedVisible(false)}
+          contentContainerStyle={[styles.advancedModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 16, textAlign }}>
+            {t('orders.advancedFilter', 'סינון מתקדם')}
+          </Text>
+
+          <ScrollView showsVerticalScrollIndicator={false} style={{ flexShrink: 1 }}>
+            {orderOptions.sources.length > 0 && (
+              <>
+                <Text variant="labelMedium" style={[styles.advancedLabel, { color: theme.colors.onSurfaceVariant }]}>
+                  {t('orders.columns.source', 'מקור')}
+                </Text>
+                <View style={styles.advancedChipRow}>
+                  {orderOptions.sources.map((opt) => {
+                    const sel = filterSource === opt;
+                    return (
+                      <Chip key={opt} selected={sel} compact onPress={() => setFilterSource(sel ? '' : opt)}
+                        style={[styles.filterChip, { backgroundColor: sel ? theme.colors.primaryContainer : theme.colors.surfaceVariant }]}
+                        textStyle={[styles.filterChipText, sel && { color: theme.colors.primary, fontWeight: '600' }]}>
+                        {t('orders.source_' + opt, { defaultValue: opt })}
+                      </Chip>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {orderOptions.owners.length > 0 && (
+              <>
+                <Text variant="labelMedium" style={[styles.advancedLabel, { color: theme.colors.onSurfaceVariant }]}>
+                  {t('orders.columns.assignee', 'בעלים')}
+                </Text>
+                <View style={styles.advancedChipRow}>
+                  {orderOptions.owners.map((opt) => {
+                    const sel = filterOwner === opt;
+                    return (
+                      <Chip key={opt} selected={sel} compact onPress={() => setFilterOwner(sel ? '' : opt)}
+                        style={[styles.filterChip, { backgroundColor: sel ? theme.colors.primaryContainer : theme.colors.surfaceVariant }]}
+                        textStyle={[styles.filterChipText, sel && { color: theme.colors.primary, fontWeight: '600' }]}>
+                        {opt}
+                      </Chip>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            {orderOptions.products.length > 0 && (
+              <>
+                <Text variant="labelMedium" style={[styles.advancedLabel, { color: theme.colors.onSurfaceVariant }]}>
+                  {t('orders.columns.items', 'פריט / מוצר')}
+                </Text>
+                <View style={styles.advancedChipRow}>
+                  {orderOptions.products.map((opt) => {
+                    const sel = filterProduct === opt;
+                    return (
+                      <Chip key={opt} selected={sel} compact onPress={() => setFilterProduct(sel ? '' : opt)}
+                        style={[styles.filterChip, { backgroundColor: sel ? theme.colors.primaryContainer : theme.colors.surfaceVariant }]}
+                        textStyle={[styles.filterChipText, sel && { color: theme.colors.primary, fontWeight: '600' }]}>
+                        {opt}
+                      </Chip>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
+            <Text variant="labelMedium" style={[styles.advancedLabel, { color: theme.colors.onSurfaceVariant }]}>
+              {t('orders.paymentStatus', 'סטטוס תשלום')}
+            </Text>
+            <View style={styles.advancedChipRow}>
+              {[
+                { id: 'paid', label: t('orders.paid', 'שולם') },
+                { id: 'partial', label: t('orders.partial', 'חלקי') },
+                { id: 'unpaid', label: t('orders.unpaid', 'לא שולם') },
+              ].map((opt) => {
+                const sel = filterPayment === opt.id;
+                return (
+                  <Chip key={opt.id} selected={sel} compact onPress={() => setFilterPayment(sel ? '' : opt.id)}
+                    style={[styles.filterChip, { backgroundColor: sel ? theme.colors.primaryContainer : theme.colors.surfaceVariant }]}
+                    textStyle={[styles.filterChipText, sel && { color: theme.colors.primary, fontWeight: '600' }]}>
+                    {opt.label}
+                  </Chip>
+                );
+              })}
+            </View>
+
+            {customFieldDefs.map((def) => (
+              <React.Fragment key={def.key}>
+                <Text variant="labelMedium" style={[styles.advancedLabel, { color: theme.colors.onSurfaceVariant }]}>
+                  {def.label}
+                </Text>
+                <TextInput
+                  mode="outlined"
+                  dense
+                  value={filterCustom[def.key] || ''}
+                  onChangeText={(v) => setFilterCustom((prev) => ({ ...prev, [def.key]: v }))}
+                  placeholder={t('orders.filterByValue', 'סנן לפי ערך')}
+                  style={{ marginBottom: 8, textAlign }}
+                  activeOutlineColor={BRAND_COLOR}
+                />
+              </React.Fragment>
+            ))}
+          </ScrollView>
+
+          <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'flex-end', marginTop: 16 }}>
+            <Button mode="outlined" onPress={clearAdvancedFilters} textColor={theme.colors.onSurface}>
+              {t('common.clear', 'נקה')}
+            </Button>
+            <Button mode="contained" onPress={() => setAdvancedVisible(false)} buttonColor={BRAND_COLOR} textColor="#FFF">
+              {t('common.apply', 'החל')} {activeAdvancedCount > 0 ? `(${activeAdvancedCount})` : ''}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
+
     </View>
   );
 }
@@ -507,4 +726,12 @@ const styles = StyleSheet.create({
   },
   errorText: { flex: 1, fontSize: 13 },
   fab: { position: 'absolute', borderRadius: 16 },
+  advancedModal: {
+    marginHorizontal: 20,
+    borderRadius: 18,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  advancedLabel: { marginBottom: 6, marginTop: 12 },
+  advancedChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
 });

@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useRef } from 'react';
+import React, { useMemo } from 'react';
 import { View, StyleSheet, ScrollView, Dimensions } from 'react-native';
 import { Appbar, Surface, Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -44,7 +44,7 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'transactions', icon: 'credit-card-outline', labelKey: 'more.transactions', route: '/(tabs)/more/transactions', color: '#2e6155', permission: 'quotes', featureKey: 'enableTransactions', featureDefault: true },
   { key: 'employees', icon: 'badge-account-horizontal-outline', labelKey: 'more.employees', route: '/(tabs)/more/employees', color: '#2A9D8F', permission: 'employees', featureKey: 'enableEmployees', featureDefault: true },
   { key: 'calendar', icon: 'calendar-month-outline', labelKey: 'more.calendar', route: '/(tabs)/more/calendar', color: '#0284c7' },
-  { key: 'email', icon: 'email-send-outline', labelKey: 'more.email', route: '/(tabs)/more/email', color: '#dc2626' },
+  { key: 'email', icon: 'email-send-outline', labelKey: 'more.email', route: '/(tabs)/more/email', color: '#dc2626', permission: 'emailInbox' },
   { key: 'users', icon: 'account-group-outline', labelKey: 'more.users', route: '/(tabs)/more/users', color: '#E63946', adminOnly: true },
   { key: 'notifications', icon: 'bell-cog-outline', labelKey: 'more.notifications', route: '/(tabs)/more/notifications', color: '#FF6B35' },
   { key: 'settings', icon: 'cog-outline', labelKey: 'more.settings', route: '/(tabs)/more/settings', color: '#6C757D' },
@@ -70,16 +70,9 @@ export default function MoreScreen() {
     });
   }, [user, orgFeatureToggles]);
 
-  const alwaysVisibleKeys = ['notifications', 'settings'];
-  const contentItems = visibleItems.filter((item) => !alwaysVisibleKeys.includes(item.key));
-  const didAutoNav = useRef(false);
-
-  useEffect(() => {
-    if (contentItems.length === 1 && !didAutoNav.current) {
-      didAutoNav.current = true;
-      router.replace(contentItems[0].route as any);
-    }
-  }, [contentItems]);
+  // Note: we intentionally do NOT auto-navigate into a single feature here. The "More"
+  // grid must always be reachable so the user can open Settings / Push Notifications /
+  // Logout, even when only one content feature is permitted.
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>

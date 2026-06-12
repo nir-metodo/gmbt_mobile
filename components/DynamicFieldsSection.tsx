@@ -220,7 +220,7 @@ const SYSTEM_KEYS = new Set<string>([
   'id', 'Id', 'ID', '_id', 'docId', 'key', 'uid',
   'orgId', 'organization', 'organizationId', 'companyId', 'tenantId',
   'ownerId', 'assignedToId', 'assignedTo', 'contactId', 'userId',
-  'createdBy', 'createdById', 'updatedBy', 'updatedById',
+  'createdBy', 'createdById', 'updatedBy', 'updatedById', 'modifiedBy', 'modifiedById',
   'createdAt', 'created_at', 'createdOn', 'updatedAt', 'updated_at', 'updatedOn',
   'deletedAt', 'timestamp', '__v', 'v', 'version', 'isDeleted', 'deleted',
   'type', 'entityType', 'stage', 'stageName', 'stageId', 'stageColor',
@@ -228,6 +228,58 @@ const SYSTEM_KEYS = new Set<string>([
   'history', 'timeline', 'events', 'metadata', 'raw', 'customFields',
   'formSections', 'formLayout', 'sections', 'layout', 'settings',
 ]);
+
+// Any identifier-style key (e.g. modifiedById, contactId, leadID, foo_id) is internal
+// plumbing and must never be shown to the user.
+function isIdKey(key: string): boolean {
+  return /[a-z]Id$/.test(key) || /ID$/.test(key) || /_id$/i.test(key);
+}
+
+const ISRAEL_TZ = 'Asia/Jerusalem';
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
+// Backend sometimes stores a UTC timestamp as "HH:mm yyyy-MM-dd" (e.g. "07:48 2026-06-09").
+const TIME_DATE_RE = /^(\d{1,2}):(\d{2})\s+(\d{4})-(\d{2})-(\d{2})$/;
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Format an instant in Israel local time. We force Asia/Jerusalem (with DST handled by Intl)
+// because backend timestamps are UTC and our users are in Israel. If the JS runtime can't
+// apply the timeZone it falls back to device-local time, which for our users is still Israel.
+function formatIsraelDateTime(date: Date, withTime: boolean): string {
+  try {
+    const s = date.toLocaleString('en-GB', {
+      timeZone: ISRAEL_TZ,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      ...(withTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}),
+    });
+    return s.replace(',', '');
+  } catch {
+    return '';
+  }
+}
+
+// Convert recognized UTC date/time string formats to Israel local time.
+// Returns null when the value isn't a date so the caller can keep the raw value.
+function tryFormatDateValue(raw: string): string | null {
+  const s = raw.trim();
+  if (ISO_DATETIME_RE.test(s)) {
+    const hasTz = /(Z|[+-]\d{2}:?\d{2})$/.test(s);
+    const d = new Date(hasTz ? s : `${s}Z`); // no tz marker → backend stores UTC
+    if (!isNaN(d.getTime())) return formatIsraelDateTime(d, true);
+  }
+  const td = TIME_DATE_RE.exec(s);
+  if (td) {
+    const [, hh, mm, yyyy, MM, dd] = td;
+    const d = new Date(Date.UTC(+yyyy, +MM - 1, +dd, +hh, +mm));
+    if (!isNaN(d.getTime())) return formatIsraelDateTime(d, true);
+  }
+  if (DATE_ONLY_RE.test(s)) {
+    const d = new Date(`${s}T00:00:00Z`);
+    if (!isNaN(d.getTime())) return formatIsraelDateTime(d, false);
+  }
+  return null;
+}
 
 function humanizeKey(key: string): string {
   const withSpaces = key
@@ -248,6 +300,12 @@ function isDisplayableExtraValue(v: any): boolean {
 function formatExtraValue(v: any): string {
   if (typeof v === 'boolean') return v ? 'Yes' : 'No';
   if (Array.isArray(v)) return v.join(', ');
+  if (typeof v === 'string') {
+    // Automated/system actor → show the product name instead of the internal "system".
+    if (v.trim().toLowerCase() === 'system') return 'Gambot';
+    const asDate = tryFormatDateValue(v);
+    if (asDate) return asDate;
+  }
   return String(v);
 }
 
@@ -277,7 +335,7 @@ export function ExtraFieldsSectionView({
   const safeData: Record<string, any> = data ?? {};
   const exclude = new Set<string>([...SYSTEM_KEYS, ...excludeKeys]);
   const entries = Object.entries(safeData).filter(
-    ([k, v]) => !exclude.has(k) && isDisplayableExtraValue(v),
+    ([k, v]) => !exclude.has(k) && !isIdKey(k) && isDisplayableExtraValue(v),
   );
 
   if (entries.length === 0) return null;

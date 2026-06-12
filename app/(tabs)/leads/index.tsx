@@ -76,6 +76,50 @@ interface SavedView {
 
 const LeadDivider = () => <Divider />;
 
+// Single-select chip group used by the advanced filter to let users pick from the
+// distinct values that actually exist in the org's leads (UTM, campaign, source...).
+function OptionChips({
+  options,
+  value,
+  onChange,
+  theme,
+}: {
+  options: string[];
+  value: string;
+  onChange: (v: string) => void;
+  theme: any;
+}) {
+  if (!options || options.length === 0) return null;
+  return (
+    <View style={styles.filterChipRow}>
+      {options.map((opt) => {
+        const isSelected = value === opt;
+        return (
+          <Chip
+            key={opt}
+            selected={isSelected}
+            onPress={() => onChange(isSelected ? '' : opt)}
+            compact
+            style={[
+              styles.filterChip,
+              isSelected
+                ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
+                : { backgroundColor: theme.colors.surfaceVariant },
+            ]}
+            textStyle={{
+              fontSize: 12,
+              color: isSelected ? theme.colors.primary : theme.colors.onSurfaceVariant,
+              fontWeight: isSelected ? '600' : '400',
+            }}
+          >
+            {opt}
+          </Chip>
+        );
+      })}
+    </View>
+  );
+}
+
 export default function LeadsListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -112,6 +156,15 @@ export default function LeadsListScreen() {
   const [filterPriority, setFilterPriority] = useState('');
   const [filterDateRange, setFilterDateRange] = useState('');
   const [filterMine, setFilterMine] = useState(false);
+  const [filterUtmSource, setFilterUtmSource] = useState('');
+  const [filterUtmMedium, setFilterUtmMedium] = useState('');
+  const [filterUtmCampaign, setFilterUtmCampaign] = useState('');
+  const [filterCampaignId, setFilterCampaignId] = useState('');
+  const [filterFormId, setFilterFormId] = useState('');
+  const [filterAdId, setFilterAdId] = useState('');
+
+  // Distinct values that exist in the org's leads, used to populate selectable filters
+  const [filterOptions, setFilterOptions] = useState<Record<string, string[]>>({});
 
   // ── UI state ────────────────────────────────────────────────────────────────
   const [searchVisible, setSearchVisible] = useState(false);
@@ -185,7 +238,24 @@ export default function LeadsListScreen() {
     statuses: filterStatus ? [filterStatus] : [],
     priorities: filterPriority ? [filterPriority] : [],
     dateRangePreset: filterDateRange || '',
-  }), [debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange]);
+    utmSource: filterUtmSource.trim(),
+    utmMedium: filterUtmMedium.trim(),
+    utmCampaign: filterUtmCampaign.trim(),
+    campaignId: filterCampaignId.trim(),
+    formId: filterFormId.trim(),
+    adId: filterAdId.trim(),
+  }), [debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId]);
+
+  // Attribution filters rendered as selectable chips, but only when the org's leads
+  // actually contain values for that field (sections with no data stay hidden).
+  const attributionFilters = [
+    { key: 'utmSource', label: 'UTM Source', value: filterUtmSource, set: setFilterUtmSource },
+    { key: 'utmMedium', label: t('leads.utmMedium', 'UTM Medium'), value: filterUtmMedium, set: setFilterUtmMedium },
+    { key: 'utmCampaign', label: 'UTM Campaign', value: filterUtmCampaign, set: setFilterUtmCampaign },
+    { key: 'campaignId', label: t('leads.campaignId', 'Campaign ID'), value: filterCampaignId, set: setFilterCampaignId },
+    { key: 'formId', label: t('leads.formId', 'Form ID'), value: filterFormId, set: setFilterFormId },
+    { key: 'adId', label: t('leads.adId', 'Ad ID'), value: filterAdId, set: setFilterAdId },
+  ];
 
   // ── Fetch a page ────────────────────────────────────────────────────────────
   const fetchPage = useCallback(async (pageNum: number, reset: boolean) => {
@@ -241,7 +311,13 @@ export default function LeadsListScreen() {
       .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization, debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine]);
+  }, [organization, debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId]);
+
+  // Load distinct filter values that exist in the org's leads (for selectable filters)
+  useEffect(() => {
+    if (!organization) return;
+    leadsApi.getFilterOptions(organization).then(setFilterOptions).catch(() => {});
+  }, [organization]);
 
   // Load saved views
   useEffect(() => {
@@ -330,6 +406,12 @@ export default function LeadsListScreen() {
     setFilterStatus(filters.status ?? '');
     setFilterPriority(filters.priority ?? '');
     setFilterDateRange(filters.dateRange ?? '');
+    setFilterUtmSource(filters.utmSource ?? '');
+    setFilterUtmMedium(filters.utmMedium ?? '');
+    setFilterUtmCampaign(filters.utmCampaign ?? '');
+    setFilterCampaignId(filters.campaignId ?? '');
+    setFilterFormId(filters.formId ?? '');
+    setFilterAdId(filters.adId ?? '');
     if (viewData.searchTerm) setSearchQuery(viewData.searchTerm);
   }, []);
 
@@ -341,6 +423,12 @@ export default function LeadsListScreen() {
     setFilterStatus('');
     setFilterPriority('');
     setFilterDateRange('');
+    setFilterUtmSource('');
+    setFilterUtmMedium('');
+    setFilterUtmCampaign('');
+    setFilterCampaignId('');
+    setFilterFormId('');
+    setFilterAdId('');
     setFilterMine(false);
     setUnseenOnly(false);
     setSearchQuery('');
@@ -357,6 +445,12 @@ export default function LeadsListScreen() {
           status: filterStatus,
           priority: filterPriority,
           dateRange: filterDateRange,
+          utmSource: filterUtmSource,
+          utmMedium: filterUtmMedium,
+          utmCampaign: filterUtmCampaign,
+          campaignId: filterCampaignId,
+          formId: filterFormId,
+          adId: filterAdId,
         },
         searchTerm: searchQuery,
       };
@@ -384,7 +478,7 @@ export default function LeadsListScreen() {
     setShowSaveViewModal(false);
     setNewViewName('');
     setSaveViewVisibility('personal');
-  }, [newViewName, organization, user, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, searchQuery, userIsAdmin, saveViewVisibility]);
+  }, [newViewName, organization, user, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId, searchQuery, userIsAdmin, saveViewVisibility]);
 
   const deleteSavedView = useCallback(async (viewId: string) => {
     if (!organization) return;
@@ -1269,16 +1363,25 @@ export default function LeadsListScreen() {
               left={<PaperInput.Icon icon="account-outline" />}
             />
 
-            <PaperInput
-              label={t('leads.source', 'Source')}
-              value={filterSource}
-              onChangeText={setFilterSource}
-              mode="outlined"
-              style={{ marginBottom: 12 }}
-              outlineColor={theme.colors.outline}
-              activeOutlineColor={theme.colors.primary}
-              left={<PaperInput.Icon icon="source-branch" />}
-            />
+            {filterOptions.source && filterOptions.source.length > 0 ? (
+              <>
+                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, marginTop: 4 }}>
+                  {t('leads.source', 'Source')}
+                </Text>
+                <OptionChips options={filterOptions.source} value={filterSource} onChange={setFilterSource} theme={theme} />
+              </>
+            ) : (
+              <PaperInput
+                label={t('leads.source', 'Source')}
+                value={filterSource}
+                onChangeText={setFilterSource}
+                mode="outlined"
+                style={{ marginBottom: 12 }}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={theme.colors.primary}
+                left={<PaperInput.Icon icon="source-branch" />}
+              />
+            )}
 
             <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, marginTop: 4 }}>
               {t('leads.status', 'Status')}
@@ -1369,6 +1472,17 @@ export default function LeadsListScreen() {
                 );
               })}
             </View>
+
+            {attributionFilters
+              .filter((f) => (filterOptions[f.key] || []).length > 0)
+              .map((f) => (
+                <View key={f.key}>
+                  <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, marginTop: 12 }}>
+                    {f.label}
+                  </Text>
+                  <OptionChips options={filterOptions[f.key]} value={f.value} onChange={f.set} theme={theme} />
+                </View>
+              ))}
           </ScrollView>
 
           <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'flex-end', marginTop: 16 }}>
@@ -1380,6 +1494,12 @@ export default function LeadsListScreen() {
                 setFilterStatus('');
                 setFilterPriority('');
                 setFilterDateRange('');
+                setFilterUtmSource('');
+                setFilterUtmMedium('');
+                setFilterUtmCampaign('');
+                setFilterCampaignId('');
+                setFilterFormId('');
+                setFilterAdId('');
               }}
               textColor={theme.colors.onSurface}
             >

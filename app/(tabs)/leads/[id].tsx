@@ -22,7 +22,9 @@ import {
   IconButton,
   Menu,
   Surface,
+  Switch,
 } from 'react-native-paper';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -167,6 +169,14 @@ export default function LeadDetailScreen() {
   const [addTaskVisible, setAddTaskVisible] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDueDate, setTaskDueDate] = useState('');
+  const [taskPriority, setTaskPriority] = useState<'low' | 'medium' | 'high'>('medium');
+  const [taskDueObj, setTaskDueObj] = useState<Date>(new Date());
+  const [showTaskDuePicker, setShowTaskDuePicker] = useState(false);
+  const [showTaskDueTimePicker, setShowTaskDueTimePicker] = useState(false);
+  const [taskReminderEnabled, setTaskReminderEnabled] = useState(false);
+  const [taskReminderObj, setTaskReminderObj] = useState<Date>(new Date());
+  const [showTaskReminderPicker, setShowTaskReminderPicker] = useState(false);
+  const [showTaskReminderTimePicker, setShowTaskReminderTimePicker] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [contactLookupVisible, setContactLookupVisible] = useState(false);
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
@@ -459,8 +469,12 @@ export default function LeadDetailScreen() {
         title,
         taskType: 'phone_call',
         status: 'open',
-        priority: 'medium',
+        priority: taskPriority,
         dueDate: taskDueDate.trim() || undefined,
+        reminderEnabled: taskReminderEnabled || undefined,
+        reminderDate: taskReminderEnabled ? taskReminderObj.toISOString() : null,
+        reminderDateUTC: taskReminderEnabled ? taskReminderObj.toISOString() : null,
+        reminderRecipientType: taskReminderEnabled ? 'assigned_user' : undefined,
         relatedTo: {
           type: 'lead',
           entityId: lead.id,
@@ -470,12 +484,14 @@ export default function LeadDetailScreen() {
       setAddTaskVisible(false);
       setTaskTitle('');
       setTaskDueDate('');
+      setTaskPriority('medium');
+      setTaskReminderEnabled(false);
     } catch {
       Alert.alert(t('common.error'));
     } finally {
       setCreatingTask(false);
     }
-  }, [organization, lead, taskTitle, taskDueDate, t]);
+  }, [organization, lead, taskTitle, taskDueDate, taskPriority, taskReminderEnabled, taskReminderObj, t]);
 
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
@@ -993,28 +1009,28 @@ export default function LeadDetailScreen() {
             />
             <ActionButton
               icon="whatsapp"
-              label={t('contacts.sendMessage')}
+              label={t('contacts.messageShort', 'הודעה')}
               color="#25D366"
               bg="#E8F5E9"
               onPress={handleMessage}
             />
             <ActionButton
               icon="clipboard-check-outline"
-              label={t('tasks.addTask')}
+              label={t('tasks.taskShort', 'משימה')}
               color="#FF9800"
               bg="#FFF3E0"
               onPress={() => setAddTaskVisible(true)}
             />
             <ActionButton
               icon="note-plus-outline"
-              label={t('phoneCalls.addNote')}
+              label={t('phoneCalls.noteShort', 'הערה')}
               color="#9C27B0"
               bg="#F3E5F5"
               onPress={() => setNoteModalVisible(true)}
             />
             <ActionButton
               icon="file-document-outline"
-              label={t('quotes.addQuote', 'הצעת מחיר')}
+              label={t('quotes.quoteShort', 'הצעה')}
               color="#2196F3"
               bg="#E3F2FD"
               onPress={() => router.push({
@@ -1805,6 +1821,7 @@ export default function LeadDetailScreen() {
               >
                 {t('tasks.addTask')} ({t('contacts.phoneCall')})
               </Text>
+              <ScrollView style={{ maxHeight: 440 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
               <FormField
                 label={t('tasks.taskTitle')}
                 value={taskTitle}
@@ -1814,15 +1831,156 @@ export default function LeadDetailScreen() {
                 writingDirection={writingDirection}
                 placeholder={lead?.contactName ? `${t('contacts.phoneCall')} - ${lead.contactName}` : undefined}
               />
-              <FormField
-                label={t('tasks.dueDate')}
-                value={taskDueDate}
-                onChangeText={setTaskDueDate}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-                placeholder="YYYY-MM-DD"
-              />
+              <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginTop: 4, marginBottom: 6 }}>
+                {t('tasks.priority')}
+              </Text>
+              <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
+                {(['low', 'medium', 'high'] as const).map((p) => {
+                  const pc = p === 'high' ? '#EF4444' : p === 'medium' ? '#F59E0B' : '#10B981';
+                  const active = taskPriority === p;
+                  return (
+                    <Chip
+                      key={p}
+                      selected={active}
+                      onPress={() => setTaskPriority(p)}
+                      compact
+                      style={[
+                        styles.formChip,
+                        active
+                          ? { backgroundColor: `${pc}20`, borderColor: pc, borderWidth: 1.5 }
+                          : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
+                      ]}
+                      textStyle={[{ fontSize: 12 }, active && { color: pc, fontWeight: '700' }]}
+                    >
+                      {t(`tasks.${p}`)}
+                    </Chip>
+                  );
+                })}
+              </View>
+
+              <Pressable onPress={() => {
+                const d = taskDueDate ? new Date(taskDueDate) : new Date();
+                setTaskDueObj(!isNaN(d.getTime()) ? d : new Date());
+                setShowTaskDuePicker(true);
+              }}>
+                <View pointerEvents="none">
+                  <TextInput
+                    label={t('tasks.dueDate')}
+                    value={taskDueDate ? (() => { const d = new Date(taskDueDate); return !isNaN(d.getTime()) ? d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' }) : taskDueDate; })() : ''}
+                    mode="outlined"
+                    editable={false}
+                    placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
+                    style={{ marginBottom: 14, textAlign }}
+                    outlineColor={theme.colors.outline}
+                    activeOutlineColor={theme.colors.primary}
+                    right={<TextInput.Icon icon="calendar" />}
+                  />
+                </View>
+              </Pressable>
+
+              {showTaskDuePicker && (
+                <DateTimePicker
+                  value={taskDueObj}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_: DateTimePickerEvent, d?: Date) => {
+                    setShowTaskDuePicker(false);
+                    if (d) {
+                      const merged = new Date(taskDueObj);
+                      merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+                      setTaskDueObj(merged);
+                      setShowTaskDueTimePicker(true);
+                    }
+                  }}
+                />
+              )}
+              {showTaskDueTimePicker && (
+                <DateTimePicker
+                  value={taskDueObj}
+                  mode="time"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_: DateTimePickerEvent, d?: Date) => {
+                    setShowTaskDueTimePicker(false);
+                    if (d) {
+                      const merged = new Date(taskDueObj);
+                      merged.setHours(d.getHours(), d.getMinutes());
+                      setTaskDueObj(merged);
+                      setTaskDueDate(merged.toISOString());
+                    }
+                  }}
+                />
+              )}
+
+              <View style={[styles.reminderRow, { flexDirection }]}>
+                <View style={[{ alignItems: 'center', gap: 8, flexDirection }]}>
+                  <MaterialCommunityIcons name="bell-outline" size={20} color={theme.colors.primary} />
+                  <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                    {t('tasks.reminder', 'תזכורת')}
+                  </Text>
+                </View>
+                <Switch
+                  value={taskReminderEnabled}
+                  onValueChange={(val) => {
+                    setTaskReminderEnabled(val);
+                    if (val && taskDueDate) {
+                      const d = new Date(taskDueDate);
+                      if (!isNaN(d.getTime())) setTaskReminderObj(d);
+                    }
+                  }}
+                  color={theme.colors.primary}
+                />
+              </View>
+
+              {taskReminderEnabled && (
+                <>
+                  <Pressable onPress={() => setShowTaskReminderPicker(true)}>
+                    <View pointerEvents="none">
+                      <TextInput
+                        label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
+                        value={taskReminderObj.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' })}
+                        mode="outlined"
+                        editable={false}
+                        style={{ marginBottom: 14, textAlign }}
+                        outlineColor={theme.colors.outline}
+                        activeOutlineColor={theme.colors.primary}
+                        right={<TextInput.Icon icon="bell-ring-outline" />}
+                      />
+                    </View>
+                  </Pressable>
+                  {showTaskReminderPicker && (
+                    <DateTimePicker
+                      value={taskReminderObj}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={(_: DateTimePickerEvent, d?: Date) => {
+                        setShowTaskReminderPicker(false);
+                        if (d) {
+                          const merged = new Date(taskReminderObj);
+                          merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+                          setTaskReminderObj(merged);
+                          setShowTaskReminderTimePicker(true);
+                        }
+                      }}
+                    />
+                  )}
+                  {showTaskReminderTimePicker && (
+                    <DateTimePicker
+                      value={taskReminderObj}
+                      mode="time"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={(_: DateTimePickerEvent, d?: Date) => {
+                        setShowTaskReminderTimePicker(false);
+                        if (d) {
+                          const merged = new Date(taskReminderObj);
+                          merged.setHours(d.getHours(), d.getMinutes());
+                          setTaskReminderObj(merged);
+                        }
+                      }}
+                    />
+                  )}
+                </>
+              )}
+              </ScrollView>
               <View style={[styles.modalActions, { flexDirection }]}>
                 <Button
                   mode="outlined"
@@ -1830,6 +1988,8 @@ export default function LeadDetailScreen() {
                     setAddTaskVisible(false);
                     setTaskTitle('');
                     setTaskDueDate('');
+                    setTaskPriority('medium');
+                    setTaskReminderEnabled(false);
                   }}
                   style={styles.addTaskModalBtn}
                   textColor={theme.colors.onSurface}
@@ -2253,7 +2413,7 @@ function ActionButton({
       <Text
         variant="labelSmall"
         style={{ color, marginTop: 4, fontWeight: '500', textAlign: 'center' }}
-        numberOfLines={1}
+        numberOfLines={2}
       >
         {label}
       </Text>
@@ -2800,6 +2960,18 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
+  },
+  chipsRow: {
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  formChip: {
+    borderRadius: 18,
+  },
+  reminderRow: {
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
   },
   stagePickerItem: {
     alignItems: 'center',

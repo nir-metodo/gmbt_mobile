@@ -162,16 +162,28 @@ export default function CatalogScreen() {
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (i) =>
-          i.name.toLowerCase().includes(q) ||
-          i.description?.toLowerCase().includes(q) ||
-          i.sku?.toLowerCase().includes(q) ||
-          i.category?.toLowerCase().includes(q)
-      );
+      const sb = fieldsConfig.searchBaseFields || { name: true, description: true, sku: true };
+      const searchableCols = customColumns.filter((c) => c.searchable);
+      result = result.filter((i) => {
+        const baseHit =
+          (sb.name && i.name?.toLowerCase().includes(q)) ||
+          (sb.description && i.description?.toLowerCase().includes(q)) ||
+          (sb.sku && i.sku?.toLowerCase().includes(q)) ||
+          (sb.category && i.category?.toLowerCase().includes(q)) ||
+          (sb.link && i.link?.toLowerCase().includes(q)) ||
+          (sb.unitPrice && String(i.unitPrice ?? '').toLowerCase().includes(q));
+        if (baseHit) return true;
+        if (searchableCols.length > 0 && i.customFields) {
+          for (const col of searchableCols) {
+            const val = i.customFields[col.key];
+            if (val && String(val).toLowerCase().includes(q)) return true;
+          }
+        }
+        return false;
+      });
     }
     return result;
-  }, [items, categoryFilter, searchQuery]);
+  }, [items, categoryFilter, searchQuery, fieldsConfig, customColumns]);
 
   const resetForm = useCallback(() => {
     setFormName('');
@@ -202,8 +214,16 @@ export default function CatalogScreen() {
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (!formName.trim()) {
-      Alert.alert(t('common.error'), 'שם הפריט הוא שדה חובה');
+    const reqField = fieldsConfig.requiredField || 'name';
+    const baseVals: Record<string, string> = {
+      name: formName, description: formDescription, unitPrice: formPrice,
+      sku: formSku, category: formCategory, link: formLink,
+    };
+    const reqFilled = Object.prototype.hasOwnProperty.call(baseVals, reqField)
+      ? baseVals[reqField].trim() !== ''
+      : true;
+    if (!reqFilled) {
+      Alert.alert(t('common.error'), isRTL ? 'יש למלא את שדה החובה' : 'Please fill the required field');
       return;
     }
     if (!user?.organization) return;
@@ -239,7 +259,7 @@ export default function CatalogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImageUrl, editingItem, items, customColumns, user?.organization, resetForm]);
+  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImageUrl, editingItem, items, customColumns, user?.organization, resetForm, fieldsConfig, isRTL]);
 
   const handleDelete = useCallback((item: CatalogItem) => {
     Alert.alert(
@@ -283,7 +303,7 @@ export default function CatalogScreen() {
           )}
           <View style={styles.cardContent}>
             <Text variant="titleSmall" style={{ color: theme.colors.onSurface, textAlign }} numberOfLines={1}>
-              {item.name}
+              {item.name || item.sku || item.category || '—'}
             </Text>
             {item.description ? (
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 2 }} numberOfLines={2}>
@@ -320,6 +340,21 @@ export default function CatalogScreen() {
       </Pressable>
     );
   }, [theme, flexDirection, textAlign, openEditModal, handleDelete]);
+
+  // Configurable mandatory field (defaults to name). On mobile only base fields are editable,
+  // so if the required field is a custom column we don't block the save here.
+  const requiredField = fieldsConfig.requiredField || 'name';
+  const baseFormValues: Record<string, string> = {
+    name: formName,
+    description: formDescription,
+    unitPrice: formPrice,
+    sku: formSku,
+    category: formCategory,
+    link: formLink,
+  };
+  const requiredIsBase = Object.prototype.hasOwnProperty.call(baseFormValues, requiredField);
+  const requiredFilled = requiredIsBase ? baseFormValues[requiredField].trim() !== '' : true;
+  const star = (key: string) => (requiredField === key ? ' *' : '');
 
   if (loading && items.length === 0) {
     return (
@@ -436,8 +471,9 @@ export default function CatalogScreen() {
                 {editingItem ? 'עריכת פריט' : 'פריט חדש'}
               </Text>
 
+              {fieldsConfig.name !== false && (
               <TextInput
-                label="שם *"
+                label={`שם${star('name')}`}
                 value={formName}
                 onChangeText={setFormName}
                 mode="outlined"
@@ -445,10 +481,11 @@ export default function CatalogScreen() {
                 outlineColor={BRAND_COLOR + '40'}
                 activeOutlineColor={BRAND_COLOR}
               />
+              )}
 
               {fieldsConfig.description !== false && (
               <TextInput
-                label="תיאור"
+                label={`תיאור${star('description')}`}
                 value={formDescription}
                 onChangeText={setFormDescription}
                 mode="outlined"
@@ -463,7 +500,7 @@ export default function CatalogScreen() {
               <View style={[styles.formRow, { flexDirection }]}>
                 {fieldsConfig.unitPrice !== false && (
                 <TextInput
-                  label="מחיר"
+                  label={`מחיר${star('unitPrice')}`}
                   value={formPrice}
                   onChangeText={setFormPrice}
                   mode="outlined"
@@ -476,7 +513,7 @@ export default function CatalogScreen() {
                 {fieldsConfig.unitPrice !== false && fieldsConfig.sku !== false && <View style={{ width: 12 }} />}
                 {fieldsConfig.sku !== false && (
                 <TextInput
-                  label="מק״ט"
+                  label={`מק״ט${star('sku')}`}
                   value={formSku}
                   onChangeText={setFormSku}
                   mode="outlined"
@@ -489,7 +526,7 @@ export default function CatalogScreen() {
 
               {fieldsConfig.category !== false && (
               <TextInput
-                label="קטגוריה"
+                label={`קטגוריה${star('category')}`}
                 value={formCategory}
                 onChangeText={setFormCategory}
                 mode="outlined"
@@ -501,7 +538,7 @@ export default function CatalogScreen() {
 
               {fieldsConfig.link !== false && (
               <TextInput
-                label="קישור (URL)"
+                label={`קישור (URL)${star('link')}`}
                 value={formLink}
                 onChangeText={setFormLink}
                 mode="outlined"
@@ -578,7 +615,7 @@ export default function CatalogScreen() {
                   mode="contained"
                   onPress={handleSave}
                   loading={saving}
-                  disabled={saving || !formName.trim()}
+                  disabled={saving || !requiredFilled}
                   style={[styles.actionBtn, { backgroundColor: BRAND_COLOR }]}
                   textColor="#fff"
                 >

@@ -9,7 +9,6 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-  Animated,
   ActivityIndicator,
   Keyboard,
 } from 'react-native';
@@ -52,9 +51,13 @@ import {
 } from '../../../components/DynamicFieldsSection';
 import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
+import ContactInternalMessages from '../../../components/ContactInternalMessages';
 import type { Contact, TimelineEvent } from '../../../types';
 
-type DetailTab = 'timeline' | 'related';
+type DetailTab = 'timeline' | 'internal' | 'related';
+
+// Soft cap on how many notes can be pinned to the top of a contact's timeline.
+const MAX_PINNED_NOTES = 3;
 
 function extractTags(keys: string[] | string | undefined): string[] {
   if (!keys) return [];
@@ -118,7 +121,6 @@ export default function ContactDetailScreen() {
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [relatedRecords, setRelatedRecords] = useState<any>({ tables: [], leads: [], quotes: [], tasks: [] });
   const [relatedLoading, setRelatedLoading] = useState(false);
-  const tabIndicator = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (!isNew && !contactFromStore && id && organization) {
@@ -264,17 +266,63 @@ export default function ContactDetailScreen() {
     }
   }, [organization]);
 
-  const switchTab = useCallback(
-    (tab: DetailTab) => {
-      setActiveTab(tab);
-      Animated.spring(tabIndicator, {
-        toValue: tab === 'timeline' ? 0 : 1,
-        useNativeDriver: true,
-        friction: 8,
-      }).start();
-    },
-    [tabIndicator],
-  );
+  const switchTab = useCallback((tab: DetailTab) => {
+    setActiveTab(tab);
+  }, []);
+
+  // Pin / unpin a note to the top of the timeline. Soft cap of MAX_PINNED_NOTES;
+  // optimistic update with revert on failure (mirrors the web behaviour).
+  const handleTogglePin = useCallback(async (entry: any) => {
+    const timelineId = entry.TimelineId || entry.timelineId;
+    if (!timelineId || !contact) return;
+    const currentlyPinned = !!(entry.isPinned || entry.IsPinned);
+    const newPinned = !currentlyPinned;
+
+    if (newPinned) {
+      const pinnedCount = (timelineEvents || []).filter(
+        (e) => (e.isPinned || e.IsPinned) && (e.TimelineId || e.timelineId) !== timelineId,
+      ).length;
+      if (pinnedCount >= MAX_PINNED_NOTES) {
+        Alert.alert(
+          '',
+          t('timeline.pinLimit', `ניתן לנעוץ עד ${MAX_PINNED_NOTES} הערות. בטל נעיצה של הערה אחרת קודם.`),
+        );
+        return;
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const prevPinnedOn = entry.pinnedOn || entry.PinnedOn || null;
+    setTimelineEvents((prev) =>
+      prev.map((item) =>
+        (item.TimelineId || item.timelineId) === timelineId
+          ? { ...item, isPinned: newPinned, pinnedOn: newPinned ? nowIso : null }
+          : item,
+      ),
+    );
+
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.TOGGLE_TIMELINE_ENTRY_PIN, {
+        organization,
+        contactId: contact.id || contact.phoneNumber,
+        timelineId,
+        isPinned: newPinned,
+        userId: user?.userId || user?.uID || '',
+        userName: user?.fullname || '',
+      });
+      if (!response.data?.Success && response.data?.Success !== undefined) {
+        throw new Error(response.data?.Message || 'Failed to toggle pin');
+      }
+    } catch (err) {
+      setTimelineEvents((prev) =>
+        prev.map((item) =>
+          (item.TimelineId || item.timelineId) === timelineId
+            ? { ...item, isPinned: currentlyPinned, pinnedOn: currentlyPinned ? prevPinnedOn : null }
+            : item,
+        ),
+      );
+    }
+  }, [organization, contact, timelineEvents, user, t]);
 
   const contactName = useMemo(
     () => contact?.name || contact?.phoneNumber || '',
@@ -515,7 +563,7 @@ export default function ContactDetailScreen() {
             />
             <ActionButton
               icon="note-plus-outline"
-              label={t('phoneCalls.addNote')}
+              label={t('phoneCalls.noteShort', 'הערה')}
               color="#9C27B0"
               bg="#F3E5F5"
               onPress={() => setNoteModalVisible(true)}
@@ -613,50 +661,34 @@ export default function ContactDetailScreen() {
                 { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline },
               ]}
             >
-              <Pressable
-                style={styles.tab}
-                onPress={() => switchTab('timeline')}
-              >
-                <Text
-                  variant="titleSmall"
-                  style={{
-                    color: activeTab === 'timeline' ? theme.colors.primary : theme.colors.onSurfaceVariant,
-                    fontWeight: activeTab === 'timeline' ? '700' : '500',
-                  }}
-                >
-                  {t('contacts.timeline')}
-                </Text>
-              </Pressable>
-              <Pressable
-                style={styles.tab}
-                onPress={() => switchTab('related')}
-              >
-                <Text
-                  variant="titleSmall"
-                  style={{
-                    color: activeTab === 'related' ? theme.colors.primary : theme.colors.onSurfaceVariant,
-                    fontWeight: activeTab === 'related' ? '700' : '500',
-                  }}
-                >
-                  {t('contacts.relatedRecords')}
-                </Text>
-              </Pressable>
-              <Animated.View
-                style={[
-                  styles.tabIndicator,
-                  {
-                    backgroundColor: theme.colors.primary,
-                    transform: [
-                      {
-                        translateX: tabIndicator.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0, 160],
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              />
+              {([
+                { key: 'timeline' as DetailTab, label: t('contacts.timeline') },
+                { key: 'internal' as DetailTab, label: t('internalMessages.tabShort', isRTL ? 'הודעות פנימיות' : 'Internal') },
+                { key: 'related' as DetailTab, label: t('contacts.relatedRecords') },
+              ]).map((tabItem) => {
+                const isActive = activeTab === tabItem.key;
+                return (
+                  <Pressable
+                    key={tabItem.key}
+                    style={[
+                      styles.tab,
+                      isActive && { borderBottomWidth: 3, borderBottomColor: theme.colors.primary },
+                    ]}
+                    onPress={() => switchTab(tabItem.key)}
+                  >
+                    <Text
+                      variant="titleSmall"
+                      numberOfLines={1}
+                      style={{
+                        color: isActive ? theme.colors.primary : theme.colors.onSurfaceVariant,
+                        fontWeight: isActive ? '700' : '500',
+                      }}
+                    >
+                      {tabItem.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
 
             {activeTab === 'timeline' ? (
@@ -668,7 +700,10 @@ export default function ContactDetailScreen() {
                 lang={lang}
                 isRTL={isRTL}
                 flexDirection={flexDirection}
+                onTogglePin={handleTogglePin}
               />
+            ) : activeTab === 'internal' ? (
+              <ContactInternalMessages contactPhone={contact?.phoneNumber || ''} />
             ) : (
               <RelatedRecordsSection
                 data={relatedRecords}
@@ -948,7 +983,7 @@ function ActionButton({
       <View style={[styles.actionBtnCircle, { backgroundColor: bg }]}>
         <MaterialCommunityIcons name={icon} size={22} color={color} />
       </View>
-      <Text variant="labelSmall" style={{ color, marginTop: 4, fontWeight: '500' }} numberOfLines={1}>
+      <Text variant="labelSmall" style={{ color, marginTop: 4, fontWeight: '500', textAlign: 'center' }} numberOfLines={2}>
         {label}
       </Text>
     </Pressable>
@@ -1080,6 +1115,12 @@ function getTimelineFilterGroup(entry: any): TimelineFilterKey {
   return 'system';
 }
 
+const isEntryPinned = (e: any) => !!(e?.isPinned || e?.IsPinned);
+const isNoteEntry = (e: any) => {
+  const type = (e?.TimelineType || e?.timelineType || '').toLowerCase();
+  return type === 'note' || type === 'internal_mention';
+};
+
 function TimelineSection({
   events,
   loading,
@@ -1088,6 +1129,7 @@ function TimelineSection({
   lang,
   isRTL,
   flexDirection,
+  onTogglePin,
 }: {
   events: any[];
   loading: boolean;
@@ -1096,6 +1138,7 @@ function TimelineSection({
   lang: 'en' | 'he';
   isRTL: boolean;
   flexDirection: 'row' | 'row-reverse';
+  onTogglePin: (entry: any) => void;
 }) {
   const [activeFilter, setActiveFilter] = useState<TimelineFilterKey>('all');
 
@@ -1128,7 +1171,17 @@ function TimelineSection({
 
   const visibleFilters = TIMELINE_FILTERS.filter((f) => f.key === 'all' || counts[f.key] > 0);
 
-  const filtered = activeFilter === 'all' ? events : events.filter((e) => getTimelineFilterGroup(e) === activeFilter);
+  const filteredRaw = activeFilter === 'all' ? events : events.filter((e) => getTimelineFilterGroup(e) === activeFilter);
+  // Pinned notes float to the top (most-recently-pinned first); everything else keeps order.
+  const pinnedEntries = filteredRaw
+    .filter(isEntryPinned)
+    .sort(
+      (a, b) =>
+        new Date(b.pinnedOn || b.PinnedOn || b.createdOn || 0).getTime() -
+        new Date(a.pinnedOn || a.PinnedOn || a.createdOn || 0).getTime(),
+    );
+  const normalEntries = filteredRaw.filter((e) => !isEntryPinned(e));
+  const filtered = [...pinnedEntries, ...normalEntries];
 
   return (
     <View style={styles.sectionContent}>
@@ -1160,6 +1213,15 @@ function TimelineSection({
         </ScrollView>
       )}
 
+      {pinnedEntries.length > 0 && (
+        <View style={[styles.pinnedHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <MaterialCommunityIcons name="pin" size={14} color="#f59e0b" />
+          <Text variant="labelSmall" style={{ color: '#b45309', fontWeight: '700' }}>
+            {t('timeline.pinned', isRTL ? 'נעוץ' : 'Pinned')} {pinnedEntries.length}/{MAX_PINNED_NOTES}
+          </Text>
+        </View>
+      )}
+
       {filtered.map((event, idx) => {
         const id = event.TimelineId || event.timelineId || event.id || String(idx);
         const type = (event.TimelineType || event.timelineType || 'note').toLowerCase();
@@ -1168,14 +1230,19 @@ function TimelineSection({
         const createdBy = event.createdByName || event.CreatedByName || '';
         const createdOn = event.createdOn || event.CreatedOn || '';
         const crossLabel = event._crossEntitySource ? `[${event._crossEntityLabel || event._crossEntitySource}]` : '';
+        const pinned = isEntryPinned(event);
+        const canPin = isNoteEntry(event);
+        const showPinnedDivider = pinnedEntries.length > 0 && idx === pinnedEntries.length;
 
         return (
-          <View key={id} style={[styles.timelineItem, { flexDirection }]}>
+          <React.Fragment key={id}>
+          {showPinnedDivider && <View style={[styles.pinnedDivider, { backgroundColor: theme.colors.outline }]} />}
+          <View style={[styles.timelineItem, { flexDirection }, pinned && { backgroundColor: 'rgba(245,158,11,0.06)', borderRadius: 10, padding: 6 }]}>
             <View style={[styles.timelineDot, { backgroundColor: config.color }]}>
               <MaterialCommunityIcons name={config.icon as any} size={12} color="#FFF" />
             </View>
             <View style={[styles.timelineBody, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
-              <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 6, width: '100%' }}>
                 <Text variant="labelSmall" style={{ color: config.color, fontWeight: '600', textTransform: 'capitalize', textAlign: isRTL ? 'right' : 'left' }}>
                   {type.replace(/_/g, ' ')}
                 </Text>
@@ -1183,6 +1250,20 @@ function TimelineSection({
                   <Text variant="labelSmall" style={{ color: '#9C27B0', fontWeight: '500', fontSize: 10 }}>
                     {crossLabel}
                   </Text>
+                ) : null}
+                <View style={{ flex: 1 }} />
+                {canPin ? (
+                  <Pressable
+                    onPress={() => onTogglePin(event)}
+                    hitSlop={8}
+                    style={{ padding: 2 }}
+                  >
+                    <MaterialCommunityIcons
+                      name={pinned ? 'pin' : 'pin-outline'}
+                      size={16}
+                      color={pinned ? '#f59e0b' : theme.colors.onSurfaceVariant}
+                    />
+                  </Pressable>
                 ) : null}
               </View>
               {note ? (
@@ -1204,6 +1285,7 @@ function TimelineSection({
               </View>
             </View>
           </View>
+          </React.Fragment>
         );
       })}
     </View>
@@ -1494,14 +1576,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
   },
-  tabIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    height: 3,
-    width: 120,
-    borderTopLeftRadius: 2,
-    borderTopRightRadius: 2,
-    left: 20,
+  pinnedHeader: {
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 12,
+    paddingBottom: 6,
+  },
+  pinnedDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginBottom: 12,
+    opacity: 0.6,
   },
   sectionContent: { paddingHorizontal: 16, paddingTop: 16 },
   sectionEmpty: {

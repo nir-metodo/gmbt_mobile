@@ -24,11 +24,16 @@ export interface CatalogCustomColumn {
 }
 
 export interface CatalogFieldsConfig {
+  name?: boolean;
   description?: boolean;
   unitPrice?: boolean;
   sku?: boolean;
   category?: boolean;
   link?: boolean;
+  /** Which field is mandatory when adding/editing an item (defaults to 'name'). */
+  requiredField?: string;
+  /** Which base fields are included in list search (defaults to name + description + sku). */
+  searchBaseFields?: Record<string, boolean>;
 }
 
 export interface CatalogData {

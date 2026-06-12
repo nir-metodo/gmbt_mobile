@@ -622,10 +622,14 @@ export default function OrderDetailScreen() {
             {orderFormSections.length > 0 && (
               <DynamicFieldsSectionForm
                 sections={orderFormSections}
-                data={dynamicData}
+                values={dynamicData}
                 onChange={(key, value) => setDynamicData((prev) => ({ ...prev, [key]: value }))}
                 lang={lang}
                 formLayout={orderFormLayout}
+                theme={theme}
+                textAlign={textAlign}
+                writingDirection={isRTL ? 'rtl' : 'ltr'}
+                flexDirection={flexDirection}
               />
             )}
 
@@ -884,10 +888,10 @@ export default function OrderDetailScreen() {
               ) : null}
             </View>
 
-            {/* Dynamic custom fields */}
+            {/* Dynamic custom fields — flatten customFields so values resolve by fieldKey */}
             <DynamicFieldsSectionView
               sections={orderFormSections}
-              data={order as Record<string, any>}
+              data={{ ...(order as Record<string, any>), ...((order as any)?.customFields || {}) }}
               lang={lang}
               formLayout={orderFormLayout}
             />

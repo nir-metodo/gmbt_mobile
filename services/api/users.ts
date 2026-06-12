@@ -8,7 +8,7 @@ export const usersApi = {
       organization,
     });
     const raw = response.data;
-    const items = raw?.Data ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+    const items = raw?.Data ?? raw?.data ?? raw?.users ?? (Array.isArray(raw) ? raw : []);
     return Array.isArray(items) ? items : [];
   },
 

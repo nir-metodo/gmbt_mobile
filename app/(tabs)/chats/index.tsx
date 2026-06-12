@@ -18,6 +18,7 @@ import {
   TextInput,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
+import { Swipeable } from 'react-native-gesture-handler';
 import {
   Text,
   Searchbar,
@@ -29,6 +30,7 @@ import {
   Portal,
   Modal,
   Button,
+  IconButton,
   TextInput as PaperInput,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -46,13 +48,19 @@ import {
   isChatOpen,
   conversationStatusLabel,
   conversationStatusColors,
+  normalizeConversationStatus,
 } from '../../../utils/conversationStatus';
 import WebSocketService from '../../../services/websocket';
 import { notificationSound } from '../../../services/notificationSound';
-import { getDataVisibility } from '../../../constants/permissions';
+import { getDataVisibility, hasPermission, getLandingRoute } from '../../../constants/permissions';
 import { ENDPOINTS } from '../../../constants/api';
 import axiosInstance from '../../../services/api/axiosInstance';
+import { usersApi } from '../../../services/api/users';
+import { contactsApi } from '../../../services/api/contacts';
+import { chatsApi } from '../../../services/api/chats';
 import type { Chat, WabaNumberInfo } from '../../../types';
+
+const BULK_STATUS_OPTIONS = ['Open', 'In Process', 'Closed'] as const;
 
 const FILTER_OPTIONS = ['all', 'unread', 'open', 'closed', 'myChats', 'internal'] as const;
 
@@ -77,6 +85,16 @@ export default function ChatsListScreen() {
   const lang = i18n.language as 'en' | 'he';
 
   const user = useAuthStore((s) => s.user);
+
+  // Defense-in-depth: if the user has no chats permission, never show this screen
+  // (handles deep links / push taps that bypass the hidden tab).
+  const canViewChats = hasPermission(user?.Permissions, user?.SecurityRole, 'chats');
+  useEffect(() => {
+    if (user && !canViewChats) {
+      router.replace(getLandingRoute(user.Permissions, user.SecurityRole) as any);
+    }
+  }, [user, canViewChats]);
+
   const chats = useChatStore((s) => s.chats);
   const isLoadingChats = useChatStore((s) => s.isLoadingChats);
   const storeSetSearchQuery = useChatStore((s) => s.setSearchQuery);
@@ -89,6 +107,17 @@ export default function ChatsListScreen() {
   const loadChats = useChatStore((s) => s.loadChats);
   const setChats = useChatStore((s) => s.setChats);
   const addOrUpdateChat = useChatStore((s) => s.addOrUpdateChat);
+  const markAsUnread = useChatStore((s) => s.markAsUnread);
+
+  // Multi-select / bulk actions (mirrors the web sidebar bulk toolbar).
+  const swipeableRefs = useRef(new Map<string, Swipeable>()).current;
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedPhones, setSelectedPhones] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [showBulkOwnerModal, setShowBulkOwnerModal] = useState(false);
+  const [showBulkStatusModal, setShowBulkStatusModal] = useState(false);
+  const [bulkOwners, setBulkOwners] = useState<any[]>([]);
+  const [loadingBulkOwners, setLoadingBulkOwners] = useState(false);
 
   const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
   const currentUserId = user?.uID || user?.userId || '';
@@ -590,6 +619,118 @@ export default function ChatsListScreen() {
     [router],
   );
 
+  // ---- Multi-select helpers ----
+  const enterSelection = useCallback((phone: string) => {
+    setSelectionMode(true);
+    setSelectedPhones((prev) => (prev.includes(phone) ? prev : [...prev, phone]));
+  }, []);
+
+  const toggleSelect = useCallback((phone: string) => {
+    setSelectedPhones((prev) =>
+      prev.includes(phone) ? prev.filter((p) => p !== phone) : [...prev, phone],
+    );
+  }, []);
+
+  const exitSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedPhones([]);
+  }, []);
+
+  // ---- Single-row mark as unread (swipe action) ----
+  const handleSingleMarkUnread = useCallback(
+    (chat: Chat) => {
+      swipeableRefs.get(chat.phoneNumber)?.close();
+      if (user?.organization) markAsUnread(user.organization, chat.phoneNumber);
+    },
+    [user?.organization, markAsUnread, swipeableRefs],
+  );
+
+  // ---- Bulk: mark unread ----
+  const handleBulkMarkUnread = useCallback(async () => {
+    if (!user?.organization || selectedPhones.length === 0) return;
+    setBulkBusy(true);
+    try {
+      for (const phone of selectedPhones) {
+        await markAsUnread(user.organization, phone);
+      }
+    } finally {
+      setBulkBusy(false);
+      exitSelection();
+    }
+  }, [user?.organization, selectedPhones, markAsUnread, exitSelection]);
+
+  // ---- Bulk: assign owner ----
+  const openBulkOwner = useCallback(async () => {
+    setShowBulkOwnerModal(true);
+    if (!user?.organization) return;
+    setLoadingBulkOwners(true);
+    try {
+      const users = await usersApi.getAll(user.organization);
+      setBulkOwners(Array.isArray(users) ? users : []);
+    } catch {
+      setBulkOwners([]);
+    } finally {
+      setLoadingBulkOwners(false);
+    }
+  }, [user?.organization]);
+
+  const handleBulkAssignOwner = useCallback(
+    async (ownerId: string, ownerName: string) => {
+      if (!user?.organization || selectedPhones.length === 0) return;
+      setBulkBusy(true);
+      try {
+        for (const phone of selectedPhones) {
+          await contactsApi.updateOwner(
+            user.organization,
+            phone,
+            ownerId,
+            user.fullname || 'system',
+          );
+          addOrUpdateChat({ phoneNumber: phone, ownerId, ownerName } as any);
+        }
+        Alert.alert('✅', isRTL ? `הבעלות שויכה ל-${ownerName}` : `Assigned to ${ownerName}`);
+      } catch {
+        Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'שיוך הבעלות נכשל' : 'Failed to assign owner');
+      } finally {
+        setBulkBusy(false);
+        setShowBulkOwnerModal(false);
+        exitSelection();
+      }
+    },
+    [user?.organization, selectedPhones, addOrUpdateChat, isRTL, exitSelection],
+  );
+
+  // ---- Bulk: update conversation status ----
+  const handleBulkStatus = useCallback(
+    async (status: string) => {
+      if (!user?.organization || selectedPhones.length === 0) return;
+      setBulkBusy(true);
+      try {
+        for (const phone of selectedPhones) {
+          await chatsApi.updateConversationStatus(
+            user.organization,
+            phone,
+            status,
+            user.uID || user.userId,
+          );
+          addOrUpdateChat({ phoneNumber: phone, status, lastConversationStatus: status } as any);
+        }
+      } finally {
+        setBulkBusy(false);
+        setShowBulkStatusModal(false);
+        exitSelection();
+      }
+    },
+    [user?.organization, selectedPhones, addOrUpdateChat, exitSelection],
+  );
+
+  const allSelected = displayedChats.length > 0 && selectedPhones.length === displayedChats.length;
+  const toggleSelectAll = useCallback(() => {
+    setSelectedPhones((prev) =>
+      prev.length === displayedChats.length ? [] : displayedChats.map((c) => c.phoneNumber),
+    );
+  }, [displayedChats]);
+
   const renderChatItem = useCallback(
     ({ item }: { item: Chat }) => {
       const hasUnread = item.unreadCount > 0;
@@ -611,21 +752,35 @@ export default function ChatsListScreen() {
         .filter(Boolean)
         .slice(0, 2);
       const extraNumberCount = chatNumberIds.size > 2 ? chatNumberIds.size - 2 : 0;
+      const isSelected = selectedPhones.includes(item.phoneNumber);
 
-      return (
+      const row = (
         <Pressable
-          onPress={() => openChat(item)}
+          onPress={() => (selectionMode ? toggleSelect(item.phoneNumber) : openChat(item))}
+          onLongPress={() => enterSelection(item.phoneNumber)}
+          delayLongPress={250}
           android_ripple={{ color: theme.colors.surfaceVariant }}
           style={({ pressed }) => [
             styles.chatItem,
             {
-              backgroundColor: pressed
+              backgroundColor: isSelected
+                ? withAlpha(theme.colors.primary, 0.14)
+                : pressed
                 ? theme.colors.surfaceVariant
                 : theme.colors.surface,
               flexDirection,
             },
           ]}
         >
+          {selectionMode && (
+            <View style={styles.selectCheck}>
+              <MaterialCommunityIcons
+                name={isSelected ? 'check-circle' : 'checkbox-blank-circle-outline'}
+                size={24}
+                color={isSelected ? theme.colors.primary : theme.colors.onSurfaceVariant}
+              />
+            </View>
+          )}
           <View style={styles.avatarWrap}>
             {item.profilePicture ? (
               <Avatar.Image
@@ -782,8 +937,33 @@ export default function ChatsListScreen() {
           </View>
         </Pressable>
       );
+
+      // In selection mode, disable swipe so taps toggle selection cleanly.
+      if (selectionMode) return row;
+
+      return (
+        <Swipeable
+          ref={(ref) => {
+            if (ref) swipeableRefs.set(item.phoneNumber, ref);
+            else swipeableRefs.delete(item.phoneNumber);
+          }}
+          renderRightActions={() => (
+            <Pressable
+              onPress={() => handleSingleMarkUnread(item)}
+              style={[styles.swipeUnreadBtn, { backgroundColor: theme.colors.primary }]}
+            >
+              <MaterialCommunityIcons name="email-mark-as-unread" size={22} color="#FFF" />
+              <Text style={styles.swipeUnreadLabel}>{t('chats.markUnread', 'לא נקרא')}</Text>
+            </Pressable>
+          )}
+          overshootRight={false}
+          friction={2}
+        >
+          {row}
+        </Swipeable>
+      );
     },
-    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t],
+    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, swipeableRefs],
   );
 
   const renderEmpty = useCallback(
@@ -1251,6 +1431,25 @@ export default function ChatsListScreen() {
         </ScrollView>
       </View>
 
+      {/* Selection header (multi-select mode) */}
+      {selectionMode && (
+        <View style={[styles.selectionBar, { backgroundColor: theme.colors.primary, flexDirection }]}>
+          <IconButton icon="close" size={22} iconColor="#FFF" onPress={exitSelection} style={{ margin: 0 }} />
+          <Text style={styles.selectionCount}>
+            {selectedPhones.length} {t('sidebar.selected', 'נבחרו')}
+          </Text>
+          <View style={{ flex: 1 }} />
+          <Pressable onPress={toggleSelectAll} style={styles.selectAllBtn}>
+            <MaterialCommunityIcons
+              name={allSelected ? 'checkbox-multiple-marked' : 'checkbox-multiple-blank-outline'}
+              size={20}
+              color="#FFF"
+            />
+            <Text style={styles.selectAllLabel}>{t('sidebar.selectAll', 'בחר הכל')}</Text>
+          </Pressable>
+        </View>
+      )}
+
       {/* Chat list */}
       <FlashList
         data={displayedChats}
@@ -1287,20 +1486,46 @@ export default function ChatsListScreen() {
         contentContainerStyle={styles.listContent}
       />
 
-      <FAB
-        icon="message-plus"
-        onPress={() => setNewChatVisible(true)}
-        style={[
-          styles.fab,
-          {
-            backgroundColor: theme.colors.primary,
-            bottom: insets.bottom + 16,
-            left: isRTL ? 16 : undefined,
-            right: isRTL ? undefined : 16,
-          },
-        ]}
-        color="#FFFFFF"
-      />
+      {!selectionMode && (
+        <FAB
+          icon="message-plus"
+          onPress={() => setNewChatVisible(true)}
+          style={[
+            styles.fab,
+            {
+              backgroundColor: theme.colors.primary,
+              bottom: insets.bottom + 16,
+              left: isRTL ? 16 : undefined,
+              right: isRTL ? undefined : 16,
+            },
+          ]}
+          color="#FFFFFF"
+        />
+      )}
+
+      {/* Bulk action bar (multi-select mode) */}
+      {selectionMode && selectedPhones.length > 0 && (
+        <View
+          style={[
+            styles.bulkBar,
+            { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 8, borderTopColor: theme.colors.outlineVariant },
+          ]}
+        >
+          <Pressable style={styles.bulkBtn} onPress={handleBulkMarkUnread} disabled={bulkBusy}>
+            <MaterialCommunityIcons name="email-mark-as-unread" size={22} color={theme.colors.primary} />
+            <Text style={[styles.bulkBtnLabel, { color: theme.colors.onSurface }]}>{t('chats.markUnread', 'לא נקרא')}</Text>
+          </Pressable>
+          <Pressable style={styles.bulkBtn} onPress={openBulkOwner} disabled={bulkBusy}>
+            <MaterialCommunityIcons name="account-switch-outline" size={22} color={theme.colors.primary} />
+            <Text style={[styles.bulkBtnLabel, { color: theme.colors.onSurface }]}>{t('sidebar.assignOwner', 'שיוך נציג')}</Text>
+          </Pressable>
+          <Pressable style={styles.bulkBtn} onPress={() => setShowBulkStatusModal(true)} disabled={bulkBusy}>
+            <MaterialCommunityIcons name="swap-horizontal" size={22} color={theme.colors.primary} />
+            <Text style={[styles.bulkBtnLabel, { color: theme.colors.onSurface }]}>{t('chats.status', 'סטטוס')}</Text>
+          </Pressable>
+          {bulkBusy && <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginStart: 8 }} />}
+        </View>
+      )}
 
       <Portal>
         <Modal
@@ -1414,6 +1639,80 @@ export default function ChatsListScreen() {
             </Button>
           </View>
         </Modal>
+
+        {/* Bulk: Assign Owner */}
+        <Modal
+          visible={showBulkOwnerModal}
+          onDismiss={() => setShowBulkOwnerModal(false)}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '70%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {t('sidebar.assignOwner', 'שיוך נציג')} ({selectedPhones.length})
+          </Text>
+          {loadingBulkOwners ? (
+            <ActivityIndicator style={{ marginVertical: 20 }} color={theme.colors.primary} />
+          ) : (
+            <ScrollView style={{ maxHeight: 360 }}>
+              {bulkOwners.map((owner) => {
+                const ownerId = owner.uID || owner.userId || owner.id || '';
+                const ownerName = owner.UserName || owner.fullname || owner.displayName || owner.email || ownerId;
+                return (
+                  <Pressable
+                    key={ownerId}
+                    onPress={() => handleBulkAssignOwner(ownerId, ownerName)}
+                    disabled={bulkBusy}
+                    style={({ pressed }) => [
+                      { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 12, borderRadius: 8 },
+                      pressed && { backgroundColor: theme.colors.surfaceVariant },
+                    ]}
+                  >
+                    <Avatar.Text
+                      size={36}
+                      label={getInitials(ownerName)}
+                      style={{ backgroundColor: theme.colors.primaryContainer }}
+                      labelStyle={{ fontSize: 14, color: theme.colors.primary }}
+                    />
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', flex: 1, textAlign }}>
+                      {ownerName}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
+        </Modal>
+
+        {/* Bulk: Update Status */}
+        <Modal
+          visible={showBulkStatusModal}
+          onDismiss={() => setShowBulkStatusModal(false)}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {t('chats.status', 'סטטוס')} ({selectedPhones.length})
+          </Text>
+          {BULK_STATUS_OPTIONS.map((status) => {
+            const normalized = normalizeConversationStatus(status);
+            const colors = conversationStatusColors(normalized);
+            return (
+              <Pressable
+                key={status}
+                onPress={() => handleBulkStatus(status)}
+                disabled={bulkBusy}
+                style={({ pressed }) => [
+                  { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 12, borderRadius: 8 },
+                  pressed && { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+              >
+                <View style={[styles.badge, { backgroundColor: colors.bg }]}>
+                  <Text style={[styles.badgeText, { color: colors.fg }]}>
+                    {conversationStatusLabel(normalized, t)}
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </Modal>
       </Portal>
     </View>
   );
@@ -1487,6 +1786,69 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 14,
+  },
+  selectCheck: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  swipeUnreadBtn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 88,
+    gap: 4,
+  },
+  swipeUnreadLabel: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  selectionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    gap: 4,
+  },
+  selectionCount: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  selectAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  selectAllLabel: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  bulkBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingTop: 10,
+    paddingHorizontal: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    elevation: 8,
+  },
+  bulkBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    gap: 3,
+  },
+  bulkBtnLabel: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   avatarWrap: {
     position: 'relative',

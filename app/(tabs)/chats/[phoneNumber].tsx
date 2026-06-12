@@ -21,6 +21,7 @@ import {
   BackHandler,
   Keyboard,
   AppState,
+  TouchableOpacity,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Text, IconButton, Menu, Avatar, Button, Divider } from 'react-native-paper';
@@ -113,6 +114,107 @@ function getDateKey(timestamp?: string): string {
   }
 }
 
+// Self-contained 24h-window countdown badge. It owns its own 1-second interval so the
+// parent chat screen (and the message FlashList) do NOT re-render every second — which is
+// the main cause of flicker in large conversations with media.
+const ConversationCountdownBadge = React.memo(function ConversationCountdownBadge({
+  expiresAt,
+}: {
+  expiresAt: string;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const diff = new Date(expiresAt).getTime() - now;
+  if (isNaN(diff) || diff <= 0) return null;
+  const hours = Math.floor(diff / 3600000);
+  const mins = Math.floor((diff % 3600000) / 60000);
+  const secs = Math.floor((diff % 60000) / 1000);
+  const color = diff < 3600000 ? '#FFA500' : '#90EE90';
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, marginEnd: 2 }}>
+      <MaterialCommunityIcons name="clock-outline" size={13} color={color} />
+      <Text style={{ color, fontSize: 11, fontWeight: '600', marginStart: 3 }}>
+        {hours}:{mins.toString().padStart(2, '0')}:{secs.toString().padStart(2, '0')}
+      </Text>
+    </View>
+  );
+});
+
+// Build a human-readable line for a chat timeline/activity entry (mirrors the web
+// ChatTimelineMessage.buildTimelineMessage). Action events (tasks, status changes,
+// assignments, etc.) don't carry a `note`/`text`, so without this they render blank.
+function buildTimelineText(entry: any, isHe: boolean): string {
+  const type = (entry?.timelineType || entry?.TimelineType || entry?.type || '').toLowerCase();
+  const by = entry?.createdByName || entry?.CreatedByName || entry?.sentByName || entry?.addedByName || (isHe ? 'לא ידוע' : 'Unknown');
+  const taskTitle = entry?.taskTitle || entry?.title || (isHe ? 'משימה' : 'Task');
+  const note = entry?.note || entry?.activityText || entry?.text || '';
+  const assignedTo = entry?.assignedToName || entry?.assignToName || '';
+  const priority = entry?.priority || 'medium';
+  switch (type) {
+    case 'task_created':
+      return isHe
+        ? `📋 נוצרה משימה: "${taskTitle}"${assignedTo ? ` · שויך ל-${assignedTo}` : ''} · עדיפות: ${priority} · ע"י ${by}`
+        : `📋 Task created: "${taskTitle}"${assignedTo ? ` · Assigned to ${assignedTo}` : ''} · Priority: ${priority} · by ${by}`;
+    case 'task_status_change':
+      return `📋 ${taskTitle} — ${note || (isHe ? 'שינוי סטטוס' : 'Status changed')}`;
+    case 'task_assigned':
+      return `📋 ${taskTitle} — ${note || (isHe ? 'הוקצתה מחדש' : 'Reassigned')}`;
+    case 'task_priority_change':
+      return `📋 ${taskTitle} — ${note || (isHe ? 'שינוי עדיפות' : 'Priority changed')}`;
+    case 'task_due_date_change':
+      return `📋 ${taskTitle} — ${note || (isHe ? 'שינוי תאריך יעד' : 'Due date changed')}`;
+    case 'task_completed':
+      return `📋 ${taskTitle} — ${isHe ? 'הושלמה' : 'Completed'}`;
+    case 'assign':
+      return isHe ? `שויך ל-${assignedTo || by}` : `Assigned to ${assignedTo || by}`;
+    case 'open conversation':
+      return isHe ? `השיחה נפתחה ע"י ${by}` : `Conversation opened by ${by}`;
+    case 'close':
+      return isHe ? `השיחה נסגרה ע"י ${by}` : `Conversation closed by ${by}`;
+    case 'status change':
+    case 'category change':
+      return `${note || ''}${by ? (isHe ? ` · ${by}` : ` · by ${by}`) : ''}`;
+    case 'campaign message sent':
+      return isHe ? `הודעת קמפיין נשלחה: ${note}` : `Campaign message sent: ${note}`;
+    case 'botomation send message':
+      return isHe ? `הודעת בוטומיישן נשלחה (${note})` : `Botomation message sent (${note})`;
+    case 'start conversation manually':
+      return isHe ? `שיחה נפתחה ידנית · תבנית: ${note}` : `Conversation started manually · template: ${note}`;
+    case 'lead_created':
+      return isHe ? `נוצר ליד: ${entry?.title || note}` : `Lead created: ${entry?.title || note}`;
+    case 'case_created':
+      return isHe ? `נוצרה פנייה: ${entry?.title || note}` : `Case created: ${entry?.title || note}`;
+    case 'bot_action':
+      return note || (isHe ? 'פעולת בוט' : 'Bot action');
+    default:
+      return note || '';
+  }
+}
+
+// Build a full template variable-query entry matching the web SendTemplateMessage payload.
+// Backend maps variables by `index` + `bodyVarIndex`; minimal entries cause unresolved {{n}}
+// placeholders and Meta rejects the send. Keep this identical across all send/schedule paths.
+function buildTemplateVarEntry(bodyVarIndex: number, value: string, queryIndex: number, label?: string) {
+  return {
+    index: queryIndex,
+    bodyVarIndex,
+    Variable: `dynamic_var${bodyVarIndex}`,
+    variableLabel: label || `{{${bodyVarIndex}}}`,
+    dataSource1: 'data_source1_HardCoded',
+    dataSource2: '',
+    conditionOperator: '',
+    parameters_hardCoded_Text: value,
+    field1: [],
+    field2: [],
+    table1: '',
+    table2: '',
+    retrieveFields: [],
+  };
+}
+
 export default function ChatConversationScreen() {
   const { phoneNumber, defaultWabaNumber } = useLocalSearchParams<{
     phoneNumber: string;
@@ -168,6 +270,10 @@ export default function ChatConversationScreen() {
   const [scheduledDateTime, setScheduledDateTime] = useState<Date | null>(null);
   const [showScheduleDatePicker, setShowScheduleDatePicker] = useState(false);
   const [showScheduleTimePicker, setShowScheduleTimePicker] = useState(false);
+  // Schedule: choose between a regular (free-text) message or a template.
+  const [scheduleMessageType, setScheduleMessageType] = useState<'text' | 'template'>('text');
+  const [scheduleTemplate, setScheduleTemplate] = useState<Template | null>(null);
+  const [scheduleVarValues, setScheduleVarValues] = useState<Record<number, string>>({});
   const [selectedTemplateForVars, setSelectedTemplateForVars] = useState<Template | null>(null);
   const [templateVariableValues, setTemplateVariableValues] = useState<Record<number, string>>({});
   // Quick / Manual tab state inside template modal
@@ -209,6 +315,9 @@ export default function ChatConversationScreen() {
 
   // Timeline entries
   const [timelineEntries, setTimelineEntries] = useState<any[]>([]);
+  // Dedicated timeline sheet (full notes + activity view, like the web "ציר זמן" tab)
+  const [showTimelineSheet, setShowTimelineSheet] = useState(false);
+  const [timelineFilter, setTimelineFilter] = useState<'all' | 'notes'>('all');
 
   // Outbound calling
   const [isInitiatingCall, setIsInitiatingCall] = useState(false);
@@ -281,10 +390,54 @@ export default function ChatConversationScreen() {
     });
   }, [allWabaNumbers, assignedNums]);
 
+  // Fallback: derive the conversation's WABA number from the loaded messages.
+  // Used when the chat isn't in the store yet (e.g. opened directly from a push
+  // notification before the chat list has loaded). A single thread always belongs to
+  // exactly one WABA number, so the most recent message carrying a number is reliable.
+  const messagesWabaId = useMemo(() => {
+    for (let i = currentMessages.length - 1; i >= 0; i--) {
+      const m: any = currentMessages[i];
+      const id = m?.fromNumberId || m?.wabaPhoneNumberId || m?.phoneNumberId;
+      if (id) return String(id);
+    }
+    return '';
+  }, [currentMessages]);
+
+  // The WABA number this specific contact's conversation belongs to.
+  const contactWabaId = chat?.lastFromNumberId || chat?.wabaPhoneNumberId || messagesWabaId || '';
+
+  // fromNumberId to use when sending/scheduling templates. Mirrors the web: only send an
+  // explicit PhoneNumberId for multi-number orgs (and only when it's a real, resolvable id).
+  // For single-number orgs we send empty so the backend uses the default WABA settings —
+  // passing a display number (user.wabaNumber) here makes GetOrgWabaSettingsByPhoneNumberId
+  // return null and the template send fails with "WhatsApp settings not configured".
+  const sendFromNumberId = useMemo(() => {
+    if (
+      allWabaNumbers.length > 1 &&
+      activeWabaNumber &&
+      allWabaNumbers.some((n) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber)
+    ) {
+      return activeWabaNumber;
+    }
+    return '';
+  }, [allWabaNumbers, activeWabaNumber]);
+
   useEffect(() => {
+    // 1. Explicit number passed via navigation (e.g. from a number-filtered list).
     if (defaultWabaNumber && wabaNumbers.some((n) => (n.PhoneNumberId || n.phoneNumberId) === defaultWabaNumber)) {
       setActiveWabaNumber(defaultWabaNumber);
-    } else if (!activeWabaNumber) {
+      return;
+    }
+    // 2. Auto-detect THIS contact's associated number (mirrors web ChatContainer).
+    //    Critical: without this the global activeWabaNumber stays stuck on the previous
+    //    contact's number, so the conversation-status query is sent with the wrong
+    //    fromNumberId and the backend replies "not live" → every chat shows as closed.
+    if (contactWabaId && wabaNumbers.some((n) => (n.PhoneNumberId || n.phoneNumberId) === contactWabaId)) {
+      if (contactWabaId !== activeWabaNumber) setActiveWabaNumber(contactWabaId);
+      return;
+    }
+    // 3. Fall back to the user's assigned / first number only when nothing is selected yet.
+    if (!activeWabaNumber) {
       if (assignedNums.length > 0) {
         setActiveWabaNumber(assignedNums[0]);
       } else if (wabaNumbers.length > 0) {
@@ -293,7 +446,7 @@ export default function ChatConversationScreen() {
         setActiveWabaNumber(user.wabaNumber);
       }
     }
-  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers, defaultWabaNumber]);
+  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers, defaultWabaNumber, contactWabaId]);
 
   const [conversationLive, setConversationLive] = useState<boolean | null>(null);
   const [recipientReplied24h, setRecipientReplied24h] = useState<boolean | null>(null);
@@ -306,6 +459,24 @@ export default function ChatConversationScreen() {
   const [orgCategories, setOrgCategories] = useState<string[]>([]);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showCategoryMenu, setShowCategoryMenu] = useState(false);
+
+  // ── Synchronous reset on chat switch (fixes "every chat first shows open") ──
+  // This screen instance is REUSED when navigating between chats: only the route
+  // param changes, React keeps the same component + state. The reset useEffect below
+  // runs AFTER the first paint, so the *previous* chat's live/open flags would flash
+  // on the new chat until the API responds — making a closed chat briefly look open
+  // (and, combined with the WABA leak, then look closed). Resetting here (during
+  // render, guarded by a ref) guarantees the new chat starts from a clean
+  // "loading → closed" state on its very first render, exactly like the web.
+  const phoneTrackRef = useRef(phoneNumber);
+  if (phoneTrackRef.current !== phoneNumber) {
+    phoneTrackRef.current = phoneNumber;
+    setConversationLive(null);
+    setRecipientReplied24h(null);
+    setConversationExpiresAt(null);
+    setIsFreeEntryPoint(false);
+    setFreeWindowExpiresAt(null);
+  }
 
   // Lead / Case (פנייה) CRM — surfaced inline in the meta bar (mirrors the web chat header)
   const [contactLeads, setContactLeads] = useState<any[]>([]);
@@ -320,7 +491,16 @@ export default function ChatConversationScreen() {
   const fetchConversationStatus = useCallback(() => {
     if (!user?.organization || !phoneNumber) return;
     const requestId = ++statusRequestIdRef.current;
-    chatsApi.getConversationStatus(user.organization, phoneNumber as string, activeWabaNumber || undefined).then((res) => {
+    // Mirror web: only scope the query to a specific number for multi-number orgs.
+    // Single-number orgs let the backend resolve the number, avoiding a wrong fromNumberId.
+    // Prefer THIS contact's own WABA number (contactWabaId) over the global
+    // activeWabaNumber — the latter is a shared Zustand value that can still hold the
+    // PREVIOUS chat's number, which makes the backend filter inbound messages by the
+    // wrong number and reply "not live" for every chat (the "all chats closed" bug).
+    const fromNumberId = wabaNumbers.length > 1
+      ? (contactWabaId || activeWabaNumber || undefined)
+      : undefined;
+    chatsApi.getConversationStatus(user.organization, phoneNumber as string, fromNumberId).then((res) => {
       if (requestId !== statusRequestIdRef.current) return; // ignore stale responses
       const live = res?.IsConversationLive ?? res?.IsConversationLiveByPhoneNumber ?? res?.isConversationLive ?? res?.isLive;
       setConversationLive(live === true || live === 'true');
@@ -341,7 +521,7 @@ export default function ChatConversationScreen() {
       setConversationLive((prev) => (prev !== null ? prev : false));
       setRecipientReplied24h((prev) => (prev !== null ? prev : false));
     });
-  }, [user?.organization, phoneNumber, activeWabaNumber]);
+  }, [user?.organization, phoneNumber, activeWabaNumber, contactWabaId, wabaNumbers.length]);
 
   useEffect(() => {
     fetchConversationStatus();
@@ -376,12 +556,13 @@ export default function ChatConversationScreen() {
     setFreeWindowExpiresAt(null);
   }, [activeWabaNumber]);
 
-  // Tick countdown every second while conversation is live
+  // Coarse tick (30s) only to re-evaluate whether a 24h / free window has expired.
+  // The visible per-second countdown is isolated in <ConversationCountdownBadge> so the
+  // whole screen + message list don't re-render every second.
   useEffect(() => {
-    if (!conversationLive || !conversationExpiresAt) return;
-    const interval = setInterval(() => setCountdownNow(Date.now()), 1000);
+    const interval = setInterval(() => setCountdownNow(Date.now()), 30000);
     return () => clearInterval(interval);
-  }, [conversationLive, conversationExpiresAt]);
+  }, []);
 
   useEffect(() => {
     if (!user?.organization) return;
@@ -626,18 +807,19 @@ export default function ChatConversationScreen() {
 
   const isStatusLoading = conversationLive === null;
 
-  // Match web ChatContainer: free text only when customer replied in 24h AND window is open AND conversation is live
+  // Mirror the web ChatContainer EXACTLY. Free text is allowed ONLY when:
+  //   1. the customer replied in the last 24h (recipientReplied24h), AND
+  //   2. the 24h window is still open (conversationExpiresAt exists AND is in the future), AND
+  //   3. the conversation is live.
+  // A template WE sent does NOT open free text — the window only opens on a customer reply.
+  // (No message-derived heuristics here; the backend flags are the single source of truth,
+  // identical to the web, which the user confirmed works correctly.)
   const canSendFreeText = useMemo(() => {
     if (isStatusLoading) return false;
-    if (conversationLive !== true) return false;
-    if (recipientReplied24h !== true) return false;
-    if (conversationExpiresAt) {
-      const now = new Date();
-      const expiresAt = new Date(conversationExpiresAt);
-      if (now >= expiresAt) return false;
-    }
-    return true;
-  }, [isStatusLoading, conversationLive, recipientReplied24h, conversationExpiresAt]);
+    const expiresAt = conversationExpiresAt ? new Date(conversationExpiresAt).getTime() : null;
+    const isWindowOpen = expiresAt != null && countdownNow < expiresAt;
+    return recipientReplied24h === true && isWindowOpen && conversationLive === true;
+  }, [isStatusLoading, recipientReplied24h, conversationExpiresAt, conversationLive, countdownNow]);
 
   const isFreeWindowActive = useMemo(() => {
     if (!freeWindowExpiresAt) return false;
@@ -680,7 +862,9 @@ export default function ChatConversationScreen() {
       let savedMappings: any[] = [];
       if (!templateId) {
         const defRes = await axiosInstance.post(ENDPOINTS.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
-        const tplAssignment = defRes.data?.Data?.templates?.openConversation;
+        // Tolerate both wrapped ({ Data: { templates } }) and unwrapped ({ templates }) shapes.
+        const root = defRes.data?.Data ?? defRes.data;
+        const tplAssignment = root?.templates?.openConversation;
         templateId = Array.isArray(tplAssignment?.templateId)
           ? (tplAssignment.templateId[0] || '')
           : (tplAssignment?.templateId || '');
@@ -695,16 +879,17 @@ export default function ChatConversationScreen() {
       }
 
       // Resolve template variables like the web does
+      const fullName = chat?.contactName || '';
       const resolveVarValue = (source: string, hardcodedValue?: string) => {
         if (source === 'hardcoded') return hardcodedValue || '';
-        if (source === 'contact.firstName') return chat?.contactName || (phoneNumber as string) || '';
-        if (source === 'contact.lastName') return '';
-        if (source === 'contact.name') return chat?.contactName || (phoneNumber as string) || '';
-        if (source === 'contact.email') return chat?.email || '';
+        if (source === 'contact.firstName') return fullName.split(' ')[0] || fullName || (phoneNumber as string) || '';
+        if (source === 'contact.lastName') return fullName.split(' ').slice(1).join(' ') || '';
+        if (source === 'contact.name') return fullName || (phoneNumber as string) || '';
+        if (source === 'contact.email') return (chat as any)?.email || '';
         if (source === 'contact.phoneNumber') return (phoneNumber as string) || '';
         if (source === 'user.organization') return user?.organization || '';
         if (source === 'user.UserName') return user?.fullname || user?.displayName || '';
-        return '';
+        return hardcodedValue || '';
       };
 
       const makeVarEntry = (idx: number, value: string, label?: string) => ({
@@ -739,10 +924,10 @@ export default function ChatConversationScreen() {
         user.organization,
         phoneNumber as string,
         templateId,
-        user.userId,
-        templateVariableQuery,
-        activeWabaNumber || user.wabaNumber || '',
-      );
+          user.uID || user.userId,
+          templateVariableQuery,
+          sendFromNumberId,
+        );
       if (result?.Success === false) {
         const rawMsg = result?.Message || '';
         const friendlyMsg = rawMsg.includes('BadRequest')
@@ -761,7 +946,7 @@ export default function ChatConversationScreen() {
     } finally {
       setIsSendingTemplate(false);
     }
-  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, allWabaNumbers, chat, loadMessages, isRTL, t]);
+  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, allWabaNumbers, chat, loadMessages, isRTL, t, sendFromNumberId]);
 
   const getTemplateBodyText = useCallback((template: Template) => {
     const body = template.components?.find(
@@ -811,9 +996,9 @@ export default function ChatConversationScreen() {
           user.organization,
           phoneNumber,
           templateId,
-          user.userId,
+          user.uID || user.userId,
           templateVariableQuery,
-          activeWabaNumber || user.wabaNumber || '',
+          sendFromNumberId,
         );
         if (result?.Success === false) {
           throw new Error(result?.Message || t('chats.templateSendError'));
@@ -831,18 +1016,15 @@ export default function ChatConversationScreen() {
         setIsSendingTemplate(false);
       }
     },
-    [user, phoneNumber, loadMessages, t, fetchConversationStatus, activeWabaNumber],
+    [user, phoneNumber, loadMessages, t, fetchConversationStatus, sendFromNumberId],
   );
 
   const handleSendTemplateWithVariables = useCallback(() => {
     if (!selectedTemplateForVars) return;
     const indices = getTemplateVariableIndices(selectedTemplateForVars);
-    const templateVariableQuery = indices.map((idx, i) => ({
-      index: i + 1,
-      Variable: `dynamic_var${idx}`,
-      dataSource1: 'data_source1_HardCoded',
-      parameters_hardCoded_Text: templateVariableValues[idx] ?? '',
-    }));
+    const templateVariableQuery = indices.map((idx, i) =>
+      buildTemplateVarEntry(idx, templateVariableValues[idx] ?? '', i + 1),
+    );
     doSendTemplate(selectedTemplateForVars, templateVariableQuery);
   }, [selectedTemplateForVars, getTemplateVariableIndices, templateVariableValues, doSendTemplate]);
 
@@ -921,12 +1103,7 @@ export default function ChatConversationScreen() {
       const mapEntry = mapping.find(m => m.index === idx);
       const entity = mapEntry?.entity || 'open';
       const field  = mapEntry?.field  || '';
-      return {
-        index: i,
-        Variable: `{{${idx}}}`,
-        dataSource1: 'data_source1_HardCoded',
-        parameters_hardCoded_Text: resolveQuickVar(entity, field),
-      };
+      return buildTemplateVarEntry(idx, resolveQuickVar(entity, field), i + 1);
     });
 
     doSendTemplate(template, templateVariableQuery);
@@ -936,46 +1113,133 @@ export default function ChatConversationScreen() {
     setScheduleText('');
     setScheduleDate('');
     setScheduleTime('');
+    setScheduleMessageType('text');
+    setScheduleTemplate(null);
+    setScheduleVarValues({});
+    loadTemplates();
     setShowScheduleModal(true);
-  }, []);
+  }, [loadTemplates]);
+
+  // Pre-fill a scheduled template's variables from its saved auto-mapping (variableMappingJson),
+  // exactly like the Quick template flow — the user can still edit any value manually.
+  const handleSelectScheduleTemplate = useCallback((template: Template) => {
+    setScheduleTemplate(template);
+    let mapping: Array<{ index: number; entity: string; field: string }> = [];
+    try { mapping = JSON.parse((template as any).variableMappingJson || '[]'); } catch {}
+    const initial: Record<number, string> = {};
+    getTemplateVariableIndices(template).forEach((idx) => {
+      const me = mapping.find((m) => m.index === idx);
+      initial[idx] = me && me.entity !== 'open' ? resolveQuickVar(me.entity, me.field) : '';
+    });
+    setScheduleVarValues(initial);
+  }, [getTemplateVariableIndices, resolveQuickVar]);
+
+  const scheduleIsFarFuture = useMemo(() => {
+    if (!scheduledDateTime) return false;
+    return scheduledDateTime.getTime() - Date.now() > 23 * 60 * 60 * 1000;
+  }, [scheduledDateTime]);
 
   const handleScheduleSubmit = useCallback(async () => {
-    if (!user?.organization || !phoneNumber || !scheduleText.trim()) return;
-    let scheduledTime = '';
-    if (scheduledDateTime) {
-      scheduledTime = scheduledDateTime.toISOString();
-    } else if (scheduleDate && scheduleTime) {
-      scheduledTime = `${scheduleDate}T${scheduleTime}:00`;
-    }
+    if (!user?.organization || !phoneNumber) return;
+    const scheduledTime = scheduledDateTime ? scheduledDateTime.toISOString() : '';
     if (!scheduledTime) {
       Alert.alert(t('common.error'), t('chats.pickDateTime', 'בחר תאריך ושעה'));
       return;
     }
+    // Messages scheduled more than 23h ahead MUST be a template (WhatsApp 24h-window rule,
+    // enforced by the backend). Guide the user instead of letting the request fail.
+    if (scheduleMessageType === 'text' && scheduleIsFarFuture) {
+      Alert.alert(
+        t('common.error'),
+        isRTL
+          ? 'הודעה שמתוזמנת מעבר ל-23 שעות חייבת להיות תבנית. בחר "תבנית".'
+          : 'A message scheduled more than 23h ahead must be a template. Pick "Template".',
+      );
+      return;
+    }
+
+    const fromNumberId = sendFromNumberId;
     setIsScheduling(true);
     try {
-      await chatsApi.scheduleMessage(
-        user.organization,
-        phoneNumber,
-        scheduleText.trim(),
-        scheduledTime,
-        activeWabaNumber || user.wabaNumber || '',
-      );
-      Alert.alert(t('common.success'), t('chats.scheduleSuccess', 'ההודעה תוזמנה בהצלחה'));
+      if (scheduleMessageType === 'template') {
+        if (!scheduleTemplate) {
+          Alert.alert(t('common.error'), isRTL ? 'בחר תבנית' : 'Select a template');
+          setIsScheduling(false);
+          return;
+        }
+        const indices = getTemplateVariableIndices(scheduleTemplate);
+        const templateVariableQuery = indices.map((idx, i) =>
+          buildTemplateVarEntry(idx, scheduleVarValues[idx] || '', i + 1),
+        );
+        const templateConfig = {
+          templateId: (scheduleTemplate as any).Id || scheduleTemplate.id,
+          templateVariableQuery,
+          locationDetails: {},
+          fromNumberId,
+        };
+        await chatsApi.scheduleMessage(user.organization, phoneNumber, scheduledTime, {
+          messageType: 'template',
+          templateConfig,
+          fromNumberId,
+        });
+      } else {
+        if (!scheduleText.trim()) {
+          Alert.alert(t('common.error'), t('chats.enterMessage', 'הזן הודעה'));
+          setIsScheduling(false);
+          return;
+        }
+        await chatsApi.scheduleMessage(user.organization, phoneNumber, scheduledTime, {
+          messageType: 'text',
+          text: scheduleText.trim(),
+          fromNumberId,
+        });
+      }
       setShowScheduleModal(false);
       setScheduleText('');
       setScheduledDateTime(null);
-    } catch {
-      Alert.alert(t('common.error'), t('chats.scheduleError', 'תזמון ההודעה נכשל'));
+      setScheduleTemplate(null);
+      setScheduleVarValues({});
+      // Refresh so the pending "scheduled" bubble appears in the thread (like web).
+      await loadMessages(user.organization, phoneNumber as string);
+      Alert.alert(t('common.success'), t('chats.scheduleSuccess', 'ההודעה תוזמנה בהצלחה'));
+    } catch (err: any) {
+      const msg = err?.response?.data?.Message || err?.message || t('chats.scheduleError', 'תזמון ההודעה נכשל');
+      Alert.alert(t('common.error'), msg);
     } finally {
       setIsScheduling(false);
     }
-  }, [user, phoneNumber, scheduleText, scheduledDateTime, scheduleDate, scheduleTime, t, activeWabaNumber]);
+  }, [user, phoneNumber, scheduledDateTime, scheduleMessageType, scheduleIsFarFuture, scheduleTemplate, scheduleVarValues, scheduleText, getTemplateVariableIndices, t, isRTL, sendFromNumberId, loadMessages]);
+
+  // Cancel a pending scheduled message from its bubble (matches web behavior).
+  const handleCancelScheduled = useCallback(async (scheduledMessageId: string) => {
+    if (!user?.organization || !scheduledMessageId) return;
+    try {
+      await chatsApi.cancelScheduledMessage(user.organization, scheduledMessageId);
+      await loadMessages(user.organization, phoneNumber as string);
+      Alert.alert(t('common.success'), t('chats.scheduledCancelled', 'ההודעה המתוזמנת בוטלה'));
+    } catch (err: any) {
+      const msg = err?.response?.data?.Message || err?.message || t('chats.scheduledCancelError', 'ביטול ההודעה נכשל');
+      Alert.alert(t('common.error'), msg);
+    }
+  }, [user, phoneNumber, loadMessages, t]);
+
+  const confirmCancelScheduled = useCallback((scheduledMessageId: string) => {
+    Alert.alert(
+      t('chats.cancelScheduledTitle', 'ביטול הודעה מתוזמנת'),
+      t('chats.cancelScheduledConfirm', 'האם לבטל את ההודעה המתוזמנת?'),
+      [
+        { text: t('common.no', 'לא'), style: 'cancel' },
+        { text: t('common.yes', 'כן'), style: 'destructive', onPress: () => handleCancelScheduled(scheduledMessageId) },
+      ],
+    );
+  }, [handleCancelScheduled, t]);
 
   // Tab bar is hidden by the layout via useSegments detection
 
   // Handle hardware back button
   useEffect(() => {
     const onBackPress = () => {
+      if (showTimelineSheet) { setShowTimelineSheet(false); return true; }
       if (showAttachSheet) { setShowAttachSheet(false); return true; }
       if (menuVisible) { setMenuVisible(false); return true; }
       if (searchVisible) { setSearchVisible(false); setSearchQuery(''); return true; }
@@ -992,7 +1256,7 @@ export default function ChatConversationScreen() {
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [showAttachSheet, menuVisible, searchVisible, showContactInfoSheet, mediaPanelVisible, showQuickActionsSheet, showInlineQuickMessages, showMentionPicker, starredFilter, replyToMessage, router]);
+  }, [showTimelineSheet, showAttachSheet, menuVisible, searchVisible, showContactInfoSheet, mediaPanelVisible, showQuickActionsSheet, showInlineQuickMessages, showMentionPicker, starredFilter, replyToMessage, router]);
 
   // Load messages & mark as read
   useEffect(() => {
@@ -1079,7 +1343,22 @@ export default function ChatConversationScreen() {
             createdOn: msg.createdOn || msg.timestamp || '',
           });
           const dir = (msg.direction || '').toLowerCase();
-          if (dir === 'inbound' || msg.from === phoneNumber) {
+          // Only count as "new inbound" if it arrived within the last 24h. The WebSocket
+          // can replay historical messages when a chat first opens; without this guard an
+          // old inbound message would incorrectly mark a closed conversation as live
+          // (this is what made the first opened chat always look "open"). Mirrors web.
+          const msgTimeRaw = msg.createdOn || msg.timestamp;
+          const msgTime = msgTimeRaw ? new Date(msgTimeRaw).getTime() : 0;
+          const isRecentInbound = msgTime > Date.now() - 24 * 60 * 60 * 1000;
+          // Match web's strict inbound test: the message must be FROM this customer
+          // (normalized phone compare, not a raw string ==) AND flagged inbound. The old
+          // loose `msg.from === phoneNumber` could miss differently-formatted numbers, and
+          // a bare `dir === 'inbound'` could mark the wrong conversation live.
+          const fromNorm = String(msg.from || '').replace(/\D/g, '');
+          const phoneNorm = String(phoneNumber || '').replace(/\D/g, '');
+          const fromMatches = !!fromNorm && !!phoneNorm &&
+            (fromNorm === phoneNorm || fromNorm.endsWith(phoneNorm.slice(-9)) || phoneNorm.endsWith(fromNorm.slice(-9)));
+          if (dir === 'inbound' && fromMatches && isRecentInbound) {
             hasInbound = true;
           }
         });
@@ -1087,9 +1366,15 @@ export default function ChatConversationScreen() {
           markAsRead(user.organization, phoneNumber, user.uID || user.userId, user.fullname || user.displayName || '');
         }
         if (hasInbound) {
-          // Only update conversation status if message is for the currently active number
+          // Only update conversation status if the inbound message belongs to THIS
+          // contact's number. Prefer contactWabaId (the conversation's own number) over
+          // the global activeWabaNumber, which may still hold the previous chat's value.
           const msgFromNumberId = msgs[0]?.fromNumberId || msgs[0]?.wabaPhoneNumberId || msgs[0]?.phoneNumberId || '';
-          if (!activeWabaNumber || !msgFromNumberId || msgFromNumberId === activeWabaNumber) {
+          const expectedWaba = contactWabaId || activeWabaNumber;
+          if (!expectedWaba || !msgFromNumberId || msgFromNumberId === expectedWaba) {
+            // Invalidate any in-flight status request so a slower API response can't
+            // override this confirmed-live state with stale data (mirrors web).
+            statusRequestIdRef.current++;
             setConversationLive(true);
             setRecipientReplied24h(true);
             const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
@@ -1115,7 +1400,7 @@ export default function ChatConversationScreen() {
       ws.close();
       wsRef.current = null;
     };
-  }, [user?.organization, phoneNumber, addMessage, updateMessage, markAsRead]);
+  }, [user?.organization, phoneNumber, addMessage, updateMessage, markAsRead, activeWabaNumber, contactWabaId]);
 
   const scrollToBottom = useCallback((animated = false) => {
     requestAnimationFrame(() => {
@@ -1123,14 +1408,15 @@ export default function ChatConversationScreen() {
     });
   }, []);
 
-  // Auto-scroll to bottom (newest) on new messages or initial load
+  // Auto-scroll to bottom (newest) on new messages.
+  // Initial positioning is handled by FlashList's maintainVisibleContentPosition
+  // (startRenderingFromBottom) so we must NOT force a scroll on first load — doing
+  // so makes the list visibly "travel" from top to the last message and flicker.
   useEffect(() => {
     if (currentMessages.length > prevMessageCount.current) {
       const isInitialLoad = prevMessageCount.current === 0;
       const addedCount = currentMessages.length - prevMessageCount.current;
-      if (isInitialLoad) {
-        scrollToBottom(false);
-      } else if (!isLoadingOlderMessages && !loadingOlderRef.current && addedCount <= 3) {
+      if (!isInitialLoad && !isLoadingOlderMessages && !loadingOlderRef.current && addedCount <= 3) {
         scrollToBottom(true);
       }
     }
@@ -1348,7 +1634,7 @@ export default function ChatConversationScreen() {
 
   const handleSelectQuickMessage = useCallback((msg: QuickMessage) => {
     setShowQuickMessages(false);
-    const text = (msg as any).text || (msg as any).message || (msg as any).body || '';
+    const text = (msg as any).messageText || (msg as any).text || (msg as any).message || (msg as any).body || '';
     if (text) {
       chatInputRef.current?.insertText(text);
     }
@@ -1583,16 +1869,22 @@ export default function ChatConversationScreen() {
     setShowMentionPicker(false);
   }, [isInternalNote, showInlineQuickMessages, showMentionPicker, orgUsers.length, quickMessages.length, isLoadingQuickMessages, user?.organization]);
 
+  const getMentionUserName = (u: any) =>
+    u.UserName || u.FullName || u.userName || u.fullname || u.name || u.Email || u.email || '';
+
   const filteredMentionUsers = useMemo(() => {
     if (!mentionQuery) return orgUsers.slice(0, 8);
     return orgUsers
-      .filter((u: any) => (u.fullname || u.name || '').toLowerCase().includes(mentionQuery))
+      .filter((u: any) =>
+        getMentionUserName(u).toLowerCase().includes(mentionQuery) ||
+        (u.Email || u.email || '').toLowerCase().includes(mentionQuery),
+      )
       .slice(0, 8);
   }, [orgUsers, mentionQuery]);
 
   const handleSelectMention = useCallback((mentionUser: any) => {
-    const name = mentionUser.fullname || mentionUser.name || '';
-    const uid = mentionUser.userId || mentionUser.uID || mentionUser.id || '';
+    const name = getMentionUserName(mentionUser);
+    const uid = mentionUser.userId || mentionUser.uID || mentionUser.uid || mentionUser.id || '';
     // Add to mentioned users (deduped)
     setMentionedUsers((prev) =>
       prev.some((u) => u.userId === uid)
@@ -1616,15 +1908,10 @@ export default function ChatConversationScreen() {
   }, [isLoadingOlderMessages]);
 
   useEffect(() => {
+    // FlashList v2's maintainVisibleContentPosition keeps the viewport anchored when
+    // older messages are prepended at the top, so no manual scrollToIndex is needed
+    // (a manual scroll here would fight MVCP and cause a visible jump/flicker).
     if (!isLoadingOlderMessages && loadingOlderRef.current && prevListLengthRef.current > 0) {
-      const addedCount = listData.length - prevListLengthRef.current;
-      if (addedCount > 0) {
-        setTimeout(() => {
-          try {
-            flatListRef.current?.scrollToIndex({ index: addedCount, animated: false });
-          } catch {}
-        }, 50);
-      }
       prevListLengthRef.current = 0;
     }
   }, [listData.length, isLoadingOlderMessages]);
@@ -1689,6 +1976,20 @@ export default function ChatConversationScreen() {
           case_created: 'ticket-outline',
           bot_action: 'robot-outline',
           calendar_event: 'calendar-check-outline',
+          task_created: 'clipboard-plus-outline',
+          task_status_change: 'clipboard-check-outline',
+          task_assigned: 'clipboard-account-outline',
+          task_priority_change: 'clipboard-alert-outline',
+          task_due_date_change: 'clipboard-text-clock-outline',
+          task_completed: 'clipboard-check',
+          assign: 'account-switch-outline',
+          'open conversation': 'lock-open-variant-outline',
+          close: 'lock-outline',
+          'status change': 'swap-horizontal',
+          'category change': 'shape-outline',
+          'campaign message sent': 'bullhorn-outline',
+          'botomation send message': 'robot-outline',
+          'start conversation manually': 'message-plus-outline',
         };
         const colorMap: Record<string, string> = {
           note: '#795548',
@@ -1709,9 +2010,11 @@ export default function ChatConversationScreen() {
         const entryType = (entry.timelineType || entry.TimelineType || entry.type || 'note').toLowerCase();
         const icon = iconMap[entryType] || 'information-outline';
         const iconColor = colorMap[entryType] || '#2e6155';
-        const entryText = entry.note || entry.text || entry.description || entry.Note || entry.content || '';
+        const entryText = (entry.note || entry.text || entry.description || entry.Note || entry.content || '') || buildTimelineText(entry, lang === 'he');
         const entryBy = entry.createdByName || entry.CreatedByName || entry.addedByName || '';
         const entryTs = entry.createdOn || entry.timestamp || entry.CreatedOn || '';
+        const taskId = entry.taskId || entry.TaskId || (entryType.startsWith('task') ? (entry.entityId || entry.relatedId) : '');
+        const isTaskEntry = entryType.startsWith('task') && !!taskId;
         return (
           <View style={[styles.timelineItem, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f0f4f8', borderColor: theme.colors.outline }]}>
             <View style={[styles.timelineIconWrap, { backgroundColor: `${iconColor}15` }]}>
@@ -1729,6 +2032,15 @@ export default function ChatConversationScreen() {
                   <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{formatMessageTime(entryTs)}</Text>
                 ) : null}
               </View>
+              {isTaskEntry ? (
+                <TouchableOpacity
+                  onPress={() => router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any)}
+                  style={{ marginTop: 6, alignSelf: lang === 'he' ? 'flex-end' : 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#2e6155', paddingVertical: 5, paddingHorizontal: 10, borderRadius: 14 }}
+                >
+                  <MaterialCommunityIcons name="clipboard-text-outline" size={13} color="#fff" />
+                  <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{lang === 'he' ? 'צפה במשימה' : 'View task'}</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
         );
@@ -1746,10 +2058,11 @@ export default function ChatConversationScreen() {
           onQuotedPress={handleQuotedPress}
           onSwipeToReply={handleSwipeToReply}
           wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
+          onCancelScheduled={confirmCancelScheduled}
         />
       );
     },
-    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers, user?.organization],
+    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers, user?.organization, lang, router, confirmCancelScheduled],
   );
 
   const keyExtractor = useCallback((item: ListItem) => {
@@ -1766,13 +2079,16 @@ export default function ChatConversationScreen() {
     <>
       <Stack.Screen options={{ headerShown: false }} />
 
+      {/* Full-screen view with no native header (headerShown:false) → keyboardVerticalOffset
+          must be 0. With behavior="padding" RN pads by keyboardHeight + offset, so any
+          non-zero offset here leaves a dead gap between the input and the keyboard. */}
       <KeyboardAvoidingView
         style={[
           styles.screen,
           { backgroundColor: theme.custom.chatBackground },
         ]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 56 : 0}
+        keyboardVerticalOffset={0}
       >
         {/* Header */}
         <View
@@ -1849,23 +2165,19 @@ export default function ChatConversationScreen() {
             </Pressable>
 
             <View style={styles.headerActions}>
-              {conversationExpiresAt && conversationLive && (() => {
-                const diff = new Date(conversationExpiresAt).getTime() - countdownNow;
-                if (diff <= 0) return null;
-                const hours = Math.floor(diff / 3600000);
-                const mins = Math.floor((diff % 3600000) / 60000);
-                const secs = Math.floor((diff % 60000) / 1000);
-                return (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, marginEnd: 2 }}>
-                    <MaterialCommunityIcons name="clock-outline" size={13} color={diff < 3600000 ? '#FFA500' : '#90EE90'} />
-                    <Text style={{ color: diff < 3600000 ? '#FFA500' : '#90EE90', fontSize: 11, fontWeight: '600', marginStart: 3 }}>
-                      {hours}:{mins.toString().padStart(2, '0')}:{secs.toString().padStart(2, '0')}
-                    </Text>
-                  </View>
-                );
-              })()}
+              {conversationExpiresAt && conversationLive && (
+                <ConversationCountdownBadge expiresAt={conversationExpiresAt} />
+              )}
 
               {/* Tag / Note / Assign are all in the meta bar below — header is clean */}
+
+              <IconButton
+                icon="timeline-text-outline"
+                size={20}
+                iconColor={theme.custom.headerText}
+                onPress={() => setShowTimelineSheet(true)}
+                accessibilityLabel={isRTL ? 'ציר זמן' : 'Timeline'}
+              />
 
               <Menu
                 visible={menuVisible}
@@ -2141,27 +2453,11 @@ export default function ChatConversationScreen() {
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
-            estimatedItemSize={120}
-            drawDistance={500}
-            overrideItemLayout={(layout, item) => {
-              if (item.kind === 'separator') {
-                layout.size = 36;
-                return;
-              }
-              if (item.kind === 'timeline') {
-                layout.size = 88;
-                return;
-              }
-              const msg = item.data;
-              const rawType = ((msg.type || (msg as any).messageType) || '').toLowerCase();
-              const hasMedia = !!(msg.mediaUrl || (msg as any).gmbt_mediaUrl || (msg as any).MediaUrl);
-              if (rawType.includes('image') || rawType.includes('video') || hasMedia) {
-                layout.size = 240;
-              } else if (rawType.includes('audio') || rawType.includes('document')) {
-                layout.size = 120;
-              } else {
-                layout.size = 84;
-              }
+            drawDistance={750}
+            maintainVisibleContentPosition={{
+              startRenderingFromBottom: true,
+              autoscrollToBottomThreshold: 0.2,
+              animateAutoScrollToBottom: true,
             }}
             ListHeaderComponent={
               isLoadingOlderMessages ? (
@@ -2449,10 +2745,22 @@ export default function ChatConversationScreen() {
                         const bodyText = bodyComp?.text || '';
                         const varMatches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)];
                         const varIndices = [...new Set(varMatches.map((m: any) => parseInt(m[1])))].sort((a, b) => a - b) as number[];
-                        const openVars = varIndices.filter(idx => {
+                        // Auto-resolved default per variable from the saved mapping. Empty for
+                        // "open" (manual) variables. The user can override any value below.
+                        const autoValueFor = (idx: number) => {
                           const me = mapping.find(m => m.index === idx);
-                          return !me || me.entity === 'open';
-                        });
+                          if (!me || me.entity === 'open') return '';
+                          return resolveQuickVar(me.entity, me.field);
+                        };
+                        const effValue = (idx: number) => {
+                          const key = `${item.id}_${idx}`;
+                          return quickOpenVarValues[key] !== undefined ? quickOpenVarValues[key] : autoValueFor(idx);
+                        };
+                        const isAutoMapped = (idx: number) => {
+                          const me = mapping.find(m => m.index === idx);
+                          return !!me && me.entity !== 'open';
+                        };
+                        const missing = varIndices.some(idx => !effValue(idx).trim());
                         return (
                           <View style={[styles.templateItem, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -2468,40 +2776,36 @@ export default function ChatConversationScreen() {
                                 </Text>
                               </View>
                             </View>
-                            {/* Open variable inputs */}
-                            {openVars.map(idx => (
+                            {/* All variable inputs — auto-mapped values are pre-filled and editable */}
+                            {varIndices.map(idx => (
                               <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                                 <Text style={{ fontSize: 12, color: '#6c63ff', minWidth: 30 }}>{`{{${idx}}}`}</Text>
                                 <TextInput
                                   placeholder={isRTL ? 'הזן ערך...' : 'Enter value...'}
                                   placeholderTextColor={theme.colors.onSurfaceVariant}
-                                  value={quickOpenVarValues[`${item.id}_${idx}`] || ''}
+                                  value={effValue(idx)}
                                   onChangeText={v => setQuickOpenVarValues(prev => ({ ...prev, [`${item.id}_${idx}`]: v }))}
-                                  style={{ flex: 1, borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, color: theme.colors.onSurface, backgroundColor: theme.colors.background }}
+                                  style={{ flex: 1, borderWidth: 1, borderColor: isAutoMapped(idx) ? '#6c63ff' : theme.colors.outline, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, color: theme.colors.onSurface, backgroundColor: theme.colors.background }}
                                 />
+                                {isAutoMapped(idx) && (
+                                  <Text style={{ fontSize: 10, color: '#6c63ff', fontWeight: '700' }}>{isRTL ? 'אוטו' : 'AUTO'}</Text>
+                                )}
                               </View>
                             ))}
                             <Pressable
                               onPress={() => {
-                                const templateVariableQuery = varIndices.map((idx, i) => {
-                                  const mapEntry = mapping.find(m => m.index === idx);
-                                  const entity = mapEntry?.entity || 'open';
-                                  const field  = mapEntry?.field  || '';
-                                  const isOpen = entity === 'open';
-                                  const val = isOpen
-                                    ? (quickOpenVarValues[`${item.id}_${idx}`] || '')
-                                    : resolveQuickVar(entity, field);
-                                  return { index: i, Variable: `{{${idx}}}`, dataSource1: 'data_source1_HardCoded', parameters_hardCoded_Text: val };
-                                });
+                                const templateVariableQuery = varIndices.map((idx, i) =>
+                                  buildTemplateVarEntry(idx, effValue(idx), i + 1)
+                                );
                                 setShowTemplateSelector(false);
                                 doSendTemplate(item, templateVariableQuery);
                               }}
-                              disabled={isSendingTemplate || openVars.some(idx => !quickOpenVarValues[`${item.id}_${idx}`]?.trim())}
+                              disabled={isSendingTemplate || missing}
                               style={({ pressed }) => ({
                                 flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
                                 backgroundColor: pressed ? '#1a7a5e' : '#25D366',
                                 paddingVertical: 9, borderRadius: 8,
-                                opacity: (isSendingTemplate || openVars.some(idx => !quickOpenVarValues[`${item.id}_${idx}`]?.trim())) ? 0.5 : 1,
+                                opacity: (isSendingTemplate || missing) ? 0.5 : 1,
                               })}
                             >
                               <MaterialCommunityIcons name="send" size={16} color="#fff" />
@@ -2714,38 +3018,127 @@ export default function ChatConversationScreen() {
                     </Text>
                   </View>
                 )}
-                <Text
-                  variant="labelMedium"
-                  style={{
-                    color: theme.colors.onSurfaceVariant,
-                    marginBottom: 6,
-                  }}
-                >
-                  {t('chats.enterMessage')}
-                </Text>
-                <TextInput
-                  value={scheduleText}
-                  onChangeText={setScheduleText}
-                  placeholder={t('chats.typeMessage')}
-                  placeholderTextColor={theme.colors.onSurfaceVariant}
-                  multiline
-                  style={[
-                    styles.scheduleInput,
-                    {
-                      borderColor: theme.dark
-                        ? 'rgba(255,255,255,0.15)'
-                        : '#d1d5db',
-                      backgroundColor: theme.dark
-                        ? 'rgba(255,255,255,0.05)'
-                        : '#f9fafb',
-                      color: theme.colors.onSurface,
-                      fontSize: 15,
-                      minHeight: 60,
-                      textAlignVertical: 'top',
-                      writingDirection: isRTL ? 'rtl' : 'ltr',
-                    },
-                  ]}
-                />
+                {/* Message type selector: regular free-text vs. template */}
+                <View style={{ flexDirection: 'row', backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f1f5f9', borderRadius: 10, padding: 3, marginBottom: 12 }}>
+                  {([
+                    { key: 'text', label: isRTL ? 'הודעה רגילה' : 'Regular', icon: 'message-text-outline' },
+                    { key: 'template', label: isRTL ? 'תבנית' : 'Template', icon: 'card-text-outline' },
+                  ] as const).map((opt) => {
+                    const active = scheduleMessageType === opt.key;
+                    return (
+                      <Pressable
+                        key={opt.key}
+                        onPress={() => setScheduleMessageType(opt.key)}
+                        style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 8, borderRadius: 8, backgroundColor: active ? '#6c63ff' : 'transparent' }}
+                      >
+                        <MaterialCommunityIcons name={opt.icon as any} size={16} color={active ? '#fff' : theme.colors.onSurfaceVariant} />
+                        <Text style={{ fontSize: 13, fontWeight: active ? '700' : '500', color: active ? '#fff' : theme.colors.onSurfaceVariant }}>{opt.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {scheduleMessageType === 'text' ? (
+                  <>
+                    <Text
+                      variant="labelMedium"
+                      style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}
+                    >
+                      {t('chats.enterMessage')}
+                    </Text>
+                    <TextInput
+                      value={scheduleText}
+                      onChangeText={setScheduleText}
+                      placeholder={t('chats.typeMessage')}
+                      placeholderTextColor={theme.colors.onSurfaceVariant}
+                      multiline
+                      style={[
+                        styles.scheduleInput,
+                        {
+                          borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db',
+                          backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f9fafb',
+                          color: theme.colors.onSurface,
+                          fontSize: 15,
+                          minHeight: 60,
+                          textAlignVertical: 'top',
+                          writingDirection: isRTL ? 'rtl' : 'ltr',
+                        },
+                      ]}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}>
+                      {isRTL ? 'בחר תבנית' : 'Select template'}
+                    </Text>
+                    {isLoadingTemplates ? (
+                      <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 8 }} />
+                    ) : (
+                      <ScrollView style={{ maxHeight: 150 }} keyboardShouldPersistTaps="handled">
+                        {templates.length === 0 ? (
+                          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, paddingVertical: 8 }}>
+                            {isRTL ? 'אין תבניות מאושרות' : 'No approved templates'}
+                          </Text>
+                        ) : (
+                          templates.map((tpl) => {
+                            const id = (tpl as any).Id || tpl.id;
+                            const active = scheduleTemplate && ((scheduleTemplate as any).Id || scheduleTemplate.id) === id;
+                            return (
+                              <Pressable
+                                key={id}
+                                onPress={() => handleSelectScheduleTemplate(tpl)}
+                                style={{ paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, marginBottom: 4, backgroundColor: active ? (theme.dark ? '#312e81' : '#eef2ff') : (theme.dark ? 'rgba(255,255,255,0.04)' : '#f9fafb'), borderWidth: 1, borderColor: active ? '#6c63ff' : 'transparent' }}
+                              >
+                                <Text style={{ fontWeight: '600', fontSize: 13, color: theme.colors.onSurface }} numberOfLines={1}>
+                                  {tpl.friendlyName || tpl.name}
+                                </Text>
+                                <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }} numberOfLines={1}>
+                                  {getTemplateBodyText(tpl)}
+                                </Text>
+                              </Pressable>
+                            );
+                          })
+                        )}
+                      </ScrollView>
+                    )}
+                    {scheduleTemplate && getTemplateVariableIndices(scheduleTemplate).length > 0 && (() => {
+                      let schedMapping: Array<{ index: number; entity: string; field: string }> = [];
+                      try { schedMapping = JSON.parse((scheduleTemplate as any).variableMappingJson || '[]'); } catch {}
+                      const isAutoMapped = (idx: number) => {
+                        const me = schedMapping.find((m) => m.index === idx);
+                        return !!me && me.entity !== 'open';
+                      };
+                      return (
+                        <View style={{ marginTop: 8, gap: 6 }}>
+                          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                            {isRTL ? 'משתנים' : 'Variables'}
+                          </Text>
+                          {getTemplateVariableIndices(scheduleTemplate).map((idx) => {
+                            const auto = isAutoMapped(idx);
+                            return (
+                              <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Text style={{ fontSize: 12, color: '#6c63ff', minWidth: 32 }}>{`{{${idx}}}`}</Text>
+                                <TextInput
+                                  value={scheduleVarValues[idx] || ''}
+                                  onChangeText={(v) => setScheduleVarValues((prev) => ({ ...prev, [idx]: v }))}
+                                  placeholder={isRTL ? 'ערך...' : 'Value...'}
+                                  placeholderTextColor={theme.colors.onSurfaceVariant}
+                                  style={{ flex: 1, borderWidth: 1, borderColor: auto ? '#6c63ff' : (theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db'), borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, color: theme.colors.onSurface, backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f9fafb' }}
+                                />
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                                  <MaterialCommunityIcons name={auto ? 'flash' : 'pencil'} size={12} color={auto ? '#6c63ff' : theme.colors.onSurfaceVariant} />
+                                  <Text style={{ fontSize: 10, color: auto ? '#6c63ff' : theme.colors.onSurfaceVariant }}>
+                                    {auto ? (isRTL ? 'אוטומטי' : 'Auto') : (isRTL ? 'ידני' : 'Manual')}
+                                  </Text>
+                                </View>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      );
+                    })()}
+                  </>
+                )}
                 <Text
                   variant="labelMedium"
                   style={{ color: theme.colors.onSurfaceVariant, marginTop: 12, marginBottom: 6 }}
@@ -2811,16 +3204,28 @@ export default function ChatConversationScreen() {
                     }}
                   />
                 )}
+                {scheduleMessageType === 'text' && scheduleIsFarFuture && (
+                  <Text style={{ color: theme.dark ? '#fdba74' : '#9a3412', fontSize: 12, marginTop: 8 }}>
+                    {isRTL
+                      ? '⚠️ מעבר ל-23 שעות חובה לבחור תבנית.'
+                      : '⚠️ More than 23h ahead requires a template.'}
+                  </Text>
+                )}
+                {(() => {
+                  const invalid = !scheduledDateTime || isScheduling
+                    || (scheduleMessageType === 'text' && (!scheduleText.trim() || scheduleIsFarFuture))
+                    || (scheduleMessageType === 'template' && !scheduleTemplate);
+                  return (
                 <Pressable
                   onPress={handleScheduleSubmit}
                   style={({ pressed }) => [
                     styles.scheduleSubmitBtn,
                     {
                       backgroundColor: pressed ? '#1a7a5e' : '#25D366',
-                      opacity: !scheduleText.trim() || !scheduledDateTime || isScheduling ? 0.5 : 1,
+                      opacity: invalid ? 0.5 : 1,
                     },
                   ]}
-                  disabled={!scheduleText.trim() || !scheduledDateTime || isScheduling}
+                  disabled={invalid}
                 >
                   {isScheduling ? (
                     <ActivityIndicator size="small" color="#fff" />
@@ -2831,6 +3236,8 @@ export default function ChatConversationScreen() {
                     {t('chats.scheduleMessage')}
                   </Text>
                 </Pressable>
+                  );
+                })()}
               </View>
             </Pressable>
           </Pressable>
@@ -3327,6 +3734,170 @@ export default function ChatConversationScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
+        {/* Timeline sheet — full notes + activity view (like the web "ציר זמן" tab) */}
+        <Modal
+          visible={showTimelineSheet}
+          transparent
+          animationType="slide"
+          onRequestClose={() => { Keyboard.dismiss(); setShowTimelineSheet(false); }}
+        >
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+          >
+            <Pressable
+              style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }}
+              onPress={() => { Keyboard.dismiss(); setShowTimelineSheet(false); }}
+            >
+              <Pressable
+                style={{
+                  backgroundColor: theme.colors.surface,
+                  borderTopLeftRadius: 16,
+                  borderTopRightRadius: 16,
+                  height: '82%',
+                  paddingBottom: Math.max(insets.bottom, 12),
+                }}
+                onPress={() => {}}
+              >
+                {/* Header */}
+                <View style={{ flexDirection: flexDirection as any, alignItems: 'center', justifyContent: 'space-between', paddingStart: 20, paddingEnd: 8, paddingTop: 16, paddingBottom: 8 }}>
+                  <View style={{ flexDirection: flexDirection as any, alignItems: 'center', gap: 8 }}>
+                    <MaterialCommunityIcons name="timeline-text-outline" size={22} color="#2e6155" />
+                    <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface }}>
+                      {isRTL ? 'ציר זמן' : 'Timeline'}
+                    </Text>
+                  </View>
+                  <IconButton icon="close" size={22} onPress={() => setShowTimelineSheet(false)} />
+                </View>
+
+                {/* Filter chips */}
+                <View style={{ flexDirection: flexDirection as any, gap: 8, paddingHorizontal: 20, paddingBottom: 8 }}>
+                  {([['all', isRTL ? 'הכל' : 'All'], ['notes', isRTL ? 'הערות' : 'Notes']] as const).map(([key, label]) => {
+                    const sel = timelineFilter === key;
+                    return (
+                      <Pressable
+                        key={key}
+                        onPress={() => setTimelineFilter(key)}
+                        style={{
+                          paddingVertical: 6,
+                          paddingHorizontal: 16,
+                          borderRadius: 16,
+                          backgroundColor: sel ? '#2e6155' : theme.colors.surfaceVariant,
+                        }}
+                      >
+                        <Text style={{ fontSize: 13, fontWeight: '600', color: sel ? '#fff' : theme.colors.onSurfaceVariant }}>{label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Divider />
+
+                {/* List (newest first) */}
+                <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 8 }} keyboardShouldPersistTaps="handled">
+                  {(() => {
+                    const isNoteEntry = (e: any) => {
+                      const ty = (e?.timelineType || e?.TimelineType || e?.type || '').toLowerCase();
+                      return ty === 'note' || ty === 'internal_mention' || (!ty && !!(e?.note || e?.text));
+                    };
+                    const entries = [...timelineEntries]
+                      .filter((e) => (timelineFilter === 'notes' ? isNoteEntry(e) : true))
+                      .sort((a, b) => {
+                        const ta = new Date(a.createdOn || a.timestamp || a.CreatedOn || 0).getTime();
+                        const tb = new Date(b.createdOn || b.timestamp || b.CreatedOn || 0).getTime();
+                        return tb - ta;
+                      });
+                    if (entries.length === 0) {
+                      return (
+                        <View style={{ alignItems: 'center', paddingVertical: 48 }}>
+                          <MaterialCommunityIcons name="timeline-outline" size={40} color={theme.colors.onSurfaceVariant} />
+                          <Text style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
+                            {timelineFilter === 'notes' ? (isRTL ? 'אין הערות עדיין' : 'No notes yet') : (isRTL ? 'אין פעילות עדיין' : 'No activity yet')}
+                          </Text>
+                        </View>
+                      );
+                    }
+                    const tlIcon: Record<string, string> = {
+                      note: 'note-text-outline', internal_mention: 'at',
+                      task_created: 'clipboard-plus-outline', task_status_change: 'clipboard-check-outline',
+                      task_assigned: 'clipboard-account-outline', task_completed: 'clipboard-check',
+                      assign: 'account-switch-outline', 'open conversation': 'lock-open-variant-outline',
+                      close: 'lock-outline', 'status change': 'swap-horizontal', 'category change': 'shape-outline',
+                      'campaign message sent': 'bullhorn-outline', 'botomation send message': 'robot-outline',
+                    };
+                    return entries.map((entry, idx) => {
+                      const ty = (entry.timelineType || entry.TimelineType || entry.type || 'note').toLowerCase();
+                      const text = entry.note || entry.text || entry.description || buildTimelineText(entry, isRTL);
+                      const by = entry.createdByName || entry.CreatedByName || entry.addedByName || '';
+                      const ts = entry.createdOn || entry.timestamp || entry.CreatedOn || '';
+                      const taskId = entry.taskId || entry.TaskId || (ty.startsWith('task') ? (entry.entityId || entry.relatedId) : '');
+                      const isTask = ty.startsWith('task') && !!taskId;
+                      const isNote = ty === 'note' || ty === 'internal_mention';
+                      return (
+                        <View key={entry.timelineEntryId || entry.id || idx} style={{ flexDirection: flexDirection as any, marginBottom: 14, gap: 10 }}>
+                          <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: isNote ? '#fff3e0' : '#e8f0ee', alignItems: 'center', justifyContent: 'center' }}>
+                            <MaterialCommunityIcons name={(tlIcon[ty] || 'information-outline') as any} size={16} color={isNote ? '#795548' : '#2e6155'} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: theme.colors.onSurface, fontSize: 14, lineHeight: 20, textAlign: isRTL ? 'right' : 'left' }}>{text}</Text>
+                            <View style={{ flexDirection: flexDirection as any, alignItems: 'center', gap: 8, marginTop: 2 }}>
+                              {by ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{by}</Text> : null}
+                              {ts ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{formatMessageTime(ts)}</Text> : null}
+                            </View>
+                            {isTask ? (
+                              <Pressable
+                                onPress={() => { setShowTimelineSheet(false); router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any); }}
+                                style={{ marginTop: 6, alignSelf: isRTL ? 'flex-end' : 'flex-start', flexDirection: flexDirection as any, alignItems: 'center', gap: 4, backgroundColor: '#2e6155', paddingVertical: 5, paddingHorizontal: 10, borderRadius: 14 }}
+                              >
+                                <MaterialCommunityIcons name="clipboard-text-outline" size={13} color="#fff" />
+                                <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{isRTL ? 'צפה במשימה' : 'View task'}</Text>
+                              </Pressable>
+                            ) : null}
+                          </View>
+                        </View>
+                      );
+                    });
+                  })()}
+                </ScrollView>
+
+                {/* Add-note composer pinned at the bottom */}
+                <Divider />
+                <View style={{ flexDirection: flexDirection as any, alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 8 }}>
+                  <TextInput
+                    value={noteText}
+                    onChangeText={setNoteText}
+                    placeholder={isRTL ? 'הוסף הערה לציר הזמן...' : 'Add a note to the timeline...'}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    multiline
+                    style={{
+                      flex: 1,
+                      borderWidth: 1,
+                      borderColor: theme.colors.outline,
+                      borderRadius: 20,
+                      paddingHorizontal: 14,
+                      paddingTop: 10,
+                      paddingBottom: 10,
+                      maxHeight: 100,
+                      fontSize: 14,
+                      color: theme.colors.onSurface,
+                      textAlign: isRTL ? 'right' : 'left',
+                    }}
+                  />
+                  <IconButton
+                    icon="send"
+                    size={22}
+                    mode="contained"
+                    containerColor="#2e6155"
+                    iconColor="#fff"
+                    disabled={savingNote || !noteText.trim()}
+                    onPress={() => { Keyboard.dismiss(); handleSaveNote(); }}
+                  />
+                </View>
+              </Pressable>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Modal>
+
         {/* / inline quick messages */}
         {showInlineQuickMessages && (() => {
           const filtered = quickMessages.filter((qm: any) => {
@@ -3363,7 +3934,7 @@ export default function ChatConversationScreen() {
                       /{qm.shortcut || qm.title || qm.name || ''}
                     </Text>
                     <Text variant="bodySmall" style={{ color: theme.colors.onSurface, flex: 1, marginStart: 8 }} numberOfLines={1}>
-                      {qm.text || qm.message || qm.body || ''}
+                      {qm.messageText || qm.text || qm.message || qm.body || ''}
                     </Text>
                   </Pressable>
                 ))}
@@ -3386,7 +3957,7 @@ export default function ChatConversationScreen() {
               >
                 <MaterialCommunityIcons name="account-circle-outline" size={18} color={theme.colors.primary} />
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginStart: 8 }}>
-                  {u.fullname || u.name || ''}
+                  {getMentionUserName(u)}
                 </Text>
               </Pressable>
             ))}

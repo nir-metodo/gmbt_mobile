@@ -12,6 +12,7 @@ import { useAppTheme } from '../hooks/useAppTheme';
 import { secureStorage } from '../services/storage';
 import axiosInstance from '../services/api/axiosInstance';
 import { ENDPOINTS } from '../constants/api';
+import { getLandingRoute } from '../constants/permissions';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import * as Notifications from 'expo-notifications';
 import { notificationService } from '../services/notifications';
@@ -91,7 +92,7 @@ export default function RootLayout() {
     if (!user && !inAuthGroup) {
       router.replace('/(auth)/login');
     } else if (user && inAuthGroup) {
-      router.replace('/(tabs)/chats');
+      router.replace(getLandingRoute(user.Permissions, user.SecurityRole) as any);
     }
   }, [user, isInitialized, segments, navigationState?.key]);
 
@@ -179,6 +180,13 @@ export default function RootLayout() {
         case 'gambotAiTransfer':
           if (data.contactPhone) {
             router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone } });
+          } else {
+            router.push('/(tabs)/chats');
+          }
+          break;
+        case 'internal_message':
+          if (data.contactPhone || data.phoneNumber) {
+            router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: (data.contactPhone || data.phoneNumber) as string } });
           } else {
             router.push('/(tabs)/chats');
           }

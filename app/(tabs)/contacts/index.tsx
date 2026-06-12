@@ -22,6 +22,7 @@ import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatPhoneNumber, getInitials } from '../../../utils/formatters';
 import { getDataVisibility } from '../../../constants/permissions';
+import InternalMessagesHub from '../../../components/InternalMessagesHub';
 import type { Contact } from '../../../types';
 
 type ContactFilterMode = 'all' | 'myContacts' | 'recent';
@@ -67,6 +68,7 @@ export default function ContactsListScreen() {
   const [filterMode, setFilterMode] = useState<ContactFilterMode>('all');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [advancedFilterVisible, setAdvancedFilterVisible] = useState(false);
+  const [internalHubVisible, setInternalHubVisible] = useState(false);
   const [filterOwner, setFilterOwner] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [sortBy, setSortBy] = useState<'name' | 'createdOn' | 'modifiedOn' | ''>('');
@@ -441,6 +443,17 @@ export default function ContactsListScreen() {
         <Text style={styles.headerTitle}>{t('contacts.title')}</Text>
         <View style={{ flexDirection: 'row', gap: 4 }}>
           <Pressable
+            onPress={() => setInternalHubVisible(true)}
+            hitSlop={8}
+            style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
+          >
+            <MaterialCommunityIcons
+              name="message-text-outline"
+              size={24}
+              color={theme.custom.headerText}
+            />
+          </Pressable>
+          <Pressable
             onPress={() => setAdvancedFilterVisible(true)}
             hitSlop={8}
             style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
@@ -764,6 +777,11 @@ export default function ContactsListScreen() {
       </Portal>
         </>
       )}
+
+      <InternalMessagesHub
+        visible={internalHubVisible}
+        onClose={() => setInternalHubVisible(false)}
+      />
     </View>
   );
 }
