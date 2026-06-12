@@ -279,10 +279,10 @@ export default function OrderDetailScreen() {
 
   // ── Save note (view mode) ─────────────────────────────────────────
   const handleSaveNote = useCallback(async () => {
-    if (!user?.organization || !id || (!noteText.trim() && !noteAttachment)) return;
+    if (!user?.organization || !id || !noteText.trim()) return;
     setSavingNote(true);
     try {
-      await ordersApi.addNote(user.organization, id, noteText.trim(), user.uID || user.userId, noteAttachment || undefined);
+      await ordersApi.addNote(user.organization, id, noteText.trim(), user.uID || user.userId, user.fullname || '');
       setNoteModalVisible(false);
       setNoteText('');
       setNoteAttachment(null);
@@ -292,7 +292,7 @@ export default function OrderDetailScreen() {
     } finally {
       setSavingNote(false);
     }
-  }, [user?.organization, id, noteText, noteAttachment, user?.uID, user?.userId, fetchOrder, t]);
+  }, [user?.organization, id, noteText, user?.uID, user?.userId, user?.fullname, fetchOrder, t]);
 
   // ── Create order ──────────────────────────────────────────────────
   const handleCreate = useCallback(async () => {

@@ -84,11 +84,12 @@ export function getOrderTotal(order: Order): number {
 
 export const ordersApi = {
   async getAll(organization: string, params?: { status?: string; page?: number; pageSize?: number }): Promise<Order[]> {
+    // Backend GetOrders reads `organization` + `filters` (not `organizationName`/`status`).
+    // Sending the wrong field returned "organization required" → empty list on mobile.
+    // Mirror the web: send organization + empty filters and filter client-side.
     const response = await axiosInstance.post(ENDPOINTS.GET_ORDERS, {
-      organizationName: organization,
-      status: params?.status,
-      page: params?.page ?? 1,
-      pageSize: params?.pageSize ?? 50,
+      organization,
+      filters: params?.status ? { status: params.status } : {},
     });
     const raw = response.data;
     const items = raw?.orders || raw?.Orders || raw?.data || raw?.Data || (Array.isArray(raw) ? raw : []);
@@ -97,7 +98,7 @@ export const ordersApi = {
 
   async getById(organization: string, orderId: string): Promise<Order | null> {
     const response = await axiosInstance.post(ENDPOINTS.GET_ORDER, {
-      organizationName: organization,
+      organization,
       orderId,
     });
     return response.data?.order || response.data?.Order || response.data || null;
@@ -146,17 +147,15 @@ export const ordersApi = {
     return response.data;
   },
 
-  async addNote(organization: string, orderId: string, note: string, userId?: string, attachment?: { uri: string; name: string; type: string }): Promise<any> {
-    const formData = new FormData();
-    formData.append('organizationName', organization);
-    formData.append('orderId', orderId);
-    formData.append('note', note);
-    if (userId) formData.append('userId', userId);
-    if (attachment) {
-      formData.append('file', { uri: attachment.uri, name: attachment.name, type: attachment.type } as any);
-    }
-    const response = await axiosInstance.post(ENDPOINTS.ADD_ORDER_NOTE, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+  async addNote(organization: string, orderId: string, note: string, userId?: string, userName?: string): Promise<any> {
+    // Backend AddOrderNote takes a JSON body ({ organization, orderId, note, userId, userName })
+    // and does not support file attachments — mirror the web payload exactly.
+    const response = await axiosInstance.post(ENDPOINTS.ADD_ORDER_NOTE, {
+      organization,
+      orderId,
+      note,
+      userId: userId ?? '',
+      userName: userName ?? '',
     });
     return response.data;
   },
