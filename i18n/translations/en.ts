@@ -220,6 +220,11 @@ export default {
     alreadyExistsMsg: 'A contact with this phone number already exists',
     goToContact: 'Go to Contact',
   },
+  kanban: {
+    dropHere: 'Drag & drop here',
+    dropHereShort: 'Drop here',
+    dragToColumn: 'Drag to another column to change stage',
+  },
   leads: {
     title: 'Leads',
     searchPlaceholder: 'Search leads...',

@@ -3761,8 +3761,8 @@ export default function ChatConversationScreen() {
                 onPress={() => {}}
               >
                 {/* Header */}
-                <View style={{ flexDirection: flexDirection as any, alignItems: 'center', justifyContent: 'space-between', paddingStart: 20, paddingEnd: 8, paddingTop: 16, paddingBottom: 8 }}>
-                  <View style={{ flexDirection: flexDirection as any, alignItems: 'center', gap: 8 }}>
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', justifyContent: 'space-between', paddingStart: 20, paddingEnd: 8, paddingTop: 16, paddingBottom: 8 }}>
+                  <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8 }}>
                     <MaterialCommunityIcons name="timeline-text-outline" size={22} color="#2e6155" />
                     <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface }}>
                       {isRTL ? 'ציר זמן' : 'Timeline'}
@@ -3772,7 +3772,7 @@ export default function ChatConversationScreen() {
                 </View>
 
                 {/* Filter chips */}
-                <View style={{ flexDirection: flexDirection as any, gap: 8, paddingHorizontal: 20, paddingBottom: 8 }}>
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 8 }}>
                   {([['all', isRTL ? 'הכל' : 'All'], ['notes', isRTL ? 'הערות' : 'Notes']] as const).map(([key, label]) => {
                     const sel = timelineFilter === key;
                     return (
@@ -3834,20 +3834,20 @@ export default function ChatConversationScreen() {
                       const isTask = ty.startsWith('task') && !!taskId;
                       const isNote = ty === 'note' || ty === 'internal_mention';
                       return (
-                        <View key={entry.timelineEntryId || entry.id || idx} style={{ flexDirection: flexDirection as any, marginBottom: 14, gap: 10 }}>
+                        <View key={entry.timelineEntryId || entry.id || idx} style={{ flexDirection: isRTL ? 'row-reverse' : 'row', marginBottom: 14, gap: 10 }}>
                           <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: isNote ? '#fff3e0' : '#e8f0ee', alignItems: 'center', justifyContent: 'center' }}>
                             <MaterialCommunityIcons name={(tlIcon[ty] || 'information-outline') as any} size={16} color={isNote ? '#795548' : '#2e6155'} />
                           </View>
                           <View style={{ flex: 1 }}>
                             <Text style={{ color: theme.colors.onSurface, fontSize: 14, lineHeight: 20, textAlign: isRTL ? 'right' : 'left' }}>{text}</Text>
-                            <View style={{ flexDirection: flexDirection as any, alignItems: 'center', gap: 8, marginTop: 2 }}>
+                            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
                               {by ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{by}</Text> : null}
                               {ts ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{formatMessageTime(ts)}</Text> : null}
                             </View>
                             {isTask ? (
                               <Pressable
                                 onPress={() => { setShowTimelineSheet(false); router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any); }}
-                                style={{ marginTop: 6, alignSelf: isRTL ? 'flex-end' : 'flex-start', flexDirection: flexDirection as any, alignItems: 'center', gap: 4, backgroundColor: '#2e6155', paddingVertical: 5, paddingHorizontal: 10, borderRadius: 14 }}
+                                style={{ marginTop: 6, alignSelf: isRTL ? 'flex-end' : 'flex-start', flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 4, backgroundColor: '#2e6155', paddingVertical: 5, paddingHorizontal: 10, borderRadius: 14 }}
                               >
                                 <MaterialCommunityIcons name="clipboard-text-outline" size={13} color="#fff" />
                                 <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{isRTL ? 'צפה במשימה' : 'View task'}</Text>
@@ -3862,7 +3862,7 @@ export default function ChatConversationScreen() {
 
                 {/* Add-note composer pinned at the bottom */}
                 <Divider />
-                <View style={{ flexDirection: flexDirection as any, alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 8 }}>
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 8 }}>
                   <TextInput
                     value={noteText}
                     onChangeText={setNoteText}

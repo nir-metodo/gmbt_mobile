@@ -145,6 +145,7 @@ export const ENDPOINTS = {
   TOGGLE_TIMELINE_ENTRY_PIN: '/api/Webhooks/ToggleTimelineEntryPin',
   GET_LEADS_BY_CONTACT: '/api/Webhooks/GetLeadsByContact',
   GET_CROSS_ENTITY_NOTES_SETTING: '/api/Webhooks/GetCrossEntityNotesSetting',
+  GET_ALL_NOTES_FOR_ORGANIZATION: '/api/Webhooks/GetAllNotesForOrganization',
 
   // Quick Messages
   GET_QUICK_MESSAGES: '/api/Webhooks/GetQuickMessages',

@@ -14,6 +14,7 @@ import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRTL } from '../../hooks/useRTL';
 import axiosInstance from '../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
+import ContactInternalMessages from '../ContactInternalMessages';
 
 interface Props {
   visible: boolean;
@@ -49,6 +50,7 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
   const [caseStageMenuVisible, setCaseStageMenuVisible] = useState<string | null>(null);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [showAddCategory, setShowAddCategory] = useState(false);
+  const [infoTab, setInfoTab] = useState<'details' | 'internal'>('details');
 
   const flexDirection = isRTL ? 'row-reverse' as const : 'row' as const;
   const textAlign = isRTL ? 'right' as const : 'left' as const;
@@ -214,7 +216,47 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
           </Pressable>
         </View>
 
-        {loading ? (
+        <View style={[styles.tabBar, { flexDirection, borderBottomColor: theme.colors.outline }]}>
+          {([
+            { key: 'details' as const, label: t('chats.contactDetailsTab', 'פרטים'), icon: 'card-account-details-outline' },
+            { key: 'internal' as const, label: t('internalMessages.tabShort', 'הודעות פנימיות'), icon: 'message-text-outline' },
+          ]).map((tabItem) => {
+            const isActive = infoTab === tabItem.key;
+            return (
+              <Pressable
+                key={tabItem.key}
+                onPress={() => setInfoTab(tabItem.key)}
+                style={[
+                  styles.tab,
+                  { flexDirection },
+                  isActive && { borderBottomWidth: 3, borderBottomColor: theme.colors.primary },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={tabItem.icon as any}
+                  size={16}
+                  color={isActive ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                />
+                <Text
+                  variant="labelLarge"
+                  numberOfLines={1}
+                  style={{
+                    color: isActive ? theme.colors.primary : theme.colors.onSurfaceVariant,
+                    fontWeight: isActive ? '700' : '500',
+                  }}
+                >
+                  {tabItem.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {infoTab === 'internal' ? (
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 16 }}>
+            <ContactInternalMessages contactPhone={phoneNumber} />
+          </ScrollView>
+        ) : loading ? (
           <ActivityIndicator style={{ marginVertical: 30 }} />
         ) : (
           <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
@@ -449,6 +491,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   body: { paddingHorizontal: 16, paddingBottom: 16 },
+  tabBar: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+  },
   section: { marginBottom: 18 },
   sectionLabel: { fontWeight: '700', marginBottom: 8 },
   selector: {

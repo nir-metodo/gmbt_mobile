@@ -227,12 +227,25 @@ const SYSTEM_KEYS = new Set<string>([
   'pipeline', 'pipelineId', 'color', 'icon', 'avatar', 'photoUrl', 'photoURL',
   'history', 'timeline', 'events', 'metadata', 'raw', 'customFields',
   'formSections', 'formLayout', 'sections', 'layout', 'settings',
+  // Audit / display metadata that is shown elsewhere or is purely internal.
+  'createdByName', 'modifiedByName', 'updatedByName', 'createdByID', 'modifiedByID',
+  'modifiedOn', 'modifiedDate', 'lastModified', 'lastModifiedOn',
+  'lastMessageTime', 'lastMessageDate', 'lastMessage', 'lastMessageId',
+  'lastInboundMessageTime', 'lastOutboundMessageTime', 'lastActivityTime',
+  'lastConversationStatus', 'lastConversationCategory',
 ]);
 
 // Any identifier-style key (e.g. modifiedById, contactId, leadID, foo_id) is internal
 // plumbing and must never be shown to the user.
 function isIdKey(key: string): boolean {
   return /[a-z]Id$/.test(key) || /ID$/.test(key) || /_id$/i.test(key);
+}
+
+// Follow-up automation config (followUpEnabled, followUpUnit, followUpInterval,
+// followUpRepeat, followUpMaxRepeats, nextFollowUp, ...) is backend plumbing the user
+// configures in settings — it must never leak into a record's detail view.
+function isInternalAutomationKey(key: string): boolean {
+  return /^follow[_-]?up/i.test(key);
 }
 
 const ISRAEL_TZ = 'Asia/Jerusalem';
@@ -335,7 +348,7 @@ export function ExtraFieldsSectionView({
   const safeData: Record<string, any> = data ?? {};
   const exclude = new Set<string>([...SYSTEM_KEYS, ...excludeKeys]);
   const entries = Object.entries(safeData).filter(
-    ([k, v]) => !exclude.has(k) && !isIdKey(k) && isDisplayableExtraValue(v),
+    ([k, v]) => !exclude.has(k) && !isIdKey(k) && !isInternalAutomationKey(k) && isDisplayableExtraValue(v),
   );
 
   if (entries.length === 0) return null;

@@ -221,6 +221,11 @@ export default {
     alreadyExistsMsg: 'איש קשר עם מספר טלפון זה כבר קיים',
     goToContact: 'עבור לאיש קשר',
   },
+  kanban: {
+    dropHere: 'גרור ושחרר כאן',
+    dropHereShort: 'שחרר כאן',
+    dragToColumn: 'גרור לעמודה אחרת לשינוי שלב',
+  },
   leads: {
     title: 'לידים',
     searchPlaceholder: 'חפש לידים...',

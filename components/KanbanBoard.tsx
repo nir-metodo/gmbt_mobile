@@ -22,6 +22,7 @@ import Animated, {
   runOnJS,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../hooks/useAppTheme';
 import { useRTL } from '../hooks/useRTL';
 
@@ -53,7 +54,8 @@ export function KanbanBoard<T>({
   columnWidth: columnWidthProp,
 }: KanbanBoardProps<T>) {
   const theme = useAppTheme();
-  const { flexDirection } = useRTL();
+  const { flexDirection, isRTL } = useRTL();
+  const { t } = useTranslation();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLandscape = windowWidth > windowHeight;
   const columnWidth = columnWidthProp ?? (isLandscape ? windowWidth * 0.35 : windowWidth * 0.72);
@@ -220,7 +222,7 @@ export function KanbanBoard<T>({
                 {isHighlighted && (
                   <View style={[styles.dropIndicator, { backgroundColor: column.color }]}>
                     <MaterialCommunityIcons name="arrow-down" size={14} color="#fff" />
-                    <Text style={styles.dropText}>שחרר כאן</Text>
+                    <Text style={styles.dropText}>{t('kanban.dropHereShort', isRTL ? 'שחרר כאן' : 'Drop here')}</Text>
                   </View>
                 )}
               </View>
@@ -231,12 +233,22 @@ export function KanbanBoard<T>({
                 showsVerticalScrollIndicator={false}
                 scrollEnabled={!dragging}
               >
-                {column.items.length === 0 ? (
-                  <View style={styles.emptyColumn}>
-                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
-                      {emptyLabel}
+                {isHighlighted && (
+                  <View style={[styles.dropZone, { borderColor: column.color, backgroundColor: `${column.color}12` }]}>
+                    <MaterialCommunityIcons name="tray-arrow-down" size={22} color={column.color} />
+                    <Text style={[styles.dropZoneText, { color: column.color }]}>
+                      {t('kanban.dropHere', isRTL ? 'גרור ושחרר כאן' : 'Drag & drop here')}
                     </Text>
                   </View>
+                )}
+                {column.items.length === 0 ? (
+                  !isHighlighted ? (
+                    <View style={styles.emptyColumn}>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+                        {emptyLabel}
+                      </Text>
+                    </View>
+                  ) : null
                 ) : (
                   column.items.map((item) => renderDraggableCard(item, column.id))
                 )}
@@ -249,7 +261,9 @@ export function KanbanBoard<T>({
       {dragging && (
         <View style={styles.dragHint}>
           <MaterialCommunityIcons name="gesture-swipe" size={16} color="#fff" />
-          <Text style={styles.dragHintText}>גרור לעמודה אחרת לשינוי שלב</Text>
+          <Text style={styles.dragHintText}>
+            {t('kanban.dragToColumn', isRTL ? 'גרור לעמודה אחרת לשינוי שלב' : 'Drag to another column to change stage')}
+          </Text>
         </View>
       )}
     </GestureHandlerRootView>
@@ -296,6 +310,21 @@ const styles = StyleSheet.create({
   emptyColumn: {
     paddingVertical: 30,
     alignItems: 'center',
+  },
+  dropZone: {
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    paddingVertical: 22,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 8,
+  },
+  dropZoneText: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   dropIndicator: {
     flexDirection: 'row',
