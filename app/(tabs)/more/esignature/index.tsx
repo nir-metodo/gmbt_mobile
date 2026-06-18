@@ -23,6 +23,8 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { esignatureApi } from '../../../../services/api/esignature';
 import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate } from '../../../../utils/formatters';
@@ -121,6 +123,9 @@ export default function ESignatureListScreen() {
     }
   }, [searchVisible, searchAnim]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredDocuments = useMemo(() => {
     let result = documents;
 
@@ -128,8 +133,8 @@ export default function ESignatureListScreen() {
       result = result.filter((d) => d.status === statusFilter);
     }
 
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const query = debouncedSearch.toLowerCase();
       result = result.filter((d) => {
         const nameMatch =
           d.title?.toLowerCase().includes(query) ||
@@ -147,7 +152,13 @@ export default function ESignatureListScreen() {
     return result.sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
-  }, [documents, statusFilter, searchQuery]);
+  }, [documents, statusFilter, debouncedSearch]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleDocs, hasMore: docsHasMore, loadMore: docsLoadMore, loadAll: docsLoadAll, count: docsCount } = useWindowedList(filteredDocuments, {
+    pageSize: 30,
+    resetKey: `${statusFilter}|${debouncedSearch}`,
+  });
 
   const openDocument = useCallback(
     (doc: ESignatureDocument) => {
@@ -446,10 +457,21 @@ export default function ESignatureListScreen() {
 
       {/* Document list */}
       <FlatList
-        data={filteredDocuments}
+        data={visibleDocs}
         renderItem={renderDocumentCard}
         keyExtractor={(item) => item.documentId || item.id}
         ListEmptyComponent={renderEmpty}
+        ListFooterComponent={
+          <ListPaginationFooter
+            count={docsCount}
+            total={filteredDocuments.length}
+            hasMore={docsHasMore}
+            onLoadMore={docsLoadMore}
+            onLoadAll={docsLoadAll}
+          />
+        }
+        onEndReached={docsHasMore ? docsLoadMore : undefined}
+        onEndReachedThreshold={0.4}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

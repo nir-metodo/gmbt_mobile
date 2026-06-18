@@ -31,10 +31,13 @@ import { useContactStore } from '../../../stores/contactStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { useLeadStore } from '../../../stores/leadStore';
 import { contactsApi } from '../../../services/api/contacts';
+import { usersApi } from '../../../services/api/users';
 import { quotesApi } from '../../../services/api/quotes';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
-import { makeAppCall } from '../../../utils/phoneCall';
+import { placeSmartCall } from '../../../utils/phoneCall';
+import { cleanPhoneNumber } from '../../../utils/phoneNumber';
+import PhoneNumberInput from '../../../components/PhoneNumberInput';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import {
@@ -52,6 +55,7 @@ import {
 import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
 import ContactInternalMessages from '../../../components/ContactInternalMessages';
+import AddTaskSheet from '../../../components/AddTaskSheet';
 import type { Contact, TimelineEvent } from '../../../types';
 
 type DetailTab = 'timeline' | 'internal' | 'related';
@@ -90,6 +94,7 @@ export default function ContactDetailScreen() {
   const contacts = useContactStore((s) => s.contacts);
   const updateContact = useContactStore((s) => s.updateContact);
   const deleteContact = useContactStore((s) => s.deleteContact);
+  const loadContacts = useContactStore((s) => s.loadContacts);
   const setSelectedContact = useContactStore((s) => s.setSelectedContact);
 
   const isNew = id === 'new';
@@ -99,7 +104,9 @@ export default function ContactDetailScreen() {
   );
   const [fetchedContact, setFetchedContact] = useState<Contact | null>(null);
   const [loadingContact, setLoadingContact] = useState(false);
-  const contact = contactFromStore ?? fetchedContact;
+  // Prefer the full fetched record (incl. dynamic/custom fields) over the sparse list-store item,
+  // so the edit form shows and saves every field like the web.
+  const contact = fetchedContact ?? contactFromStore;
 
   const [activeTab, setActiveTab] = useState<DetailTab>('timeline');
   const [editVisible, setEditVisible] = useState(isNew);
@@ -109,6 +116,8 @@ export default function ContactDetailScreen() {
     contact ? { ...contact } : { ...EMPTY_CONTACT },
   );
   const [saving, setSaving] = useState(false);
+  const [existingContact, setExistingContact] = useState<Contact | null>(null);
+  const [checkingDuplicate, setCheckingDuplicate] = useState(false);
   const [contactFormSections, setContactFormSections] = useState<DynamicSection[]>([]);
   const [contactFormLayout, setContactFormLayout] = useState<string[]>([]);
   const [noteModalVisible, setNoteModalVisible] = useState(false);
@@ -121,9 +130,16 @@ export default function ContactDetailScreen() {
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [relatedRecords, setRelatedRecords] = useState<any>({ tables: [], leads: [], quotes: [], tasks: [] });
   const [relatedLoading, setRelatedLoading] = useState(false);
+  const [orgUsers, setOrgUsers] = useState<any[]>([]);
+  const [orgUsersLoading, setOrgUsersLoading] = useState(false);
+  const [ownerPickerExpanded, setOwnerPickerExpanded] = useState(false);
+  const [flagSaving, setFlagSaving] = useState(false);
+  const [addTaskVisible, setAddTaskVisible] = useState(false);
 
   useEffect(() => {
-    if (!isNew && !contactFromStore && id && organization) {
+    // Always load the full record for an existing contact (even if a sparse copy is in the list
+    // store) so the dynamic/custom fields are available for viewing and editing.
+    if (!isNew && id && organization) {
       setLoadingContact(true);
       contactsApi.getById(organization, id).then((c) => {
         if (c) {
@@ -133,7 +149,21 @@ export default function ContactDetailScreen() {
         }
       }).catch(() => {}).finally(() => setLoadingContact(false));
     }
-  }, [isNew, contactFromStore, id, organization]);
+  }, [isNew, id, organization]);
+
+  const refetchContact = useCallback(async () => {
+    if (isNew || !id || !organization) return;
+    try {
+      const c = await contactsApi.getById(organization, id);
+      if (c) {
+        setFetchedContact(c);
+        setForm({ ...c });
+        setFormTags(extractTags(c.keys));
+      }
+    } catch {
+      // keep existing data on failure
+    }
+  }, [isNew, id, organization]);
 
   useEffect(() => {
     if (contact) {
@@ -333,13 +363,13 @@ export default function ContactDetailScreen() {
 
   const handleCall = useCallback(() => {
     if (contact?.phoneNumber) {
-      makeAppCall({
+      placeSmartCall({
         phoneNumber: contact.phoneNumber,
         organization,
-        callerUserId: user?.uID || user?.userId,
-        callerUserName: user?.fullname,
+        user,
         relatedTo: { type: 'contact', entityId: contact.id, entityName: contact.name },
-        contactName: contact.name,
+        contactId: contact.id,
+        customerName: contact.name,
       });
     }
   }, [contact, organization, user]);
@@ -361,55 +391,65 @@ export default function ContactDetailScreen() {
         text: t('common.delete'),
         style: 'destructive',
         onPress: async () => {
-          if (organization && contact) {
-            await deleteContact(organization, contact.id);
+          if (!organization || !contact) return;
+          try {
+            await deleteContact(organization, contact.id || contact.phoneNumber || '');
+            // Refresh the list so it reloads without the deleted contact.
+            loadContacts(organization, user?.uID || user?.userId, 'all').catch(() => {});
+            Alert.alert(
+              t('common.success', 'הצלחה'),
+              t('contacts.deleteSuccess', 'איש הקשר נמחק בהצלחה'),
+            );
             if (router.canGoBack()) router.back();
             else router.replace('/(tabs)/contacts');
+          } catch {
+            Alert.alert(t('common.error'), t('contacts.deleteError', 'מחיקת איש הקשר נכשלה'));
           }
         },
       },
     ]);
-  }, [organization, contact, contactName, deleteContact, t, router]);
+  }, [organization, contact, contactName, deleteContact, loadContacts, user, t, router]);
 
   const createContact = useContactStore((s) => s.createContact);
+
+  // Server-side "contact already exists?" check, mirroring the web NewContactForm.
+  const checkDuplicate = useCallback(async (fullNumber: string): Promise<Contact | null> => {
+    if (!organization || !isNew) return null;
+    const cleaned = (fullNumber || '').replace(/\D/g, '');
+    if (!cleaned) { setExistingContact(null); return null; }
+    setCheckingDuplicate(true);
+    try {
+      const results = await contactsApi.search(organization, cleaned, 5);
+      const found = (Array.isArray(results) ? results : []).find(
+        (c) => (c.phoneNumber || c.id || '').replace(/\D/g, '') === cleaned,
+      ) || null;
+      setExistingContact(found);
+      return found;
+    } catch {
+      setExistingContact(null);
+      return null;
+    } finally {
+      setCheckingDuplicate(false);
+    }
+  }, [organization, isNew]);
 
   const handleSave = useCallback(async () => {
     if (!organization) return;
     setSaving(true);
     try {
-      const formData = { ...form, keys: formTags.length > 0 ? formTags.join('#') : '' };
+      // Normalize to WhatsApp format on save too (safety net), matching the web.
+      const normalizedPhone = cleanPhoneNumber(form.phoneNumber || '');
+      const formData = { ...form, phoneNumber: normalizedPhone, keys: formTags.length > 0 ? formTags.join('#') : '' };
       const userId = user?.userId || user?.uID || '';
       const userName = user?.fullname || user?.name || 'Gambot';
       if (isNew) {
-        // Check if contact with this phone number already exists
-        const cleanedPhone = (form.phoneNumber || '').replace(/\D/g, '');
-        if (cleanedPhone) {
-          const existing = contacts.find((c) => {
-            const cp = (c.phoneNumber || c.id || '').replace(/\D/g, '');
-            return cp === cleanedPhone;
-          });
-          if (existing) {
-            setSaving(false);
-            Alert.alert(
-              t('contacts.alreadyExistsTitle', 'איש קשר קיים'),
-              t('contacts.alreadyExistsMsg', `איש קשר עם מספר זה כבר קיים: ${existing.name || existing.phoneNumber}`),
-              [
-                { text: t('common.cancel'), style: 'cancel' },
-                {
-                  text: t('contacts.goToContact', 'עבור לאיש קשר'),
-                  onPress: () => {
-                    router.replace({
-                      pathname: '/(tabs)/contacts/[id]',
-                      params: { id: existing.id || existing.phoneNumber || cleanedPhone },
-                    });
-                  },
-                },
-              ],
-            );
-            return;
-          }
+        // Server-side duplicate check (like web) before creating.
+        const found = await checkDuplicate(normalizedPhone);
+        if (found) {
+          setSaving(false);
+          return; // inline warning under the phone field guides the user
         }
-        await createContact(organization, { ...formData, id: form.phoneNumber || '' }, userId, userName);
+        await createContact(organization, { ...formData, id: normalizedPhone || '' }, userId, userName);
         if (router.canGoBack()) {
           router.back();
         } else {
@@ -418,13 +458,15 @@ export default function ContactDetailScreen() {
       } else {
         await updateContact(organization, { ...formData, id: contact?.id ?? '' }, userId, userName);
         setEditVisible(false);
+        // Pull the authoritative record back so the view reflects exactly what was saved.
+        await refetchContact();
       }
     } catch {
       Alert.alert(t('common.error'));
     } finally {
       setSaving(false);
     }
-  }, [organization, form, formTags, contact, isNew, createContact, updateContact, t, router]);
+  }, [organization, form, formTags, contact, isNew, createContact, updateContact, refetchContact, checkDuplicate, t, router]);
 
   const updateField = useCallback(
     (field: keyof Contact, value: string) => {
@@ -432,6 +474,101 @@ export default function ContactDetailScreen() {
     },
     [],
   );
+
+  // Persist consent / spam flags directly (mirrors web ContactFormView UpdateContactById).
+  const persistContactFlags = useCallback(
+    async (patch: Partial<Contact>) => {
+      if (!organization || !contact) return;
+      const phone = (contact.phoneNumber || contact.id || '').toString();
+      const userId = user?.userId || user?.uID || '';
+      const userName = user?.fullname || user?.name || 'Gambot';
+      await contactsApi.update(organization, { id: phone, phoneNumber: phone, ...patch }, userId, userName);
+      await refetchContact();
+    },
+    [organization, contact, user, refetchContact],
+  );
+
+  const handleMarkConsent = useCallback(
+    (value: boolean) => {
+      setMenuVisible(false);
+      const run = async () => {
+        setFlagSaving(true);
+        try {
+          const nowIso = new Date().toISOString();
+          const patch: Partial<Contact> = value
+            ? {
+                consent: true,
+                consentSource: 'manual',
+                consentDate: nowIso,
+                consentText: i18n.language !== 'en' ? 'הסכמה ידנית' : 'Manual consent',
+                consentType: 'Explicit',
+              }
+            : { consent: false, consentSource: null, consentDate: null, consentText: null, consentType: null };
+          await persistContactFlags(patch);
+        } catch {
+          Alert.alert(t('common.error'));
+        } finally {
+          setFlagSaving(false);
+        }
+      };
+      if (!value) {
+        Alert.alert(
+          t('contacts.consentNotAgreed', 'לא הסכימו'),
+          t('contacts.markNotAgreedConfirm', 'לסמן שאיש הקשר אינו מסכים לקבל הודעות?'),
+          [
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('common.confirm', 'אישור'), style: 'destructive', onPress: run },
+          ],
+        );
+      } else {
+        run();
+      }
+    },
+    [persistContactFlags, t, i18n.language],
+  );
+
+  const handleToggleSpam = useCallback(() => {
+    setMenuVisible(false);
+    const isSpam = !!(contact as any)?.isSpam;
+    const run = async () => {
+      setFlagSaving(true);
+      try {
+        const patch: Partial<Contact> = isSpam
+          ? { isSpam: false }
+          : {
+              isSpam: true,
+              markedSpamAt: new Date().toISOString(),
+              markedSpamBy: user?.userId || user?.uID || 'system',
+              markedSpamByName: user?.fullname || user?.name || 'system',
+            };
+        await persistContactFlags(patch);
+      } catch {
+        Alert.alert(t('common.error'));
+      } finally {
+        setFlagSaving(false);
+      }
+    };
+    Alert.alert(
+      isSpam ? t('contacts.removeSpam', 'הסר ספאם') : t('contacts.markSpam', 'סמן כספאם'),
+      isSpam
+        ? t('contacts.removeSpamConfirm', 'להסיר את סימון הספאם מאיש קשר זה?')
+        : t('contacts.markSpamConfirm', 'לסמן איש קשר זה כספאם? הוא יוחרג מקמפיינים ושליחות.'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('common.confirm', 'אישור'), style: 'destructive', onPress: run },
+      ],
+    );
+  }, [contact, persistContactFlags, user, t]);
+
+  const loadOrgUsers = useCallback(() => {
+    if (orgUsers.length > 0 || orgUsersLoading || !organization) return;
+    setOrgUsersLoading(true);
+    usersApi
+      .getAll(organization)
+      .then((u) => setOrgUsers(u))
+      .catch(() => {})
+      .finally(() => setOrgUsersLoading(false));
+  }, [orgUsers.length, orgUsersLoading, organization]);
 
   if (!contact && !isNew) {
     return (
@@ -503,6 +640,29 @@ export default function ContactDetailScreen() {
               title={t('contacts.mediaAndFiles', 'מדיה וקבצים')}
             />
             <Divider />
+            {(contact as any)?.consent !== true ? (
+              <Menu.Item
+                leadingIcon="check-decagram"
+                onPress={() => handleMarkConsent(true)}
+                title={t('contacts.markAgreed', 'סמן כהסכמה')}
+                titleStyle={{ color: '#16A34A' }}
+              />
+            ) : null}
+            {(contact as any)?.consent !== false ? (
+              <Menu.Item
+                leadingIcon="cancel"
+                onPress={() => handleMarkConsent(false)}
+                title={t('contacts.markNotAgreed', 'סמן כאי-הסכמה')}
+                titleStyle={{ color: '#D97706' }}
+              />
+            ) : null}
+            <Menu.Item
+              leadingIcon={(contact as any)?.isSpam ? 'shield-check-outline' : 'shield-alert-outline'}
+              onPress={handleToggleSpam}
+              title={(contact as any)?.isSpam ? t('contacts.removeSpam', 'הסר ספאם') : t('contacts.markSpam', 'סמן כספאם')}
+              titleStyle={{ color: (contact as any)?.isSpam ? theme.colors.onSurface : '#DC2626' }}
+            />
+            <Divider />
             <Menu.Item
               leadingIcon="delete-outline"
               onPress={handleDelete}
@@ -543,6 +703,35 @@ export default function ContactDetailScreen() {
               {contact.email}
             </Text>
           ) : null}
+          {(() => {
+            const c = contact as any;
+            const chips: React.ReactNode[] = [];
+            if (c?.isSpam) {
+              chips.push(
+                <Chip key="spam" compact icon="shield-alert" style={{ backgroundColor: '#FEE2E2' }} textStyle={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>
+                  {t('contacts.possibleSpam', 'ספאם')}
+                </Chip>,
+              );
+            }
+            if (c?.consent === true) {
+              chips.push(
+                <Chip key="consent-yes" compact icon="check-decagram" style={{ backgroundColor: '#DCFCE7' }} textStyle={{ color: '#16A34A', fontWeight: '700', fontSize: 12 }}>
+                  {t('contacts.consentAgreed', 'הסכים')}
+                </Chip>,
+              );
+            } else if (c?.consent === false) {
+              chips.push(
+                <Chip key="consent-no" compact icon="cancel" style={{ backgroundColor: '#FEF3C7' }} textStyle={{ color: '#D97706', fontWeight: '700', fontSize: 12 }}>
+                  {t('contacts.consentNotAgreed', 'לא הסכים')}
+                </Chip>,
+              );
+            }
+            return chips.length > 0 ? (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, justifyContent: 'center', opacity: flagSaving ? 0.5 : 1 }}>
+                {chips}
+              </View>
+            ) : null;
+          })()}
         </View>
 
         {!isNew ? (
@@ -567,6 +756,13 @@ export default function ContactDetailScreen() {
               color="#9C27B0"
               bg="#F3E5F5"
               onPress={() => setNoteModalVisible(true)}
+            />
+            <ActionButton
+              icon="clipboard-check-outline"
+              label={t('tasks.taskShort', 'משימה')}
+              color="#FF9800"
+              bg="#FFF3E0"
+              onPress={() => setAddTaskVisible(true)}
             />
           </View>
         ) : null}
@@ -769,15 +965,44 @@ export default function ContactDetailScreen() {
                 textAlign={textAlign}
                 writingDirection={writingDirection}
               />
-              <FormField
+              <PhoneNumberInput
                 label={t('contacts.phone')}
                 value={form.phoneNumber ?? ''}
-                onChangeText={(v) => updateField('phoneNumber', v)}
+                onChangeNumber={(v) => { updateField('phoneNumber', v); if (existingContact) setExistingContact(null); }}
+                onBlurNormalized={(full) => { checkDuplicate(full); }}
                 theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-                keyboardType="phone-pad"
+                helperText={
+                  i18n.language !== 'en'
+                    ? 'המספרים יומרו אוטומטית לפורמט וואטסאפ (למשל: 050-5278310 ← 972505278310)'
+                    : 'Numbers are auto-converted to WhatsApp format (e.g. 050-5278310 → 972505278310)'
+                }
               />
+              {isNew && existingContact ? (
+                <Pressable
+                  onPress={() => {
+                    const goId = existingContact.id || existingContact.phoneNumber || '';
+                    if (goId) router.replace({ pathname: '/(tabs)/contacts/[id]', params: { id: goId } });
+                  }}
+                  style={{
+                    flexDirection,
+                    alignItems: 'center',
+                    gap: 8,
+                    backgroundColor: '#FEF3C7',
+                    borderColor: '#F59E0B',
+                    borderWidth: 1,
+                    borderRadius: 10,
+                    padding: 12,
+                    marginBottom: 12,
+                  }}
+                >
+                  <MaterialCommunityIcons name="alert-circle-outline" size={20} color="#B45309" />
+                  <Text style={{ color: '#92400E', flex: 1, textAlign, writingDirection }}>
+                    {i18n.language !== 'en'
+                      ? `איש קשר עם מספר זה כבר קיים: ${existingContact.name || existingContact.phoneNumber}. הקש למעבר.`
+                      : `A contact with this number already exists: ${existingContact.name || existingContact.phoneNumber}. Tap to open.`}
+                  </Text>
+                </Pressable>
+              ) : null}
               <FormField
                 label={t('contacts.email')}
                 value={form.email ?? ''}
@@ -788,14 +1013,62 @@ export default function ContactDetailScreen() {
                 keyboardType="email-address"
                 autoCapitalize="none"
               />
-              <FormField
-                label={t('contacts.owner')}
-                value={(form as any).ownerName ?? ''}
-                onChangeText={(v) => setForm((prev) => ({ ...prev, ownerName: v }))}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-              />
+              {/* Owner — transfer ownership via user picker (mirrors web) */}
+              <View style={styles.formField}>
+                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}>
+                  {t('contacts.owner')}
+                </Text>
+                <Pressable
+                  onPress={() => { setOwnerPickerExpanded((v) => !v); loadOrgUsers(); }}
+                  style={{
+                    borderWidth: 1,
+                    borderRadius: 10,
+                    borderColor: ownerPickerExpanded ? theme.colors.primary : theme.colors.outline,
+                    paddingHorizontal: 12,
+                    paddingVertical: 12,
+                    backgroundColor: theme.custom.inputBackground,
+                  }}
+                >
+                  <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+                    <MaterialCommunityIcons name="account-tie" size={18} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="bodyMedium" style={{ flex: 1, color: (form as any).ownerName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                      {orgUsersLoading
+                        ? (t('common.loading') || 'טוען...')
+                        : ((form as any).ownerName || (form as any).ownerId || t('contacts.selectOwner', 'בחר בעלים'))}
+                    </Text>
+                    <MaterialCommunityIcons name={ownerPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+                  </View>
+                </Pressable>
+                {ownerPickerExpanded ? (
+                  <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 10, marginTop: 6, overflow: 'hidden' }}>
+                    <Pressable
+                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8 }]}
+                      onPress={() => { setForm((prev) => ({ ...prev, ownerId: '', ownerName: '', contactOwner: '' } as any)); setOwnerPickerExpanded(false); }}
+                    >
+                      <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('common.none', 'ללא')}</Text>
+                    </Pressable>
+                    <Divider />
+                    {orgUsers.map((u) => {
+                      const uid = u.uID || u.userId || u.id || '';
+                      const uname = u.FullName || u.userName || u.UserName || u.fullname || u.name || u.Email || '';
+                      const selected = uid === (form as any).ownerId;
+                      return (
+                        <Pressable
+                          key={uid}
+                          style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: selected ? `${theme.colors.primary}15` : 'transparent' }]}
+                          onPress={() => { setForm((prev) => ({ ...prev, ownerId: uid, ownerName: uname, contactOwner: uid } as any)); setOwnerPickerExpanded(false); }}
+                        >
+                          <MaterialCommunityIcons name="account" size={16} color={selected ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                          <Text variant="bodySmall" style={{ color: selected ? theme.colors.primary : theme.colors.onSurface, fontWeight: selected ? '700' : '400' }}>
+                            {uname}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+              </View>
               <View style={styles.formField}>
                 <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6 }}>
                   {t('contacts.tags')}
@@ -960,6 +1233,21 @@ export default function ContactDetailScreen() {
         contactPhone={contact?.phoneNumber || ''}
         organization={organization}
         wabaNumbers={user?.wabaNumbers && user.wabaNumbers.length > 1 ? user.wabaNumbers : undefined}
+      />
+
+      <AddTaskSheet
+        visible={addTaskVisible}
+        onDismiss={() => setAddTaskVisible(false)}
+        onCreated={() => { if (activeTab === 'timeline') fetchTimeline().catch(() => {}); }}
+        organization={organization}
+        user={user}
+        relatedPhone={contact?.phoneNumber || ''}
+        relatedTo={{
+          type: 'contact',
+          entityId: contact?.phoneNumber || contact?.id || '',
+          entityName: contactName,
+        }}
+        defaultTitle={contactName ? `${t('contacts.phoneCall')} - ${contactName}` : undefined}
       />
     </View>
   );

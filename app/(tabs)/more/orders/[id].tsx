@@ -30,6 +30,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { ordersApi, Order } from '../../../../services/api/orders';
+import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { quotesApi } from '../../../../services/api/quotes';
 import { formatDate } from '../../../../utils/formatters';
@@ -43,6 +44,7 @@ import {
 } from '../../../../components/DynamicFieldsSection';
 import type { Contact } from '../../../../types';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../../components/NoteAttachmentRow';
+import AddTaskSheet from '../../../../components/AddTaskSheet';
 import { appCache } from '../../../../services/cache';
 
 const BRAND_COLOR = '#2e6155';
@@ -118,8 +120,10 @@ export default function OrderDetailScreen() {
   const isNew = id === 'new';
 
   // ── View mode state ───────────────────────────────────────────────
-  const [order, setOrder] = useState<Order | null>(null);
-  const [loading, setLoading] = useState(!isNew);
+  // Render instantly from the list cache, then refresh in the background.
+  const cachedOrder = !isNew ? getCachedEntity<Order>('orders', id) : undefined;
+  const [order, setOrder] = useState<Order | null>(cachedOrder ?? null);
+  const [loading, setLoading] = useState(!isNew && !cachedOrder);
   const [error, setError] = useState<string | null>(null);
   const [orderFormSections, setOrderFormSections] = useState<DynamicSection[]>([]);
   const [orderFormLayout, setOrderFormLayout] = useState<string[]>([]);
@@ -129,6 +133,8 @@ export default function OrderDetailScreen() {
   const [savingNote, setSavingNote] = useState(false);
   const [statusMenuVisible, setStatusMenuVisible] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
+  const [addTaskVisible, setAddTaskVisible] = useState(false);
 
   // ── Create mode state ─────────────────────────────────────────────
   const [formCustomerName, setFormCustomerName] = useState(prefillContactName || '');
@@ -174,6 +180,7 @@ export default function OrderDetailScreen() {
       setError(null);
       const data = await ordersApi.getById(user.organization, id);
       setOrder(data);
+      cacheEntity('orders', data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
@@ -276,6 +283,33 @@ export default function OrderDetailScreen() {
       setUpdatingStatus(false);
     }
   }, [user?.organization, id, t]);
+
+  // ── Delete order (view mode) ──────────────────────────────────────
+  const handleDelete = useCallback(() => {
+    setHeaderMenuVisible(false);
+    if (!user?.organization || !id) return;
+    Alert.alert(
+      t('common.delete'),
+      t('orders.deleteConfirm', 'האם למחוק את ההזמנה?'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await ordersApi.delete(user.organization, id);
+              Alert.alert(t('common.success', 'הצלחה'), t('orders.deleteSuccess', 'ההזמנה נמחקה'));
+              if (router.canGoBack()) router.back();
+              else router.replace('/(tabs)/more/orders');
+            } catch (err: any) {
+              Alert.alert(t('common.error'), err.message || t('errors.generic'));
+            }
+          },
+        },
+      ],
+    );
+  }, [user?.organization, id, router, t]);
 
   // ── Save note (view mode) ─────────────────────────────────────────
   const handleSaveNote = useCallback(async () => {
@@ -725,6 +759,28 @@ export default function OrderDetailScreen() {
           title={order?.orderNumber ? `${t('orders.order')} #${order.orderNumber}` : t('orders.orderDetails')}
           titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }}
         />
+        {order ? (
+          <Menu
+            visible={headerMenuVisible}
+            onDismiss={() => setHeaderMenuVisible(false)}
+            anchor={
+              <Appbar.Action icon="dots-vertical" color="#FFF" onPress={() => setHeaderMenuVisible(true)} />
+            }
+          >
+            <Menu.Item
+              onPress={() => { setHeaderMenuVisible(false); setAddTaskVisible(true); }}
+              title={t('tasks.addTask', 'הוסף משימה')}
+              leadingIcon="clipboard-check-outline"
+            />
+            <Divider />
+            <Menu.Item
+              onPress={handleDelete}
+              title={t('common.delete')}
+              leadingIcon="delete-outline"
+              titleStyle={{ color: '#F44336' }}
+            />
+          </Menu>
+        ) : null}
       </Appbar.Header>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -921,6 +977,47 @@ export default function OrderDetailScreen() {
               </View>
             ) : null}
 
+            {/* Activity timeline (notes, status changes, etc.) */}
+            {(() => {
+              const activity = Array.isArray((order as any).activity) ? [...(order as any).activity] : [];
+              if (activity.length === 0) return null;
+              activity.sort((a: any, b: any) => {
+                const da = new Date(a.createdAt || a.CreatedAt || a.date || a.timestamp || 0).getTime();
+                const db = new Date(b.createdAt || b.CreatedAt || b.date || b.timestamp || 0).getTime();
+                return db - da;
+              });
+              return (
+                <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
+                  <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+                    {t('contacts.timeline', 'ציר זמן')}
+                  </Text>
+                  <Divider style={{ marginBottom: 12 }} />
+                  {activity.map((entry: any, idx: number) => {
+                    const msg = entry.message || entry.note || entry.text || entry.description || '';
+                    const who = entry.userName || entry.createdByName || entry.user || '';
+                    const when = entry.createdAt || entry.CreatedAt || entry.date || entry.timestamp || '';
+                    let whenLabel = '';
+                    if (when) {
+                      const d = new Date(when);
+                      if (!isNaN(d.getTime())) whenLabel = d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' });
+                    }
+                    return (
+                      <View key={idx} style={{ marginBottom: 12 }}>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }}>
+                          {msg}
+                        </Text>
+                        {(who || whenLabel) ? (
+                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: isRTL ? 'right' : 'left' }}>
+                            {[who, whenLabel].filter(Boolean).join(' · ')}
+                          </Text>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+              );
+            })()}
+
             {/* Add Note Action */}
             <Pressable
               onPress={() => setNoteModalVisible(true)}
@@ -983,6 +1080,20 @@ export default function OrderDetailScreen() {
           </View>
         </Modal>
       </Portal>
+
+      <AddTaskSheet
+        visible={addTaskVisible}
+        onDismiss={() => setAddTaskVisible(false)}
+        organization={user?.organization || ''}
+        user={user}
+        relatedPhone={order?.customerPhone || ''}
+        relatedTo={{
+          type: 'order',
+          entityId: order?.id || '',
+          entityName: order?.orderNumber ? `${t('orders.order')} #${order.orderNumber}` : (order?.customerName || ''),
+        }}
+        defaultTitle={order?.customerName ? `${t('orders.order')} - ${order.customerName}` : undefined}
+      />
     </View>
   );
 }

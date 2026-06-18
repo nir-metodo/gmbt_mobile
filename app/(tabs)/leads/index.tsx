@@ -27,6 +27,7 @@ import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { getDataVisibility } from '../../../constants/permissions';
 import { formatCurrency, formatDate, getInitials, withAlpha } from '../../../utils/formatters';
+import { placeSmartCall } from '../../../utils/phoneCall';
 import { spacing, borderRadius } from '../../../constants/theme';
 import type { Lead, LeadStage } from '../../../types';
 
@@ -556,13 +557,33 @@ export default function LeadsListScreen() {
   }, [leads, selectedStage, getLeadStageName, unseenOnly, seenLeadIds, sortKey, sortDir, parseTs]);
 
   const kanbanColumns = useMemo<KanbanColumn<Lead>[]>(() => {
-    return stageKeys.map((stage) => ({
+    // When the real pipeline is loaded, build columns keyed by the stable stage id and
+    // match leads by stageId first (like the web), falling back to name/id stored on the
+    // lead. Grouping by display name alone hid every lead whose stored stage didn't map
+    // back to a name key (custom pipelines), leaving the board empty.
+    if (pipelineStages.length > 0) {
+      return pipelineStages.map((s) => ({
+        id: s.id,
+        title: STAGE_I18N[s.name] ? t(STAGE_I18N[s.name]) : s.name,
+        color: s.color ?? stageColorMap[s.id] ?? theme.colors.primary,
+        items: leads.filter(
+          (l) =>
+            l.stageId === s.id ||
+            l.stageName === s.name ||
+            l.stage === s.name ||
+            l.stageName === s.id ||
+            l.stage === s.id,
+        ),
+      }));
+    }
+    // No pipeline settings loaded → fall back to the default keys grouped by display name.
+    return DEFAULT_STAGE_KEYS.map((stage) => ({
       id: stage,
       title: t(STAGE_I18N[stage] ?? stage),
       color: stageColorMap[stage] ?? theme.colors.primary,
       items: leadsByStage.get(stage) ?? [],
     }));
-  }, [stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary]);
+  }, [pipelineStages, leads, stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary]);
 
   const handleKanbanMove = useCallback((item: Lead, _fromColumnId: string, toColumnId: string) => {
     handleStageChange(item, toColumnId);
@@ -869,7 +890,14 @@ export default function LeadsListScreen() {
               onPress={(e) => {
                 e.stopPropagation?.();
                 const phone = item.contactPhone || item.phoneNumber || '';
-                Linking.openURL(`tel:${phone}`);
+                placeSmartCall({
+                  phoneNumber: phone,
+                  organization,
+                  user,
+                  relatedTo: { type: 'lead', entityId: item.id || '', entityName: item.title },
+                  leadId: item.id || '',
+                  customerName: item.contactName,
+                });
               }}
               style={[styles.quickDialRow, { flexDirection }]}
               hitSlop={4}

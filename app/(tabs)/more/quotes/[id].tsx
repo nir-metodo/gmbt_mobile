@@ -34,11 +34,12 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { quotesApi } from '../../../../services/api/quotes';
+import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { chatsApi } from '../../../../services/api/chats';
 import { contactsApi } from '../../../../services/api/contacts';
 import { usersApi } from '../../../../services/api/users';
 import { formatDate, formatCurrency, getInitials } from '../../../../utils/formatters';
-import { makeAppCall } from '../../../../utils/phoneCall';
+import { placeSmartCall } from '../../../../utils/phoneCall';
 import { borderRadius } from '../../../../constants/theme';
 import type { Quote, QuoteItem, Contact, OrgUser } from '../../../../types';
 
@@ -107,8 +108,11 @@ export default function QuoteDetailScreen() {
 
   const user = useAuthStore((s) => s.user);
 
-  const [quote, setQuote] = useState<Quote | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Show the quote we already loaded in the list immediately, then refresh in the
+  // background — avoids the long full-screen spinner on a slow `getById` round-trip.
+  const cachedQuote = id && id !== 'new' ? getCachedEntity<Quote>('quotes', id) : undefined;
+  const [quote, setQuote] = useState<Quote | null>(cachedQuote ?? null);
+  const [loading, setLoading] = useState(!cachedQuote);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [sending, setSending] = useState(false);
@@ -198,6 +202,7 @@ export default function QuoteDetailScreen() {
       const result = await quotesApi.getById(user.organization, id);
       if (result) {
         setQuote(result);
+        cacheEntity('quotes', result);
       } else {
         const allResult = await quotesApi.getAll(user.organization);
         const list = Array.isArray(allResult.data) ? allResult.data : [];
@@ -493,6 +498,7 @@ export default function QuoteDetailScreen() {
             setDeleting(true);
             try {
               await quotesApi.delete(user.organization, quote.id);
+              Alert.alert(t('common.success', 'הצלחה'), t('quotes.deleteSuccess', 'נמחק בהצלחה'));
               if (router.canGoBack()) {
                 router.back();
               } else {
@@ -625,12 +631,19 @@ export default function QuoteDetailScreen() {
       Alert.alert(t('common.error'), t('quotes.noPhoneNumber'));
       return;
     }
-    await makeAppCall({
+    const relatedTo = (quote as any)?.leadId
+      ? { type: 'lead' as const, entityId: (quote as any).leadId, entityName: quote?.contactName }
+      : ((quote as any)?.contactId
+        ? { type: 'contact' as const, entityId: (quote as any).contactId, entityName: quote?.contactName }
+        : undefined);
+    await placeSmartCall({
       phoneNumber: phone,
       organization: user?.organization || '',
-      callerUserId: user?.uID || user?.userId,
-      callerUserName: user?.fullname,
-      contactName: quote?.contactName,
+      user,
+      relatedTo,
+      contactId: (quote as any)?.contactId,
+      leadId: (quote as any)?.leadId,
+      customerName: quote?.contactName,
     });
   }, [quote, user, t]);
 

@@ -32,6 +32,8 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { paymentsApi, type Transaction } from '../../../../services/api/payments';
 import { withAlpha } from '../../../../utils/formatters';
 
@@ -164,10 +166,13 @@ export default function TransactionsScreen() {
     }
   }, [organization, createForm, he, fetchTransactions]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filtered = useMemo(() => {
     let list = [...transactions];
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.trim().toLowerCase();
       list = list.filter(
         (tx) =>
           (tx.customerName || '').toLowerCase().includes(q) ||
@@ -186,7 +191,13 @@ export default function TransactionsScreen() {
       return dateB - dateA;
     });
     return list;
-  }, [transactions, searchQuery, statusFilter]);
+  }, [transactions, debouncedSearch, statusFilter]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleTx, hasMore: txHasMore, loadMore: txLoadMore, loadAll: txLoadAll, count: txCount } = useWindowedList(filtered, {
+    pageSize: 30,
+    resetKey: `${debouncedSearch}|${statusFilter}`,
+  });
 
   const stats = useMemo(() => {
     const total = transactions.length;
@@ -447,11 +458,22 @@ export default function TransactionsScreen() {
           </View>
         ) : (
           <FlashList
-            data={filtered}
+            data={visibleTx}
             renderItem={renderItem}
             keyExtractor={(item, idx) => item.id || item.transactionId || `tx_${idx}`}
             ItemSeparatorComponent={() => <Divider />}
             ListEmptyComponent={renderEmpty}
+            ListFooterComponent={
+              <ListPaginationFooter
+                count={txCount}
+                total={filtered.length}
+                hasMore={txHasMore}
+                onLoadMore={txLoadMore}
+                onLoadAll={txLoadAll}
+              />
+            }
+            onEndReached={txHasMore ? txLoadMore : undefined}
+            onEndReachedThreshold={0.4}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}

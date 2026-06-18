@@ -61,7 +61,7 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
     try {
       const [catRes, timelineRes, leadsRes, stagesRes, casesRes, caseSettingsRes] = await Promise.allSettled([
         axiosInstance.post(ENDPOINTS.GET_CONVERSATION_CATEGORIES, { organization }),
-        axiosInstance.post(ENDPOINTS.GET_CHAT_TIMELINE, { organizationiD: organization, phoneNumber }),
+        axiosInstance.post(ENDPOINTS.GET_CHAT_TIMELINE, { organization, contactId: phoneNumber }),
         axiosInstance.post(ENDPOINTS.GET_LEADS_BY_CONTACT, { organization, phoneNumber }),
         axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, { organization }),
         axiosInstance.post(ENDPOINTS.GET_CASES_BY_CONTACT, { organization, phoneNumber }),

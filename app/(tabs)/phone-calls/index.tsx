@@ -39,6 +39,8 @@ import { useTranslation } from 'react-i18next';
 import { phoneCallsApi } from '../../../services/api/phoneCalls';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
+import { useDebouncedValue, useWindowedList } from '../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../components/ListPaginationFooter';
 import { useAuthStore } from '../../../stores/authStore';
 import { makeAppCall, makeGambotCall } from '../../../utils/phoneCall';
 import { getDataVisibility } from '../../../constants/permissions';
@@ -644,13 +646,16 @@ export default function PhoneCallsTabScreen() {
     setRefreshing(false);
   }, [fetchCalls, fetchRules]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredCalls = useMemo(() => {
     let result = calls;
     if (filter === 'answered') result = result.filter((c) => c.status === 'answered');
     else if (filter === 'missed') result = result.filter((c) => c.status === 'missed');
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.toLowerCase();
       result = result.filter(
         (c) =>
           c.contactName?.toLowerCase().includes(q) ||
@@ -658,7 +663,13 @@ export default function PhoneCallsTabScreen() {
       );
     }
     return result;
-  }, [calls, filter, searchQuery]);
+  }, [calls, filter, debouncedSearch]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleCalls, hasMore: callsHasMore, loadMore: callsLoadMore, loadAll: callsLoadAll, count: callsCount } = useWindowedList(filteredCalls, {
+    pageSize: 30,
+    resetKey: `${filter}|${debouncedSearch}`,
+  });
 
   const handleExpandCall = useCallback((id: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -940,10 +951,21 @@ export default function PhoneCallsTabScreen() {
           </ScrollView>
 
           <FlatList
-            data={filteredCalls}
+            data={visibleCalls}
             renderItem={renderCallItem}
             keyExtractor={callKeyExtractor}
             contentContainerStyle={styles.list}
+            ListFooterComponent={
+              <ListPaginationFooter
+                count={callsCount}
+                total={filteredCalls.length}
+                hasMore={callsHasMore}
+                onLoadMore={callsLoadMore}
+                onLoadAll={callsLoadAll}
+              />
+            }
+            onEndReached={callsHasMore ? callsLoadMore : undefined}
+            onEndReachedThreshold={0.4}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />
             }

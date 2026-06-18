@@ -38,6 +38,8 @@ import { useTranslation } from 'react-i18next';
 import { phoneCallsApi } from '../../../../services/api/phoneCalls';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { useAuthStore } from '../../../../stores/authStore';
 import { PhoneCall, CallRule } from '../../../../types';
 import {
@@ -607,6 +609,12 @@ export default function PhoneCallsScreen() {
     return calls.filter((c) => c.status === 'missed');
   }, [calls, filter]);
 
+  // Client-side pagination so very long call logs stay snappy.
+  const { visible: visibleCalls, hasMore: callsHasMore, loadMore: callsLoadMore, loadAll: callsLoadAll, count: callsCount } = useWindowedList(filteredCalls, {
+    pageSize: 30,
+    resetKey: filter,
+  });
+
   const handleExpandCall = useCallback((id: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setExpandedCallId((prev) => (prev === id ? null : id));
@@ -783,10 +791,21 @@ export default function PhoneCallsScreen() {
           </ScrollView>
 
           <FlatList
-            data={filteredCalls}
+            data={visibleCalls}
             renderItem={renderCallItem}
             keyExtractor={callKeyExtractor}
             contentContainerStyle={styles.list}
+            ListFooterComponent={
+              <ListPaginationFooter
+                count={callsCount}
+                total={filteredCalls.length}
+                hasMore={callsHasMore}
+                onLoadMore={callsLoadMore}
+                onLoadAll={callsLoadAll}
+              />
+            }
+            onEndReached={callsHasMore ? callsLoadMore : undefined}
+            onEndReachedThreshold={0.4}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />
             }

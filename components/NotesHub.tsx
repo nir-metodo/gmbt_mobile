@@ -51,6 +51,21 @@ interface Props {
 
 const PAGE_SIZE = 30;
 
+// Module-level cache so reopening the hub (or flipping back to a filter you
+// already viewed) renders instantly while fresh data loads in the background,
+// instead of showing a full-screen spinner every time.
+const notesCache = new Map<string, { notes: Note[]; total: number }>();
+const buildCacheKey = (p: {
+  organization: string;
+  page: number;
+  source: Source;
+  dateFrom: string;
+  dateTo: string;
+  userFilter: string;
+  appliedSearch: string;
+}) =>
+  [p.organization, p.page, p.source, p.dateFrom, p.dateTo, p.userFilter, p.appliedSearch.trim()].join('|');
+
 const getUserName = (u: any) =>
   u?.userName || u?.UserName || u?.fullname || u?.FullName || u?.name || u?.email || u?.Email || '';
 const getUserId = (u: any) => u?.userId || u?.uID || u?.uid || u?.id || '';
@@ -115,7 +130,18 @@ export default function NotesHub({ visible, onClose }: Props) {
 
   const fetchNotes = useCallback(async () => {
     if (!organization) return;
-    setLoading(true);
+
+    // Serve cached results instantly; only block with a spinner on a cold load.
+    const key = buildCacheKey({ organization, page, source, dateFrom, dateTo, userFilter, appliedSearch });
+    const cached = notesCache.get(key);
+    if (cached) {
+      setNotes(cached.notes);
+      setTotal(cached.total);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
     try {
       const res = await axiosInstance.post(ENDPOINTS.GET_ALL_NOTES_FOR_ORGANIZATION, {
         organization,
@@ -129,12 +155,17 @@ export default function NotesHub({ visible, onClose }: Props) {
       });
       const data = res.data;
       const list = data?.Data || data?.data || [];
-      setNotes(Array.isArray(list) ? list : []);
-      setTotal(data?.Total ?? data?.total ?? (Array.isArray(list) ? list.length : 0));
+      const safeList = Array.isArray(list) ? list : [];
+      const safeTotal = data?.Total ?? data?.total ?? safeList.length;
+      setNotes(safeList);
+      setTotal(safeTotal);
+      notesCache.set(key, { notes: safeList, total: safeTotal });
     } catch (err) {
       console.error('[NotesHub] fetch error', err);
-      setNotes([]);
-      setTotal(0);
+      if (!cached) {
+        setNotes([]);
+        setTotal(0);
+      }
     } finally {
       setLoading(false);
     }
@@ -319,6 +350,7 @@ export default function NotesHub({ visible, onClose }: Props) {
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
+                style={styles.pillsScroll}
                 contentContainerStyle={[styles.userPills, { flexDirection }]}
               >
                 <Chip
@@ -354,6 +386,7 @@ export default function NotesHub({ visible, onClose }: Props) {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
+            style={styles.pillsScroll}
             contentContainerStyle={[styles.sourcePills, { flexDirection }]}
           >
             {SOURCES.map((s) => {
@@ -459,8 +492,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   quickRangeRow: { gap: 8, paddingHorizontal: 14, paddingBottom: 8, alignItems: 'center' },
-  userPills: { gap: 6, paddingHorizontal: 14, paddingBottom: 10 },
-  sourcePills: { gap: 8, paddingHorizontal: 14, paddingVertical: 10 },
+  // flexGrow:0 stops the horizontal ScrollView from expanding to fill the column,
+  // and alignItems:center keeps the chips at their natural height (instead of the
+  // default `stretch` blowing them up into tall empty columns).
+  pillsScroll: { flexGrow: 0, flexShrink: 0 },
+  userPills: { gap: 6, paddingHorizontal: 14, paddingBottom: 10, alignItems: 'center' },
+  sourcePills: { gap: 8, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center' },
   searchRow: { paddingHorizontal: 12, paddingBottom: 8 },
   searchbar: { height: 44, borderRadius: 22, elevation: 0 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 60 },

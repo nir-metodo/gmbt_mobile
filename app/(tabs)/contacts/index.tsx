@@ -21,6 +21,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatPhoneNumber, getInitials } from '../../../utils/formatters';
+import { placeSmartCall } from '../../../utils/phoneCall';
 import { getDataVisibility } from '../../../constants/permissions';
 import InternalMessagesHub from '../../../components/InternalMessagesHub';
 import NotesHub from '../../../components/NotesHub';
@@ -233,9 +234,18 @@ export default function ContactsListScreen() {
   const handleCall = useCallback(
     (contact: Contact) => {
       swipeableRefs.get(contact.id)?.close();
-      if (contact.phoneNumber) Linking.openURL(`tel:${contact.phoneNumber}`);
+      if (contact.phoneNumber) {
+        placeSmartCall({
+          phoneNumber: contact.phoneNumber,
+          organization,
+          user,
+          relatedTo: { type: 'contact', entityId: contact.id, entityName: contact.name },
+          contactId: contact.id,
+          customerName: contact.name,
+        });
+      }
     },
-    [swipeableRefs],
+    [swipeableRefs, organization, user],
   );
 
   const handleMessage = useCallback(
@@ -309,6 +319,10 @@ export default function ContactsListScreen() {
     ({ item }: { item: Contact }) => {
       const contactName = item.name || item.phoneNumber || '';
       const tags = extractContactTags(item.keys);
+      const isSpam = !!(item as any).isSpam;
+      const notAgreed = (item as any).consent === false;
+      const spamBase = theme.dark ? 'rgba(220,38,38,0.14)' : '#FFF5F5';
+      const spamPressed = theme.dark ? 'rgba(220,38,38,0.22)' : '#FFE8E8';
 
       return (
         <Swipeable
@@ -326,11 +340,12 @@ export default function ContactsListScreen() {
             style={({ pressed }) => [
               styles.contactRow,
               {
-                backgroundColor: pressed
-                  ? theme.colors.surfaceVariant
-                  : theme.colors.surface,
+                backgroundColor: isSpam
+                  ? (pressed ? spamPressed : spamBase)
+                  : (pressed ? theme.colors.surfaceVariant : theme.colors.surface),
                 flexDirection,
               },
+              isSpam ? { borderStartWidth: 3, borderStartColor: '#DC2626' } : null,
             ]}
           >
             <View style={styles.avatarWrap}>
@@ -347,13 +362,30 @@ export default function ContactsListScreen() {
             </View>
 
             <View style={[styles.contactBody, { alignItems: isRTL ? 'flex-end' : 'flex-start', minWidth: 0 }]}>
-              <Text
-                variant="titleMedium"
-                numberOfLines={1}
-                style={{ color: theme.colors.onSurface, textAlign, fontWeight: '600', width: '100%' }}
-              >
-                {contactName}
-              </Text>
+              <View style={{ flexDirection, alignItems: 'center', gap: 6, width: '100%' }}>
+                <Text
+                  variant="titleMedium"
+                  numberOfLines={1}
+                  style={{ color: theme.colors.onSurface, textAlign, fontWeight: isSpam ? '700' : '600', flexShrink: 1 }}
+                >
+                  {contactName}
+                </Text>
+                {isSpam ? (
+                  <View style={{ backgroundColor: '#DC2626', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1 }}>
+                    <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '700', letterSpacing: 0.5 }}>
+                      {t('contacts.possibleSpam', 'ספאם')}
+                    </Text>
+                  </View>
+                ) : null}
+                {!isSpam && notAgreed ? (
+                  <View style={{ backgroundColor: '#FEF3C7', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1, flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                    <MaterialCommunityIcons name="cancel" size={11} color="#D97706" />
+                    <Text style={{ color: '#D97706', fontSize: 10, fontWeight: '700' }}>
+                      {t('contacts.consentNotAgreed', 'לא הסכים')}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
 
               <View style={[styles.metaRow, { flexDirection }]}>
                 {item.phoneNumber ? (
@@ -403,7 +435,7 @@ export default function ContactsListScreen() {
         </Swipeable>
       );
     },
-    [theme, isRTL, textAlign, flexDirection, openContact, renderSwipeActions, swipeableRefs],
+    [theme, isRTL, textAlign, flexDirection, openContact, renderSwipeActions, swipeableRefs, t],
   );
 
   const renderEmpty = useCallback(

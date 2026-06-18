@@ -20,7 +20,8 @@ export interface CatalogCustomColumn {
   type: string;
   showInQuote?: boolean;
   searchable?: boolean;
-  options?: string[];
+  // Web stores select options as a comma-separated string; older/other data may be an array.
+  options?: string[] | string;
 }
 
 export interface CatalogFieldsConfig {
@@ -55,24 +56,32 @@ export const catalogApi = {
     };
   },
 
-  async save(organization: string, items: CatalogItem[], customColumns: CatalogCustomColumn[]): Promise<void> {
+  async save(organization: string, items: CatalogItem[], customColumns?: CatalogCustomColumn[]): Promise<void> {
+    // The backend persists branding with SetOptions.Overwrite, so we must send back the FULL doc.
+    // Re-fetch the latest branding so we don't drop logo/colors/fieldsConfig and don't clobber
+    // column definitions that may have been edited on web since this screen loaded.
     const response = await axiosInstance.post(ENDPOINTS.GET_QUOTE_BRANDING, {
       organization,
     });
     const existing = response.data || {};
+    const brandingData: Record<string, any> = {
+      ...existing,
+      catalogItems: items,
+    };
+    // Mobile cannot edit column definitions — keep whatever the server has. Only fall back to the
+    // in-memory columns if the server doc somehow has none (e.g. first-ever save).
+    if (!Array.isArray(existing.catalogCustomColumns) && customColumns) {
+      brandingData.catalogCustomColumns = customColumns;
+    }
     await axiosInstance.post(ENDPOINTS.SAVE_QUOTE_BRANDING, {
       organization,
-      brandingData: {
-        ...existing,
-        catalogItems: items,
-        catalogCustomColumns: customColumns,
-      },
+      brandingData,
     });
   },
 
-  async deleteItem(organization: string, itemId: string, allItems: CatalogItem[], customColumns: CatalogCustomColumn[]): Promise<CatalogItem[]> {
+  async deleteItem(organization: string, itemId: string, allItems: CatalogItem[]): Promise<CatalogItem[]> {
     const updated = allItems.filter((i) => i.id !== itemId);
-    await this.save(organization, updated, customColumns);
+    await this.save(organization, updated);
     return updated;
   },
 };

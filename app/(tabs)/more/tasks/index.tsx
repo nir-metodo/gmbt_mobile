@@ -35,7 +35,10 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { tasksApi } from '../../../../services/api/tasks';
+import { cacheEntities } from '../../../../services/entityCache';
 import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
@@ -134,8 +137,11 @@ export default function TasksMoreScreen() {
       const data = await tasksApi.getAll(
         user.organization,
         user.uID || user.userId,
-        tasksDV === 'own' ? 'seeOwn' : 'seeAll',
+        // Backend GetAllTasksByOrganization filters only when dataVisibility === 'own'.
+        // (Previously sent 'seeOwn'/'seeAll', which never matched → all tasks always showed.)
+        tasksDV === 'own' ? 'own' : 'all',
       );
+      cacheEntities('tasks', data);
       setTasks(data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
@@ -222,6 +228,12 @@ export default function TasksMoreScreen() {
     });
   }, [tasks, statusFilter, priorityFilter, debouncedSearch, taskSortKey, taskSortDir]);
 
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleTasks, hasMore: tasksHasMore, loadMore: tasksLoadMore, loadAll: tasksLoadAll, count: tasksCount } = useWindowedList(filteredTasks, {
+    pageSize: 30,
+    resetKey: `${statusFilter}|${priorityFilter}|${debouncedSearch}|${taskSortKey}|${taskSortDir}`,
+  });
+
   const resetForm = useCallback(() => {
     setFormTitle('');
     setFormDescription('');
@@ -240,24 +252,34 @@ export default function TasksMoreScreen() {
     if (!user?.organization || !formTitle.trim()) return;
     setCreating(true);
     try {
+      const meId = user?.uID || user?.userId || '';
+      const meName = user?.fullname || (user as any)?.name || '';
+      const contactName = selectedContact
+        ? (selectedContact.fullName || selectedContact.name || formRelatedEntityName.trim())
+        : formRelatedEntityName.trim();
+      const contactPhone = selectedContact?.phoneNumber || selectedContact?.phone || undefined;
       await tasksApi.create(user.organization, {
         title: formTitle.trim(),
         description: formDescription.trim() || undefined,
         priority: formPriority as Task['priority'],
         taskType: formTaskType as Task['taskType'],
         dueDate: formDueDate.trim() || undefined,
-        assignedTo: formAssignedTo.trim() || undefined,
-        relatedEntityName: selectedContact
-          ? (selectedContact.fullName || selectedContact.name || formRelatedEntityName.trim())
-          : formRelatedEntityName.trim() || undefined,
-        relatedEntityPhone: selectedContact?.phoneNumber || selectedContact?.phone || undefined,
+        // Default assignee to the current user (like web) when no one is typed in.
+        assignedToId: meId,
+        assignedToName: formAssignedTo.trim() || meName,
+        assignedTo: formAssignedTo.trim() || meName || undefined,
+        relatedEntityName: contactName || undefined,
+        relatedEntityPhone: contactPhone,
         relatedContactId: selectedContact?.id || undefined,
+        ...(selectedContact
+          ? { relatedTo: { type: 'contact', entityId: selectedContact.id || contactPhone || '', entityName: contactName } }
+          : {}),
         status: 'open',
         reminderEnabled: reminderEnabled || undefined,
         reminderDate: reminderEnabled ? reminderDateObj.toISOString() : undefined,
         reminderDateUTC: reminderEnabled ? reminderDateObj.toISOString() : undefined,
         reminderRecipientType: reminderEnabled ? 'assigned_user' : undefined,
-      } as any);
+      } as any, meId, meName);
       setCreateModalVisible(false);
       resetForm();
       await fetchTasks();
@@ -610,10 +632,21 @@ export default function TasksMoreScreen() {
       </View>
 
       <FlatList
-        data={filteredTasks}
+        data={visibleTasks}
         renderItem={renderTaskCard}
         keyExtractor={(item, index) => item.id || item.taskId || `task_${index}`}
         ListEmptyComponent={renderEmpty}
+        ListFooterComponent={
+          <ListPaginationFooter
+            count={tasksCount}
+            total={filteredTasks.length}
+            hasMore={tasksHasMore}
+            onLoadMore={tasksLoadMore}
+            onLoadAll={tasksLoadAll}
+          />
+        }
+        onEndReached={tasksHasMore ? tasksLoadMore : undefined}
+        onEndReachedThreshold={0.4}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

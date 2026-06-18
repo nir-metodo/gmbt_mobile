@@ -22,6 +22,7 @@ import {
   Keyboard,
   AppState,
   TouchableOpacity,
+  InteractionManager,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Text, IconButton, Menu, Avatar, Button, Divider } from 'react-native-paper';
@@ -183,6 +184,13 @@ function buildTimelineText(entry: any, isHe: boolean): string {
       return isHe ? `הודעת בוטומיישן נשלחה (${note})` : `Botomation message sent (${note})`;
     case 'start conversation manually':
       return isHe ? `שיחה נפתחה ידנית · תבנית: ${note}` : `Conversation started manually · template: ${note}`;
+    case 'outbound_phone_call_initiated':
+      return isHe ? `📞 שיחה יוצאת התחילה${by ? ` · ${by}` : ''}` : `📞 Outbound call started${by ? ` · by ${by}` : ''}`;
+    case 'outbound_phone_call_completed': {
+      const dur = entry?.duration ? `${entry.duration}s` : '';
+      const st = entry?.status || (isHe ? 'הסתיימה' : 'completed');
+      return isHe ? `📞 שיחה הסתיימה (${st})${dur ? ` · ${dur}` : ''}` : `📞 Call ended (${st})${dur ? ` · ${dur}` : ''}`;
+    }
     case 'lead_created':
       return isHe ? `נוצר ליד: ${entry?.title || note}` : `Lead created: ${entry?.title || note}`;
     case 'case_created':
@@ -246,6 +254,8 @@ export default function ChatConversationScreen() {
   const toggleStarred = useChatStore((s) => s.toggleStarred);
   const addMessage = useChatStore((s) => s.addMessage);
   const updateMessage = useChatStore((s) => s.updateMessage);
+  const updateMessageStatus = useChatStore((s) => s.updateMessageStatus);
+  const addOptimisticMedia = useChatStore((s) => s.addOptimisticMedia);
   const clearCurrentChat = useChatStore((s) => s.clearCurrentChat);
   const addOrUpdateChat = useChatStore((s) => s.addOrUpdateChat);
   const activeWabaNumber = useChatStore((s) => s.activeWabaNumber);
@@ -263,6 +273,10 @@ export default function ChatConversationScreen() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   const [isSendingTemplate, setIsSendingTemplate] = useState(false);
+  // Synchronous guard against double template sends. `isSendingTemplate` is React state and
+  // updates asynchronously, so two fast taps can both pass the check and send the template
+  // twice to the customer. A ref flips immediately and blocks the second call.
+  const sendingTemplateRef = useRef(false);
   const [scheduleText, setScheduleText] = useState('');
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
@@ -305,9 +319,27 @@ export default function ChatConversationScreen() {
 
   // @mentions
   const [orgUsers, setOrgUsers] = useState<any[]>([]);
+  const [orgUsersLoading, setOrgUsersLoading] = useState(false);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionedUsers, setMentionedUsers] = useState<{ userId: string; userName: string }[]>([]);
+
+  // Prefetch org users so the @-mention list appears instantly the moment "@" is typed.
+  const loadOrgUsers = useCallback(() => {
+    if (!user?.organization) return;
+    setOrgUsersLoading(true);
+    usersApi.getAll(user.organization)
+      .then((users) => setOrgUsers(Array.isArray(users) ? users : []))
+      .catch(() => {})
+      .finally(() => setOrgUsersLoading(false));
+  }, [user?.organization]);
+
+  useEffect(() => {
+    if (user?.organization && orgUsers.length === 0) {
+      loadOrgUsers();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.organization]);
 
   // / slash → inline quick messages
   const [quickSlashFilter, setQuickSlashFilter] = useState('');
@@ -454,6 +486,16 @@ export default function ChatConversationScreen() {
   const [isFreeEntryPoint, setIsFreeEntryPoint] = useState(false);
   const [freeWindowExpiresAt, setFreeWindowExpiresAt] = useState<string | null>(null);
   const [countdownNow, setCountdownNow] = useState(Date.now());
+  // Which inline timeline notes are expanded ("view more"). Keyed by the list item id so many
+  // can be open at once across the recycling list.
+  const [expandedNotes, setExpandedNotes] = useState<Set<string>>(() => new Set());
+  const toggleNoteExpanded = useCallback((id: string) => {
+    setExpandedNotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
   const [chatStatus, setChatStatus] = useState<string>('');
   const [chatCategory, setChatCategory] = useState<string>('');
   const [orgCategories, setOrgCategories] = useState<string[]>([]);
@@ -507,7 +549,15 @@ export default function ChatConversationScreen() {
       const replied = res?.IsRecipientReplyLast24Hours ?? res?.isRecipientReplyLast24Hours;
       setRecipientReplied24h(replied === true || replied === 'true');
       const expires = res?.ConversationExpiresAt ?? res?.conversationExpiresAt;
-      setConversationExpiresAt(expires || null);
+      // Don't let a missing/empty expiry from a periodic refetch slam an otherwise-open window
+      // shut (which flips the composer to template buttons and wipes what the user was typing).
+      // If the server returns no expiry but we already have one that's still in the future, keep
+      // it; only clear when the conversation is genuinely not live.
+      setConversationExpiresAt((prev) => {
+        if (expires) return expires;
+        if (prev && new Date(prev).getTime() > Date.now() && (live === true || live === 'true')) return prev;
+        return null;
+      });
       const freeEntry = res?.IsFreeEntryPoint ?? res?.isFreeEntryPoint;
       setIsFreeEntryPoint(freeEntry === true || freeEntry === 'true');
       const freeExpires = res?.FreeWindowExpiresAt ?? res?.freeWindowExpiresAt;
@@ -547,14 +597,14 @@ export default function ChatConversationScreen() {
     if (chat?.lastConversationCategory) setChatCategory(chat.lastConversationCategory);
   }, [chat?.lastConversationStatus, chat?.lastConversationCategory, phoneNumber]);
 
-  // Also reset WS-derived state when WABA number changes (multi-number orgs)
-  useEffect(() => {
-    setConversationLive(null);
-    setRecipientReplied24h(null);
-    setConversationExpiresAt(null);
-    setIsFreeEntryPoint(false);
-    setFreeWindowExpiresAt(null);
-  }, [activeWabaNumber]);
+  // NOTE: do NOT reset conversation state when the global activeWabaNumber changes.
+  // activeWabaNumber is a shared Zustand value that gets auto-synced to this contact's number
+  // (and can change from WS pushes / returning to the list) WHILE the chat is open. Nulling the
+  // state here made isStatusLoading=true → canSendFreeText=false, which unmounted the text input,
+  // flashed the template buttons on a legitimately-open chat, and wiped what the user was typing.
+  // fetchConversationStatus already re-runs on activeWabaNumber/contactWabaId changes (its deps),
+  // so the values refresh without a destructive null reset. Chat switches are handled by the
+  // phoneNumber-keyed reset effect above.
 
   // Coarse tick (30s) only to re-evaluate whether a 24h / free window has expired.
   // The visible per-second countdown is isolated in <ConversationCountdownBadge> so the
@@ -566,9 +616,13 @@ export default function ChatConversationScreen() {
 
   useEffect(() => {
     if (!user?.organization) return;
-    chatsApi.getConversationCategories(user.organization)
-      .then((cats) => setOrgCategories(cats))
-      .catch(() => {});
+    // Non-critical for first paint — defer until after the chat opens so messages render first.
+    const task = InteractionManager.runAfterInteractions(() => {
+      chatsApi.getConversationCategories(user.organization)
+        .then((cats) => setOrgCategories(cats))
+        .catch(() => {});
+    });
+    return () => task.cancel();
   }, [user?.organization]);
 
   const handleChangeStatus = useCallback(async (newStatus: string) => {
@@ -595,10 +649,13 @@ export default function ChatConversationScreen() {
   const loadCrmRecords = useCallback(async () => {
     if (!user?.organization || !phoneNumber) return;
     const organization = user.organization;
+    // Backend GetLeadsByContact requires `contactPhone` (digits only). Send both keys + the
+    // digits-only number so the lookup works regardless of which field the endpoint reads.
+    const digits = String(phoneNumber).replace(/\D/g, '');
     const [leadsRes, stagesRes, casesRes, caseSettingsRes] = await Promise.allSettled([
-      axiosInstance.post(ENDPOINTS.GET_LEADS_BY_CONTACT, { organization, phoneNumber }),
+      axiosInstance.post(ENDPOINTS.GET_LEADS_BY_CONTACT, { organization, contactPhone: digits, phoneNumber: digits }),
       axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, { organization }),
-      axiosInstance.post(ENDPOINTS.GET_CASES_BY_CONTACT, { organization, phoneNumber }),
+      axiosInstance.post(ENDPOINTS.GET_CASES_BY_CONTACT, { organization, contactPhone: digits, phoneNumber: digits }),
       axiosInstance.post(ENDPOINTS.GET_CASE_SETTINGS, { organization }),
     ]);
     if (leadsRes.status === 'fulfilled') {
@@ -624,11 +681,17 @@ export default function ChatConversationScreen() {
   useEffect(() => {
     setContactLeads([]);
     setContactCases([]);
-    loadCrmRecords();
+    // CRM chips (leads/cases/pipeline) are secondary to the conversation — load them after
+    // the screen has settled so opening a chat isn't blocked behind 4 extra requests.
+    const task = InteractionManager.runAfterInteractions(() => { loadCrmRecords(); });
+    return () => task.cancel();
   }, [loadCrmRecords]);
 
-  // First lead/case is the "active" one shown inline (matches web behavior).
-  const activeLead = contactLeads[0] || null;
+  // Active lead = first still-open lead (skip won/lost), else the first one — matches web.
+  const activeLead = contactLeads.find((l) => {
+    const s = (l.stageId || l.StageId || '').toString().toLowerCase();
+    return s !== 'won' && s !== 'lost' && s !== 'closed_won' && s !== 'closed_lost';
+  }) || contactLeads[0] || null;
   const activeCase = contactCases[0] || null;
 
   const handleMoveLeadStage = useCallback(async (stage: any) => {
@@ -686,12 +749,15 @@ export default function ChatConversationScreen() {
     }
   }, [user?.organization, phoneNumber, chat?.tags, addOrUpdateChat, user?.uID, user?.userId, user?.fullname]);
 
-  // Load telephony settings for outbound calling
+  // Load telephony settings for outbound calling (deferred — only needed when placing a call).
   useEffect(() => {
     if (!user?.organization) return;
-    phoneCallsApi.getTelephonySettings(user.organization)
-      .then((data) => { if (data?.phoneNumbers?.length) setTelSettings(data); })
-      .catch(() => {});
+    const task = InteractionManager.runAfterInteractions(() => {
+      phoneCallsApi.getTelephonySettings(user.organization)
+        .then((data) => { if (data?.phoneNumbers?.length) setTelSettings(data); })
+        .catch(() => {});
+    });
+    return () => task.cancel();
   }, [user?.organization]);
 
   const handleInitiateCall = useCallback(async () => {
@@ -722,6 +788,7 @@ export default function ChatConversationScreen() {
         agentId: user.uID || user.userId || '',
         agentName: user.fullname || user.FullName || '',
         customerName: contactName,
+        contactId: phoneNumber as string,
       });
 
       if (result.success) {
@@ -743,9 +810,14 @@ export default function ChatConversationScreen() {
   useEffect(() => {
     if (!user?.organization || !phoneNumber) return;
     setTimelineEntries([]);
-    chatsApi.getChatTimeline(user.organization, phoneNumber as string)
-      .then(setTimelineEntries)
-      .catch(() => setTimelineEntries([]));
+    // Timeline shows in a sheet/interleaved entries — defer so it doesn't compete with the
+    // initial message load on chat open.
+    const task = InteractionManager.runAfterInteractions(() => {
+      chatsApi.getChatTimeline(user.organization, phoneNumber as string)
+        .then(setTimelineEntries)
+        .catch(() => setTimelineEntries([]));
+    });
+    return () => task.cancel();
   }, [user?.organization, phoneNumber]);
 
   // Save note to timeline
@@ -754,13 +826,16 @@ export default function ChatConversationScreen() {
     setSavingNote(true);
     try {
       const { contactsApi } = await import('../../../services/api/contacts');
-      await contactsApi.addTimelineEntry(
+      const saveRes = await contactsApi.addTimelineEntry(
         user.organization,
         phoneNumber as string,
         noteText.trim(),
-        user.userId || user.uid || '',
-        user.fullname || user.displayName || ''
+        (user as any).userId || (user as any).uID || (user as any).uid || '',
+        user.fullname || (user as any).displayName || ''
       );
+      if (saveRes && (saveRes.Success === false || saveRes.success === false)) {
+        throw new Error(saveRes.Message || saveRes.message || 'save failed');
+      }
       setNoteText('');
       setShowAddNoteModal(false);
       chatsApi.getChatTimeline(user.organization, phoneNumber as string)
@@ -848,6 +923,8 @@ export default function ChatConversationScreen() {
 
   const handleSendDefaultTemplate = useCallback(async () => {
     if (!user?.organization || !phoneNumber || isSendingTemplate) return;
+    if (sendingTemplateRef.current) return; // already sending — block double tap
+    sendingTemplateRef.current = true;
     setIsSendingTemplate(true);
     setShowTemplateSelector(false);
     try {
@@ -944,6 +1021,7 @@ export default function ChatConversationScreen() {
       const msg = err?.response?.data?.Message || err?.message || t('chats.templateSendError');
       Alert.alert(t('common.error'), msg);
     } finally {
+      sendingTemplateRef.current = false;
       setIsSendingTemplate(false);
     }
   }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, allWabaNumbers, chat, loadMessages, isRTL, t, sendFromNumberId]);
@@ -985,11 +1063,13 @@ export default function ChatConversationScreen() {
   const doSendTemplate = useCallback(
     async (template: Template, templateVariableQuery: any[]) => {
       if (!user?.organization || !phoneNumber) return;
+      if (sendingTemplateRef.current) return; // already sending — block double tap
       const templateId = template.id || template.templateId || template.Id || '';
       if (!templateId) {
         Alert.alert(t('common.error'), t('chats.templateSendError'));
         return;
       }
+      sendingTemplateRef.current = true;
       setIsSendingTemplate(true);
       try {
         const result = await chatsApi.sendTemplateMessage(
@@ -1013,6 +1093,7 @@ export default function ChatConversationScreen() {
         const msg = err?.response?.data?.Message || err?.message || t('chats.templateSendError');
         Alert.alert(t('common.error'), msg);
       } finally {
+        sendingTemplateRef.current = false;
         setIsSendingTemplate(false);
       }
     },
@@ -1282,15 +1363,22 @@ export default function ChatConversationScreen() {
     return () => subscription.remove();
   }, [user?.organization, phoneNumber, loadMessages, fetchConversationStatus]);
 
-  // Reload messages + conversation status whenever the screen gains focus
-  // (navigating back from another screen, opening from push notification, etc.)
+  // Refresh conversation status when the screen gains focus (returning from a sub-screen,
+  // push notification, etc.). Messages are NOT reloaded here — the mount effect above already
+  // loads them (instantly from cache when available), and live updates arrive over WebSocket.
+  // Reloading here too caused a duplicate getMessages on every chat open.
+  const didInitialFocus = useRef(false);
   useFocusEffect(
     useCallback(() => {
+      if (!didInitialFocus.current) {
+        // Skip the first focus — it coincides with mount, which already fetched status.
+        didInitialFocus.current = true;
+        return;
+      }
       if (user?.organization && phoneNumber) {
-        loadMessages(user.organization, phoneNumber);
         fetchConversationStatus();
       }
-    }, [user?.organization, phoneNumber, loadMessages, fetchConversationStatus])
+    }, [user?.organization, phoneNumber, fetchConversationStatus])
   );
 
   // WebSocket for live messages
@@ -1318,6 +1406,7 @@ export default function ChatConversationScreen() {
         const msgs: any[] = Array.isArray(raw) ? raw : (raw ? [raw] : []);
 
         let hasInbound = false;
+        let latestInboundTime = 0;
         msgs.forEach((msg) => {
           const normalizedId = msg.messageId || msg.id || msg.Id || '';
           if (!normalizedId) return;
@@ -1360,6 +1449,7 @@ export default function ChatConversationScreen() {
             (fromNorm === phoneNorm || fromNorm.endsWith(phoneNorm.slice(-9)) || phoneNorm.endsWith(fromNorm.slice(-9)));
           if (dir === 'inbound' && fromMatches && isRecentInbound) {
             hasInbound = true;
+            if (msgTime > latestInboundTime) latestInboundTime = msgTime;
           }
         });
         if (msgs.length > 0) {
@@ -1377,8 +1467,15 @@ export default function ChatConversationScreen() {
             statusRequestIdRef.current++;
             setConversationLive(true);
             setRecipientReplied24h(true);
-            const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-            setConversationExpiresAt(expires);
+            // The 24h window ends 24h after the customer's ACTUAL inbound time — not 24h from
+            // when we received the WS event. Using Date.now() here reset the countdown to ~24:00
+            // every time the chat opened / replayed history. Never shrink an existing later expiry.
+            const inboundBase = latestInboundTime > 0 ? latestInboundTime : Date.now();
+            const newExpiryMs = inboundBase + 24 * 60 * 60 * 1000;
+            setConversationExpiresAt((prev) => {
+              const prevMs = prev ? new Date(prev).getTime() : 0;
+              return new Date(Math.max(prevMs, newExpiryMs)).toISOString();
+            });
           }
         }
       }
@@ -1408,6 +1505,12 @@ export default function ChatConversationScreen() {
     });
   }, []);
 
+  // Tracks whether the viewport is currently pinned near the newest message. We only force a
+  // scroll-to-bottom for new messages when the user is already at the bottom — otherwise the
+  // manual scroll fights FlashList's maintainVisibleContentPosition and yanks the user away from
+  // the history they're reading (the "jumps to old messages and back" flicker).
+  const isNearBottomRef = useRef(true);
+
   // Auto-scroll to bottom (newest) on new messages.
   // Initial positioning is handled by FlashList's maintainVisibleContentPosition
   // (startRenderingFromBottom) so we must NOT force a scroll on first load — doing
@@ -1416,7 +1519,13 @@ export default function ChatConversationScreen() {
     if (currentMessages.length > prevMessageCount.current) {
       const isInitialLoad = prevMessageCount.current === 0;
       const addedCount = currentMessages.length - prevMessageCount.current;
-      if (!isInitialLoad && !isLoadingOlderMessages && !loadingOlderRef.current && addedCount <= 3) {
+      if (
+        !isInitialLoad &&
+        !isLoadingOlderMessages &&
+        !loadingOlderRef.current &&
+        addedCount <= 3 &&
+        isNearBottomRef.current
+      ) {
         scrollToBottom(true);
       }
     }
@@ -1447,6 +1556,10 @@ export default function ChatConversationScreen() {
         else if (['mp3', 'ogg', 'opus', 'wav', 'aac', 'm4a', 'amr'].includes(ext)) mediaType = 'audio';
         else if (['pdf', 'doc', 'docx', 'xls', 'xlsx'].includes(ext)) mediaType = 'document';
       }
+      // Only prefetch what useCachedMedia actually serves from the file cache: audio & docs.
+      // Images use expo-image's own disk cache, and videos load on demand (poster in the row),
+      // so prefetching them here only double-downloads and starves visible images on the network.
+      if (mediaType !== 'audio' && mediaType !== 'document') continue;
       mediaItems.push({ url, type: mediaType });
     }
     if (mediaItems.length > 0) {
@@ -1492,6 +1605,28 @@ export default function ChatConversationScreen() {
       msgs = msgs.filter((m) =>
         (m.text || m.body || '').toLowerCase().includes(q)
       );
+    }
+
+    // Guaranteed anti-duplicate: collapse an optimistic `temp_` bubble whenever its
+    // server-confirmed twin (same direction + identical text) is already present. This is the
+    // last line of defense so a just-sent message can never render twice (optimistic + WS echo)
+    // while the chat is open, regardless of any reconciliation race in the store.
+    const confirmedTextSigs = new Set<string>();
+    for (const m of msgs) {
+      const id = String((m as any).messageId || '');
+      if (id && !id.startsWith('temp_')) {
+        const txt = (m.text || (m as any).body || '').trim();
+        if (txt) confirmedTextSigs.add(`${(m.direction || '').toLowerCase()}|${txt}`);
+      }
+    }
+    if (confirmedTextSigs.size > 0) {
+      msgs = msgs.filter((m) => {
+        const id = String((m as any).messageId || '');
+        if (!id.startsWith('temp_')) return true;
+        const txt = (m.text || (m as any).body || '').trim();
+        if (!txt) return true; // media/voice temps are reconciled in the store
+        return !confirmedTextSigs.has(`${(m.direction || '').toLowerCase()}|${txt}`);
+      });
     }
 
     // Build a combined list sorted oldest first (non-inverted: data[0] = oldest = top of screen)
@@ -1644,17 +1779,24 @@ export default function ChatConversationScreen() {
   const handleSend = useCallback(
     async (text: string) => {
       if (!user?.organization || !phoneNumber) return;
+      // Sending is an explicit user action — always snap to the newest message so they see it.
+      isNearBottomRef.current = true;
       try {
-        if (isInternalNote) {
+        // Internal note vs WhatsApp message is decided by whether the agent actually @-mentioned
+        // teammates (mirrors web). Keying off the sticky `isInternalNote` flag was a bug: it was
+        // set true on the first `@` and never reset, so every later regular message silently
+        // became an internal note and never reached the customer.
+        if (mentionedUsers.length > 0) {
           await sendInternalMessage(
             user.organization,
             phoneNumber,
             text,
             user.fullname,
             user.uID || user.userId || '',
-            mentionedUsers.length > 0 ? mentionedUsers : undefined,
+            mentionedUsers,
           );
           setMentionedUsers([]);
+          setIsInternalNote(false);
         } else {
           await sendMessage(
             user.organization,
@@ -1665,6 +1807,7 @@ export default function ChatConversationScreen() {
             replyToMessage?.messageId,
             activeWabaNumber || user.wabaNumber || '',
             user.email || user.Email || '',
+            sendFromNumberId,
           );
         }
         setReplyToMessage(null);
@@ -1672,11 +1815,16 @@ export default function ChatConversationScreen() {
         Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
       }
     },
-    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber],
+    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber, sendFromNumberId],
   );
 
   const sendPickedMedia = useCallback(async (uri: string, fileName: string, mimeType: string, fileSize?: number) => {
     if (!user?.organization || !phoneNumber) return;
+    isNearBottomRef.current = true;
+    const mt = (mimeType || '').toLowerCase();
+    const mediaType = mt.startsWith('video') ? 'video' : mt.startsWith('audio') ? 'audio' : mt.startsWith('image') ? 'image' : 'document';
+    // Show the bubble immediately (optimistic); the WS echo replaces this temp.
+    const tempId = addOptimisticMedia({ localUri: uri, mediaType, fileName });
     try {
       await chatsApi.sendMediaMessage(
         user.organization,
@@ -1684,12 +1832,15 @@ export default function ChatConversationScreen() {
         { uri, name: fileName, type: mimeType, size: fileSize },
         '',
         user?.uID || user?.userId || '',
-        activeWabaNumber || user.wabaNumber || '',
+        // Mirror the template logic: only pass a PhoneNumberId for multi-number orgs. Passing a
+        // display number here for single-number orgs makes the backend fail to resolve settings.
+        sendFromNumberId,
       );
     } catch {
+      updateMessageStatus(tempId, 'failed');
       Alert.alert(t('common.error'), t('chats.sendFailed', 'Failed to send media'));
     }
-  }, [user?.organization, phoneNumber, user?.uID, user?.userId, t, activeWabaNumber]);
+  }, [user?.organization, phoneNumber, user?.uID, user?.userId, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus]);
 
   const handleAttachment = useCallback(() => {
     setShowAttachSheet(true);
@@ -1750,6 +1901,7 @@ export default function ChatConversationScreen() {
 
   const handleVoiceMessage = useCallback(async (uri: string, durationMs: number) => {
     if (!user?.organization || !phoneNumber) return;
+    isNearBottomRef.current = true;
     const fileName = `voice_${Date.now()}.mp4`;
     const mimeType = 'audio/mp4';
     let fileSize = 0;
@@ -1758,6 +1910,7 @@ export default function ChatConversationScreen() {
       const fileInfo = await FileSystem.getInfoAsync(uri, { size: true });
       if (fileInfo.exists && fileInfo.size) fileSize = fileInfo.size;
     } catch {}
+    const tempId = addOptimisticMedia({ localUri: uri, mediaType: 'audio', fileName });
     try {
       await chatsApi.sendMediaMessage(
         user.organization,
@@ -1765,12 +1918,13 @@ export default function ChatConversationScreen() {
         { uri, name: fileName, type: mimeType, size: fileSize },
         '',
         user?.uID || user?.userId || '',
-        activeWabaNumber || user.wabaNumber || '',
+        sendFromNumberId,
       );
     } catch {
+      updateMessageStatus(tempId, 'failed');
       Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההקלטה נכשלה'));
     }
-  }, [user?.organization, user?.uID, user?.userId, phoneNumber, t, activeWabaNumber]);
+  }, [user?.organization, user?.uID, user?.userId, phoneNumber, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus]);
 
   // Long press context actions
   const handleMessageLongPress = useCallback(
@@ -1860,14 +2014,17 @@ export default function ChatConversationScreen() {
         const query = afterAt.toLowerCase();
         setMentionQuery(query);
         setShowMentionPicker(true);
-        if (orgUsers.length === 0 && user?.organization) {
-          usersApi.getAll(user.organization).then(setOrgUsers).catch(() => {});
+        if (orgUsers.length === 0 && !orgUsersLoading && user?.organization) {
+          loadOrgUsers();
         }
         return;
       }
     }
     setShowMentionPicker(false);
-  }, [isInternalNote, showInlineQuickMessages, showMentionPicker, orgUsers.length, quickMessages.length, isLoadingQuickMessages, user?.organization]);
+    // Drop internal-note mode once the agent is no longer composing an @mention and none are
+    // attached, so the next plain message routes to the customer (and the picker stays hidden).
+    if (isInternalNote && mentionedUsers.length === 0) setIsInternalNote(false);
+  }, [isInternalNote, mentionedUsers.length, showInlineQuickMessages, showMentionPicker, orgUsers.length, orgUsersLoading, loadOrgUsers, quickMessages.length, isLoadingQuickMessages, user?.organization]);
 
   const getMentionUserName = (u: any) =>
     u.UserName || u.FullName || u.userName || u.fullname || u.name || u.Email || u.email || '';
@@ -1919,6 +2076,7 @@ export default function ChatConversationScreen() {
   const handleScroll = useCallback((e: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+    isNearBottomRef.current = distanceFromBottom < 120;
     setShowScrollBtn(distanceFromBottom > 400);
     if (contentOffset.y < 150 && hasMoreMessages && !isLoadingOlderMessages && !loadingOlderRef.current) {
       loadingOlderRef.current = true;
@@ -2015,6 +2173,10 @@ export default function ChatConversationScreen() {
         const entryTs = entry.createdOn || entry.timestamp || entry.CreatedOn || '';
         const taskId = entry.taskId || entry.TaskId || (entryType.startsWith('task') ? (entry.entityId || entry.relatedId) : '');
         const isTaskEntry = entryType.startsWith('task') && !!taskId;
+        const noteExpanded = expandedNotes.has(item.id);
+        // Heuristic for "is this long enough to need a 'view more'": ~3 lines worth of text or
+        // several explicit line breaks. Avoids fragile onTextLayout measurement inside FlashList.
+        const isLongNote = !!entryText && (entryText.length > 140 || (entryText.match(/\n/g)?.length || 0) >= 3);
         return (
           <View style={[styles.timelineItem, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f0f4f8', borderColor: theme.colors.outline }]}>
             <View style={[styles.timelineIconWrap, { backgroundColor: `${iconColor}15` }]}>
@@ -2022,7 +2184,14 @@ export default function ChatConversationScreen() {
             </View>
             <View style={{ flex: 1 }}>
               {entryText ? (
-                <Text style={{ fontSize: 13, color: theme.colors.onSurface }} numberOfLines={3}>{entryText}</Text>
+                <Text style={{ fontSize: 13, color: theme.colors.onSurface }} numberOfLines={noteExpanded ? undefined : 3}>{entryText}</Text>
+              ) : null}
+              {isLongNote ? (
+                <TouchableOpacity onPress={() => toggleNoteExpanded(item.id)} hitSlop={8} style={{ marginTop: 3, alignSelf: lang === 'he' ? 'flex-end' : 'flex-start' }}>
+                  <Text style={{ fontSize: 12, fontWeight: '600', color: '#2e6155' }}>
+                    {noteExpanded ? (lang === 'he' ? 'צפה פחות' : 'View less') : (lang === 'he' ? 'צפה עוד' : 'View more')}
+                  </Text>
+                </TouchableOpacity>
               ) : null}
               <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2, gap: 6 }}>
                 {entryBy ? (
@@ -2062,18 +2231,36 @@ export default function ChatConversationScreen() {
         />
       );
     },
-    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers, user?.organization, lang, router, confirmCancelScheduled],
+    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers, user?.organization, lang, router, confirmCancelScheduled, expandedNotes, toggleNoteExpanded],
   );
 
   const keyExtractor = useCallback((item: ListItem) => {
     if (item.kind === 'separator') return item.id;
     if (item.kind === 'timeline') return item.id;
-    return item.data.messageId;
+    // A missing/duplicate messageId yields colliding React keys, which is a classic cause of
+    // FlashList "flicker / jump to old messages" on long chats. Fall back to a stable composite.
+    const id = String((item.data as any).messageId || '');
+    if (id) return id;
+    return `msg-${getTs(item.data)}-${(item.data.text || (item.data as any).body || '').slice(0, 24)}`;
   }, []);
 
   const getItemType = useCallback((item: ListItem) => {
     return item.kind;
   }, []);
+
+  // Stable config object — recreating this inline on every screen re-render (scroll button
+  // toggles, conversation-status updates, etc.) makes FlashList reconfigure unnecessarily.
+  const maintainVisibleContentPositionConfig = useMemo(
+    () => ({
+      startRenderingFromBottom: true,
+      autoscrollToBottomThreshold: 0.2,
+      // Animating every auto-scroll makes the list visibly "travel" up/down for a few
+      // seconds while variable-height media rows mount and re-measure on chat open.
+      // Snapping instantly removes that flicker.
+      animateAutoScrollToBottom: false,
+    }),
+    [],
+  );
 
   return (
     <>
@@ -2123,7 +2310,7 @@ export default function ChatConversationScreen() {
               style={styles.headerProfile}
               onPress={() =>
                 router.push({
-                  pathname: '/(tabs)/contacts/[id]',
+                  pathname: '/(tabs)/chats/contact/[id]',
                   params: { id: phoneNumber as string },
                 } as any)
               }
@@ -2170,6 +2357,15 @@ export default function ChatConversationScreen() {
               )}
 
               {/* Tag / Note / Assign are all in the meta bar below — header is clean */}
+
+              <IconButton
+                icon={isInitiatingCall ? 'phone-in-talk' : 'phone'}
+                size={20}
+                iconColor={theme.custom.headerText}
+                disabled={isInitiatingCall}
+                onPress={handleInitiateCall}
+                accessibilityLabel={isRTL ? 'התקשר' : 'Call'}
+              />
 
               <IconButton
                 icon="timeline-text-outline"
@@ -2454,11 +2650,7 @@ export default function ChatConversationScreen() {
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
             drawDistance={750}
-            maintainVisibleContentPosition={{
-              startRenderingFromBottom: true,
-              autoscrollToBottomThreshold: 0.2,
-              animateAutoScrollToBottom: true,
-            }}
+            maintainVisibleContentPosition={maintainVisibleContentPositionConfig}
             ListHeaderComponent={
               isLoadingOlderMessages ? (
                 <View style={styles.olderMsgsLoader}>
@@ -3943,24 +4135,55 @@ export default function ChatConversationScreen() {
           );
         })()}
 
-        {/* @mention picker */}
-        {showMentionPicker && isInternalNote && filteredMentionUsers.length > 0 && (
-          <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline }]}>
-            {filteredMentionUsers.map((u: any, idx: number) => (
-              <Pressable
-                key={u.userId || u.uID || idx}
-                onPress={() => handleSelectMention(u)}
-                style={({ pressed }) => [
-                  styles.mentionItem,
-                  pressed && { backgroundColor: theme.colors.surfaceVariant },
-                ]}
-              >
-                <MaterialCommunityIcons name="account-circle-outline" size={18} color={theme.colors.primary} />
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginStart: 8 }}>
-                  {getMentionUserName(u)}
-                </Text>
+        {/* @mention picker — visibility is driven solely by showMentionPicker (set when an
+            @mention is being composed). We always render a state (list / loading / empty) so the
+            user gets feedback instead of a silent nothing when users haven't loaded yet. */}
+        {showMentionPicker && (
+          <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220 }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.outline }}>
+              <MaterialCommunityIcons name="at" size={16} color={theme.colors.primary} />
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 6 }}>
+                {isRTL ? 'אזכור משתמש' : 'Mention a user'}
+              </Text>
+              <Pressable onPress={() => setShowMentionPicker(false)} hitSlop={8} style={{ marginStart: 'auto' }}>
+                <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
               </Pressable>
-            ))}
+            </View>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {filteredMentionUsers.length > 0 ? (
+                filteredMentionUsers.map((u: any, idx: number) => (
+                  <Pressable
+                    key={u.userId || u.uID || idx}
+                    onPress={() => handleSelectMention(u)}
+                    style={({ pressed }) => [
+                      styles.mentionItem,
+                      pressed && { backgroundColor: theme.colors.surfaceVariant },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name="account-circle-outline" size={18} color={theme.colors.primary} />
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginStart: 8 }}>
+                      {getMentionUserName(u)}
+                    </Text>
+                  </Pressable>
+                ))
+              ) : orgUsersLoading ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', padding: 14, gap: 8 }}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {isRTL ? 'טוען משתמשים...' : 'Loading users...'}
+                  </Text>
+                </View>
+              ) : (
+                <Pressable onPress={loadOrgUsers} style={styles.mentionItem}>
+                  <MaterialCommunityIcons name="refresh" size={18} color={theme.colors.primary} />
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 8 }}>
+                    {mentionQuery
+                      ? (isRTL ? 'לא נמצאו משתמשים תואמים' : 'No matching users')
+                      : (isRTL ? 'לא נטענו משתמשים — הקש לניסיון חוזר' : 'No users loaded — tap to retry')}
+                  </Text>
+                </Pressable>
+              )}
+            </ScrollView>
           </View>
         )}
       </KeyboardAvoidingView>

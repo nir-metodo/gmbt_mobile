@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, Image, Linking, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, ScrollView, Pressable, Image, Linking, ActivityIndicator, Platform } from 'react-native';
 import type { MD3Theme } from 'react-native-paper';
 import {
   Appbar,
@@ -27,6 +27,7 @@ import { getInitials } from '../../../../utils/formatters';
 import { getCacheSize, clearCache, formatCacheSize } from '../../../../services/mediaCache';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../../constants/api';
+import { enableDeviceCallEvents, disableDeviceCallEvents } from '../../../../services/deviceCallEvents';
 import Constants from 'expo-constants';
 
 const BRAND_COLOR = '#2e6155';
@@ -148,6 +149,12 @@ export default function SettingsScreen() {
   const handleToggle = useCallback(async (key: string, value: boolean) => {
     try {
       if (key === 'callRecording') settings.setCallRecording(value);
+      else if (key === 'reportDeviceCallEvents') {
+        settings.setReportDeviceCallEvents(value);
+        if (value) await enableDeviceCallEvents();
+        else disableDeviceCallEvents();
+        return;
+      }
       else if (key === 'pushNotifications') settings.setPushNotifications(value);
       else if (key === 'messageNotifications') settings.setMessageNotifications(value);
       else if (key === 'callNotifications') settings.setCallNotifications(value);
@@ -318,6 +325,22 @@ export default function SettingsScreen() {
             themeColors={theme.colors}
             onPress={() => router.push('/(tabs)/phone-calls' as any)}
             right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
+          />
+        </Surface></>
+        )}
+
+        {/* ────── Device Call Automation (Android only) ────── */}
+        {Platform.OS === 'android' && (
+        <><SectionHeader title={t('settings.deviceCallAutomation', 'אוטומציות שיחות מהמכשיר')} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[s.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon="phone-sync-outline"
+            iconColor="#4CAF50"
+            label={t('settings.reportDeviceCallEvents', 'דווח על שיחות מהמכשיר לבוטומיישן')}
+            description={t('settings.reportDeviceCallEventsDesc', 'שיחה נכנסת שלא נענתה / שנענתה והסתיימה במכשיר תפעיל בוטומיישן (שליחת הודעה למתקשר). דורש הרשאת טלפון/יומן שיחות. אנדרואיד בלבד.')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.reportDeviceCallEventsEnabled} onValueChange={(v) => handleToggle('reportDeviceCallEvents', v)} color={BRAND_COLOR} />}
           />
         </Surface></>
         )}

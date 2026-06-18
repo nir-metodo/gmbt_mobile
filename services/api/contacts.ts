@@ -20,6 +20,21 @@ export const contactsApi = {
   },
 
   async getById(organization: string, contactId: string): Promise<Contact | null> {
+    // Prefer the full record (incl. dynamic/custom fields) like the web ContactFormView does.
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_CONTACT_BY_ID, {
+        organization,
+        contactId,
+      });
+      const data = response.data;
+      const contact = data?.Contact || data?.contact || data?.Data || data?.data || data;
+      if (contact && (contact.id || contact.phoneNumber)) {
+        return contact as Contact;
+      }
+    } catch {
+      // fall through to search-based lookup below
+    }
+    // Fallback: search (sparse record, but better than nothing).
     try {
       const results = await this.search(organization, contactId, 5);
       return results.find((c) => c.id === contactId || c.phoneNumber === contactId) ?? results[0] ?? null;
@@ -92,9 +107,12 @@ export const contactsApi = {
   },
 
   async delete(organization: string, contactId: string): Promise<any> {
-    const response = await axiosInstance.post(ENDPOINTS.DELETE_CONTACT, {
+    // Mirror the web: soft-delete via DeleteContactById with `contactID` (capital D).
+    // The old DeleteContact/contactId call did not actually delete server-side, so the
+    // contact reappeared after the list refreshed.
+    const response = await axiosInstance.post(ENDPOINTS.DELETE_CONTACT_BY_ID, {
+      contactID: contactId,
       organization,
-      contactId,
     });
     return response.data;
   },

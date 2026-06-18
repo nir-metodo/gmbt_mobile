@@ -127,6 +127,9 @@ export const phoneCallsApi = {
     agentName: string;
     customerName?: string;
     notes?: string;
+    contactId?: string;
+    leadId?: string;
+    relatedTo?: { type: 'contact' | 'lead' | 'case'; entityId: string; entityName?: string };
   }): Promise<{ success: boolean; callId?: string }> {
     const response = await axiosInstance.post(ENDPOINTS.TELNYX_OUTBOUND_CALL, payload);
     return response.data || {};
@@ -189,5 +192,23 @@ export const phoneCallsApi = {
       rules,
     });
     return response.data;
+  },
+
+  /**
+   * Report a device (personal-phone) call event so botomations can trigger on it.
+   * Android-only: gated by the user's "report device call events" setting + Platform check
+   * at the call sites. The backend fires missed_call / call_answered + call_ended.
+   */
+  async reportDeviceCallEvent(payload: {
+    organization: string;
+    callType: 'missed' | 'answered' | 'ended';
+    callerPhone: string;
+    calledNumber?: string;
+    callerName?: string;
+    callId?: string;
+    durationSeconds?: number;
+  }): Promise<{ success: boolean; callId?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.REPORT_DEVICE_CALL_EVENT, payload);
+    return response.data || {};
   },
 };

@@ -25,20 +25,26 @@ export function useCachedMedia(
   useEffect(() => {
     urlRef.current = remoteUrl;
 
+    // Bail out of redundant state updates — returning the same object reference makes React
+    // skip the re-render. Without this, every image/video bubble re-renders once on mount,
+    // and in a media-heavy chat that churn feeds the FlashList "settle"/flicker on open.
+    const setIfChanged = (next: { uri: string | null; isLoading: boolean }) =>
+      setState((prev) => (prev.uri === next.uri && prev.isLoading === next.isLoading ? prev : next));
+
     if (!remoteUrl) {
-      setState({ uri: null, isLoading: false });
+      setIfChanged({ uri: null, isLoading: false });
       return;
     }
 
     // For images and video, use remote URL directly — RN Image/Video handle caching natively
     if (type === 'image' || type === 'video') {
-      setState({ uri: remoteUrl, isLoading: false });
+      setIfChanged({ uri: remoteUrl, isLoading: false });
       return;
     }
 
     // For audio/documents, check cache then download if needed
     let cancelled = false;
-    setState({ uri: remoteUrl, isLoading: true });
+    setIfChanged({ uri: remoteUrl, isLoading: true });
 
     (async () => {
       try {
@@ -46,16 +52,16 @@ export function useCachedMedia(
         if (cancelled || urlRef.current !== remoteUrl) return;
 
         if (cached) {
-          if (mountedRef.current) setState({ uri: cached, isLoading: false });
+          if (mountedRef.current) setIfChanged({ uri: cached, isLoading: false });
           return;
         }
 
         const localPath = await cacheMedia(remoteUrl, type);
         if (cancelled || urlRef.current !== remoteUrl) return;
-        if (mountedRef.current) setState({ uri: localPath, isLoading: false });
+        if (mountedRef.current) setIfChanged({ uri: localPath, isLoading: false });
       } catch {
         if (cancelled || urlRef.current !== remoteUrl) return;
-        if (mountedRef.current) setState({ uri: remoteUrl, isLoading: false });
+        if (mountedRef.current) setIfChanged({ uri: remoteUrl, isLoading: false });
       }
     })();
 

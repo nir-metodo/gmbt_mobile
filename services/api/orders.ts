@@ -160,6 +160,14 @@ export const ordersApi = {
     return response.data;
   },
 
+  async delete(organization: string, orderId: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.DELETE_ORDER, {
+      organization,
+      orderId,
+    });
+    return response.data;
+  },
+
   async getSettings(organization: string): Promise<{ statuses: OrderStatusConfig[] }> {
     try {
       const response = await axiosInstance.post(ENDPOINTS.GET_ORDERS_SETTINGS, { organization });

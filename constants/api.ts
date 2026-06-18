@@ -14,6 +14,7 @@ export const ENDPOINTS = {
 
   // Contacts
   GET_CONTACTS: '/api/Webhooks/GetAllContactsByOrg',
+  GET_CONTACT_BY_ID: '/api/Webhooks/GetContactById',
   SEARCH_CONTACTS: '/api/Webhooks/SearchContacts',
   CREATE_CONTACT: '/api/Webhooks/CreateNewContact',
   UPDATE_CONTACT: '/api/Webhooks/UpdateContact',
@@ -106,7 +107,6 @@ export const ENDPOINTS = {
   CREATE_QUOTE: '/api/Webhooks/CreateQuote',
   UPDATE_QUOTE: '/api/Webhooks/UpdateQuote',
   DELETE_QUOTE: '/api/Webhooks/DeleteQuote',
-  GET_QUOTE_BRANDING: '/api/Webhooks/GetQuoteBranding',
 
   GET_QUOTE_BRANDING: '/api/Webhooks/GetQuoteBranding',
   SAVE_QUOTE_BRANDING: '/api/Webhooks/SaveQuoteBranding',
@@ -193,6 +193,7 @@ export const ENDPOINTS = {
   GET_CALL_RECORDINGS: '/api/Webhooks/GetCallRecordings',
   GET_RECORDING_SETTINGS: '/api/Webhooks/GetRecordingSettings',
   UPDATE_RECORDING_SETTINGS: '/api/Webhooks/UpdateRecordingSettings',
+  REPORT_DEVICE_CALL_EVENT: '/api/Webhooks/ReportDeviceCallEvent',
 
   // Media Manager
   GET_MEDIA_FOLDERS: '/api/Webhooks/GetMediaFolders',
@@ -278,7 +279,7 @@ export const ENDPOINTS = {
   GET_INVOICE_BY_ID: '/api/Webhooks/GetInvoiceById',
   CREATE_INVOICE: '/api/Webhooks/CreateInvoice',
   UPDATE_INVOICE: '/api/Webhooks/UpdateInvoice',
-  DELETE_INVOICE: '/api/Webhooks/DeleteInvoice',
+  DELETE_INVOICE: '/api/Webhooks/DeleteInvoiceDraft',
   GET_INVOICE_BRANDING: '/api/Webhooks/GetInvoiceBranding',
 
   // Calendar Events

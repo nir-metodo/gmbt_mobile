@@ -40,6 +40,7 @@ import * as Clipboard from 'expo-clipboard';
 import { mediaApi } from '../../../../services/api/media';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useDebouncedValue } from '../../../../hooks/useWindowedList';
 import { useAuthStore } from '../../../../stores/authStore';
 import { getDataVisibility } from '../../../../constants/permissions';
 import type { MediaFolder, MediaFile } from '../../../../types';
@@ -155,11 +156,14 @@ export default function MediaScreen() {
     setRefreshing(false);
   }, [fetchData]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredFiles = useMemo(() => {
-    if (!searchQuery.trim()) return files;
-    const q = searchQuery.toLowerCase();
+    if (!debouncedSearch.trim()) return files;
+    const q = debouncedSearch.toLowerCase();
     return files.filter((f) => f.name?.toLowerCase().includes(q));
-  }, [files, searchQuery]);
+  }, [files, debouncedSearch]);
 
   const handleUploadFile = useCallback(async (source: 'gallery' | 'document' | 'camera') => {
     try {

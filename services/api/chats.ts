@@ -27,6 +27,7 @@ export const chatsApi = {
     contextMessageId?: string,
     wabaNumber?: string,
     senderEmail?: string,
+    fromNumberId?: string,
   ): Promise<any> {
     const payload = {
       text: message,
@@ -38,7 +39,11 @@ export const chatsApi = {
       sentByName: senderName || '',
       sentById: userId || '',
       organization,
-      ...(contextMessageId ? { contextMessageId } : {}),
+      // Multi-number routing: mirror web by sending the selected PhoneNumberId. Empty for
+      // single-number orgs so the backend falls back to the default WABA settings.
+      ...(fromNumberId ? { fromNumberId } : {}),
+      // Reply threading: backend reads PascalCase `ContextMessageId` only (matches web).
+      ...(contextMessageId ? { ContextMessageId: contextMessageId } : {}),
     };
 
     if (!payload.from) {
@@ -415,9 +420,10 @@ export const chatsApi = {
   },
 
   async getChatTimeline(organization: string, phoneNumber: string): Promise<any[]> {
+    // Backend (GetChatTimeline) reads `organization` and `contactId` (the chat doc id is the phone number).
     const response = await axiosInstance.post(ENDPOINTS.GET_CHAT_TIMELINE, {
-      organizationiD: organization,
-      phoneNumber,
+      organization,
+      contactId: phoneNumber,
     });
     const raw = response.data;
     return Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];

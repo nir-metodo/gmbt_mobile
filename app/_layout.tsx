@@ -18,6 +18,7 @@ import * as Notifications from 'expo-notifications';
 import { notificationService } from '../services/notifications';
 import { pushNotificationService } from '../services/pushNotifications';
 import { notificationSound } from '../services/notificationSound';
+import { syncDeviceCallEventsConfig } from '../services/deviceCallEvents';
 import '../i18n';
 
 I18nManager.allowRTL(true);
@@ -68,6 +69,10 @@ export default function RootLayout() {
           // Non-critical — token refresh on foreground failed; user will get 401 on next request
         }
 
+        // Keep the Android call-event receiver's stored token/config fresh, and flush any
+        // events it queued while the app was backgrounded/killed. No-op on iOS / pre-rebuild.
+        syncDeviceCallEventsConfig().catch(() => {});
+
         // Re-register push token on foreground — handles the case where the user
         // denied the permission dialog at login but later enabled notifications in device settings.
         const userId = currentUser.uID || currentUser.userId || '';
@@ -106,6 +111,9 @@ export default function RootLayout() {
         pushNotificationService.registerPushToken(user.organization, userId);
       }
     }).catch(() => {});
+
+    // Push the freshly-authenticated org/token down to the Android call-event receiver.
+    syncDeviceCallEventsConfig().catch(() => {});
   }, [user?.organization, user?.uID, user?.userId]);
 
   // Play sound when a push notification arrives while app is in foreground

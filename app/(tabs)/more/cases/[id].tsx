@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  useWindowDimensions,
 } from 'react-native';
 import {
   Text,
@@ -26,10 +27,11 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
-import { makeAppCall } from '../../../../utils/phoneCall';
+import { placeSmartCall } from '../../../../utils/phoneCall';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
+import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { usersApi } from '../../../../services/api/users';
 import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
@@ -44,6 +46,7 @@ import {
   type DynamicSection,
 } from '../../../../components/DynamicFieldsSection';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../../components/NoteAttachmentRow';
+import AddTaskSheet from '../../../../components/AddTaskSheet';
 import type { Case } from '../../../../types';
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -84,6 +87,7 @@ export default function CaseDetailScreen() {
     prefillContactName?: string;
   }>();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign, writingDirection } = useRTL();
   const { t, i18n } = useTranslation();
@@ -93,12 +97,19 @@ export default function CaseDetailScreen() {
 
   const isNew = id === 'new';
 
-  const [caseData, setCaseData] = useState<Case | null>(null);
+  // Render instantly from the list cache, then refresh in the background.
+  // Memoized per id so the cache lookup keeps a stable identity across renders
+  // (otherwise fetchCase, which depends on it, re-runs in an infinite loop).
+  const cachedCase = useMemo(
+    () => (!isNew ? getCachedEntity<Case>('cases', id) : undefined),
+    [isNew, id]
+  );
+  const [caseData, setCaseData] = useState<Case | null>(cachedCase ?? null);
   const [caseSettings, setCaseSettings] = useState<{ sla?: { enabled: boolean; responseTime: number; resolutionTime: number } } | null>(null);
   const [caseFormSections, setCaseFormSections] = useState<DynamicSection[]>([]);
   const [caseFormLayout, setCaseFormLayout] = useState<string[]>([]);
   const [formDynamicFields, setFormDynamicFields] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!isNew && !cachedCase);
   const [error, setError] = useState<string | null>(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -123,6 +134,7 @@ export default function CaseDetailScreen() {
   const [formTags, setFormTags] = useState('');
   const [formNotes, setFormNotes] = useState('');
   const [noteModalVisible, setNoteModalVisible] = useState(false);
+  const [addTaskVisible, setAddTaskVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [noteAttachment, setNoteAttachment] = useState<NoteAttachment | null>(null);
   const [addingNote, setAddingNote] = useState(false);
@@ -164,7 +176,8 @@ export default function CaseDetailScreen() {
       ]);
       if (found) {
         setCaseData(found);
-      } else {
+        cacheEntity('cases', found);
+      } else if (!cachedCase) {
         setError(t('common.noResults'));
       }
       if (settings?.sla) setCaseSettings(settings);
@@ -175,7 +188,7 @@ export default function CaseDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, id, isNew, t]);
+  }, [user?.organization, id, isNew, t, cachedCase]);
 
   useEffect(() => {
     fetchCase();
@@ -321,6 +334,7 @@ export default function CaseDetailScreen() {
             setDeleting(true);
             try {
               await casesApi.delete(user.organization, caseData.id);
+              Alert.alert(t('common.success', 'הצלחה'), t('cases.deleteSuccess', 'נמחק בהצלחה'));
               if (router.canGoBack()) {
                 router.back();
               } else {
@@ -795,13 +809,14 @@ export default function CaseDetailScreen() {
                   <Pressable
                     onPress={() => {
                       const phone = caseData.contactPhone || (caseData as any).contact_phone;
-                      makeAppCall({
+                      placeSmartCall({
                         phoneNumber: phone,
                         organization: user?.organization || '',
-                        callerUserId: user?.uID || user?.userId,
-                        callerUserName: user?.fullname,
+                        user,
                         relatedTo: { type: 'case', entityId: caseData.id, entityName: caseData.subject || caseData.title },
-                        contactName: caseData.contactName,
+                        contactId: (caseData as any).contactId,
+                        leadId: (caseData as any).leadId,
+                        customerName: caseData.contactName,
                       });
                     }}
                     style={[styles.contactActionBtn, { backgroundColor: theme.colors.primaryContainer }]}
@@ -832,6 +847,15 @@ export default function CaseDetailScreen() {
                     <MaterialCommunityIcons name="note-plus-outline" size={20} color="#9C27B0" />
                     <Text variant="labelMedium" style={{ color: '#9C27B0', fontWeight: '600' }}>
                       {t('phoneCalls.addNote')}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setAddTaskVisible(true)}
+                    style={[styles.contactActionBtn, { backgroundColor: '#FFF3E0' }]}
+                  >
+                    <MaterialCommunityIcons name="clipboard-check-outline" size={20} color="#FF9800" />
+                    <Text variant="labelMedium" style={{ color: '#FF9800', fontWeight: '600' }}>
+                      {t('tasks.taskShort', 'משימה')}
                     </Text>
                   </Pressable>
                 </View>
@@ -1061,8 +1085,11 @@ export default function CaseDetailScreen() {
             { backgroundColor: theme.colors.surface },
           ]}
         >
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <ScrollView showsVerticalScrollIndicator={false}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            {/* maxHeight bounds the ScrollView so it can scroll. A bare `flex:1` here collapses the
+                content to height 0 inside a Paper Modal whose container only has `maxHeight` (no
+                definite height), which is what made the modal show only a grey backdrop. */}
+            <ScrollView style={{ maxHeight: windowHeight * 0.78 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => setEditModalVisible(false)} style={{ margin: 0 }} />
                 <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
@@ -1470,6 +1497,20 @@ export default function CaseDetailScreen() {
           </KeyboardAvoidingView>
         </Modal>
       </Portal>
+
+      <AddTaskSheet
+        visible={addTaskVisible}
+        onDismiss={() => setAddTaskVisible(false)}
+        organization={user?.organization || ''}
+        user={user}
+        relatedPhone={caseData?.contactPhone || (caseData as any)?.contact_phone || ''}
+        relatedTo={{
+          type: 'case',
+          entityId: caseData?.id || '',
+          entityName: caseData?.subject || caseData?.title || '',
+        }}
+        defaultTitle={caseData?.contactName ? `${t('contacts.phoneCall')} - ${caseData.contactName}` : (caseData?.subject || caseData?.title)}
+      />
     </View>
   );
 }

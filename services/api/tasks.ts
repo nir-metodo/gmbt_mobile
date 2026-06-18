@@ -37,7 +37,7 @@ export const tasksApi = {
     const response = await axiosInstance.post(ENDPOINTS.GET_TASKS, {
       organizationName: organization,
       userId: userId || '',
-      dataVisibility: dataVisibility || 'seeAll',
+      dataVisibility: dataVisibility || 'all',
     });
     const raw = response.data;
     const items = raw?.tasks || raw?.Tasks || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);

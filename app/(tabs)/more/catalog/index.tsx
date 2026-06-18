@@ -23,6 +23,7 @@ import {
   TextInput,
   Button,
   IconButton,
+  Switch,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -34,6 +35,8 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { catalogApi, CatalogItem, CatalogCustomColumn, CatalogFieldsConfig } from '../../../../services/api/catalog';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { appCache } from '../../../../services/cache';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../../constants/api';
@@ -42,6 +45,19 @@ const BRAND_COLOR = '#059669';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Select options may be an array (mobile) or a comma-separated string (how the web Catalog stores them).
+function getColumnOptions(col: CatalogCustomColumn): string[] {
+  const raw = col.options as unknown;
+  if (Array.isArray(raw)) return raw.map((o) => String(o).trim()).filter(Boolean);
+  if (typeof raw === 'string') return raw.split(',').map((o) => o.trim()).filter(Boolean);
+  return [];
+}
+
+function formatCustomValue(v: any, isRTL: boolean): string {
+  if (typeof v === 'boolean') return v ? (isRTL ? 'כן' : 'Yes') : (isRTL ? 'לא' : 'No');
+  return String(v);
 }
 
 export default function CatalogScreen() {
@@ -53,10 +69,14 @@ export default function CatalogScreen() {
   const user = useAuthStore((s) => s.user);
 
   const CACHE_KEY = `catalog_${user?.organization}`;
+  const COLS_CACHE_KEY = `catalog_cols_${user?.organization}`;
+  const CFG_CACHE_KEY = `catalog_cfg_${user?.organization}`;
 
   const [items, setItems] = useState<CatalogItem[]>(() => appCache.get<CatalogItem[]>(CACHE_KEY) ?? []);
-  const [customColumns, setCustomColumns] = useState<CatalogCustomColumn[]>([]);
-  const [fieldsConfig, setFieldsConfig] = useState<CatalogFieldsConfig>({ description: true, unitPrice: true, sku: true, category: true, link: true });
+  // Hydrate column definitions + field config from cache so custom fields render immediately and
+  // survive a transient fetch failure (otherwise a dropped refresh would blank the custom fields).
+  const [customColumns, setCustomColumns] = useState<CatalogCustomColumn[]>(() => appCache.get<CatalogCustomColumn[]>(COLS_CACHE_KEY) ?? []);
+  const [fieldsConfig, setFieldsConfig] = useState<CatalogFieldsConfig>(() => appCache.get<CatalogFieldsConfig>(CFG_CACHE_KEY) ?? { description: true, unitPrice: true, sku: true, category: true, link: true });
   const [loading, setLoading] = useState(!appCache.get<CatalogItem[]>(CACHE_KEY));
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -74,7 +94,12 @@ export default function CatalogScreen() {
   const [formCategory, setFormCategory] = useState('');
   const [formLink, setFormLink] = useState('');
   const [formImageUrl, setFormImageUrl] = useState('');
+  const [formCustomFields, setFormCustomFields] = useState<Record<string, any>>({});
   const [uploading, setUploading] = useState(false);
+
+  const setCustomField = useCallback((key: string, value: any) => {
+    setFormCustomFields((p) => ({ ...p, [key]: value }));
+  }, []);
 
   const pickImage = async (source: 'camera' | 'library') => {
     try {
@@ -127,7 +152,14 @@ export default function CatalogScreen() {
       const data = await catalogApi.getAll(user.organization);
       setItems(data.catalogItems);
       setCustomColumns(data.catalogCustomColumns);
-      if (data.catalogFieldsConfig) setFieldsConfig(prev => ({ ...prev, ...data.catalogFieldsConfig }));
+      appCache.set(COLS_CACHE_KEY, data.catalogCustomColumns);
+      if (data.catalogFieldsConfig) {
+        setFieldsConfig(prev => {
+          const merged = { ...prev, ...data.catalogFieldsConfig };
+          appCache.set(CFG_CACHE_KEY, merged);
+          return merged;
+        });
+      }
       appCache.set(CACHE_KEY, data.catalogItems);
     } catch {
       if (items.length === 0) {
@@ -155,13 +187,16 @@ export default function CatalogScreen() {
     return ['all', ...Array.from(cats).sort()];
   }, [items]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredItems = useMemo(() => {
     let result = items;
     if (categoryFilter !== 'all') {
       result = result.filter((i) => i.category === categoryFilter);
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.toLowerCase();
       const sb = fieldsConfig.searchBaseFields || { name: true, description: true, sku: true };
       const searchableCols = customColumns.filter((c) => c.searchable);
       result = result.filter((i) => {
@@ -183,7 +218,13 @@ export default function CatalogScreen() {
       });
     }
     return result;
-  }, [items, categoryFilter, searchQuery, fieldsConfig, customColumns]);
+  }, [items, categoryFilter, debouncedSearch, fieldsConfig, customColumns]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleItems, hasMore: itemsHasMore, loadMore: itemsLoadMore, loadAll: itemsLoadAll, count: itemsCount } = useWindowedList(filteredItems, {
+    pageSize: 30,
+    resetKey: `${categoryFilter}|${debouncedSearch}`,
+  });
 
   const resetForm = useCallback(() => {
     setFormName('');
@@ -193,6 +234,7 @@ export default function CatalogScreen() {
     setFormCategory('');
     setFormLink('');
     setFormImageUrl('');
+    setFormCustomFields({});
     setEditingItem(null);
   }, []);
 
@@ -210,6 +252,7 @@ export default function CatalogScreen() {
     setFormCategory(item.category || '');
     setFormLink(item.link || '');
     setFormImageUrl(item.images?.[0] || '');
+    setFormCustomFields(item.customFields || {});
     setModalVisible(true);
   }, []);
 
@@ -238,8 +281,11 @@ export default function CatalogScreen() {
         sku: formSku.trim(),
         category: formCategory.trim(),
         link: formLink.trim(),
-        images: formImageUrl.trim() ? [formImageUrl.trim()] : (editingItem?.images || []),
-        customFields: editingItem?.customFields || {},
+        // Empty => persist an empty array (image was removed). Falling back to the old images
+        // here would silently re-save a deleted image, so the removal never "sticks".
+        images: formImageUrl.trim() ? [formImageUrl.trim()] : [],
+        // Merge so any keys not surfaced as columns on this device are preserved.
+        customFields: { ...(editingItem?.customFields || {}), ...formCustomFields },
       };
 
       let newItems: CatalogItem[];
@@ -259,7 +305,7 @@ export default function CatalogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImageUrl, editingItem, items, customColumns, user?.organization, resetForm, fieldsConfig, isRTL]);
+  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImageUrl, formCustomFields, editingItem, items, customColumns, user?.organization, resetForm, fieldsConfig, isRTL]);
 
   const handleDelete = useCallback((item: CatalogItem) => {
     Alert.alert(
@@ -273,7 +319,7 @@ export default function CatalogScreen() {
           onPress: async () => {
             if (!user?.organization) return;
             try {
-              const updated = await catalogApi.deleteItem(user.organization, item.id, items, customColumns);
+              const updated = await catalogApi.deleteItem(user.organization, item.id, items);
               setItems(updated);
               appCache.set(CACHE_KEY, updated);
             } catch {
@@ -287,6 +333,26 @@ export default function CatalogScreen() {
 
   const renderItem = useCallback(({ item }: { item: CatalogItem }) => {
     const hasImage = item.images && item.images.length > 0 && item.images[0];
+    const cf = item.customFields || {};
+    const hasVal = (v: any) => v !== undefined && v !== null && v !== '';
+    // Title: prefer base fields, then the configured required (possibly custom) field,
+    // then the first filled custom column — so an item with only dynamic fields isn't blank.
+    let titleKey: string | null = null;
+    let displayTitle = item.name || item.sku || item.category || '';
+    if (!displayTitle) {
+      const reqKey = fieldsConfig.requiredField;
+      if (reqKey && hasVal(cf[reqKey])) {
+        titleKey = reqKey;
+        displayTitle = formatCustomValue(cf[reqKey], isRTL);
+      } else {
+        const firstFilled = customColumns.find((c) => hasVal(cf[c.key]));
+        if (firstFilled) {
+          titleKey = firstFilled.key;
+          displayTitle = formatCustomValue(cf[firstFilled.key], isRTL);
+        }
+      }
+    }
+    if (!displayTitle) displayTitle = '—';
     return (
       <Pressable
         style={[styles.card, { backgroundColor: theme.colors.surface }]}
@@ -303,7 +369,7 @@ export default function CatalogScreen() {
           )}
           <View style={styles.cardContent}>
             <Text variant="titleSmall" style={{ color: theme.colors.onSurface, textAlign }} numberOfLines={1}>
-              {item.name || item.sku || item.category || '—'}
+              {displayTitle}
             </Text>
             {item.description ? (
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 2 }} numberOfLines={2}>
@@ -329,6 +395,25 @@ export default function CatalogScreen() {
                 </View>
               ) : null}
             </View>
+            {/* Custom column values (shows the columns added in the web Catalog settings). */}
+            {customColumns.length > 0 && (() => {
+              const filled = customColumns
+                .filter((c) => c.key !== titleKey)
+                .map((c) => ({ label: c.label, val: cf[c.key] }))
+                .filter((x) => hasVal(x.val));
+              if (!filled.length) return null;
+              return (
+                <View style={[styles.cardMeta, { flexDirection, flexWrap: 'wrap' }]}>
+                  {filled.slice(0, 4).map((x, i) => (
+                    <View key={i} style={[styles.customBadge, { backgroundColor: theme.colors.onSurfaceVariant + '14' }]}>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }}>
+                        {x.label}: {formatCustomValue(x.val, isRTL)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              );
+            })()}
           </View>
           <IconButton
             icon="pencil-outline"
@@ -339,7 +424,7 @@ export default function CatalogScreen() {
         </View>
       </Pressable>
     );
-  }, [theme, flexDirection, textAlign, openEditModal, handleDelete]);
+  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, customColumns, isRTL, fieldsConfig]);
 
   // Configurable mandatory field (defaults to name). On mobile only base fields are editable,
   // so if the required field is a custom column we don't block the save here.
@@ -430,11 +515,22 @@ export default function CatalogScreen() {
 
       {/* Items list */}
       <FlatList
-        data={filteredItems}
+        data={visibleItems}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         contentContainerStyle={[styles.list, filteredItems.length === 0 && styles.emptyList]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} />}
+        ListFooterComponent={
+          <ListPaginationFooter
+            count={itemsCount}
+            total={filteredItems.length}
+            hasMore={itemsHasMore}
+            onLoadMore={itemsLoadMore}
+            onLoadAll={itemsLoadAll}
+          />
+        }
+        onEndReached={itemsHasMore ? itemsLoadMore : undefined}
+        onEndReachedThreshold={0.4}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <MaterialCommunityIcons name="package-variant" size={64} color={BRAND_COLOR} style={{ opacity: 0.3 }} />
@@ -602,6 +698,61 @@ export default function CatalogScreen() {
                 </View>
               ) : null}
 
+              {/* Custom columns (defined in the web Catalog → Columns settings) — editable here too. */}
+              {customColumns.length > 0 && (
+                <>
+                  <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, marginBottom: 8, textAlign }}>
+                    {isRTL ? 'שדות מותאמים' : 'Custom fields'}
+                  </Text>
+                  {customColumns.map((col) => {
+                    const val = formCustomFields[col.key];
+                    if (col.type === 'boolean') {
+                      const on = val === true || val === 'true' || val === 'כן' || val === 'Yes';
+                      return (
+                        <View key={col.id} style={{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                          <Text style={{ color: theme.colors.onSurface, flex: 1 }}>{col.label}</Text>
+                          <Switch value={on} onValueChange={(v) => setCustomField(col.key, v)} color={BRAND_COLOR} />
+                        </View>
+                      );
+                    }
+                    const selectOptions = col.type === 'select' ? getColumnOptions(col) : [];
+                    if (col.type === 'select' && selectOptions.length > 0) {
+                      return (
+                        <View key={col.id} style={{ marginBottom: 12 }}>
+                          <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 4, textAlign }}>{col.label}</Text>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                            {selectOptions.map((opt) => (
+                              <Chip
+                                key={opt}
+                                selected={val === opt}
+                                onPress={() => setCustomField(col.key, val === opt ? '' : opt)}
+                                style={val === opt ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                                textStyle={val === opt ? { color: BRAND_COLOR } : undefined}
+                              >
+                                {opt}
+                              </Chip>
+                            ))}
+                          </View>
+                        </View>
+                      );
+                    }
+                    return (
+                      <TextInput
+                        key={col.id}
+                        label={col.label}
+                        value={val === undefined || val === null ? '' : String(val)}
+                        onChangeText={(txt) => setCustomField(col.key, txt)}
+                        mode="outlined"
+                        style={styles.input}
+                        keyboardType={col.type === 'number' ? 'numeric' : 'default'}
+                        outlineColor={BRAND_COLOR + '40'}
+                        activeOutlineColor={BRAND_COLOR}
+                      />
+                    );
+                  })}
+                </>
+              )}
+
               <View style={[styles.modalActions, { flexDirection }]}>
                 <Button
                   mode="outlined"
@@ -658,6 +809,7 @@ const styles = StyleSheet.create({
   cardContent: { flex: 1, marginHorizontal: 12 },
   cardMeta: { marginTop: 4, alignItems: 'center', flexWrap: 'wrap' },
   categoryBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  customBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginEnd: 4, marginTop: 2 },
   fab: { position: 'absolute', bottom: 24, right: 16, borderRadius: 16 },
   modal: { marginHorizontal: 16, borderRadius: 16, padding: 20, maxHeight: '85%' },
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 16 },

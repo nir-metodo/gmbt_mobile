@@ -29,6 +29,8 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { suppliersApi, Supplier } from '../../../../services/api/suppliers';
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
@@ -85,9 +87,12 @@ export default function SuppliersScreen() {
     setRefreshing(false);
   }, [fetchSuppliers]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredSuppliers = useMemo(() => {
-    if (!searchQuery.trim()) return suppliers;
-    const q = searchQuery.toLowerCase();
+    if (!debouncedSearch.trim()) return suppliers;
+    const q = debouncedSearch.toLowerCase();
     return suppliers.filter(
       (s) =>
         s.name?.toLowerCase().includes(q) ||
@@ -95,7 +100,13 @@ export default function SuppliersScreen() {
         s.phone?.includes(q) ||
         s.email?.toLowerCase().includes(q)
     );
-  }, [suppliers, searchQuery]);
+  }, [suppliers, debouncedSearch]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleSuppliers, hasMore: supHasMore, loadMore: supLoadMore, loadAll: supLoadAll, count: supCount } = useWindowedList(filteredSuppliers, {
+    pageSize: 30,
+    resetKey: debouncedSearch,
+  });
 
   const resetForm = () => {
     setFormName(''); setFormContactPerson(''); setFormPhone('');
@@ -249,11 +260,22 @@ export default function SuppliersScreen() {
         </View>
       ) : (
         <FlatList
-          data={filteredSuppliers}
+          data={visibleSuppliers}
           keyExtractor={(item) => item.id}
           renderItem={renderSupplier}
           contentContainerStyle={{ padding: 16, paddingBottom: 80 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} />}
+          ListFooterComponent={
+            <ListPaginationFooter
+              count={supCount}
+              total={filteredSuppliers.length}
+              hasMore={supHasMore}
+              onLoadMore={supLoadMore}
+              onLoadAll={supLoadAll}
+            />
+          }
+          onEndReached={supHasMore ? supLoadMore : undefined}
+          onEndReachedThreshold={0.4}
           ListEmptyComponent={
             <View style={styles.centered}>
               <MaterialCommunityIcons name="store-off-outline" size={48} color={theme.colors.onSurfaceVariant} />

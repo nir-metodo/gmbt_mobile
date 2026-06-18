@@ -421,7 +421,9 @@ export default function ChatsListScreen() {
         // Skip reactions - don't update chat list with reaction text
         if (msg.type === 'reaction') return;
         if (msg.phoneNumber || msg.from) {
-          addOrUpdateChat({
+          const dir = (msg.direction || '').toLowerCase();
+          const isOutbound = dir === 'outbound' || !!msg.sentFromApp;
+          const base: any = {
             id: msg.phoneNumber || msg.from,
             phoneNumber: msg.phoneNumber || msg.from,
             contactName:
@@ -431,11 +433,17 @@ export default function ChatsListScreen() {
               msg.from,
             lastMessage: msg.body || msg.message || msg.text || '',
             lastMessageTime: msg.timestamp || new Date().toISOString(),
-            unreadCount: (msg.unreadCount ?? 0) + 1,
             isOnline: msg.isOnline,
             profilePicture: msg.profilePicture,
-          });
-          const dir = (msg.direction || '').toLowerCase();
+          };
+          // Only inbound messages bump the unread badge. For outbound (sent from app/web by
+          // any agent) we omit unreadCount so addOrUpdateChat preserves the existing value
+          // instead of falsely marking the row unread (mirrors web).
+          if (!isOutbound) {
+            base.unreadCount = (msg.unreadCount ?? 0) + 1;
+            base.isRead = false;
+          }
+          addOrUpdateChat(base);
           if (dir === 'inbound' || (!msg.sentFromApp && msg.from !== user?.wabaNumber)) {
             notificationSound.playMessageSound();
           }

@@ -84,6 +84,128 @@ const forceLogout = async () => {
   router.replace('/(auth)/login');
 };
 
+// ── JWT expiry helpers ─────────────────────────────────────────────────────
+// Firebase ID tokens last ~1h. Screens can render cached data for a long time
+// with no network call, so the token silently expires; the next write (e.g.
+// creating a task) would otherwise be sent with a dead token. We decode the
+// token's `exp` claim and refresh proactively before it expires.
+const PROACTIVE_REFRESH_SKEW_MS = 90_000; // refresh ~90s before actual expiry
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+const base64UrlDecode = (input: string): string => {
+  let str = input.replace(/-/g, '+').replace(/_/g, '/');
+  let output = '';
+  let buffer = 0;
+  let bits = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (ch === '=') break;
+    const idx = B64_CHARS.indexOf(ch);
+    if (idx === -1) continue;
+    buffer = (buffer << 6) | idx;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+  return output;
+};
+
+// Returns the token's expiry in ms since epoch, or 0 if it can't be parsed.
+const getTokenExpMs = (token: string): number => {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return 0;
+    const obj = JSON.parse(base64UrlDecode(payload));
+    return typeof obj?.exp === 'number' ? obj.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+};
+
+// Unknown expiry (0) → don't pre-refresh; let the reactive path handle it.
+const isTokenExpiredSoon = (token: string): boolean => {
+  const exp = getTokenExpMs(token);
+  if (!exp) return false;
+  return Date.now() >= exp - PROACTIVE_REFRESH_SKEW_MS;
+};
+
+const isRefreshEndpoint = (url?: string) => !!url && url.includes('/refresh-token');
+
+// Detects token-expiry signalled in any response shape (Message/message/error
+// fields or raw string), so a 200/500 carrying an "expired token" message still
+// triggers a refresh+retry instead of failing the user out.
+const responseSignalsExpiredToken = (data: any): boolean => {
+  const msg =
+    typeof data === 'string'
+      ? data
+      : (data?.Message || data?.message || data?.error || '');
+  return (
+    typeof msg === 'string' &&
+    /(firebase id token expired|expired firebase token|invalid or expired firebase token|token has expired|id token has expired)/i.test(
+      msg,
+    )
+  );
+};
+
+// Performs the actual refresh-token exchange and propagates the new token to all
+// caches/stores. Throws if it can't obtain a fresh token.
+const performTokenRefresh = async (): Promise<string> => {
+  const refreshToken = await secureStorage.getRefreshToken();
+  if (!refreshToken) throw new Error('No refresh token');
+
+  const res = await axios.post(`${API_BASE_URL}${ENDPOINTS.REFRESH_TOKEN}`, {
+    refreshToken,
+  });
+
+  if (!res?.data?.IdToken) {
+    throw new Error('No IdToken in refresh response');
+  }
+
+  const newToken = res.data.IdToken;
+  _cachedToken = newToken;
+  await secureStorage.setToken(newToken);
+
+  const user = await appStorage.getUser();
+  if (user) {
+    user.authToken = newToken;
+    await appStorage.setUser(user);
+  }
+
+  try {
+    const authStore = getAuthStore();
+    const storeUser = authStore.getState().user;
+    if (storeUser) {
+      authStore.setState({ user: { ...storeUser, authToken: newToken } });
+    }
+  } catch {}
+
+  axiosInstance.defaults.headers.common['Authorization'] = 'Bearer ' + newToken;
+  return newToken;
+};
+
+// Shared, de-duplicated refresh: concurrent callers wait on a single in-flight
+// refresh instead of each firing their own. Returns the fresh token.
+const ensureFreshToken = async (): Promise<string> => {
+  if (isRefreshing) {
+    return new Promise<string>((resolve, reject) => {
+      failedQueue.push({ resolve, reject });
+    });
+  }
+  isRefreshing = true;
+  try {
+    const newToken = await performTokenRefresh();
+    processQueue(null, newToken);
+    return newToken;
+  } catch (err) {
+    processQueue(err, null);
+    throw err;
+  } finally {
+    isRefreshing = false;
+  }
+};
+
 const refreshAndRetry = async (originalRequest: any) => {
   if (originalRequest._retry) {
     return Promise.reject(new Error('Already retried'));
@@ -93,55 +215,21 @@ const refreshAndRetry = async (originalRequest: any) => {
     return new Promise<string>((resolve, reject) => {
       failedQueue.push({ resolve, reject });
     }).then((token) => {
+      originalRequest._retry = true;
       originalRequest.headers['Authorization'] = 'Bearer ' + token;
       return axiosInstance(originalRequest);
     });
   }
 
   originalRequest._retry = true;
-  isRefreshing = true;
 
   try {
-    const refreshToken = await secureStorage.getRefreshToken();
-    if (!refreshToken) throw new Error('No refresh token');
-
-    const res = await axios.post(`${API_BASE_URL}${ENDPOINTS.REFRESH_TOKEN}`, {
-      refreshToken,
-    });
-
-    if (!res?.data?.IdToken) {
-      throw new Error('No IdToken in refresh response');
-    }
-
-    const newToken = res.data.IdToken;
-    _cachedToken = newToken;
-    await secureStorage.setToken(newToken);
-
-    const user = await appStorage.getUser();
-    if (user) {
-      user.authToken = newToken;
-      await appStorage.setUser(user);
-    }
-
-    try {
-      const authStore = getAuthStore();
-      const storeUser = authStore.getState().user;
-      if (storeUser) {
-        authStore.setState({ user: { ...storeUser, authToken: newToken } });
-      }
-    } catch {}
-
-    axiosInstance.defaults.headers.common['Authorization'] = 'Bearer ' + newToken;
-    processQueue(null, newToken);
-
+    const newToken = await ensureFreshToken();
     originalRequest.headers['Authorization'] = 'Bearer ' + newToken;
     return axiosInstance(originalRequest);
   } catch (refreshError) {
-    processQueue(refreshError, null);
     await forceLogout();
     return Promise.reject(refreshError);
-  } finally {
-    isRefreshing = false;
   }
 };
 
@@ -154,9 +242,22 @@ axiosInstance.interceptors.request.use(
       );
     }
 
-    const token = _cachedToken ?? await secureStorage.getToken();
+    let token = _cachedToken ?? await secureStorage.getToken();
+
+    // Proactively refresh an expired/expiring token before the request goes out,
+    // so writes like "create task" never travel with a dead token (which would
+    // otherwise fail or bounce the user to the login screen).
+    if (token && !isRefreshEndpoint(config.url) && isTokenExpiredSoon(token)) {
+      try {
+        token = await ensureFreshToken();
+      } catch {
+        // Couldn't refresh proactively — fall back to the existing token and let
+        // the reactive 401/expiry handler deal with it (incl. logout if needed).
+      }
+    }
+
     if (token) {
-      if (!_cachedToken) _cachedToken = token;
+      _cachedToken = token;
       config.headers.Authorization = `Bearer ${token}`;
     }
 
@@ -181,13 +282,7 @@ axiosInstance.interceptors.response.use(
   async (response) => {
     reportSuccess();
 
-    const data = response?.data;
-    const msg = data?.Message || data?.message;
-    const isTokenExpired =
-      (typeof msg === 'string' && msg.includes('Firebase ID token expired')) ||
-      (typeof data === 'string' && data.includes('Firebase ID token expired'));
-
-    if (isTokenExpired) {
+    if (responseSignalsExpiredToken(response?.data) && !isRefreshEndpoint(response.config?.url)) {
       return refreshAndRetry(response.config);
     }
 
@@ -204,13 +299,17 @@ axiosInstance.interceptors.response.use(
 
     const status = error.response?.status;
     const originalRequest = error.config;
-    const isRefreshEndpoint = originalRequest?.url?.includes('/refresh-token');
+    const onRefreshEndpoint = isRefreshEndpoint(originalRequest?.url);
 
-    if ((status === 401 || status === 403) && !isRefreshEndpoint && originalRequest) {
+    // Treat 401/403 OR any "expired token" payload (which some endpoints return
+    // as a 500 with the message in an `error` field) as a refresh signal.
+    const expired = responseSignalsExpiredToken(error.response?.data);
+
+    if ((status === 401 || status === 403 || expired) && !onRefreshEndpoint && originalRequest) {
       return refreshAndRetry(originalRequest);
     }
 
-    if ((status === 401 || status === 403) && isRefreshEndpoint) {
+    if ((status === 401 || status === 403) && onRefreshEndpoint) {
       await forceLogout();
     }
 

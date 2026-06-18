@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  useWindowDimensions,
 } from 'react-native';
 import {
   Text,
@@ -30,9 +31,12 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { inventoryApi, InventoryItem } from '../../../../services/api/inventory';
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
+import { cacheEntities } from '../../../../services/entityCache';
 
 const BRAND_COLOR = '#2e6155';
 const LOW_STOCK_THRESHOLD = 5;
@@ -54,6 +58,7 @@ function getStockLabel(item: InventoryItem, t: any): string {
 export default function InventoryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
   const { t } = useTranslation();
@@ -85,6 +90,7 @@ export default function InventoryScreen() {
       setError(null);
       const data = await inventoryApi.getAll(user.organization);
       appCache.set(CACHE_KEY, data);
+      cacheEntities('inventory', data);
       setItems(data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
@@ -131,6 +137,9 @@ export default function InventoryScreen() {
     }
   }, [user?.organization, formName, formSku, formQty, formPrice, formCategory, formMinQty, fetchInventory, CACHE_KEY, t]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredItems = useMemo(() => {
     let result = Array.isArray(items) ? items : [];
 
@@ -140,8 +149,8 @@ export default function InventoryScreen() {
       result = result.filter((i) => i.quantity > 0 && i.quantity <= (i.minQuantity ?? LOW_STOCK_THRESHOLD));
     }
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.toLowerCase();
       result = result.filter(
         (i) =>
           i.productName?.toLowerCase().includes(q) ||
@@ -151,7 +160,13 @@ export default function InventoryScreen() {
     }
 
     return result.sort((a, b) => a.productName.localeCompare(b.productName));
-  }, [items, stockFilter, searchQuery]);
+  }, [items, stockFilter, debouncedSearch]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleInventory, hasMore: invHasMore, loadMore: invLoadMore, loadAll: invLoadAll, count: invCount } = useWindowedList(filteredItems, {
+    pageSize: 30,
+    resetKey: `${stockFilter}|${debouncedSearch}`,
+  });
 
   const renderItem = useCallback(
     ({ item }: { item: InventoryItem }) => {
@@ -305,10 +320,21 @@ export default function InventoryScreen() {
       ) : null}
 
       <FlatList
-        data={filteredItems}
+        data={visibleInventory}
         renderItem={renderItem}
         keyExtractor={(item) => item.id}
         ListEmptyComponent={renderEmpty}
+        ListFooterComponent={
+          <ListPaginationFooter
+            count={invCount}
+            total={filteredItems.length}
+            hasMore={invHasMore}
+            onLoadMore={invLoadMore}
+            onLoadAll={invLoadAll}
+          />
+        }
+        onEndReached={invHasMore ? invLoadMore : undefined}
+        onEndReachedThreshold={0.4}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />}
         contentContainerStyle={[styles.listContent, filteredItems.length === 0 && styles.listContentEmpty]}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
@@ -329,8 +355,10 @@ export default function InventoryScreen() {
           onDismiss={() => { setCreateVisible(false); resetForm(); }}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <ScrollView showsVerticalScrollIndicator={false}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            {/* Bounded maxHeight lets the ScrollView scroll. A bare `flex:1` collapses the content
+                to height 0 inside a Paper Modal whose container only has `maxHeight` (grey backdrop). */}
+            <ScrollView style={{ maxHeight: windowHeight * 0.78 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                   {t('inventory.addItem')}

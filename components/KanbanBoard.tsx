@@ -27,6 +27,9 @@ import { useAppTheme } from '../hooks/useAppTheme';
 import { useRTL } from '../hooks/useRTL';
 
 const CARD_HEIGHT = 80;
+// Auto-scroll tuning: how close to an edge (px) triggers scrolling, and px per ~16ms tick.
+const EDGE_ZONE = 72;
+const SCROLL_STEP = 16;
 
 export interface KanbanColumn<T = any> {
   id: string;
@@ -74,6 +77,15 @@ export function KanbanBoard<T>({
   const scrollOffset = useRef(0);
   const highlightColumnRef = useRef<string | null>(null);
 
+  // ── Auto-scroll while dragging near the edges ──────────────────────────────
+  // The board is wider than the screen, so dragging must be able to scroll the
+  // horizontal list to reveal (and drop on) columns that are currently off-screen.
+  const containerWidth = useRef(windowWidth);
+  const contentWidth = useRef(0);
+  const lastDragX = useRef(0);
+  const autoScrollDir = useRef(0); // -1 left, 1 right, 0 idle
+  const autoScrollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const handleColumnLayout = useCallback((columnId: string, event: LayoutChangeEvent) => {
     const { x, width } = event.nativeEvent.layout;
     columnLayouts.current.set(columnId, { x, width });
@@ -89,7 +101,16 @@ export function KanbanBoard<T>({
     return null;
   }, []);
 
+  const stopAutoScroll = useCallback(() => {
+    autoScrollDir.current = 0;
+    if (autoScrollTimer.current) {
+      clearInterval(autoScrollTimer.current);
+      autoScrollTimer.current = null;
+    }
+  }, []);
+
   const handleDragEnd = useCallback((item: T, fromColumnId: string) => {
+    stopAutoScroll();
     const targetColumnId = highlightColumnRef.current;
     highlightColumnRef.current = null;
     setDragging(null);
@@ -100,18 +121,52 @@ export function KanbanBoard<T>({
         onMoveItem(item, fromColumnId, targetColumnId);
       }, 300);
     }
-  }, [onMoveItem]);
+  }, [onMoveItem, stopAutoScroll]);
 
   const startDrag = useCallback((item: T, fromColumnId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setDragging({ item, fromColumnId });
   }, []);
 
-  const updateHighlight = useCallback((absoluteX: number) => {
-    const col = findColumnAtX(absoluteX);
+  // Re-evaluate which column sits under the finger and recolor it.
+  const refreshHighlight = useCallback(() => {
+    const col = findColumnAtX(lastDragX.current);
     highlightColumnRef.current = col;
     setHighlightColumn(col);
   }, [findColumnAtX]);
+
+  const updateHighlight = useCallback((absoluteX: number) => {
+    lastDragX.current = absoluteX;
+    refreshHighlight();
+
+    // Decide auto-scroll direction based on how close the finger is to an edge.
+    const maxScroll = Math.max(0, contentWidth.current - containerWidth.current);
+    const atLeftEdge = absoluteX < EDGE_ZONE && scrollOffset.current > 0;
+    const atRightEdge = absoluteX > containerWidth.current - EDGE_ZONE && scrollOffset.current < maxScroll;
+    autoScrollDir.current = atLeftEdge ? -1 : atRightEdge ? 1 : 0;
+
+    if (autoScrollDir.current !== 0) {
+      if (!autoScrollTimer.current) {
+        autoScrollTimer.current = setInterval(() => {
+          if (autoScrollDir.current === 0) return;
+          const max = Math.max(0, contentWidth.current - containerWidth.current);
+          const next = Math.max(
+            0,
+            Math.min(max, scrollOffset.current + autoScrollDir.current * SCROLL_STEP),
+          );
+          if (next === scrollOffset.current) {
+            // Reached an end — nothing more to reveal in this direction.
+            return;
+          }
+          scrollOffset.current = next;
+          scrollRef.current?.scrollTo({ x: next, animated: false });
+          refreshHighlight();
+        }, 16);
+      }
+    } else {
+      stopAutoScroll();
+    }
+  }, [refreshHighlight, stopAutoScroll]);
 
   const animatedCardStyle = useAnimatedStyle(() => {
     if (!dragActive.value) {
@@ -158,6 +213,7 @@ export function KanbanBoard<T>({
         scale.value = withSpring(1);
         opacity.value = withTiming(1);
         dragActive.value = false;
+        runOnJS(stopAutoScroll)();
       });
 
     return (
@@ -167,7 +223,7 @@ export function KanbanBoard<T>({
         </Animated.View>
       </GestureDetector>
     );
-  }, [dragging, keyExtractor, renderCard, startDrag, updateHighlight, handleDragEnd, animatedCardStyle, dragActive, translateX, translateY, scale, opacity]);
+  }, [dragging, keyExtractor, renderCard, startDrag, updateHighlight, handleDragEnd, stopAutoScroll, animatedCardStyle, dragActive, translateX, translateY, scale, opacity]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -177,6 +233,8 @@ export function KanbanBoard<T>({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.container}
         onScroll={(e) => { scrollOffset.current = e.nativeEvent.contentOffset.x; }}
+        onLayout={(e) => { containerWidth.current = e.nativeEvent.layout.width; }}
+        onContentSizeChange={(w) => { contentWidth.current = w; }}
         scrollEventThrottle={16}
         scrollEnabled={!dragging}
       >

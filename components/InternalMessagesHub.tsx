@@ -138,7 +138,9 @@ export default function InternalMessagesHub({ visible, onClose }: Props) {
   // ── Composer mention handling ──
   const handleComposerChange = (val: string) => {
     setComposerText(val);
-    const caret = caretRef.current ?? val.length;
+    // Selection updates after onChangeText, so caretRef is stale for the first char typed.
+    // Fall back to end-of-text so typing "@" opens the mention list immediately.
+    const caret = (caretRef.current > 0 && caretRef.current <= val.length) ? caretRef.current : val.length;
     const before = val.substring(0, caret);
     const atIdx = before.lastIndexOf('@');
     if (atIdx !== -1) {

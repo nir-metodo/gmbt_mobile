@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
+  useWindowDimensions,
 } from 'react-native';
 import {
   Text,
@@ -32,6 +33,8 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { purchaseOrdersApi, PurchaseOrder } from '../../../../services/api/purchaseOrders';
 import { suppliersApi, Supplier } from '../../../../services/api/suppliers';
 import { formatDate, withAlpha } from '../../../../utils/formatters';
@@ -62,6 +65,7 @@ type StatusFilter = typeof STATUS_FILTERS[number];
 export default function PurchasingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
   const { t } = useTranslation();
@@ -189,11 +193,14 @@ export default function PurchasingScreen() {
     ]);
   }, [user, CACHE_KEY, t]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filtered = useMemo(() => {
     let result = Array.isArray(orders) ? orders : [];
     if (statusFilter !== 'all') result = result.filter(o => o.status === statusFilter);
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.toLowerCase();
       result = result.filter(o =>
         o.supplierName?.toLowerCase().includes(q) ||
         o.poNumber?.toLowerCase().includes(q) ||
@@ -205,7 +212,13 @@ export default function PurchasingScreen() {
       const bD = b.createdOn ? new Date(b.createdOn).getTime() : 0;
       return bD - aD;
     });
-  }, [orders, statusFilter, searchQuery]);
+  }, [orders, statusFilter, debouncedSearch]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visiblePOs, hasMore: poHasMore, loadMore: poLoadMore, loadAll: poLoadAll, count: poCount } = useWindowedList(filtered, {
+    pageSize: 30,
+    resetKey: `${statusFilter}|${debouncedSearch}`,
+  });
 
   const renderCard = useCallback(({ item }: { item: PurchaseOrder }) => {
     const color = STATUS_COLORS[item.status] || '#9E9E9E';
@@ -359,9 +372,20 @@ export default function PurchasingScreen() {
       ) : null}
 
       <FlatList
-        data={filtered}
+        data={visiblePOs}
         renderItem={renderCard}
         keyExtractor={(item) => item.id}
+        ListFooterComponent={
+          <ListPaginationFooter
+            count={poCount}
+            total={filtered.length}
+            hasMore={poHasMore}
+            onLoadMore={poLoadMore}
+            onLoadAll={poLoadAll}
+          />
+        }
+        onEndReached={poHasMore ? poLoadMore : undefined}
+        onEndReachedThreshold={0.4}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />}
         contentContainerStyle={[styles.listContent, filtered.length === 0 && styles.listContentEmpty]}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
@@ -392,8 +416,10 @@ export default function PurchasingScreen() {
           onDismiss={() => { setCreateVisible(false); resetForm(); }}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            {/* Bounded maxHeight lets the ScrollView scroll. A bare `flex:1` collapses the content
+                to height 0 inside a Paper Modal whose container only has `maxHeight` (grey backdrop). */}
+            <ScrollView style={{ maxHeight: windowHeight * 0.78 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                   {t('purchasing.newPO')}

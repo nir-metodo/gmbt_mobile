@@ -32,6 +32,9 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { quotesApi } from '../../../../services/api/quotes';
+import { cacheEntities } from '../../../../services/entityCache';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { formatDate, formatCurrency, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import type { Quote } from '../../../../types';
@@ -112,7 +115,10 @@ export default function QuotesListScreen() {
     try {
       setError(null);
       const result = await quotesApi.getAll(user.organization);
-      setQuotes(Array.isArray(result.data) ? result.data : []);
+      const list = Array.isArray(result.data) ? result.data : [];
+      setQuotes(list);
+      // Warm the detail-screen cache so tapping a quote opens instantly.
+      cacheEntities('quotes', list);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
@@ -162,6 +168,9 @@ export default function QuotesListScreen() {
     }
   }, [searchVisible, searchAnim]);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredAndSortedQuotes = useMemo(() => {
     let result = quotes;
 
@@ -195,8 +204,8 @@ export default function QuotesListScreen() {
       }
     }
 
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const query = debouncedSearch.toLowerCase();
       result = result.filter(
         (q) =>
           q.title?.toLowerCase().includes(query) ||
@@ -229,7 +238,13 @@ export default function QuotesListScreen() {
       }
       return sortDirection === 'desc' ? -comparison : comparison;
     });
-  }, [quotes, statusFilter, dateRangeFilter, searchQuery, sortField, sortDirection]);
+  }, [quotes, statusFilter, dateRangeFilter, debouncedSearch, sortField, sortDirection]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleQuotes, hasMore, loadMore, loadAll, count } = useWindowedList(filteredAndSortedQuotes, {
+    pageSize: 30,
+    resetKey: `${statusFilter}|${dateRangeFilter}|${debouncedSearch}|${sortField}|${sortDirection}`,
+  });
 
   const kanbanData = useMemo(() => {
     const grouped: Record<string, Quote[]> = {};
@@ -891,10 +906,21 @@ export default function QuotesListScreen() {
             <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 'auto' }}>{filteredAndSortedQuotes.length} {t('quotes.items', 'פריטים')}</Text>
           </View>
           <FlatList
-            data={filteredAndSortedQuotes}
+            data={visibleQuotes}
             renderItem={renderQuoteCard}
             keyExtractor={(item) => item.id}
             ListEmptyComponent={renderEmpty}
+            ListFooterComponent={
+              <ListPaginationFooter
+                count={count}
+                total={filteredAndSortedQuotes.length}
+                hasMore={hasMore}
+                onLoadMore={loadMore}
+                onLoadAll={loadAll}
+              />
+            }
+            onEndReached={hasMore ? loadMore : undefined}
+            onEndReachedThreshold={0.4}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}

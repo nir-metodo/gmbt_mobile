@@ -15,6 +15,7 @@ interface SettingsState {
   callTranscriptionEnabled: boolean;
   callAiSummaryEnabled: boolean;
   callSaveToTimelineEnabled: boolean;
+  reportDeviceCallEventsEnabled: boolean;
   callRules: CallRule[];
   pushNotificationsEnabled: boolean;
   messageNotificationsEnabled: boolean;
@@ -36,6 +37,7 @@ interface SettingsState {
   setCallTranscription: (enabled: boolean) => void;
   setCallAiSummary: (enabled: boolean) => void;
   setCallSaveToTimeline: (enabled: boolean) => void;
+  setReportDeviceCallEvents: (enabled: boolean) => void;
   loadCallRules: (organization: string) => Promise<void>;
   updateCallRules: (organization: string, rules: CallRule[]) => Promise<void>;
   setPushNotifications: (enabled: boolean) => void;
@@ -52,6 +54,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   callTranscriptionEnabled: false,
   callAiSummaryEnabled: false,
   callSaveToTimelineEnabled: true,
+  reportDeviceCallEventsEnabled: false,
   callRules: [],
   pushNotificationsEnabled: true,
   messageNotificationsEnabled: true,
@@ -68,12 +71,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   initialize: async () => {
     const theme = await appStorage.getTheme();
     const language = await appStorage.getLanguage();
+    const reportDeviceCallEventsEnabled = await appStorage.getReportDeviceCallEvents();
     i18n.changeLanguage(language);
     const shouldBeRTL = language === 'he';
     if (I18nManager.isRTL !== shouldBeRTL) {
       I18nManager.forceRTL(shouldBeRTL);
     }
-    set({ theme, language });
+    set({ theme, language, reportDeviceCallEventsEnabled });
   },
 
   setTheme: async (theme) => {
@@ -116,6 +120,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
   setCallSaveToTimeline: (enabled) => {
     set({ callSaveToTimelineEnabled: enabled });
+  },
+
+  setReportDeviceCallEvents: (enabled) => {
+    set({ reportDeviceCallEventsEnabled: enabled });
+    appStorage.setReportDeviceCallEvents(enabled).catch(() => {});
   },
 
   loadCallRules: async (organization) => {

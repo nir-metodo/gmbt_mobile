@@ -45,7 +45,6 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'employees', icon: 'badge-account-horizontal-outline', labelKey: 'more.employees', route: '/(tabs)/more/employees', color: '#2A9D8F', permission: 'employees', featureKey: 'enableEmployees', featureDefault: true },
   { key: 'calendar', icon: 'calendar-month-outline', labelKey: 'more.calendar', route: '/(tabs)/more/calendar', color: '#0284c7' },
   { key: 'email', icon: 'email-send-outline', labelKey: 'more.email', route: '/(tabs)/more/email', color: '#dc2626', permission: 'emailInbox' },
-  { key: 'users', icon: 'account-group-outline', labelKey: 'more.users', route: '/(tabs)/more/users', color: '#E63946', adminOnly: true },
   { key: 'notifications', icon: 'bell-cog-outline', labelKey: 'more.notifications', route: '/(tabs)/more/notifications', color: '#FF6B35' },
   { key: 'settings', icon: 'cog-outline', labelKey: 'more.settings', route: '/(tabs)/more/settings', color: '#6C757D' },
 ];

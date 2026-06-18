@@ -574,7 +574,13 @@ export default function ReportsScreen() {
 
     switch (category) {
       case 'leads': {
-        const won = items.filter(i => ['closed_won', 'won'].includes(asString(i.stageName || i.stage).toLowerCase())).length;
+        // Match web won-detection: check stageId / status / stageName (web uses stageId==='won' || status==='won').
+        const isWon = (i: any) => {
+          const vals = [i.stageId, i.StageId, i.status, i.Status, asString(i.stageName || i.stage)]
+            .map((v) => (v ?? '').toString().toLowerCase());
+          return vals.some((v) => v === 'won' || v === 'closed_won');
+        };
+        const won = items.filter(isWon).length;
         const convRate = items.length > 0 ? ((won / items.length) * 100).toFixed(0) : '0';
         const newCount = items.filter(i => ['new', 'new lead'].includes(asString(i.stageName || i.stage).toLowerCase())).length;
         return [
@@ -606,7 +612,8 @@ export default function ReportsScreen() {
       case 'quotes': {
         const totalVal = items.reduce((sum, i) => sum + Number(i.total || i.Total || 0), 0);
         const avgVal = items.length > 0 ? totalVal / items.length : 0;
-        const accepted = items.filter(i => (i.status || '').toLowerCase() === 'accepted').length;
+        // Web counts a quote as "won" when status is accepted OR paid.
+        const accepted = items.filter(i => ['accepted', 'paid'].includes((i.status || i.Status || '').toLowerCase())).length;
         const acceptRate = items.length > 0 ? ((accepted / items.length) * 100).toFixed(0) : '0';
         return [
           { label: t('reports.kpiAvgValue'), value: `₪${Math.round(avgVal).toLocaleString()}`, color: '#7B2D8E', icon: 'calculator-variant' },

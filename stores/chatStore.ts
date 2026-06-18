@@ -36,7 +36,8 @@ interface ChatState {
 
   loadMessages: (organization: string, phoneNumber: string) => Promise<void>;
   loadOlderMessages: () => void;
-  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string, wabaNumber?: string, senderEmail?: string) => Promise<void>;
+  sendMessage: (organization: string, to: string, message: string, senderName?: string, userId?: string, replyToMessageId?: string, wabaNumber?: string, senderEmail?: string, fromNumberId?: string) => Promise<void>;
+  addOptimisticMedia: (params: { localUri: string; mediaType: string; fileName?: string; caption?: string }) => string;
   sendInternalMessage: (organization: string, phoneNumber: string, message: string, senderName: string, sentById?: string, mentionedUsers?: { userId: string; userName: string }[]) => Promise<void>;
   markAsRead: (organization: string, phoneNumber: string, userId?: string, userName?: string) => Promise<void>;
   markAsUnread: (organization: string, phoneNumber: string) => Promise<void>;
@@ -54,9 +55,36 @@ const messageIdSet = new Set<string>();
 // How many messages we last requested from the server, and whether the server returned a
 // full page (meaning older history likely exists). Used for real server-side pagination:
 // when the user scrolls past everything we've fetched, we grow the limit and re-fetch.
-let currentServerLimit = PAGE_SIZE * 4;
+// Kept deliberately small (100) so opening a heavy chat is fast and shows the last page
+// instantly — scrolling up reveals the next 50 locally, then fetches more from the server.
+let currentServerLimit = PAGE_SIZE * 2;
 let serverMayHaveMore = false;
 let currentOrg = '';
+
+// In-memory per-chat message cache (LRU). Re-opening a recently visited chat renders its
+// messages instantly from here while a fresh copy is fetched in the background — this is
+// what makes chat → list → chat navigation feel instant instead of showing a spinner and
+// waiting on the network every time.
+type MessageCacheEntry = {
+  allMessages: any[];
+  displayedCount: number;
+  hasMoreMessages: boolean;
+  serverLimit: number;
+  serverMayHaveMore: boolean;
+};
+const messageCache = new Map<string, MessageCacheEntry>();
+const MESSAGE_CACHE_MAX = 25;
+
+function setMessageCache(phone: string, entry: MessageCacheEntry): void {
+  if (!phone) return;
+  if (messageCache.has(phone)) messageCache.delete(phone); // refresh LRU recency
+  messageCache.set(phone, entry);
+  while (messageCache.size > MESSAGE_CACHE_MAX) {
+    const oldest = messageCache.keys().next().value;
+    if (oldest === undefined) break;
+    messageCache.delete(oldest);
+  }
+}
 
 // Normalize, dedupe (by id + content signature), sort oldest→newest, and resolve quoted
 // messages. Shared by the initial load and the "load older" deeper fetch.
@@ -149,7 +177,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     try {
-      const contacts = await contactsApi.getAll(organization, { userId, dataVisibility });
+      // Load the full contact set (mirrors web's chat page, which pages by 9999) so the chat
+      // list and search cover every conversation, not just the first 100. FlashList only
+      // renders what's visible, so holding the array in memory is cheap.
+      const contacts = await contactsApi.getAll(organization, { userId, dataVisibility, pageSize: 9999 });
       const chatList: Chat[] = (contacts || [])
         .filter((c: any) => c.phoneNumber || c.PhoneNumber)
         .map((c: any) => ({
@@ -234,43 +265,89 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadMessages: async (organization, phoneNumber) => {
     const requestId = ++messagesRequestSeq;
     const switchingChat = get().currentPhoneNumber !== phoneNumber;
-    set({
-      isLoadingMessages: switchingChat || get().currentMessages.length === 0,
-      currentPhoneNumber: phoneNumber,
-      displayedCount: PAGE_SIZE,
-      ...(switchingChat ? {
-        currentMessages: [],
-        allMessages: [],
-        hasMoreMessages: false,
-      } : {}),
-    });
-    currentServerLimit = PAGE_SIZE * 4;
+    const cached = switchingChat ? messageCache.get(phoneNumber) : null;
     currentOrg = organization;
+
+    if (switchingChat && cached) {
+      // Instant render from cache — no spinner, no empty flash. We still refresh below.
+      messageIdSet.clear();
+      cached.allMessages.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
+      currentServerLimit = cached.serverLimit;
+      serverMayHaveMore = cached.serverMayHaveMore;
+      set({
+        currentPhoneNumber: phoneNumber,
+        allMessages: cached.allMessages,
+        currentMessages: cached.allMessages.slice(-cached.displayedCount),
+        displayedCount: cached.displayedCount,
+        hasMoreMessages: cached.hasMoreMessages,
+        isLoadingMessages: false,
+      });
+    } else {
+      set({
+        isLoadingMessages: switchingChat || get().currentMessages.length === 0,
+        currentPhoneNumber: phoneNumber,
+        displayedCount: PAGE_SIZE,
+        ...(switchingChat ? {
+          currentMessages: [],
+          allMessages: [],
+          hasMoreMessages: false,
+        } : {}),
+      });
+      currentServerLimit = PAGE_SIZE * 2;
+    }
+
     try {
-      const raw = await chatsApi.getMessages(organization, phoneNumber, currentServerLimit);
+      const limit = currentServerLimit;
+      const raw = await chatsApi.getMessages(organization, phoneNumber, limit);
       const rawCount = Array.isArray(raw) ? raw.length : 0;
       // Server returned a full page → older history likely exists beyond what we fetched.
-      serverMayHaveMore = rawCount >= currentServerLimit;
+      serverMayHaveMore = rawCount >= limit;
 
       const deduped = normalizeAndDedupeMessages(raw);
 
       if (requestId !== messagesRequestSeq) return;
       if (get().currentPhoneNumber !== phoneNumber) return;
 
-      const displayed = deduped.slice(-PAGE_SIZE);
+      // Preserve how many messages are currently revealed (e.g. user scrolled up) when
+      // refreshing a cached chat; otherwise start at one page.
+      const desiredCount = Math.max(PAGE_SIZE, get().displayedCount || PAGE_SIZE);
+      const displayed = deduped.slice(-desiredCount);
+      const newDisplayedCount = Math.min(desiredCount, deduped.length) || PAGE_SIZE;
+      const newHasMore = deduped.length > desiredCount || serverMayHaveMore;
       messageIdSet.clear();
       deduped.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
+
+      // Anti-flicker: when the refresh (cache -> API, AppState foreground, etc.) yields the
+      // exact same visible messages (same ids + statuses in the same order), keep the previous
+      // object references so FlashList does NOT re-diff/remeasure the whole list. This is the
+      // main cause of the "flicker / jump to old messages and back" on chats with many messages.
+      const prevVisible = get().currentMessages;
+      const sameVisibleList =
+        prevVisible.length === displayed.length &&
+        prevVisible.every((m: any, i: number) =>
+          m.messageId === displayed[i].messageId &&
+          (m.status || '') === (displayed[i].status || '') &&
+          (m.text || '') === (displayed[i].text || '')
+        );
+
       set({
         allMessages: deduped,
-        currentMessages: displayed,
-        displayedCount: PAGE_SIZE,
-        hasMoreMessages: deduped.length > PAGE_SIZE || serverMayHaveMore,
+        currentMessages: sameVisibleList ? prevVisible : displayed,
+        displayedCount: newDisplayedCount,
+        hasMoreMessages: newHasMore,
         isLoadingMessages: false,
+      });
+      setMessageCache(phoneNumber, {
+        allMessages: deduped,
+        displayedCount: newDisplayedCount,
+        hasMoreMessages: newHasMore,
+        serverLimit: limit,
+        serverMayHaveMore,
       });
     } catch {
       if (requestId !== messagesRequestSeq) return;
       if (get().currentPhoneNumber !== phoneNumber) return;
-      messageIdSet.clear();
+      // On failure keep whatever we already showed (cache); just stop the spinner.
       set({ isLoadingMessages: false });
     }
   },
@@ -330,7 +407,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?, senderEmail?) => {
+  sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?, senderEmail?, fromNumberId?) => {
     set({ isSending: true });
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const fromNumber = wabaNumber || get().activeWabaNumber || '';
@@ -354,8 +431,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       allMessages: [...state.allMessages, optimisticMsg],
     }));
     try {
-      console.log('[sendMessage] Sending:', { organization, to, message: message.substring(0, 50), from: fromNumber, senderName, userId, senderEmail });
-      await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId, fromNumber, senderEmail);
+      console.log('[sendMessage] Sending:', { organization, to, message: message.substring(0, 50), from: fromNumber, fromNumberId, senderName, userId, senderEmail });
+      await chatsApi.sendMessage(organization, to, message, senderName, userId, replyToMessageId, fromNumber, senderEmail, fromNumberId);
       set((state) => ({
         currentMessages: state.currentMessages.map((m) =>
           m.messageId === tempId ? { ...m, status: 'sent' as const } : m
@@ -426,12 +503,52 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  markAsRead: async (organization, phoneNumber, userId, userName) => {
+  // Optimistically show a media/voice message the instant the user sends it (mirrors web),
+  // so the bubble doesn't pop in only after the WS echo / refetch. Returns the temp id so the
+  // caller can mark it failed on error. The local file:// uri is matched against the server
+  // echo in addMessage (which can't compare URLs, so it matches a recent local-uri temp).
+  addOptimisticMedia: ({ localUri, mediaType, fileName, caption }) => {
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const now = new Date().toISOString();
+    const optimisticMsg: any = {
+      messageId: tempId,
+      text: caption || '',
+      body: caption || '',
+      caption: caption || '',
+      direction: 'Outbound',
+      timestamp: now,
+      createdOn: now,
+      status: 'pending',
+      sentFromApp: true,
+      type: mediaType,
+      messageType: mediaType,
+      mediaUrl: localUri,
+      gmbt_mediaUrl: localUri,
+      fileName: fileName || '',
+    };
     set((state) => ({
-      chats: state.chats.map((c) =>
-        c.phoneNumber === phoneNumber ? { ...c, unreadCount: 0, isRead: true } : c
-      ),
+      currentMessages: [...state.currentMessages, optimisticMsg],
+      allMessages: [...state.allMessages, optimisticMsg],
     }));
+    return tempId;
+  },
+
+  markAsRead: async (organization, phoneNumber, userId, userName) => {
+    // Normalize digits so 050… vs 972… formats still match the list row (otherwise the
+    // unread badge wasn't clearing when returning from a chat opened via a different format).
+    const target = (phoneNumber || '').replace(/\D/g, '');
+    const matches = (p?: string) => {
+      const n = (p || '').replace(/\D/g, '');
+      if (!n || !target) return false;
+      const core = (x: string) => (x.startsWith('972') ? x.slice(3) : x.replace(/^0/, ''));
+      return n === target || core(n) === core(target);
+    };
+    set((state) => {
+      const chats = state.chats.map((c) =>
+        matches(c.phoneNumber) ? { ...c, unreadCount: 0, isRead: true } : c
+      );
+      return { chats, unreadCount: chats.filter((c) => c.isRead === false).length };
+    });
     try {
       await chatsApi.markAsRead(organization, phoneNumber, userId, userName);
     } catch {}
@@ -514,13 +631,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     }
 
-    // Replace optimistic temp message if this is the server-confirmed version
+    // Replace optimistic temp message if this is the server-confirmed version.
+    // We already gated to the current chat above, so we match the pending temp by content +
+    // outbound (NOT by an exact `to` string — phone formats from the WS echo frequently differ
+    // from what we sent, which used to leave both the optimistic and the echo on screen).
     const dir = (message.direction || '').toLowerCase();
     if (dir === 'outbound' || message.sentFromApp) {
-      const tempIdx = currentMessages.findIndex(
-        (m) => m.messageId?.startsWith('temp_') && m.to === message.to &&
-          m.text === (message.text || message.body || '') && m.status !== 'failed'
-      );
+      const incomingText = (message.text || (message as any).body || '').trim();
+      const incomingMedia = (message as any).gmbt_mediaUrl || (message as any).mediaUrl || (message as any).MediaUrl || '';
+      const incomingType = String((message as any).type || (message as any).messageType || '').toLowerCase();
+      const isLocalUri = (u: string) => /^(file:|content:|ph:|assets-library:)/i.test(u);
+      const tempIdx = currentMessages.findIndex((m) => {
+        if (!m.messageId?.startsWith('temp_') || m.status === 'failed') return false;
+        const mText = (m.text || (m as any).body || '').trim();
+        const mMedia = (m as any).gmbt_mediaUrl || (m as any).mediaUrl || (m as any).MediaUrl || '';
+        const mType = String((m as any).type || (m as any).messageType || '').toLowerCase();
+        // Match on text when present, otherwise on media URL (covers media/template sends).
+        if (incomingText) return mText === incomingText;
+        if (incomingMedia) {
+          if (mMedia && mMedia === incomingMedia) return true;
+          // Optimistic media holds a *local* uri that can never equal the server URL, so fall
+          // back to matching a recent local-uri temp of the same media type (mirrors web's
+          // time/type proximity dedup) — otherwise both the optimistic and echo bubbles show.
+          if (mMedia && isLocalUri(mMedia) && (!incomingType || !mType || incomingType === mType)) return true;
+          return false;
+        }
+        return mText === '' && !mMedia;
+      });
       if (tempIdx !== -1) {
         messageIdSet.add(message.messageId);
         set({
@@ -575,6 +712,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearCurrentChat: () => {
+    // Snapshot the chat we're leaving into the LRU cache so re-opening it is instant
+    // (including any messages received live while it was open).
+    const { currentPhoneNumber, allMessages, displayedCount, hasMoreMessages } = get();
+    if (currentPhoneNumber && allMessages.length > 0) {
+      setMessageCache(currentPhoneNumber, {
+        allMessages,
+        displayedCount: displayedCount || PAGE_SIZE,
+        hasMoreMessages,
+        serverLimit: currentServerLimit,
+        serverMayHaveMore,
+      });
+    }
     messageIdSet.clear();
     set({ currentMessages: [], allMessages: [], currentPhoneNumber: null, displayedCount: PAGE_SIZE, hasMoreMessages: false });
   },

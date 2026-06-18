@@ -34,6 +34,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
+import { cacheEntities } from '../../../../services/entityCache';
 import { ENDPOINTS } from '../../../../constants/api';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { getDataVisibility } from '../../../../constants/permissions';
@@ -159,6 +160,7 @@ export default function CasesListScreen() {
       });
       const newItems = result.data ?? [];
       const total = result.total ?? 0;
+      cacheEntities('cases', newItems);
       setTotalCount(total);
       setCases((prev) => (reset ? newItems : [...prev, ...newItems]));
       setPage(pageNum);

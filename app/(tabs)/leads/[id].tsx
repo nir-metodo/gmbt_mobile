@@ -24,14 +24,14 @@ import {
   Surface,
   Switch,
 } from 'react-native-paper';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
-import { makeAppCall } from '../../../utils/phoneCall';
+import { placeSmartCall } from '../../../utils/phoneCall';
 import { tasksApi } from '../../../services/api/tasks';
 import { contactsApi } from '../../../services/api/contacts';
 import axiosInstance from '../../../services/api/axiosInstance';
@@ -60,6 +60,21 @@ import {
 } from '../../../components/DynamicFieldsSection';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
 import type { Lead, LeadStage, TimelineEvent, OrgUser } from '../../../types';
+
+// Crash-proof date/time formatter. On Android (Hermes) `Date.toLocaleString(locale, { dateStyle, timeStyle })`
+// can throw a RangeError when full ICU/Intl isn't available, which in a release build (no error boundary)
+// closes the whole app. We try the rich formatter and fall back to a manual one if it throws.
+function formatDateTimeSafe(value: Date | string | null | undefined, lang: string): string {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return typeof value === 'string' ? value : '';
+  try {
+    return d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' });
+  } catch {
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+}
 
 const DEFAULT_STAGE_COLORS: Record<string, string> = {
   New: '#2e6155',
@@ -296,13 +311,13 @@ export default function LeadDetailScreen() {
   const handleCall = useCallback(() => {
     const phone = lead?.contactPhone || (lead as any)?.phoneNumber;
     if (phone) {
-      makeAppCall({
+      placeSmartCall({
         phoneNumber: phone,
         organization,
-        callerUserId: user?.uID || user?.userId,
-        callerUserName: user?.fullname,
+        user,
         relatedTo: { type: 'lead', entityId: lead?.id || '', entityName: lead?.title },
-        contactName: lead?.contactName,
+        leadId: lead?.id || '',
+        customerName: lead?.contactName,
       });
     }
   }, [lead, organization, user]);
@@ -447,51 +462,131 @@ export default function LeadDetailScreen() {
         text: t('common.delete'),
         style: 'destructive',
         onPress: async () => {
-          if (organization && lead) {
+          if (!organization || !lead) return;
+          try {
             await deleteLead(organization, lead.id);
+            Alert.alert(t('common.success', 'הצלחה'), t('leads.deleteSuccess', 'הליד נמחק בהצלחה'));
             if (router.canGoBack()) router.back();
             else router.replace('/(tabs)/leads');
+          } catch {
+            Alert.alert(t('common.error'), t('leads.deleteError', 'מחיקת הליד נכשלה'));
           }
         },
       },
     ]);
   }, [organization, lead, deleteLead, t, router]);
 
+  // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inside a React Native <Modal> on Android.
+  // The native date/time dialog clashes with the modal host and the chained date→time flow throws
+  // "IllegalStateException: Fragment already added", which closes the whole app. On Android we open
+  // the pickers imperatively (date, then time) so nothing is mounted inside the modal. iOS keeps the
+  // inline spinner via the show* flags below.
+  const pickDateTimeAndroid = useCallback((current: Date, onPicked: (d: Date) => void) => {
+    const base = current && !isNaN(current.getTime()) ? new Date(current) : new Date();
+    try {
+      DateTimePickerAndroid.open({
+        value: base,
+        mode: 'date',
+        onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
+          if (e.type !== 'set' || !dateVal) return;
+          const merged = new Date(base);
+          merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
+          // Defer opening the time picker to the next tick. Opening it synchronously inside the date
+          // picker's onChange can throw "IllegalStateException: Fragment already added" on some Android
+          // versions before the date dialog has finished dismissing — which crashes the whole app.
+          setTimeout(() => {
+            try {
+              DateTimePickerAndroid.open({
+                value: merged,
+                mode: 'time',
+                is24Hour: true,
+                onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
+                  if (e2.type !== 'set' || !timeVal) return;
+                  merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
+                  onPicked(merged);
+                },
+              });
+            } catch {
+              // If the time dialog can't open, at least keep the chosen date.
+              onPicked(merged);
+            }
+          }, 150);
+        },
+      });
+    } catch {
+      // Picker unavailable — fail silently rather than crash.
+    }
+  }, []);
+
+  // Open the Add Task modal pre-filled with sensible defaults:
+  // a due date (tomorrow 09:00), a reminder aligned to that due date, and a default title.
+  const openAddTask = useCallback(() => {
+    const due = new Date();
+    due.setDate(due.getDate() + 1);
+    due.setHours(9, 0, 0, 0);
+    setTaskDueObj(due);
+    setTaskDueDate(due.toISOString());
+    setTaskReminderObj(new Date(due));
+    setTaskReminderEnabled(true);
+    const defaultTitle = lead?.contactName
+      ? `${t('contacts.phoneCall')} - ${lead.contactName}`
+      : (lead?.title || t('contacts.phoneCall'));
+    setTaskTitle(defaultTitle);
+    setTaskPriority('medium');
+    setAddTaskVisible(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead, t]);
+
   const handleAddTask = useCallback(async () => {
     if (!organization || !lead) return;
     const defaultTitle = lead.contactName
       ? `${t('contacts.phoneCall')} - ${lead.contactName}`
-      : t('contacts.phoneCall');
+      : (lead.title || t('contacts.phoneCall'));
     const title = taskTitle.trim() || defaultTitle;
+    // Reminder defaults to the due date when enabled but not explicitly set.
+    const dueIso = taskDueDate.trim() || undefined;
+    const reminderIso = taskReminderEnabled
+      ? (taskReminderObj?.toISOString() || dueIso || new Date().toISOString())
+      : null;
     setCreatingTask(true);
     try {
-      await tasksApi.create(organization, {
-        title,
-        taskType: 'phone_call',
-        status: 'open',
-        priority: taskPriority,
-        dueDate: taskDueDate.trim() || undefined,
-        reminderEnabled: taskReminderEnabled || undefined,
-        reminderDate: taskReminderEnabled ? taskReminderObj.toISOString() : null,
-        reminderDateUTC: taskReminderEnabled ? taskReminderObj.toISOString() : null,
-        reminderRecipientType: taskReminderEnabled ? 'assigned_user' : undefined,
-        relatedTo: {
-          type: 'lead',
-          entityId: lead.id,
-          entityName: lead.title ?? '',
-        },
-      } as any);
+      await tasksApi.create(
+        organization,
+        {
+          title,
+          taskType: 'phone_call',
+          status: 'open',
+          priority: taskPriority,
+          dueDate: dueIso,
+          assignedToId: user?.uID || user?.userId || '',
+          assignedToName: user?.fullname || (user as any)?.name || '',
+          reminderEnabled: taskReminderEnabled || undefined,
+          reminderDate: reminderIso,
+          reminderDateUTC: reminderIso,
+          reminderRecipientType: taskReminderEnabled ? 'assigned_user' : undefined,
+          relatedTo: {
+            type: 'lead',
+            entityId: lead.id,
+            entityName: lead.title ?? '',
+          },
+        } as any,
+        user?.uID || user?.userId || '',
+        user?.fullname || '',
+      );
       setAddTaskVisible(false);
       setTaskTitle('');
       setTaskDueDate('');
       setTaskPriority('medium');
       setTaskReminderEnabled(false);
+      fetchLeadTimeline().catch(() => {});
+      Alert.alert(t('tasks.taskCreated', 'המשימה נוצרה'));
     } catch {
       Alert.alert(t('common.error'));
     } finally {
       setCreatingTask(false);
     }
-  }, [organization, lead, taskTitle, taskDueDate, taskPriority, taskReminderEnabled, taskReminderObj, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organization, lead, taskTitle, taskDueDate, taskPriority, taskReminderEnabled, taskReminderObj, user, t]);
 
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
@@ -1019,7 +1114,7 @@ export default function LeadDetailScreen() {
               label={t('tasks.taskShort', 'משימה')}
               color="#FF9800"
               bg="#FFF3E0"
-              onPress={() => setAddTaskVisible(true)}
+              onPress={openAddTask}
             />
             <ActionButton
               icon="note-plus-outline"
@@ -1795,6 +1890,24 @@ export default function LeadDetailScreen() {
               </Button>
             </View>
           </KeyboardAvoidingView>
+
+          {/* Contact picker — MUST be nested inside this edit Modal. A second RN <Modal> rendered as
+              a sibling at the root won't present on top of an already-open pageSheet Modal (pressing
+              "select contact" appeared to do nothing). Nesting it here makes it present correctly. */}
+          <ContactLookup
+            visible={contactLookupVisible}
+            organization={organization}
+            onSelect={(contact) => {
+              setForm((prev) => ({
+                ...prev,
+                contactName: contact.name,
+                contactPhone: contact.phoneNumber,
+                contactId: contact.id,
+              }));
+              setContactLookupVisible(false);
+            }}
+            onDismiss={() => setContactLookupVisible(false)}
+          />
       </Modal>
 
       {/* Add Task modal */}
@@ -1860,13 +1973,21 @@ export default function LeadDetailScreen() {
 
               <Pressable onPress={() => {
                 const d = taskDueDate ? new Date(taskDueDate) : new Date();
-                setTaskDueObj(!isNaN(d.getTime()) ? d : new Date());
-                setShowTaskDuePicker(true);
+                const base = !isNaN(d.getTime()) ? d : new Date();
+                setTaskDueObj(base);
+                if (Platform.OS === 'android') {
+                  pickDateTimeAndroid(base, (picked) => {
+                    setTaskDueObj(picked);
+                    setTaskDueDate(picked.toISOString());
+                  });
+                } else {
+                  setShowTaskDuePicker(true);
+                }
               }}>
                 <View pointerEvents="none">
                   <TextInput
                     label={t('tasks.dueDate')}
-                    value={taskDueDate ? (() => { const d = new Date(taskDueDate); return !isNaN(d.getTime()) ? d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' }) : taskDueDate; })() : ''}
+                    value={taskDueDate ? formatDateTimeSafe(taskDueDate, lang) : ''}
                     mode="outlined"
                     editable={false}
                     placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
@@ -1878,7 +1999,7 @@ export default function LeadDetailScreen() {
                 </View>
               </Pressable>
 
-              {showTaskDuePicker && (
+              {Platform.OS === 'ios' && showTaskDuePicker && (
                 <DateTimePicker
                   value={taskDueObj}
                   mode="date"
@@ -1894,7 +2015,7 @@ export default function LeadDetailScreen() {
                   }}
                 />
               )}
-              {showTaskDueTimePicker && (
+              {Platform.OS === 'ios' && showTaskDueTimePicker && (
                 <DateTimePicker
                   value={taskDueObj}
                   mode="time"
@@ -1933,11 +2054,17 @@ export default function LeadDetailScreen() {
 
               {taskReminderEnabled && (
                 <>
-                  <Pressable onPress={() => setShowTaskReminderPicker(true)}>
+                  <Pressable onPress={() => {
+                    if (Platform.OS === 'android') {
+                      pickDateTimeAndroid(taskReminderObj, (picked) => setTaskReminderObj(picked));
+                    } else {
+                      setShowTaskReminderPicker(true);
+                    }
+                  }}>
                     <View pointerEvents="none">
                       <TextInput
                         label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
-                        value={taskReminderObj.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' })}
+                        value={formatDateTimeSafe(taskReminderObj, lang)}
                         mode="outlined"
                         editable={false}
                         style={{ marginBottom: 14, textAlign }}
@@ -1947,7 +2074,7 @@ export default function LeadDetailScreen() {
                       />
                     </View>
                   </Pressable>
-                  {showTaskReminderPicker && (
+                  {Platform.OS === 'ios' && showTaskReminderPicker && (
                     <DateTimePicker
                       value={taskReminderObj}
                       mode="date"
@@ -1963,7 +2090,7 @@ export default function LeadDetailScreen() {
                       }}
                     />
                   )}
-                  {showTaskReminderTimePicker && (
+                  {Platform.OS === 'ios' && showTaskReminderTimePicker && (
                     <DateTimePicker
                       value={taskReminderObj}
                       mode="time"
@@ -2010,21 +2137,6 @@ export default function LeadDetailScreen() {
             </Pressable>
           </Pressable>
       </Modal>
-
-      <ContactLookup
-        visible={contactLookupVisible}
-        organization={organization}
-        onSelect={(contact) => {
-          setForm((prev) => ({
-            ...prev,
-            contactName: contact.name,
-            contactPhone: contact.phoneNumber,
-            contactId: contact.id,
-          }));
-          setContactLookupVisible(false);
-        }}
-        onDismiss={() => setContactLookupVisible(false)}
-      />
 
       <Modal
         visible={noteModalVisible}

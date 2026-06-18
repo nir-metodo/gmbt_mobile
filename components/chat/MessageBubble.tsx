@@ -206,6 +206,36 @@ function MessageBubbleInner({
   const [fetchedTemplateData, setFetchedTemplateData] = useState<any>(null);
   const [fetchedMediaUrl, setFetchedMediaUrl] = useState<string>('');
 
+  // FlashList recycles this component instance to render different messages. Local UI state
+  // (broken-image flag, fetched template data, audio/play state) would otherwise carry over
+  // to the next message — showing a broken placeholder on a valid image, a stale template,
+  // or a wrong audio duration. Reset it synchronously when the underlying message changes.
+  const currentMessageId = message.messageId || (message as any).id || '';
+  const prevMessageIdRef = useRef(currentMessageId);
+  if (prevMessageIdRef.current !== currentMessageId) {
+    prevMessageIdRef.current = currentMessageId;
+    setImageError(false);
+    setImageViewerVisible(false);
+    setVideoFullscreen(false);
+    setAudioPlaying(false);
+    setAudioPosition(0);
+    setAudioDuration(0);
+    setFetchedTemplateData(null);
+    setFetchedMediaUrl('');
+    durationLoaded.current = false;
+  }
+
+  // Release any playing voice note when the row is recycled to another message or unmounts,
+  // so audio never keeps playing in the background after scrolling away.
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.unloadAsync().catch(() => {});
+        audioRef.current = null;
+      }
+    };
+  }, [currentMessageId]);
+
   useEffect(() => {
     const msgType = (message.type || (message as any).messageType || '').toLowerCase();
     if (msgType !== 'template') return;
@@ -309,7 +339,9 @@ function MessageBubbleInner({
   };
 
   const mediaUrl = (message as any).gmbt_mediaUrl || message.mediaUrl || message.MediaUrl || message.media_url;
+  const videoPoster = (message as any).thumbnailUrl || (message as any).ThumbnailUrl || (message as any).thumbnail || (message as any).previewUrl || undefined;
   const rawType = (message.type || message.messageType || '') as string;
+  const DOC_EXTS = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip', 'rtf'];
   const resolvedType = (() => {
     const t = rawType.toLowerCase();
     if (t === 'image' || t.startsWith('image/')) return 'image';
@@ -322,11 +354,20 @@ function MessageBubbleInner({
       if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'].includes(ext)) return 'image';
       if (['mp4', 'mov', 'avi', 'webm', '3gp'].includes(ext)) return 'video';
       if (['mp3', 'ogg', 'opus', 'wav', 'aac', 'm4a', 'amr'].includes(ext)) return 'audio';
-      if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip'].includes(ext)) return 'document';
+      if (DOC_EXTS.includes(ext)) return 'document';
+      // mediaType hint — PDFs/office docs sent from the app or campaigns often arrive as
+      // type:"media" with mediaType:"application/pdf" and NO extension on the URL. Without this
+      // they fell through to the image default and rendered as a broken image ("can't see it").
       const mt = (message.mediaType || '').toLowerCase();
       if (mt.startsWith('image')) return 'image';
       if (mt.startsWith('video')) return 'video';
       if (mt.startsWith('audio')) return 'audio';
+      if (mt.startsWith('application') || mt.includes('pdf') || mt.includes('document') || mt === 'file') return 'document';
+      // fileName extension hint (the URL may be a signed link with no extension).
+      const fext = ((message.fileName || '').split('.').pop() || '').toLowerCase();
+      if (DOC_EXTS.includes(fext)) return 'document';
+      // A named attachment with no image/video/audio hint is far more likely a document.
+      if (message.fileName) return 'document';
       return 'image';
     }
     return t;
@@ -426,19 +467,27 @@ function MessageBubbleInner({
           const videoSource = effectiveMediaUrl || mediaUrl;
           return (
             <>
+              {/* Lightweight poster in the list row (tap to play). Mounting a live <Video>
+                  with native controls in every recycled FlashList row caused flicker and
+                  blank frames when scrolling chats with many videos. */}
               <Pressable onPress={() => onMediaPress ? onMediaPress(message) : setVideoFullscreen(true)} style={styles.videoThumb}>
                 <View style={[styles.mediaPlaceholder, { backgroundColor: isDark ? '#111' : '#000' }]}>
-                  {mediaLoading && (
-                    <View style={{ position: 'absolute', zIndex: 1, alignItems: 'center' }}>
+                  {videoPoster ? (
+                    <Image
+                      source={{ uri: videoPoster }}
+                      style={{ width: MEDIA_WIDTH, height: 180, borderRadius: 8 }}
+                      contentFit="cover"
+                      cachePolicy="disk"
+                      recyclingKey={mediaUrl}
+                    />
+                  ) : null}
+                  <View style={{ position: 'absolute', alignItems: 'center', justifyContent: 'center' }}>
+                    {mediaLoading ? (
                       <ActivityIndicator size="small" color="#fff" />
-                    </View>
-                  )}
-                  <Video
-                    source={{ uri: videoSource }}
-                    style={{ width: MEDIA_WIDTH, height: 180, borderRadius: 8 }}
-                    resizeMode={ResizeMode.CONTAIN}
-                    useNativeControls
-                  />
+                    ) : (
+                      <MaterialCommunityIcons name="play-circle" size={52} color="rgba(255,255,255,0.92)" />
+                    )}
+                  </View>
                 </View>
               </Pressable>
               {!onMediaPress && (
@@ -466,21 +515,37 @@ function MessageBubbleInner({
           </View>
         );
 
-      case 'document':
+      case 'document': {
         const docName = message.fileName || t('chats.attachFile');
-        const docExt = (docName.split('.').pop() || '').toUpperCase();
+        const docExt = (docName.split('.').pop() || '').toLowerCase();
+        const urlExt = (mediaUrl ? (mediaUrl.split('?')[0].split('.').pop() || '') : '').toLowerCase();
+        const mt = (message.mediaType || '').toLowerCase();
+        const isPdf = docExt === 'pdf' || urlExt === 'pdf' || mt.includes('pdf');
+        const isWord = ['doc', 'docx'].includes(docExt) || mt.includes('word');
+        const isExcel = ['xls', 'xlsx', 'csv'].includes(docExt) || mt.includes('sheet') || mt.includes('excel');
+        const docIcon = isPdf ? 'file-pdf-box' : isWord ? 'file-word-box' : isExcel ? 'file-excel-box' : 'file-document-outline';
+        const docIconColor = isPdf ? '#e53935' : isWord ? '#2563eb' : isExcel ? '#16a34a' : theme.colors.primary;
+        const docSubtitle = isPdf ? 'PDF' : (docExt ? docExt.toUpperCase() : 'DOC');
+        const openDoc = () => {
+          const url = effectiveMediaUrl || mediaUrl;
+          if (url) {
+            WebBrowser.openBrowserAsync(url, { presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN }).catch(() => {
+              Linking.openURL(url).catch(() => {});
+            });
+          }
+        };
         return (
-          <Pressable onPress={() => { if (effectiveMediaUrl) { WebBrowser.openBrowserAsync(effectiveMediaUrl, { presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN }).catch(() => {}); } }} disabled={!effectiveMediaUrl || mediaLoading}>
+          <Pressable onPress={openDoc} disabled={(!effectiveMediaUrl && !mediaUrl) || mediaLoading}>
             <View style={[styles.docContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#f0f4f0' }]}>
               <View style={styles.docIconWrap}>
-                <MaterialCommunityIcons name="file-document-outline" size={24} color={theme.colors.primary} />
+                <MaterialCommunityIcons name={docIcon as any} size={26} color={docIconColor} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text variant="bodySmall" numberOfLines={1} style={{ color: textColor, fontWeight: '600' }}>
                   {docName}
                 </Text>
                 <Text variant="labelSmall" style={{ color: timeColor, marginTop: 1 }}>
-                  {mediaLoading ? t('chats.downloading', 'מוריד...') : (docExt || 'DOC')}
+                  {mediaLoading ? t('chats.downloading', 'מוריד...') : `${docSubtitle} · ${t('chats.tapToOpen', isRTL ? 'הקש לפתיחה' : 'Tap to open')}`}
                 </Text>
               </View>
               {mediaLoading ? (
@@ -491,6 +556,7 @@ function MessageBubbleInner({
             </View>
           </Pressable>
         );
+      }
 
       case 'audio':
         const progress = audioDuration > 0 ? audioPosition / audioDuration : 0;

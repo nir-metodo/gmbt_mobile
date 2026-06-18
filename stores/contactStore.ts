@@ -101,14 +101,14 @@ export const useContactStore = create<ContactState>((set, get) => ({
   },
 
   deleteContact: async (organization, contactId) => {
-    try {
-      await contactsApi.delete(organization, contactId);
-      set((state) => ({
-        contacts: state.contacts.filter((c) => c.id !== contactId),
-      }));
-    } catch (err) {
-      throw err;
+    const res = await contactsApi.delete(organization, contactId);
+    // Backend returns { Success: bool }. Only drop it locally if the server confirms.
+    if (res && res.Success === false) {
+      throw new Error(res?.Message || res?.error || 'Delete failed');
     }
+    set((state) => ({
+      contacts: state.contacts.filter((c) => c.id !== contactId && c.phoneNumber !== contactId),
+    }));
   },
 
   addOrUpdateContact: (contact) => {

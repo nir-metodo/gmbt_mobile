@@ -39,6 +39,7 @@ import {
   DOCUMENT_TYPES,
   INVOICE_STATUSES,
 } from '../../../../services/api/invoices';
+import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { quotesApi } from '../../../../services/api/quotes';
 import type { Contact } from '../../../../types';
@@ -83,8 +84,10 @@ export default function InvoiceDetailScreen() {
   const isNew = id === 'new';
 
   // ── View mode state ───────────────────────────────────────────────
-  const [invoice, setInvoice] = useState<Invoice | null>(null);
-  const [loading, setLoading] = useState(!isNew);
+  // Render instantly from the list cache, then refresh in the background.
+  const cachedInvoice = !isNew ? getCachedEntity<Invoice>('invoices', id) : undefined;
+  const [invoice, setInvoice] = useState<Invoice | null>(cachedInvoice ?? null);
+  const [loading, setLoading] = useState(!isNew && !cachedInvoice);
   const [error, setError] = useState<string | null>(null);
 
   // ── Create/edit mode state ────────────────────────────────────────
@@ -109,6 +112,7 @@ export default function InvoiceDetailScreen() {
   // Type/payment menus
   const [typeMenuVisible, setTypeMenuVisible] = useState(false);
   const [paymentMenuVisible, setPaymentMenuVisible] = useState(false);
+  const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
 
   // Contact search / picker
   const [contactPickerVisible, setContactPickerVisible] = useState(false);
@@ -141,6 +145,7 @@ export default function InvoiceDetailScreen() {
       setError(null);
       const data = await invoicesApi.getById(user.organization, id);
       setInvoice(data);
+      cacheEntity('invoices', data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
@@ -296,6 +301,33 @@ export default function InvoiceDetailScreen() {
     formContactPhone, formContactEmail, formContactCompany, formItems, formDiscount,
     formPaymentMethod, formNotes, totals, prefillRelatedQuoteId, router, t,
   ]);
+
+  // ══ Delete (drafts only — mirrors web isLocked gating) ════════════
+  const handleDelete = useCallback(() => {
+    setHeaderMenuVisible(false);
+    if (!user?.organization || !id) return;
+    Alert.alert(
+      t('common.delete'),
+      t('invoices.confirmDelete', 'האם למחוק את הטיוטה?'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await invoicesApi.delete(user.organization, id);
+              Alert.alert(t('common.success', 'הצלחה'), t('invoices.deleteSuccess', 'הטיוטה נמחקה'));
+              if (router.canGoBack()) router.back();
+              else router.replace('/(tabs)/more/invoices');
+            } catch (err: any) {
+              Alert.alert(t('common.error'), err.message || t('errors.generic'));
+            }
+          },
+        },
+      ],
+    );
+  }, [user?.organization, id, router, t]);
 
   // ══ Loading / Error ═══════════════════════════════════════════════
   if (loading) {
@@ -728,6 +760,22 @@ export default function InvoiceDetailScreen() {
           await Clipboard.setStringAsync(publicUrl);
           Alert.alert('הקישור הועתק', 'קישור לצפייה בחשבונית הועתק ללוח');
         }} />
+        {!(invoice as any).isLocked ? (
+          <Menu
+            visible={headerMenuVisible}
+            onDismiss={() => setHeaderMenuVisible(false)}
+            anchor={
+              <Appbar.Action icon="dots-vertical" color="#FFF" onPress={() => setHeaderMenuVisible(true)} />
+            }
+          >
+            <Menu.Item
+              onPress={handleDelete}
+              title={t('common.delete')}
+              leadingIcon="delete-outline"
+              titleStyle={{ color: '#F44336' }}
+            />
+          </Menu>
+        ) : null}
       </Appbar.Header>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>

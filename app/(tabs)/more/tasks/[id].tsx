@@ -9,6 +9,7 @@ import {
   Platform,
   FlatList,
   TouchableOpacity,
+  useWindowDimensions,
 } from 'react-native';
 import {
   Text,
@@ -28,11 +29,12 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { tasksApi } from '../../../../services/api/tasks';
+import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { usersApi } from '../../../../services/api/users';
 import { leadsApi } from '../../../../services/api/leads';
 import { getDataVisibility } from '../../../../constants/permissions';
@@ -121,6 +123,7 @@ export default function TaskDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
   const { t, i18n } = useTranslation();
@@ -128,8 +131,16 @@ export default function TaskDetailScreen() {
 
   const user = useAuthStore((s) => s.user);
 
-  const [task, setTask] = useState<Task | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Render instantly from the list cache, then refresh in the background.
+  // Memoized per id so the cache lookup keeps a stable identity across renders;
+  // otherwise fetchTask (which depends on it) would be recreated every render and
+  // re-trigger its effect in an infinite loop (re-fetching the task + activities).
+  const cachedTask = useMemo(
+    () => (id && id !== 'new' ? getCachedEntity<Task>('tasks', id) : undefined),
+    [id]
+  );
+  const [task, setTask] = useState<Task | null>(cachedTask ?? null);
+  const [loading, setLoading] = useState(!cachedTask);
   const [error, setError] = useState<string | null>(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -168,6 +179,56 @@ export default function TaskDetailScreen() {
   const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
   const [reminderDateObj, setReminderDateObj] = useState<Date>(new Date());
 
+  // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inside a React Native <Modal> on Android.
+  // The native dialog clashes with the modal host and the chained date→time flow throws
+  // "IllegalStateException: Fragment already added", closing the app. On Android open the pickers
+  // imperatively (date, then time); iOS keeps the inline spinner via the show* flags.
+  const pickDateTimeAndroid = (current: Date, onPicked: (d: Date) => void) => {
+    const base = current && !isNaN(current.getTime()) ? new Date(current) : new Date();
+    DateTimePickerAndroid.open({
+      value: base,
+      mode: 'date',
+      onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
+        if (e.type !== 'set' || !dateVal) return;
+        const merged = new Date(base);
+        merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
+        DateTimePickerAndroid.open({
+          value: merged,
+          mode: 'time',
+          is24Hour: true,
+          onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
+            if (e2.type !== 'set' || !timeVal) return;
+            merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
+            onPicked(merged);
+          },
+        });
+      },
+    });
+  };
+
+  const openDuePicker = () => {
+    const d = formDueDate ? new Date(formDueDate) : new Date();
+    const base = !isNaN(d.getTime()) ? d : new Date();
+    setDueDateObj(base);
+    if (Platform.OS === 'android') {
+      pickDateTimeAndroid(base, (picked) => {
+        setDueDateObj(picked);
+        setFormDueDate(picked.toISOString());
+        if (reminderEnabled && !formDueDate) setReminderDateObj(picked);
+      });
+    } else {
+      setShowDueDatePicker(true);
+    }
+  };
+
+  const openReminderPicker = () => {
+    if (Platform.OS === 'android') {
+      pickDateTimeAndroid(reminderDateObj, (picked) => setReminderDateObj(picked));
+    } else {
+      setShowReminderDatePicker(true);
+    }
+  };
+
   const [activities, setActivities] = useState<any[]>([]);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
   const [newComment, setNewComment] = useState('');
@@ -184,6 +245,7 @@ export default function TaskDetailScreen() {
         const found = await tasksApi.getById(user.organization, id);
         if (found && found.id) {
           setTask(found);
+          cacheEntity('tasks', found);
           setLoading(false);
           return;
         }
@@ -192,20 +254,22 @@ export default function TaskDetailScreen() {
       const tasks = await tasksApi.getAll(
         user.organization,
         user.uID || user.userId,
-        tasksDV === 'own' ? 'seeOwn' : 'seeAll',
+        // Backend filters only when dataVisibility === 'own' (not 'seeOwn').
+        tasksDV === 'own' ? 'own' : 'all',
       );
       const found = tasks.find((t) => t.id === id);
       if (found) {
         setTask(found);
-      } else {
+        cacheEntity('tasks', found);
+      } else if (!cachedTask) {
         setError(t('common.noResults'));
       }
     } catch (err: any) {
-      setError(err.message || t('errors.generic'));
+      if (!cachedTask) setError(err.message || t('errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, user?.uID, user?.userId, id, t, tasksDV]);
+  }, [user?.organization, user?.uID, user?.userId, id, t, tasksDV, cachedTask]);
 
   useEffect(() => {
     fetchTask();
@@ -384,6 +448,7 @@ export default function TaskDetailScreen() {
             setDeleting(true);
             try {
               await tasksApi.delete(user.organization, task.id);
+              Alert.alert(t('common.success', 'הצלחה'), t('tasks.deleteSuccess', 'נמחק בהצלחה'));
               if (router.canGoBack()) router.back();
               else router.replace('/(tabs)/more/tasks');
             } catch (err: any) {
@@ -399,13 +464,19 @@ export default function TaskDetailScreen() {
   const handleStatusChange = useCallback(
     async (newStatus: string) => {
       if (!user?.organization || !task) return;
+      const taskId = task.taskId || task.id;
       try {
-        await tasksApi.update(user.organization, {
-          id: task.id,
-          taskId: task.taskId || task.id,
-          status: newStatus as Task['status'],
-          ...(newStatus === 'completed' ? { completedAt: new Date().toISOString() } : {}),
-        } as any, user.userId || user.uID || '', user.fullname || '');
+        if (newStatus === 'completed') {
+          // Use the dedicated CompleteTask endpoint so the backend stamps completedDate/by
+          // exactly like the list one-tap action and the web TaskDetails screen.
+          await tasksApi.complete(user.organization, taskId, user.userId || user.uID || '', user.fullname || '');
+        } else {
+          await tasksApi.update(user.organization, {
+            id: task.id,
+            taskId,
+            status: newStatus as Task['status'],
+          } as any, user.userId || user.uID || '', user.fullname || '');
+        }
         await fetchTask();
       } catch (err: any) {
         Alert.alert(t('common.error'), err.message || t('errors.generic'));
@@ -965,8 +1036,10 @@ export default function TaskDetailScreen() {
             { backgroundColor: theme.colors.surface },
           ]}
         >
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <ScrollView showsVerticalScrollIndicator={false}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            {/* Bounded maxHeight lets the ScrollView scroll. A bare `flex:1` collapses the content
+                to height 0 inside a Paper Modal whose container only has `maxHeight` (grey backdrop). */}
+            <ScrollView style={{ maxHeight: windowHeight * 0.74 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                   {t('tasks.editTask')}
@@ -1087,11 +1160,7 @@ export default function TaskDetailScreen() {
                 })}
               </View>
 
-              <Pressable onPress={() => {
-                const d = formDueDate ? new Date(formDueDate) : new Date();
-                setDueDateObj(!isNaN(d.getTime()) ? d : new Date());
-                setShowDueDatePicker(true);
-              }}>
+              <Pressable onPress={openDuePicker}>
                 <View pointerEvents="none">
                 <TextInput
                   label={t('tasks.dueDate')}
@@ -1102,16 +1171,12 @@ export default function TaskDetailScreen() {
                   style={[styles.formInput, { textAlign }]}
                   outlineColor={theme.colors.outline}
                   activeOutlineColor={BRAND_COLOR}
-                  right={<TextInput.Icon icon="calendar" onPress={() => {
-                    const d = formDueDate ? new Date(formDueDate) : new Date();
-                    setDueDateObj(!isNaN(d.getTime()) ? d : new Date());
-                    setShowDueDatePicker(true);
-                  }} />}
+                  right={<TextInput.Icon icon="calendar" onPress={openDuePicker} />}
                 />
                 </View>
               </Pressable>
 
-              {showDueDatePicker && (
+              {Platform.OS === 'ios' && showDueDatePicker && (
                 <DateTimePicker
                   value={dueDateObj}
                   mode="date"
@@ -1127,7 +1192,7 @@ export default function TaskDetailScreen() {
                   }}
                 />
               )}
-              {showDueTimePicker && (
+              {Platform.OS === 'ios' && showDueTimePicker && (
                 <DateTimePicker
                   value={dueDateObj}
                   mode="time"
@@ -1168,7 +1233,7 @@ export default function TaskDetailScreen() {
 
               {reminderEnabled && (
                 <>
-                  <Pressable onPress={() => setShowReminderDatePicker(true)}>
+                  <Pressable onPress={openReminderPicker}>
                     <View pointerEvents="none">
                     <TextInput
                       label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
@@ -1178,12 +1243,12 @@ export default function TaskDetailScreen() {
                       style={[styles.formInput, { textAlign }]}
                       outlineColor={theme.colors.outline}
                       activeOutlineColor={BRAND_COLOR}
-                      right={<TextInput.Icon icon="bell-ring-outline" onPress={() => setShowReminderDatePicker(true)} />}
+                      right={<TextInput.Icon icon="bell-ring-outline" onPress={openReminderPicker} />}
                     />
                     </View>
                   </Pressable>
 
-                  {showReminderDatePicker && (
+                  {Platform.OS === 'ios' && showReminderDatePicker && (
                     <DateTimePicker
                       value={reminderDateObj}
                       mode="date"
@@ -1199,7 +1264,7 @@ export default function TaskDetailScreen() {
                       }}
                     />
                   )}
-                  {showReminderTimePicker && (
+                  {Platform.OS === 'ios' && showReminderTimePicker && (
                     <DateTimePicker
                       value={reminderDateObj}
                       mode="time"

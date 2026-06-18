@@ -37,9 +37,12 @@ import {
   resolveOrderStatusIcon,
   getOrderTotal,
 } from '../../../../services/api/orders';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { formatDate } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
+import { cacheEntities } from '../../../../services/entityCache';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -142,6 +145,7 @@ export default function OrdersScreen() {
       setError(null);
       const data = await ordersApi.getAll(user.organization);
       appCache.set(CACHE_KEY, data);
+      cacheEntities('orders', data);
       setOrders(data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
@@ -213,6 +217,9 @@ export default function OrdersScreen() {
     setFilterCustom({});
   }, []);
 
+  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
+
   const filteredOrders = useMemo(() => {
     let result = Array.isArray(orders) ? orders : [];
     if (statusFilter !== 'all') {
@@ -224,8 +231,8 @@ export default function OrdersScreen() {
         return normalized === statusFilter;
       });
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.toLowerCase();
       result = result.filter(
         (o) =>
           o.orderNumber?.toLowerCase().includes(q) ||
@@ -254,7 +261,13 @@ export default function OrdersScreen() {
       const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return bDate - aDate;
     });
-  }, [orders, statusFilter, searchQuery, filterSource, filterOwner, filterPayment, filterProduct, filterCustom]);
+  }, [orders, statusFilter, debouncedSearch, filterSource, filterOwner, filterPayment, filterProduct, filterCustom]);
+
+  // Client-side pagination over the filtered list (search still spans everything).
+  const { visible: visibleOrders, hasMore: ordersHasMore, loadMore: ordersLoadMore, loadAll: ordersLoadAll, count: ordersCount } = useWindowedList(filteredOrders, {
+    pageSize: 30,
+    resetKey: `${statusFilter}|${debouncedSearch}|${filterSource}|${filterOwner}|${filterPayment}|${filterProduct}|${JSON.stringify(filterCustom)}`,
+  });
 
   const getStatusLabel = useCallback((statusId: string) => {
     const configured = statuses.find((s) => s.id === statusId);
@@ -517,10 +530,21 @@ export default function OrdersScreen() {
         />
       ) : (
         <FlatList
-          data={filteredOrders}
+          data={visibleOrders}
           renderItem={renderOrderCard}
           keyExtractor={(item) => item.id}
           ListEmptyComponent={renderEmpty}
+          ListFooterComponent={
+            <ListPaginationFooter
+              count={ordersCount}
+              total={filteredOrders.length}
+              hasMore={ordersHasMore}
+              onLoadMore={ordersLoadMore}
+              onLoadAll={ordersLoadAll}
+            />
+          }
+          onEndReached={ordersHasMore ? ordersLoadMore : undefined}
+          onEndReachedThreshold={0.4}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />}
           contentContainerStyle={[styles.listContent, filteredOrders.length === 0 && styles.listContentEmpty]}
           ItemSeparatorComponent={() => <View style={{ height: 8 }} />}

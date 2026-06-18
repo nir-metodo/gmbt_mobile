@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
+import { View, StyleSheet, ScrollView, Linking, AppState } from 'react-native';
 import type { MD3Theme } from 'react-native-paper';
 import {
   Appbar,
@@ -8,9 +8,10 @@ import {
   Switch,
   Divider,
   ActivityIndicator,
+  Button,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
@@ -20,6 +21,7 @@ import {
   pushNotificationService,
   DEFAULT_PUSH_SETTINGS,
   type PushNotificationSettings,
+  type PushPermissionState,
 } from '../../../../services/pushNotifications';
 
 const BRAND_COLOR = '#2e6155';
@@ -93,6 +95,8 @@ export default function NotificationsSettingsScreen() {
   const [settings, setSettings] = useState<PushNotificationSettings>(DEFAULT_PUSH_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
+  const [permState, setPermState] = useState<PushPermissionState | null>(null);
+  const [requesting, setRequesting] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -101,6 +105,50 @@ export default function NotificationsSettingsScreen() {
       .then((s) => setSettings(s))
       .finally(() => setLoading(false));
   }, [user]);
+
+  // Refresh the OS permission status. If it's granted, make sure the push token is registered —
+  // this is the recovery path for users who denied at login and later enabled in device settings.
+  const refreshPermission = useCallback(async () => {
+    const state = await pushNotificationService.getPermissionState();
+    setPermState(state);
+    if (state.status === 'granted' && user) {
+      pushNotificationService.registerPushToken(user.organization, user.userId).catch(() => {});
+    }
+  }, [user]);
+
+  // Re-check whenever the screen is focused (e.g. returning from the OS Settings app).
+  useFocusEffect(
+    useCallback(() => {
+      refreshPermission();
+    }, [refreshPermission])
+  );
+
+  // Re-check when the app comes back to the foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') refreshPermission();
+    });
+    return () => sub.remove();
+  }, [refreshPermission]);
+
+  const handleEnablePush = useCallback(async () => {
+    if (!permState) return;
+    // If the OS will still show the dialog, ask in-app. Otherwise deep-link to system settings.
+    if (permState.status !== 'granted' && permState.canAskAgain) {
+      setRequesting(true);
+      try {
+        const status = await pushNotificationService.requestPermission();
+        if (status === 'granted' && user) {
+          await pushNotificationService.registerPushToken(user.organization, user.userId).catch(() => {});
+        }
+        await refreshPermission();
+      } finally {
+        setRequesting(false);
+      }
+    } else {
+      Linking.openSettings().catch(() => {});
+    }
+  }, [permState, user, refreshPermission]);
 
   const handleToggle = useCallback(
     async (key: keyof PushNotificationSettings, value: boolean) => {
@@ -158,6 +206,54 @@ export default function NotificationsSettingsScreen() {
       </Appbar.Header>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
+        {/* OS permission status — lets users who denied at login enable notifications later. */}
+        {permState && permState.status !== 'unsupported' && (() => {
+          const granted = permState.status === 'granted';
+          const accent = granted ? '#16a34a' : '#dc2626';
+          const title = granted
+            ? (isRTL ? 'ההתראות מופעלות' : 'Notifications are on')
+            : (isRTL ? 'ההתראות כבויות' : 'Notifications are off');
+          const desc = granted
+            ? (isRTL ? 'המכשיר שלך מקבל התראות מהמערכת.' : 'Your device is receiving push notifications.')
+            : (permState.canAskAgain
+                ? (isRTL ? 'אשר קבלת התראות כדי לא לפספס הודעות, לידים ומשימות.' : 'Allow notifications so you don\'t miss messages, leads and tasks.')
+                : (isRTL ? 'ההתראות חסומות בהגדרות המכשיר. פתח את ההגדרות כדי להפעיל.' : 'Notifications are blocked in device settings. Open settings to enable.'));
+          const btnLabel = permState.canAskAgain
+            ? (isRTL ? 'אפשר התראות' : 'Allow notifications')
+            : (isRTL ? 'פתח הגדרות' : 'Open settings');
+          return (
+            <Surface style={[styles.section, styles.permCard, { backgroundColor: theme.colors.surface, borderColor: accent + '33' }]} elevation={1}>
+              <View style={[styles.permRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={[styles.iconWrap, { backgroundColor: accent + '15' }]}>
+                  <MaterialCommunityIcons name={granted ? 'bell-check-outline' : 'bell-off-outline'} size={22} color={accent} />
+                </View>
+                <View style={[styles.textWrap, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+                  <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                    {title}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: isRTL ? 'right' : 'left' }}>
+                    {desc}
+                  </Text>
+                </View>
+              </View>
+              {!granted && (
+                <Button
+                  mode="contained"
+                  onPress={handleEnablePush}
+                  loading={requesting}
+                  disabled={requesting}
+                  buttonColor={BRAND_COLOR}
+                  textColor="#fff"
+                  style={styles.permButton}
+                  icon={permState.canAskAgain ? 'bell-ring-outline' : 'cog-outline'}
+                >
+                  {btnLabel}
+                </Button>
+              )}
+            </Surface>
+          );
+        })()}
+
         {/* Messages */}
         {canChats && (
         <><SectionHeader title={t('pushSettings.messagesSection')} isRTL={isRTL} themeColors={theme.colors} />
@@ -397,6 +493,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   section: { borderRadius: 16, marginHorizontal: 16, overflow: 'hidden' },
+  permCard: { marginTop: 16, padding: 16, borderWidth: 1 },
+  permRow: { alignItems: 'center' },
+  permButton: { marginTop: 14, borderRadius: 10 },
   divider: { marginHorizontal: 16 },
   row: { alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16 },
   iconWrap: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },

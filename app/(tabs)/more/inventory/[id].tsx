@@ -26,6 +26,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { inventoryApi, InventoryItem, StockMovement } from '../../../../services/api/inventory';
+import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { formatDate, withAlpha } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 
@@ -47,9 +48,11 @@ export default function InventoryDetailScreen() {
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
 
-  const [item, setItem] = useState<InventoryItem | null>(null);
+  // Render instantly from the list cache, then refresh in the background.
+  const cachedItem = id && id !== 'new' ? getCachedEntity<InventoryItem>('inventory', id) : undefined;
+  const [item, setItem] = useState<InventoryItem | null>(cachedItem ?? null);
   const [movements, setMovements] = useState<StockMovement[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedItem);
   const [movementsLoading, setMovementsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,6 +67,7 @@ export default function InventoryDetailScreen() {
       setError(null);
       const data = await inventoryApi.getById(user.organization, id);
       setItem(data);
+      cacheEntity('inventory', data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {

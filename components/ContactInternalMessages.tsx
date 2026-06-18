@@ -55,7 +55,12 @@ export default function ContactInternalMessages({ contactPhone }: Props) {
   }, [organization]);
 
   const fetchMessages = useCallback(async () => {
-    if (!organization || !contactPhone) return;
+    if (!organization || !contactPhone) {
+      // Don't spin forever when there is no phone yet — show the empty state instead.
+      setMessages([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const list = await chatsApi.getInternalMessagesHub({
@@ -81,7 +86,10 @@ export default function ContactInternalMessages({ contactPhone }: Props) {
 
   const handleComposerChange = (val: string) => {
     setComposerText(val);
-    const caret = caretRef.current ?? val.length;
+    // The selection (caret) updates AFTER onChangeText, so caretRef is stale for the first
+    // character typed. When it's stale/out of range, assume the user is typing at the end so
+    // typing "@" opens the mention list immediately.
+    const caret = (caretRef.current > 0 && caretRef.current <= val.length) ? caretRef.current : val.length;
     const before = val.substring(0, caret);
     const atIdx = before.lastIndexOf('@');
     if (atIdx !== -1) {

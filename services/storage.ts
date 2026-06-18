@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
   THEME: 'theme',
   DEVICE_TOKEN: 'device_token',
   CUSTOM_TABLES: 'custom_tables',
+  REPORT_DEVICE_CALL_EVENTS: 'report_device_call_events',
 };
 
 export const secureStorage = {
@@ -83,6 +84,13 @@ export const appStorage = {
   },
   async getDeviceToken(): Promise<string | null> {
     return AsyncStorage.getItem(STORAGE_KEYS.DEVICE_TOKEN);
+  },
+
+  async setReportDeviceCallEvents(enabled: boolean) {
+    await AsyncStorage.setItem(STORAGE_KEYS.REPORT_DEVICE_CALL_EVENTS, enabled ? '1' : '0');
+  },
+  async getReportDeviceCallEvents(): Promise<boolean> {
+    return (await AsyncStorage.getItem(STORAGE_KEYS.REPORT_DEVICE_CALL_EVENTS)) === '1';
   },
 
   async clearAll() {

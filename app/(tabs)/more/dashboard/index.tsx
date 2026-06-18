@@ -161,10 +161,14 @@ export default function DashboardScreen() {
   const fetchData = useCallback(async () => {
     if (!org) return;
     const { startDate, endDate } = getDateRange(dateRange);
+    // GetDashboardStatistics / GetContactGrowthStatistics require organizationName + userId + userRole
+    // (the backend rejects payloads that only carry `organization`). Send web-compatible fields.
+    const userId = (user as any)?.uID || (user as any)?.userId || '';
+    const userRole = ((user as any)?.SecurityRole || '').toLowerCase() === 'admin' ? 'admin' : 'user';
     try {
       const [dashRes, growthRes, leadsRes] = await Promise.allSettled([
-        axiosInstance.post(ENDPOINTS.GET_DASHBOARD_STATS, { organization: org, startDate, endDate }),
-        axiosInstance.post(ENDPOINTS.GET_CONTACT_GROWTH, { organization: org, startDate, endDate }),
+        axiosInstance.post(ENDPOINTS.GET_DASHBOARD_STATS, { organizationName: org, organization: org, userId, userRole, startDate, endDate }),
+        axiosInstance.post(ENDPOINTS.GET_CONTACT_GROWTH, { organizationName: org, organization: org, userId, userRole, startDate, endDate }),
         axiosInstance.post(ENDPOINTS.GET_LEADS_DASHBOARD, { organization: org, startDate, endDate }),
       ]);
       if (dashRes.status === 'fulfilled') setDashData(dashRes.value.data || {});
@@ -175,7 +179,8 @@ export default function DashboardScreen() {
         Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 
       const [tasksRes, quotesRes, esigRes, convRes, callsRes] = await Promise.allSettled([
-        withTimeout(axiosInstance.post(ENDPOINTS.GET_TASKS, { organization: org })),
+        // GetAllTasksByOrganization expects organizationName (+ userId/dataVisibility), not `organization`.
+        withTimeout(axiosInstance.post(ENDPOINTS.GET_TASKS, { organizationName: org, userId, dataVisibility: userRole === 'admin' ? 'all' : 'own' })),
         withTimeout(axiosInstance.post(ENDPOINTS.GET_ALL_QUOTES, { organization: org })),
         withTimeout(axiosInstance.post(ENDPOINTS.GET_ESIGNATURE_DOCS, { organization: org })),
         withTimeout(axiosInstance.post(ENDPOINTS.GET_CONVERSATION_STATS, { organization: org, startDate, endDate })),
@@ -183,13 +188,15 @@ export default function DashboardScreen() {
       ]);
 
       if (tasksRes.status === 'fulfilled') {
-        const tasks: any[] = Array.isArray(tasksRes.value.data) ? tasksRes.value.data : [];
+        const raw = tasksRes.value.data;
+        const tasks: any[] = raw?.tasks || raw?.Tasks || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);
         const now = new Date();
-        const active = tasks.filter((tk) => tk.status !== 'Completed' && !tk.isCompleted).length;
-        const completed = tasks.filter((tk) => tk.status === 'Completed' || tk.isCompleted).length;
-        const overdue = tasks.filter((tk) => tk.status !== 'Completed' && !tk.isCompleted && tk.dueDate && new Date(tk.dueDate) < now).length;
+        const isDone = (tk: any) => (tk.status || tk.Status || '').toLowerCase() === 'completed' || tk.isCompleted === true;
+        const active = tasks.filter((tk) => !isDone(tk)).length;
+        const completed = tasks.filter(isDone).length;
+        const overdue = tasks.filter((tk) => !isDone(tk) && tk.dueDate && new Date(tk.dueDate) < now).length;
         const byPriority: Record<string, number> = {};
-        tasks.forEach((tk) => { const p = tk.priority || 'None'; byPriority[p] = (byPriority[p] || 0) + 1; });
+        tasks.forEach((tk) => { const p = tk.priority || tk.Priority || 'None'; byPriority[p] = (byPriority[p] || 0) + 1; });
         setTaskStats({ total: tasks.length, active, completed, overdue, byPriority });
       }
 

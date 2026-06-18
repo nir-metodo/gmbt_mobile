@@ -24,6 +24,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { invoicesApi, Invoice, DOCUMENT_TYPES, INVOICE_STATUSES } from '../../../../services/api/invoices';
+import { cacheEntities } from '../../../../services/entityCache';
 import { formatDate } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 
@@ -64,6 +65,7 @@ export default function InvoicesScreen() {
         statusFilter,
         typeFilter,
       });
+      cacheEntities('invoices', result.invoices);
       setInvoices((prev) => append ? [...prev, ...result.invoices] : result.invoices);
       setTotalCount(result.totalCount);
       setPage(p);
