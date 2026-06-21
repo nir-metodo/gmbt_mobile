@@ -32,6 +32,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useLeadStore } from '../../../stores/leadStore';
 import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
+import { tasksApi } from '../../../services/api/tasks';
 import { quotesApi } from '../../../services/api/quotes';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
@@ -302,6 +303,24 @@ export default function ContactDetailScreen() {
 
   // Pin / unpin a note to the top of the timeline. Soft cap of MAX_PINNED_NOTES;
   // optimistic update with revert on failure (mirrors the web behaviour).
+  // Open a task (from the timeline) in the full task detail screen for editing / completing.
+  const openTaskFromTimeline = useCallback((taskId: string) => {
+    if (!taskId) return;
+    router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any);
+  }, [router]);
+
+  // Mark a task complete straight from the timeline, then refresh.
+  const completeTaskFromTimeline = useCallback(async (taskId: string) => {
+    if (!taskId || !organization) return;
+    try {
+      await tasksApi.complete(organization, taskId, user?.uID || user?.userId || '', user?.fullname || user?.name || 'Gambot');
+      await fetchTimeline();
+    } catch {
+      Alert.alert(t('common.error'));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organization, user]);
+
   const handleTogglePin = useCallback(async (entry: any) => {
     const timelineId = entry.TimelineId || entry.timelineId;
     if (!timelineId || !contact) return;
@@ -897,6 +916,8 @@ export default function ContactDetailScreen() {
                 isRTL={isRTL}
                 flexDirection={flexDirection}
                 onTogglePin={handleTogglePin}
+                onOpenTask={openTaskFromTimeline}
+                onCompleteTask={completeTaskFromTimeline}
               />
             ) : activeTab === 'internal' ? (
               <ContactInternalMessages contactPhone={contact?.phoneNumber || ''} />
@@ -1418,6 +1439,8 @@ function TimelineSection({
   isRTL,
   flexDirection,
   onTogglePin,
+  onOpenTask,
+  onCompleteTask,
 }: {
   events: any[];
   loading: boolean;
@@ -1427,8 +1450,21 @@ function TimelineSection({
   isRTL: boolean;
   flexDirection: 'row' | 'row-reverse';
   onTogglePin: (entry: any) => void;
+  onOpenTask?: (taskId: string) => void;
+  onCompleteTask?: (taskId: string) => Promise<void> | void;
 }) {
   const [activeFilter, setActiveFilter] = useState<TimelineFilterKey>('all');
+  const [completingId, setCompletingId] = useState<string | null>(null);
+
+  const handleComplete = async (taskId: string) => {
+    if (!taskId || completingId) return;
+    setCompletingId(taskId);
+    try {
+      await onCompleteTask?.(taskId);
+    } finally {
+      setCompletingId(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -1571,6 +1607,38 @@ function TimelineSection({
                   </Text>
                 ) : null}
               </View>
+              {(() => {
+                const taskId = event.taskId || event.TaskId || (type.startsWith('task') ? (event.entityId || event.relatedId) : '');
+                const isTask = type.startsWith('task') && !!taskId;
+                if (!isTask) return null;
+                const taskDone = type === 'task_completed' || (event.taskStatus || event.TaskStatus || '').toLowerCase() === 'completed';
+                return (
+                  <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                    <Pressable
+                      onPress={() => onOpenTask?.(String(taskId))}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.colors.primary, paddingVertical: 5, paddingHorizontal: 12, borderRadius: 14 }}
+                    >
+                      <MaterialCommunityIcons name="pencil-outline" size={13} color="#fff" />
+                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{lang === 'he' ? 'ערוך' : 'Edit'}</Text>
+                    </Pressable>
+                    {!taskDone ? (
+                      <Pressable
+                        onPress={() => handleComplete(String(taskId))}
+                        disabled={completingId === taskId}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#10B98122', borderWidth: 1, borderColor: '#10B981', paddingVertical: 5, paddingHorizontal: 12, borderRadius: 14, opacity: completingId === taskId ? 0.6 : 1 }}
+                      >
+                        <MaterialCommunityIcons name="check" size={13} color="#059669" />
+                        <Text style={{ color: '#059669', fontSize: 12, fontWeight: '700' }}>{completingId === taskId ? '…' : (lang === 'he' ? 'הושלם' : 'Complete')}</Text>
+                      </Pressable>
+                    ) : (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <MaterialCommunityIcons name="check-circle" size={14} color="#059669" />
+                        <Text style={{ color: '#059669', fontSize: 12, fontWeight: '700' }}>{lang === 'he' ? 'הושלמה' : 'Done'}</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })()}
             </View>
           </View>
           </React.Fragment>

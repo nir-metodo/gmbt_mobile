@@ -21,6 +21,11 @@ const MEDIA_WIDTH = MAX_BUBBLE_WIDTH - 18;
 const STICKER_SIZE = SCREEN_WIDTH * 0.38;
 
 const templateFetchCache = new Map<string, any>();
+// Session cache of resolved voice-note durations (keyed by media URL). FlashList recycles bubbles
+// constantly while scrolling, and without this every recycle of an audio row would spin up a native
+// Audio.Sound just to read its duration — heavy bridge work that stutters scrolling in voice-heavy
+// chats. Resolve each URL once, then reuse.
+const audioDurationCache = new Map<string, number>();
 
 function renderFormattedText(text: string, color: string): React.ReactNode[] {
   const segments: React.ReactNode[] = [];
@@ -185,6 +190,13 @@ function MessageBubbleInner({
     const url = (rawMsg.gmbt_mediaUrl || message.mediaUrl || message.MediaUrl || message.media_url);
     const msgType = (message.type || message.messageType || '').toLowerCase();
     if (!url || (msgType !== 'audio' && !msgType.startsWith('audio/'))) return;
+    // Already resolved this URL earlier this session → reuse, skip the native load entirely.
+    const cachedDuration = audioDurationCache.get(url);
+    if (cachedDuration && cachedDuration > 0) {
+      setAudioDuration(cachedDuration);
+      durationLoaded.current = true;
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -193,6 +205,7 @@ function MessageBubbleInner({
           { shouldPlay: false },
         );
         if (!cancelled && status.isLoaded && status.durationMillis) {
+          audioDurationCache.set(url, status.durationMillis);
           setAudioDuration(status.durationMillis);
           durationLoaded.current = true;
         }

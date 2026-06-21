@@ -43,6 +43,7 @@ import { formatDate } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
 import { cacheEntities } from '../../../../services/entityCache';
+import { readList as readDiskList, cacheList as cacheDiskList } from '../../../../services/db/genericCache';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -146,6 +147,7 @@ export default function OrdersScreen() {
       const data = await ordersApi.getAll(user.organization);
       appCache.set(CACHE_KEY, data);
       cacheEntities('orders', data);
+      cacheDiskList('orders', user.organization, data, (o) => o.id);
       setOrders(data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
@@ -153,6 +155,20 @@ export default function OrdersScreen() {
       setLoading(false);
     }
   }, [user?.organization, t, CACHE_KEY]);
+
+  // Instant open after an app restart: hydrate from the on-device DB before the network responds.
+  useEffect(() => {
+    if (!user?.organization || orders.length > 0) return;
+    let active = true;
+    readDiskList<Order>('orders', user.organization).then((cached) => {
+      if (active && cached.length > 0) {
+        setOrders((prev) => (prev.length > 0 ? prev : cached));
+        setLoading(false);
+      }
+    });
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.organization]);
 
   useEffect(() => {
     fetchOrders();
@@ -280,6 +296,7 @@ export default function OrdersScreen() {
     setOrders((prev) => {
       const updated = prev.map((o) => (o.id === order.id ? { ...o, status: newStatus } : o));
       appCache.set(CACHE_KEY, updated);
+      cacheDiskList('orders', user.organization, [{ ...order, status: newStatus }], (o) => o.id);
       return updated;
     });
     try {

@@ -334,7 +334,7 @@ export default function InternalMessagesHub({ visible, onClose }: Props) {
         contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.background }]}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={{ flex: 1 }}
         >
           {/* Header */}
@@ -440,6 +440,7 @@ export default function InternalMessagesHub({ visible, onClose }: Props) {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
+            style={styles.pillsScroll}
             contentContainerStyle={[styles.scopePills, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
           >
             {SCOPES.map((s) => {
@@ -465,6 +466,7 @@ export default function InternalMessagesHub({ visible, onClose }: Props) {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
+              style={styles.pillsScroll}
               contentContainerStyle={[styles.userPills, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
             >
               <Chip
@@ -622,8 +624,13 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 13,
   },
-  scopePills: { gap: 8, paddingHorizontal: 14, paddingVertical: 10 },
-  userPills: { gap: 6, paddingHorizontal: 14, paddingBottom: 8 },
+  // flexGrow:0 stops the horizontal ScrollView from expanding to fill the column's free vertical
+  // space (which stretched the pills into tall full-height cards and pushed the list down).
+  pillsScroll: { flexGrow: 0, flexShrink: 0 },
+  // alignItems:'center' keeps each chip at its intrinsic (text + small padding) height instead of
+  // the horizontal ScrollView's default cross-axis 'stretch', which blew them up vertically.
+  scopePills: { gap: 8, paddingHorizontal: 14, paddingVertical: 8, alignItems: 'center' },
+  userPills: { gap: 6, paddingHorizontal: 14, paddingBottom: 8, alignItems: 'center' },
   contactSearchRow: { paddingHorizontal: 12, paddingBottom: 6 },
   searchRow: { paddingHorizontal: 12, paddingBottom: 8 },
   searchbar: { height: 44, borderRadius: 22, elevation: 0 },

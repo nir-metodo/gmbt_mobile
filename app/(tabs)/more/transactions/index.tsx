@@ -526,7 +526,7 @@ export default function TransactionsScreen() {
           onDismiss={() => setShowCreateModal(false)}
           contentContainerStyle={[styles.detailModal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[{ flexDirection, alignItems: 'center', marginBottom: 16 }]}>
                 <MaterialCommunityIcons name="credit-card-plus-outline" size={22} color={BRAND_COLOR} />

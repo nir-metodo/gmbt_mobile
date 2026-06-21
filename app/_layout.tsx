@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { AppState, AppStateStatus, I18nManager, Linking } from 'react-native';
 import { Slot, router, useSegments, useRootNavigationState } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -8,6 +8,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../stores/authStore';
 import { useSettingsStore } from '../stores/settingsStore';
+import { useChatStore } from '../stores/chatStore';
 import { useAppTheme } from '../hooks/useAppTheme';
 import { secureStorage } from '../services/storage';
 import axiosInstance from '../services/api/axiosInstance';
@@ -124,11 +125,36 @@ export default function RootLayout() {
     return () => sub.remove();
   }, []);
 
-  // Handle notification tap and action buttons
+  // Mirror the in-app unread count onto the OS app-icon badge (the number/dot shown on the
+  // launcher icon). This is the same count that drives the in-app Chats tab badge, so the
+  // icon stays in sync: it appears when there are unread conversations and clears to 0 the
+  // moment they're read. Updates whenever the store's unreadCount changes (chat load, WS
+  // message, mark as read/unread).
+  const unreadCount = useChatStore((s) => s.unreadCount);
   useEffect(() => {
-    const sub = notificationService.addNotificationResponseListener(async (response) => {
+    notificationService.setBadgeCount(unreadCount ?? 0).catch(() => {});
+  }, [unreadCount]);
+
+  // Notification taps that launch the app from a KILLED/background state are delivered via
+  // getLastNotificationResponseAsync() — NOT through the runtime listener below (which only
+  // catches taps while JS is already running). Without handling the cold-start response the
+  // app just opened to its default tab (the chat list), so tapping an "incoming message" push
+  // dropped the user on the list instead of the specific chat. We also guard navigation until
+  // the root navigator is mounted, otherwise an early router.push() is silently dropped.
+  const handledNotifIdsRef = useRef<Set<string>>(new Set());
+  const pendingResponseRef = useRef<Notifications.NotificationResponse | null>(null);
+
+  const handleNotificationResponse = useCallback(async (response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data;
       if (!data?.type) return;
+
+      // Dedupe: a cold-start tap can surface both via getLastNotificationResponseAsync and the
+      // runtime listener. Process each physical notification at most once.
+      const notifId = response.notification.request.identifier;
+      if (notifId) {
+        if (handledNotifIdsRef.current.has(notifId)) return;
+        handledNotifIdsRef.current.add(notifId);
+      }
 
       const actionId = response.actionIdentifier;
 
@@ -200,9 +226,46 @@ export default function RootLayout() {
           }
           break;
       }
+  }, [user?.organization]);
+
+  // Try to navigate for a pending notification response, but only once the root navigator is
+  // mounted. If it isn't ready yet we keep the response in pendingResponseRef and retry when
+  // navigationState becomes available (see effect below).
+  const tryHandlePending = useCallback(() => {
+    const pending = pendingResponseRef.current;
+    if (!pending) return;
+    if (!navigationState?.key) return; // navigator not ready — retry later
+    pendingResponseRef.current = null;
+    handleNotificationResponse(pending);
+  }, [navigationState?.key, handleNotificationResponse]);
+
+  // Runtime listener: taps while the app is already running (foreground/background).
+  useEffect(() => {
+    const sub = notificationService.addNotificationResponseListener((response) => {
+      pendingResponseRef.current = response;
+      tryHandlePending();
     });
     return () => sub.remove();
-  }, [user?.organization]);
+  }, [tryHandlePending]);
+
+  // Cold start: the tap that LAUNCHED the app is only available here, not via the listener.
+  useEffect(() => {
+    let cancelled = false;
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (cancelled || !response) return;
+        pendingResponseRef.current = response;
+        tryHandlePending();
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tryHandlePending]);
+
+  // Flush any pending response once the navigator is ready (and the user is loaded so the
+  // target route's auth gating lets the deep link through instead of bouncing to login).
+  useEffect(() => {
+    tryHandlePending();
+  }, [navigationState?.key, user?.organization, tryHandlePending]);
 
   const isDark =
     themeSetting === 'dark' ||

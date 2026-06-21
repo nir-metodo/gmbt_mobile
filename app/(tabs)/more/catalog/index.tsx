@@ -561,7 +561,7 @@ export default function CatalogScreen() {
           onDismiss={() => { setModalVisible(false); resetForm(); }}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text variant="titleMedium" style={[styles.modalTitle, { color: theme.colors.onSurface, textAlign }]}>
                 {editingItem ? 'עריכת פריט' : 'פריט חדש'}

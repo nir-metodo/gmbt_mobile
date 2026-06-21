@@ -331,13 +331,13 @@ export default function SettingsScreen() {
 
         {/* ────── Device Call Automation (Android only) ────── */}
         {Platform.OS === 'android' && (
-        <><SectionHeader title={t('settings.deviceCallAutomation', 'אוטומציות שיחות מהמכשיר')} isRTL={isRTL} themeColors={theme.colors} />
+        <><SectionHeader title={t('settings.deviceCallAutomation', 'Call2Chat — שיחות מהמכשיר')} isRTL={isRTL} themeColors={theme.colors} />
         <Surface style={[s.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
           <SettingRow
             icon="phone-sync-outline"
             iconColor="#4CAF50"
-            label={t('settings.reportDeviceCallEvents', 'דווח על שיחות מהמכשיר לבוטומיישן')}
-            description={t('settings.reportDeviceCallEventsDesc', 'שיחה נכנסת שלא נענתה / שנענתה והסתיימה במכשיר תפעיל בוטומיישן (שליחת הודעה למתקשר). דורש הרשאת טלפון/יומן שיחות. אנדרואיד בלבד.')}
+            label={t('settings.reportDeviceCallEvents', 'הפעל Call2Chat (דיווח שיחות מהמכשיר)')}
+            description={t('settings.reportDeviceCallEventsDesc', 'מפעיל בוטומיישן משיחות בטלפון האישי שלך: "נכנסת" ברגע הצלצול, "לא נענתה"/"הסתיימה" בסיום השיחה. שונה מפתרון השיחות במספר וירטואלי (Call Flow). דורש הרשאת טלפון/יומן שיחות. אנדרואיד בלבד.')}
             isRTL={isRTL}
             themeColors={theme.colors}
             right={<Switch value={!!settings.reportDeviceCallEventsEnabled} onValueChange={(v) => handleToggle('reportDeviceCallEvents', v)} color={BRAND_COLOR} />}

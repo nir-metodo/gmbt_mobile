@@ -8,6 +8,8 @@ import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../hooks/useAppTheme';
 import { useRTL } from '../hooks/useRTL';
 import { tasksApi } from '../services/api/tasks';
+import { usersApi } from '../services/api/users';
+import type { OrgUser } from '../types';
 
 // Crash-proof date/time formatter. On Android (Hermes) `Date.toLocaleString(locale, { dateStyle, timeStyle })`
 // can throw when full ICU/Intl isn't bundled, which closes the whole app in a release build (no error
@@ -45,8 +47,8 @@ interface Props {
 
 /**
  * Reusable "Add Task" bottom sheet shared by contacts, orders, cases, leads, etc.
- * Defaults: assignee = current user, due = tomorrow 09:00, reminder ON aligned to due date,
- * and the task is auto-linked to the originating entity via `relatedTo`.
+ * Defaults: assignee = current user, due = now (current date & time), reminder ON aligned to due
+ * date, and the task is auto-linked to the originating entity via `relatedTo`.
  */
 export default function AddTaskSheet({
   visible,
@@ -69,26 +71,87 @@ export default function AddTaskSheet({
   const [dueObj, setDueObj] = useState<Date>(new Date());
   const [dueIso, setDueIso] = useState('');
   const [showDuePicker, setShowDuePicker] = useState(false);
-  const [showDueTimePicker, setShowDueTimePicker] = useState(false);
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [reminderObj, setReminderObj] = useState<Date>(new Date());
   const [showReminderPicker, setShowReminderPicker] = useState(false);
-  const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
   const [creating, setCreating] = useState(false);
+
+  // Assignee (responsible user) — defaults to the current user, changeable from a picker.
+  const [assignedToId, setAssignedToId] = useState('');
+  const [assignedToName, setAssignedToName] = useState('');
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
+  const [userPickerExpanded, setUserPickerExpanded] = useState(false);
+
+  // "Additional details" — collapsed by default, mirroring the web TaskForm. Holds the optional
+  // description / task type / category / tags so the default view stays minimal.
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [description, setDescription] = useState('');
+  const [taskType, setTaskType] = useState<string>('general');
+  const [category, setCategory] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
+
+  const TASK_TYPES: Array<{ key: string; he: string; en: string; icon: string }> = [
+    { key: 'phone_call', he: 'שיחת טלפון', en: 'Phone call', icon: '📞' },
+    { key: 'follow_up', he: 'מעקב', en: 'Follow up', icon: '📧' },
+    { key: 'meeting', he: 'פגישה', en: 'Meeting', icon: '🤝' },
+    { key: 'general', he: 'כללי', en: 'General', icon: '📝' },
+  ];
+
+  const addTag = () => {
+    const v = tagInput.trim();
+    if (v && !tags.includes(v)) setTags((prev) => [...prev, v]);
+    setTagInput('');
+  };
+  const removeTag = (tag: string) => setTags((prev) => prev.filter((tg) => tg !== tag));
 
   // Reset sensible defaults each time the sheet opens.
   useEffect(() => {
     if (!visible) return;
+    // Default due date + reminder to "now" (current date & time) so the user only nudges it to the
+    // nearest convenient time instead of dialing back from some arbitrary future default.
     const due = new Date();
-    due.setDate(due.getDate() + 1);
-    due.setHours(9, 0, 0, 0);
     setDueObj(due);
     setDueIso(due.toISOString());
     setReminderObj(new Date(due));
     setReminderEnabled(true);
     setTitle(defaultTitle ?? '');
     setPriority('medium');
-  }, [visible, defaultTitle]);
+    setShowDuePicker(false);
+    setShowReminderPicker(false);
+    setUserPickerExpanded(false);
+    setAssignedToId(user?.uID || user?.userId || '');
+    setAssignedToName(user?.fullname || user?.name || '');
+    // Additional details reset to a clean, collapsed state.
+    setDetailsExpanded(false);
+    setDescription('');
+    setCategory('');
+    setTags([]);
+    setTagInput('');
+    setTaskType(relatedTo?.type === 'contact' || relatedTo?.type === 'lead' ? 'phone_call' : 'general');
+  }, [visible, defaultTitle, user, relatedTo]);
+
+  // Lazily load the org users so the assignee can be switched to a teammate.
+  useEffect(() => {
+    if (!visible || !organization || orgUsers.length > 0) return;
+    usersApi.getAll(organization).then(setOrgUsers).catch(() => {});
+  }, [visible, organization, orgUsers.length]);
+
+  // Keep the reminder aligned with the due date: when the due date moves, shift the reminder by the
+  // same amount so the gap the user chose is preserved (initially the gap is zero, so they match).
+  // Editing the reminder alone leaves a deliberate gap, exactly as the user expects.
+  const applyDueChange = (picked: Date, prevDue: Date) => {
+    if (!picked || isNaN(picked.getTime())) return;
+    const base = prevDue && !isNaN(prevDue.getTime()) ? prevDue : picked;
+    const delta = picked.getTime() - base.getTime();
+    setDueObj(picked);
+    setDueIso(picked.toISOString());
+    setReminderObj((prev) => {
+      const ref = prev && !isNaN(prev.getTime()) ? prev : new Date(picked);
+      const shifted = new Date(ref.getTime() + delta);
+      return isNaN(shifted.getTime()) ? new Date(picked) : shifted;
+    });
+  };
 
   // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inside a React Native <Modal> on Android.
   // The native date/time dialog clashes with the modal host and the chained date→time flow throws
@@ -141,16 +204,20 @@ export default function AddTaskSheet({
         organization,
         {
           title: finalTitle,
-          taskType: relatedTo?.type === 'contact' || relatedTo?.type === 'lead' ? 'phone_call' : 'general',
+          taskType: taskType || (relatedTo?.type === 'contact' || relatedTo?.type === 'lead' ? 'phone_call' : 'general'),
           status: 'open',
           priority,
           dueDate: dueIso || undefined,
-          assignedToId: user?.uID || user?.userId || '',
-          assignedToName: user?.fullname || user?.name || '',
+          assignedToId: assignedToId || user?.uID || user?.userId || '',
+          assignedToName: assignedToName || user?.fullname || user?.name || '',
           reminderEnabled: reminderEnabled || undefined,
           reminderDate: reminderIso,
           reminderDateUTC: reminderIso,
           reminderRecipientType: reminderEnabled ? 'assigned_user' : undefined,
+          // Optional "additional details" — only sent when filled.
+          ...(description.trim() ? { description: description.trim() } : {}),
+          ...(category.trim() ? { category: category.trim() } : {}),
+          ...(tags.length > 0 ? { tags } : {}),
           ...(relatedPhone ? { relatedContactPhone: relatedPhone } : {}),
           ...(relatedTo ? { relatedTo } : {}),
         } as any,
@@ -216,18 +283,65 @@ export default function AddTaskSheet({
               })}
             </View>
 
+            {/* Assignee / responsible user — defaults to the current user, tap to change. */}
+            <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
+              {t('tasks.assignedTo', 'אחראי')}
+            </Text>
+            <Pressable onPress={() => setUserPickerExpanded((v) => !v)}>
+              <View pointerEvents="none">
+                <TextInput
+                  value={assignedToName || t('tasks.unassigned', 'ללא')}
+                  mode="outlined"
+                  editable={false}
+                  style={{ marginBottom: userPickerExpanded ? 4 : 14, textAlign }}
+                  outlineColor={theme.colors.outline}
+                  activeOutlineColor={theme.colors.primary}
+                  left={<TextInput.Icon icon="account" />}
+                  right={<TextInput.Icon icon={userPickerExpanded ? 'chevron-up' : 'chevron-down'} />}
+                />
+              </View>
+            </Pressable>
+            {userPickerExpanded && (
+              <View style={[styles.userList, { borderColor: theme.colors.outline, backgroundColor: theme.colors.surfaceVariant }]}>
+                {orgUsers.length === 0 ? (
+                  <Text style={{ color: theme.colors.onSurfaceVariant, padding: 12, textAlign }}>
+                    {t('common.loading', 'טוען...')}
+                  </Text>
+                ) : (
+                  orgUsers.map((u) => {
+                    const id = u.uID || u.userId || '';
+                    const name = u.fullname || u.name || u.userName || u.email || id;
+                    const active = id === assignedToId;
+                    return (
+                      <Pressable
+                        key={id}
+                        onPress={() => {
+                          setAssignedToId(id);
+                          setAssignedToName(name);
+                          setUserPickerExpanded(false);
+                        }}
+                        style={[styles.userRow, { flexDirection }, active ? { backgroundColor: `${theme.colors.primary}1A` } : null]}
+                      >
+                        <Text style={{ color: active ? theme.colors.primary : theme.colors.onSurface, fontWeight: active ? '700' : '500' }}>
+                          {name}
+                        </Text>
+                        {active && <MaterialCommunityIcons name="check" size={18} color={theme.colors.primary} />}
+                      </Pressable>
+                    );
+                  })
+                )}
+              </View>
+            )}
+
             <Pressable
               onPress={() => {
                 const d = dueIso ? new Date(dueIso) : new Date();
                 const base = !isNaN(d.getTime()) ? d : new Date();
-                setDueObj(base);
                 if (Platform.OS === 'android') {
-                  pickDateTimeAndroid(base, (picked) => {
-                    setDueObj(picked);
-                    setDueIso(picked.toISOString());
-                  });
+                  pickDateTimeAndroid(base, (picked) => applyDueChange(picked, base));
                 } else {
-                  setShowDuePicker(true);
+                  setShowReminderPicker(false);
+                  setShowDuePicker((v) => !v);
                 }
               }}
             >
@@ -238,7 +352,7 @@ export default function AddTaskSheet({
                   mode="outlined"
                   editable={false}
                   placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
-                  style={{ marginBottom: 14, textAlign }}
+                  style={{ marginBottom: Platform.OS === 'ios' && showDuePicker ? 0 : 14, textAlign }}
                   outlineColor={theme.colors.outline}
                   activeOutlineColor={theme.colors.primary}
                   right={<TextInput.Icon icon="calendar" />}
@@ -247,36 +361,21 @@ export default function AddTaskSheet({
             </Pressable>
 
             {Platform.OS === 'ios' && showDuePicker && (
-              <DateTimePicker
-                value={dueObj}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={(_: DateTimePickerEvent, d?: Date) => {
-                  setShowDuePicker(false);
-                  if (d) {
-                    const merged = new Date(dueObj);
-                    merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                    setDueObj(merged);
-                    setShowDueTimePicker(true);
-                  }
-                }}
-              />
-            )}
-            {Platform.OS === 'ios' && showDueTimePicker && (
-              <DateTimePicker
-                value={dueObj}
-                mode="time"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={(_: DateTimePickerEvent, d?: Date) => {
-                  setShowDueTimePicker(false);
-                  if (d) {
-                    const merged = new Date(dueObj);
-                    merged.setHours(d.getHours(), d.getMinutes());
-                    setDueObj(merged);
-                    setDueIso(merged.toISOString());
-                  }
-                }}
-              />
+              <View style={[styles.iosPickerWrap, { borderColor: theme.colors.outline }]}>
+                <DateTimePicker
+                  value={dueObj}
+                  mode="datetime"
+                  display="spinner"
+                  themeVariant={theme.dark ? 'dark' : 'light'}
+                  style={{ alignSelf: 'stretch' }}
+                  onChange={(_: DateTimePickerEvent, d?: Date) => {
+                    if (d) applyDueChange(d, dueObj);
+                  }}
+                />
+                <Button mode="contained-tonal" compact onPress={() => setShowDuePicker(false)} style={{ alignSelf: 'center', marginTop: 4 }}>
+                  {t('common.done', 'סיום')}
+                </Button>
+              </View>
             )}
 
             <View style={[styles.reminderRow, { flexDirection }]}>
@@ -300,10 +399,12 @@ export default function AddTaskSheet({
             {reminderEnabled && (
               <>
                 <Pressable onPress={() => {
+                  const base = reminderObj && !isNaN(reminderObj.getTime()) ? reminderObj : new Date();
                   if (Platform.OS === 'android') {
-                    pickDateTimeAndroid(reminderObj, (picked) => setReminderObj(picked));
+                    pickDateTimeAndroid(base, (picked) => setReminderObj(picked));
                   } else {
-                    setShowReminderPicker(true);
+                    setShowDuePicker(false);
+                    setShowReminderPicker((v) => !v);
                   }
                 }}>
                   <View pointerEvents="none">
@@ -312,7 +413,7 @@ export default function AddTaskSheet({
                       value={formatDateTimeSafe(reminderObj, lang)}
                       mode="outlined"
                       editable={false}
-                      style={{ marginBottom: 14, textAlign }}
+                      style={{ marginBottom: Platform.OS === 'ios' && showReminderPicker ? 0 : 14, textAlign }}
                       outlineColor={theme.colors.outline}
                       activeOutlineColor={theme.colors.primary}
                       right={<TextInput.Icon icon="bell-ring-outline" />}
@@ -320,37 +421,126 @@ export default function AddTaskSheet({
                   </View>
                 </Pressable>
                 {Platform.OS === 'ios' && showReminderPicker && (
-                  <DateTimePicker
-                    value={reminderObj}
-                    mode="date"
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    onChange={(_: DateTimePickerEvent, d?: Date) => {
-                      setShowReminderPicker(false);
-                      if (d) {
-                        const merged = new Date(reminderObj);
-                        merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                        setReminderObj(merged);
-                        setShowReminderTimePicker(true);
-                      }
-                    }}
-                  />
-                )}
-                {Platform.OS === 'ios' && showReminderTimePicker && (
-                  <DateTimePicker
-                    value={reminderObj}
-                    mode="time"
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    onChange={(_: DateTimePickerEvent, d?: Date) => {
-                      setShowReminderTimePicker(false);
-                      if (d) {
-                        const merged = new Date(reminderObj);
-                        merged.setHours(d.getHours(), d.getMinutes());
-                        setReminderObj(merged);
-                      }
-                    }}
-                  />
+                  <View style={[styles.iosPickerWrap, { borderColor: theme.colors.outline }]}>
+                    <DateTimePicker
+                      value={reminderObj}
+                      mode="datetime"
+                      display="spinner"
+                      themeVariant={theme.dark ? 'dark' : 'light'}
+                      style={{ alignSelf: 'stretch' }}
+                      onChange={(_: DateTimePickerEvent, d?: Date) => {
+                        if (d) setReminderObj(d);
+                      }}
+                    />
+                    <Button mode="contained-tonal" compact onPress={() => setShowReminderPicker(false)} style={{ alignSelf: 'center', marginTop: 4 }}>
+                      {t('common.done', 'סיום')}
+                    </Button>
+                  </View>
                 )}
               </>
+            )}
+
+            {/* Additional details — collapsed by default (mirrors the web TaskForm). */}
+            <Pressable
+              onPress={() => setDetailsExpanded((v) => !v)}
+              style={[styles.detailsToggle, { flexDirection }]}
+            >
+              <MaterialCommunityIcons
+                name={detailsExpanded ? 'chevron-down' : (isRTL ? 'chevron-left' : 'chevron-right')}
+                size={20}
+                color={theme.colors.primary}
+              />
+              <Text style={{ color: theme.colors.primary, fontWeight: '700' }}>
+                {isRTL ? 'פרטים נוספים' : 'Additional details'}
+              </Text>
+            </Pressable>
+
+            {detailsExpanded && (
+              <View style={{ marginTop: 4 }}>
+                {/* Description */}
+                <TextInput
+                  label={isRTL ? 'תיאור' : 'Description'}
+                  value={description}
+                  onChangeText={setDescription}
+                  mode="outlined"
+                  multiline
+                  numberOfLines={3}
+                  style={{ marginBottom: 14, textAlign }}
+                  outlineColor={theme.colors.outline}
+                  activeOutlineColor={theme.colors.primary}
+                />
+
+                {/* Task type */}
+                <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
+                  {isRTL ? 'סוג משימה' : 'Task type'}
+                </Text>
+                <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
+                  {TASK_TYPES.map((tt) => {
+                    const active = taskType === tt.key;
+                    return (
+                      <Chip
+                        key={tt.key}
+                        selected={active}
+                        onPress={() => setTaskType(tt.key)}
+                        compact
+                        style={[
+                          styles.chip,
+                          active
+                            ? { backgroundColor: `${theme.colors.primary}20`, borderColor: theme.colors.primary, borderWidth: 1.5 }
+                            : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
+                        ]}
+                        textStyle={[{ fontSize: 12 }, active ? { color: theme.colors.primary, fontWeight: '700' } : null]}
+                      >
+                        {`${tt.icon} ${isRTL ? tt.he : tt.en}`}
+                      </Chip>
+                    );
+                  })}
+                </View>
+
+                {/* Category */}
+                <TextInput
+                  label={isRTL ? 'קטגוריה' : 'Category'}
+                  value={category}
+                  onChangeText={setCategory}
+                  mode="outlined"
+                  style={{ marginBottom: 14, textAlign }}
+                  outlineColor={theme.colors.outline}
+                  activeOutlineColor={theme.colors.primary}
+                />
+
+                {/* Tags */}
+                <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
+                  {isRTL ? 'תיוגים' : 'Tags'}
+                </Text>
+                <TextInput
+                  value={tagInput}
+                  onChangeText={setTagInput}
+                  onSubmitEditing={addTag}
+                  blurOnSubmit={false}
+                  returnKeyType="done"
+                  mode="outlined"
+                  placeholder={isRTL ? 'הקלד תיוג והוסף...' : 'Type a tag and add...'}
+                  style={{ marginBottom: tags.length > 0 ? 8 : 14, textAlign }}
+                  outlineColor={theme.colors.outline}
+                  activeOutlineColor={theme.colors.primary}
+                  right={<TextInput.Icon icon="plus" onPress={addTag} />}
+                />
+                {tags.length > 0 && (
+                  <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
+                    {tags.map((tag) => (
+                      <Chip
+                        key={tag}
+                        compact
+                        onClose={() => removeTag(tag)}
+                        style={[styles.chip, { backgroundColor: theme.colors.surfaceVariant }]}
+                        textStyle={{ fontSize: 12 }}
+                      >
+                        {tag}
+                      </Chip>
+                    ))}
+                  </View>
+                )}
+              </View>
             )}
           </ScrollView>
 
@@ -375,4 +565,8 @@ const styles = StyleSheet.create({
   chip: { borderRadius: 18 },
   reminderRow: { alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
   actions: { gap: 12, marginTop: 12 },
+  userList: { borderWidth: 1, borderRadius: 10, marginBottom: 14, overflow: 'hidden' },
+  userRow: { alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 14 },
+  iosPickerWrap: { borderWidth: 1, borderRadius: 12, padding: 8, marginBottom: 14, alignItems: 'stretch' },
+  detailsToggle: { alignItems: 'center', gap: 6, paddingVertical: 10, marginBottom: 2 },
 });

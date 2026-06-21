@@ -24,7 +24,6 @@ import {
   Surface,
   Switch,
 } from 'react-native-paper';
-import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,11 +31,11 @@ import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { placeSmartCall } from '../../../utils/phoneCall';
-import { tasksApi } from '../../../services/api/tasks';
 import { contactsApi } from '../../../services/api/contacts';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
 import { usersApi } from '../../../services/api/users';
+import { tasksApi } from '../../../services/api/tasks';
 import { leadsApi } from '../../../services/api/leads';
 import { quotesApi } from '../../../services/api/quotes';
 import { paymentsApi } from '../../../services/api/payments';
@@ -51,6 +50,7 @@ import {
 } from '../../../utils/formatters';
 import { spacing, borderRadius } from '../../../constants/theme';
 import ContactLookup from '../../../components/ContactLookup';
+import AddTaskSheet from '../../../components/AddTaskSheet';
 import {
   DynamicFieldsSectionView,
   DynamicFieldsSectionForm,
@@ -182,17 +182,6 @@ export default function LeadDetailScreen() {
   const [editVisible, setEditVisible] = useState(isNew);
   const [saving, setSaving] = useState(false);
   const [addTaskVisible, setAddTaskVisible] = useState(false);
-  const [taskTitle, setTaskTitle] = useState('');
-  const [taskDueDate, setTaskDueDate] = useState('');
-  const [taskPriority, setTaskPriority] = useState<'low' | 'medium' | 'high'>('medium');
-  const [taskDueObj, setTaskDueObj] = useState<Date>(new Date());
-  const [showTaskDuePicker, setShowTaskDuePicker] = useState(false);
-  const [showTaskDueTimePicker, setShowTaskDueTimePicker] = useState(false);
-  const [taskReminderEnabled, setTaskReminderEnabled] = useState(false);
-  const [taskReminderObj, setTaskReminderObj] = useState<Date>(new Date());
-  const [showTaskReminderPicker, setShowTaskReminderPicker] = useState(false);
-  const [showTaskReminderTimePicker, setShowTaskReminderTimePicker] = useState(false);
-  const [creatingTask, setCreatingTask] = useState(false);
   const [contactLookupVisible, setContactLookupVisible] = useState(false);
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
   const [orgUsersLoading, setOrgUsersLoading] = useState(false);
@@ -476,120 +465,32 @@ export default function LeadDetailScreen() {
     ]);
   }, [organization, lead, deleteLead, t, router]);
 
-  // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inside a React Native <Modal> on Android.
-  // The native date/time dialog clashes with the modal host and the chained date→time flow throws
-  // "IllegalStateException: Fragment already added", which closes the whole app. On Android we open
-  // the pickers imperatively (date, then time) so nothing is mounted inside the modal. iOS keeps the
-  // inline spinner via the show* flags below.
-  const pickDateTimeAndroid = useCallback((current: Date, onPicked: (d: Date) => void) => {
-    const base = current && !isNaN(current.getTime()) ? new Date(current) : new Date();
-    try {
-      DateTimePickerAndroid.open({
-        value: base,
-        mode: 'date',
-        onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
-          if (e.type !== 'set' || !dateVal) return;
-          const merged = new Date(base);
-          merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
-          // Defer opening the time picker to the next tick. Opening it synchronously inside the date
-          // picker's onChange can throw "IllegalStateException: Fragment already added" on some Android
-          // versions before the date dialog has finished dismissing — which crashes the whole app.
-          setTimeout(() => {
-            try {
-              DateTimePickerAndroid.open({
-                value: merged,
-                mode: 'time',
-                is24Hour: true,
-                onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
-                  if (e2.type !== 'set' || !timeVal) return;
-                  merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
-                  onPicked(merged);
-                },
-              });
-            } catch {
-              // If the time dialog can't open, at least keep the chosen date.
-              onPicked(merged);
-            }
-          }, 150);
-        },
-      });
-    } catch {
-      // Picker unavailable — fail silently rather than crash.
-    }
+  // Task creation is handled by the shared lightweight AddTaskSheet (same as contacts/cases/orders):
+  // one-tap open, sensible defaults (due tomorrow 09:00, reminder ON), no required fields.
+  const openAddTask = useCallback(() => {
+    setAddTaskVisible(true);
   }, []);
 
-  // Open the Add Task modal pre-filled with sensible defaults:
-  // a due date (tomorrow 09:00), a reminder aligned to that due date, and a default title.
-  const openAddTask = useCallback(() => {
-    const due = new Date();
-    due.setDate(due.getDate() + 1);
-    due.setHours(9, 0, 0, 0);
-    setTaskDueObj(due);
-    setTaskDueDate(due.toISOString());
-    setTaskReminderObj(new Date(due));
-    setTaskReminderEnabled(true);
-    const defaultTitle = lead?.contactName
-      ? `${t('contacts.phoneCall')} - ${lead.contactName}`
-      : (lead?.title || t('contacts.phoneCall'));
-    setTaskTitle(defaultTitle);
-    setTaskPriority('medium');
-    setAddTaskVisible(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lead, t]);
-
-  const handleAddTask = useCallback(async () => {
-    if (!organization || !lead) return;
-    const defaultTitle = lead.contactName
-      ? `${t('contacts.phoneCall')} - ${lead.contactName}`
-      : (lead.title || t('contacts.phoneCall'));
-    const title = taskTitle.trim() || defaultTitle;
-    // Reminder defaults to the due date when enabled but not explicitly set.
-    const dueIso = taskDueDate.trim() || undefined;
-    const reminderIso = taskReminderEnabled
-      ? (taskReminderObj?.toISOString() || dueIso || new Date().toISOString())
-      : null;
-    setCreatingTask(true);
-    try {
-      await tasksApi.create(
-        organization,
-        {
-          title,
-          taskType: 'phone_call',
-          status: 'open',
-          priority: taskPriority,
-          dueDate: dueIso,
-          assignedToId: user?.uID || user?.userId || '',
-          assignedToName: user?.fullname || (user as any)?.name || '',
-          reminderEnabled: taskReminderEnabled || undefined,
-          reminderDate: reminderIso,
-          reminderDateUTC: reminderIso,
-          reminderRecipientType: taskReminderEnabled ? 'assigned_user' : undefined,
-          relatedTo: {
-            type: 'lead',
-            entityId: lead.id,
-            entityName: lead.title ?? '',
-          },
-        } as any,
-        user?.uID || user?.userId || '',
-        user?.fullname || '',
-      );
-      setAddTaskVisible(false);
-      setTaskTitle('');
-      setTaskDueDate('');
-      setTaskPriority('medium');
-      setTaskReminderEnabled(false);
-      fetchLeadTimeline().catch(() => {});
-      Alert.alert(t('tasks.taskCreated', 'המשימה נוצרה'));
-    } catch {
-      Alert.alert(t('common.error'));
-    } finally {
-      setCreatingTask(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization, lead, taskTitle, taskDueDate, taskPriority, taskReminderEnabled, taskReminderObj, user, t]);
+  // Open a task (from the timeline) in the full task detail screen, where it can be edited/completed.
+  const openTaskFromTimeline = useCallback((taskId: string) => {
+    if (!taskId) return;
+    router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any);
+  }, [router]);
 
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+
+  // Mark a task complete straight from the timeline, then refresh so the row reflects it.
+  const completeTaskFromTimeline = useCallback(async (taskId: string) => {
+    if (!taskId || !organization) return;
+    try {
+      await tasksApi.complete(organization, taskId, user?.uID || user?.userId || '', user?.fullname || user?.name || 'Gambot');
+      await fetchLeadTimeline();
+    } catch {
+      Alert.alert(t('common.error'));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organization, user]);
 
   const fetchLeadTimeline = useCallback(async () => {
     if (!organization || !lead?.id) return;
@@ -1160,7 +1061,7 @@ export default function LeadDetailScreen() {
             >
               {t('contacts.timeline')}
             </Text>
-            <TimelineSection theme={theme} t={t} lang={lang} isRTL={isRTL} flexDirection={flexDirection} events={timelineEvents} loading={timelineLoading} />
+            <TimelineSection theme={theme} t={t} lang={lang} isRTL={isRTL} flexDirection={flexDirection} events={timelineEvents} loading={timelineLoading} onOpenTask={openTaskFromTimeline} onCompleteTask={completeTaskFromTimeline} />
           </Surface>
         ) : null}
 
@@ -1380,6 +1281,101 @@ export default function LeadDetailScreen() {
                 })}
               </ScrollView>
               </View>
+
+              {/* ── Product Catalog Section ── */}
+              {catalogEnabled && catalogItems.length > 0 && (
+                <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                  <View style={[styles.formSectionHeader, { flexDirection }]}>
+                    <View style={styles.formSectionAccent} />
+                    <MaterialCommunityIcons name="cart-outline" size={18} color="#2e6155" />
+                    <Text variant="titleSmall" style={styles.formSectionTitle}>
+                      {lang === 'he' ? 'מוצרים/שירותים' : 'Products of Interest'}
+                    </Text>
+                  </View>
+                  {catalogItems.length > 6 && (
+                    <TextInput
+                      placeholder={lang === 'he' ? 'חיפוש מוצר...' : 'Search product...'}
+                      placeholderTextColor={theme.colors.onSurfaceVariant}
+                      value={catalogSearch}
+                      onChangeText={setCatalogSearch}
+                      style={[styles.catalogSearchInput, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign }]}
+                    />
+                  )}
+                  <View style={styles.catalogGrid}>
+                    {catalogItems
+                      .filter((item: any) => {
+                        if (!catalogSearch.trim()) return true;
+                        const q = catalogSearch.trim().toLowerCase();
+                        return (item.name || '').toLowerCase().includes(q) || (item.category || '').toLowerCase().includes(q);
+                      })
+                      .map((item: any) => {
+                        const products = (form.interestedProducts || []) as any[];
+                        const existing = products.find((p: any) => p.productId === item.id);
+                        return (
+                          <Pressable
+                            key={item.id}
+                            onPress={() => {
+                              if (existing) {
+                                const updated = products.filter((p: any) => p.productId !== item.id);
+                                setForm((prev) => ({ ...prev, interestedProducts: updated }));
+                              } else {
+                                const updated = [...products, { productId: item.id, name: item.name, unitPrice: item.unitPrice, sku: item.sku, category: item.category, quantity: 1 }];
+                                setForm((prev) => ({ ...prev, interestedProducts: updated }));
+                              }
+                            }}
+                            style={[
+                              styles.catalogCard,
+                              {
+                                backgroundColor: existing ? (theme.dark ? '#1e3a2a' : '#d1fae5') : (theme.dark ? 'rgba(255,255,255,0.04)' : '#f9fafb'),
+                                borderColor: existing ? '#2e6155' : (theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb'),
+                              },
+                            ]}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <View style={[styles.catalogCheck, { backgroundColor: existing ? '#2e6155' : 'transparent', borderColor: existing ? '#2e6155' : theme.colors.outline }]}>
+                                {existing && <MaterialCommunityIcons name="check" size={14} color="#fff" />}
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 14, fontWeight: '600', color: theme.colors.onSurface }} numberOfLines={1}>{item.name}</Text>
+                                {item.description ? <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, marginTop: 1 }} numberOfLines={1}>{item.description}</Text> : null}
+                              </View>
+                              <Text style={{ fontSize: 13, fontWeight: '600', color: '#2e6155' }}>
+                                ₪{Number(item.unitPrice || 0).toLocaleString()}
+                              </Text>
+                            </View>
+                            {existing && (
+                              <View style={[styles.catalogQtyRow, { flexDirection }]}>
+                                <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant }}>{lang === 'he' ? 'כמות:' : 'Qty:'}</Text>
+                                <View style={styles.catalogQtyControls}>
+                                  <Pressable
+                                    onPress={() => setForm((prev) => ({ ...prev, interestedProducts: products.map((p: any) => p.productId === item.id ? { ...p, quantity: Math.max(1, (p.quantity || 1) - 1) } : p) }))}
+                                    style={[styles.catalogQtyBtn, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb' }]}
+                                  >
+                                    <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.onSurface }}>−</Text>
+                                  </Pressable>
+                                  <Text style={{ fontSize: 14, fontWeight: '600', color: theme.colors.onSurface, minWidth: 24, textAlign: 'center' }}>{existing.quantity || 1}</Text>
+                                  <Pressable
+                                    onPress={() => setForm((prev) => ({ ...prev, interestedProducts: products.map((p: any) => p.productId === item.id ? { ...p, quantity: (p.quantity || 1) + 1 } : p) }))}
+                                    style={[styles.catalogQtyBtn, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb' }]}
+                                  >
+                                    <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.onSurface }}>+</Text>
+                                  </Pressable>
+                                </View>
+                              </View>
+                            )}
+                          </Pressable>
+                        );
+                      })}
+                  </View>
+                  {(form.interestedProducts || []).length > 0 && (
+                    <View style={[styles.catalogSummary, { backgroundColor: theme.dark ? 'rgba(46,97,85,0.15)' : '#ecfdf5' }]}>
+                      <Text style={{ fontSize: 13, color: '#2e6155', fontWeight: '600' }}>
+                        {lang === 'he' ? 'נבחרו' : 'Selected'}: {(form.interestedProducts || []).length} {lang === 'he' ? 'פריטים' : 'items'} | {lang === 'he' ? 'שווי' : 'Value'}: ₪{(form.interestedProducts || []).reduce((s: number, p: any) => s + (p.unitPrice || 0) * (p.quantity || 1), 0).toLocaleString()}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
 
               {/* ── Source & Channel Section ── */}
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
@@ -1668,101 +1664,6 @@ export default function LeadDetailScreen() {
               />
               </View>
 
-              {/* ── Product Catalog Section ── */}
-              {catalogEnabled && catalogItems.length > 0 && (
-                <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
-                  <View style={[styles.formSectionHeader, { flexDirection }]}>
-                    <View style={styles.formSectionAccent} />
-                    <MaterialCommunityIcons name="cart-outline" size={18} color="#2e6155" />
-                    <Text variant="titleSmall" style={styles.formSectionTitle}>
-                      {lang === 'he' ? 'מוצרים/שירותים' : 'Products of Interest'}
-                    </Text>
-                  </View>
-                  {catalogItems.length > 6 && (
-                    <TextInput
-                      placeholder={lang === 'he' ? 'חיפוש מוצר...' : 'Search product...'}
-                      placeholderTextColor={theme.colors.onSurfaceVariant}
-                      value={catalogSearch}
-                      onChangeText={setCatalogSearch}
-                      style={[styles.catalogSearchInput, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign }]}
-                    />
-                  )}
-                  <View style={styles.catalogGrid}>
-                    {catalogItems
-                      .filter((item: any) => {
-                        if (!catalogSearch.trim()) return true;
-                        const q = catalogSearch.trim().toLowerCase();
-                        return (item.name || '').toLowerCase().includes(q) || (item.category || '').toLowerCase().includes(q);
-                      })
-                      .map((item: any) => {
-                        const products = (form.interestedProducts || []) as any[];
-                        const existing = products.find((p: any) => p.productId === item.id);
-                        return (
-                          <Pressable
-                            key={item.id}
-                            onPress={() => {
-                              if (existing) {
-                                const updated = products.filter((p: any) => p.productId !== item.id);
-                                setForm((prev) => ({ ...prev, interestedProducts: updated }));
-                              } else {
-                                const updated = [...products, { productId: item.id, name: item.name, unitPrice: item.unitPrice, sku: item.sku, category: item.category, quantity: 1 }];
-                                setForm((prev) => ({ ...prev, interestedProducts: updated }));
-                              }
-                            }}
-                            style={[
-                              styles.catalogCard,
-                              {
-                                backgroundColor: existing ? (theme.dark ? '#1e3a2a' : '#d1fae5') : (theme.dark ? 'rgba(255,255,255,0.04)' : '#f9fafb'),
-                                borderColor: existing ? '#2e6155' : (theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb'),
-                              },
-                            ]}
-                          >
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                              <View style={[styles.catalogCheck, { backgroundColor: existing ? '#2e6155' : 'transparent', borderColor: existing ? '#2e6155' : theme.colors.outline }]}>
-                                {existing && <MaterialCommunityIcons name="check" size={14} color="#fff" />}
-                              </View>
-                              <View style={{ flex: 1 }}>
-                                <Text style={{ fontSize: 14, fontWeight: '600', color: theme.colors.onSurface }} numberOfLines={1}>{item.name}</Text>
-                                {item.description ? <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, marginTop: 1 }} numberOfLines={1}>{item.description}</Text> : null}
-                              </View>
-                              <Text style={{ fontSize: 13, fontWeight: '600', color: '#2e6155' }}>
-                                ₪{Number(item.unitPrice || 0).toLocaleString()}
-                              </Text>
-                            </View>
-                            {existing && (
-                              <View style={[styles.catalogQtyRow, { flexDirection }]}>
-                                <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant }}>{lang === 'he' ? 'כמות:' : 'Qty:'}</Text>
-                                <View style={styles.catalogQtyControls}>
-                                  <Pressable
-                                    onPress={() => setForm((prev) => ({ ...prev, interestedProducts: products.map((p: any) => p.productId === item.id ? { ...p, quantity: Math.max(1, (p.quantity || 1) - 1) } : p) }))}
-                                    style={[styles.catalogQtyBtn, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb' }]}
-                                  >
-                                    <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.onSurface }}>−</Text>
-                                  </Pressable>
-                                  <Text style={{ fontSize: 14, fontWeight: '600', color: theme.colors.onSurface, minWidth: 24, textAlign: 'center' }}>{existing.quantity || 1}</Text>
-                                  <Pressable
-                                    onPress={() => setForm((prev) => ({ ...prev, interestedProducts: products.map((p: any) => p.productId === item.id ? { ...p, quantity: (p.quantity || 1) + 1 } : p) }))}
-                                    style={[styles.catalogQtyBtn, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.1)' : '#e5e7eb' }]}
-                                  >
-                                    <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.onSurface }}>+</Text>
-                                  </Pressable>
-                                </View>
-                              </View>
-                            )}
-                          </Pressable>
-                        );
-                      })}
-                  </View>
-                  {(form.interestedProducts || []).length > 0 && (
-                    <View style={[styles.catalogSummary, { backgroundColor: theme.dark ? 'rgba(46,97,85,0.15)' : '#ecfdf5' }]}>
-                      <Text style={{ fontSize: 13, color: '#2e6155', fontWeight: '600' }}>
-                        {lang === 'he' ? 'נבחרו' : 'Selected'}: {(form.interestedProducts || []).length} {lang === 'he' ? 'פריטים' : 'items'} | {lang === 'he' ? 'שווי' : 'Value'}: ₪{(form.interestedProducts || []).reduce((s: number, p: any) => s + (p.unitPrice || 0) * (p.quantity || 1), 0).toLocaleString()}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              )}
-
               {/* ── Custom Fields Section ── */}
               {leadFormSections.length > 0 && (
                 <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
@@ -1910,233 +1811,21 @@ export default function LeadDetailScreen() {
           />
       </Modal>
 
-      {/* Add Task modal */}
-      <Modal
+      {/* Add Task — shared lightweight sheet (one-tap, sensible defaults, no required fields) */}
+      <AddTaskSheet
         visible={addTaskVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setAddTaskVisible(false)}
-      >
-          <Pressable
-            style={styles.stagePickerOverlay}
-            onPress={() => setAddTaskVisible(false)}
-          >
-            <Pressable
-              onPress={(e) => e.stopPropagation()}
-              style={[
-                styles.stagePickerSheet,
-                { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 },
-              ]}
-            >
-              <Text
-                variant="titleMedium"
-                style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}
-              >
-                {t('tasks.addTask')} ({t('contacts.phoneCall')})
-              </Text>
-              <ScrollView style={{ maxHeight: 440 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <FormField
-                label={t('tasks.taskTitle')}
-                value={taskTitle}
-                onChangeText={setTaskTitle}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-                placeholder={lead?.contactName ? `${t('contacts.phoneCall')} - ${lead.contactName}` : undefined}
-              />
-              <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginTop: 4, marginBottom: 6 }}>
-                {t('tasks.priority')}
-              </Text>
-              <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
-                {(['low', 'medium', 'high'] as const).map((p) => {
-                  const pc = p === 'high' ? '#EF4444' : p === 'medium' ? '#F59E0B' : '#10B981';
-                  const active = taskPriority === p;
-                  return (
-                    <Chip
-                      key={p}
-                      selected={active}
-                      onPress={() => setTaskPriority(p)}
-                      compact
-                      style={[
-                        styles.formChip,
-                        active
-                          ? { backgroundColor: `${pc}20`, borderColor: pc, borderWidth: 1.5 }
-                          : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
-                      ]}
-                      textStyle={[{ fontSize: 12 }, active && { color: pc, fontWeight: '700' }]}
-                    >
-                      {t(`tasks.${p}`)}
-                    </Chip>
-                  );
-                })}
-              </View>
-
-              <Pressable onPress={() => {
-                const d = taskDueDate ? new Date(taskDueDate) : new Date();
-                const base = !isNaN(d.getTime()) ? d : new Date();
-                setTaskDueObj(base);
-                if (Platform.OS === 'android') {
-                  pickDateTimeAndroid(base, (picked) => {
-                    setTaskDueObj(picked);
-                    setTaskDueDate(picked.toISOString());
-                  });
-                } else {
-                  setShowTaskDuePicker(true);
-                }
-              }}>
-                <View pointerEvents="none">
-                  <TextInput
-                    label={t('tasks.dueDate')}
-                    value={taskDueDate ? formatDateTimeSafe(taskDueDate, lang) : ''}
-                    mode="outlined"
-                    editable={false}
-                    placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
-                    style={{ marginBottom: 14, textAlign }}
-                    outlineColor={theme.colors.outline}
-                    activeOutlineColor={theme.colors.primary}
-                    right={<TextInput.Icon icon="calendar" />}
-                  />
-                </View>
-              </Pressable>
-
-              {Platform.OS === 'ios' && showTaskDuePicker && (
-                <DateTimePicker
-                  value={taskDueObj}
-                  mode="date"
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                  onChange={(_: DateTimePickerEvent, d?: Date) => {
-                    setShowTaskDuePicker(false);
-                    if (d) {
-                      const merged = new Date(taskDueObj);
-                      merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                      setTaskDueObj(merged);
-                      setShowTaskDueTimePicker(true);
-                    }
-                  }}
-                />
-              )}
-              {Platform.OS === 'ios' && showTaskDueTimePicker && (
-                <DateTimePicker
-                  value={taskDueObj}
-                  mode="time"
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                  onChange={(_: DateTimePickerEvent, d?: Date) => {
-                    setShowTaskDueTimePicker(false);
-                    if (d) {
-                      const merged = new Date(taskDueObj);
-                      merged.setHours(d.getHours(), d.getMinutes());
-                      setTaskDueObj(merged);
-                      setTaskDueDate(merged.toISOString());
-                    }
-                  }}
-                />
-              )}
-
-              <View style={[styles.reminderRow, { flexDirection }]}>
-                <View style={[{ alignItems: 'center', gap: 8, flexDirection }]}>
-                  <MaterialCommunityIcons name="bell-outline" size={20} color={theme.colors.primary} />
-                  <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                    {t('tasks.reminder', 'תזכורת')}
-                  </Text>
-                </View>
-                <Switch
-                  value={taskReminderEnabled}
-                  onValueChange={(val) => {
-                    setTaskReminderEnabled(val);
-                    if (val && taskDueDate) {
-                      const d = new Date(taskDueDate);
-                      if (!isNaN(d.getTime())) setTaskReminderObj(d);
-                    }
-                  }}
-                  color={theme.colors.primary}
-                />
-              </View>
-
-              {taskReminderEnabled && (
-                <>
-                  <Pressable onPress={() => {
-                    if (Platform.OS === 'android') {
-                      pickDateTimeAndroid(taskReminderObj, (picked) => setTaskReminderObj(picked));
-                    } else {
-                      setShowTaskReminderPicker(true);
-                    }
-                  }}>
-                    <View pointerEvents="none">
-                      <TextInput
-                        label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
-                        value={formatDateTimeSafe(taskReminderObj, lang)}
-                        mode="outlined"
-                        editable={false}
-                        style={{ marginBottom: 14, textAlign }}
-                        outlineColor={theme.colors.outline}
-                        activeOutlineColor={theme.colors.primary}
-                        right={<TextInput.Icon icon="bell-ring-outline" />}
-                      />
-                    </View>
-                  </Pressable>
-                  {Platform.OS === 'ios' && showTaskReminderPicker && (
-                    <DateTimePicker
-                      value={taskReminderObj}
-                      mode="date"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(_: DateTimePickerEvent, d?: Date) => {
-                        setShowTaskReminderPicker(false);
-                        if (d) {
-                          const merged = new Date(taskReminderObj);
-                          merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                          setTaskReminderObj(merged);
-                          setShowTaskReminderTimePicker(true);
-                        }
-                      }}
-                    />
-                  )}
-                  {Platform.OS === 'ios' && showTaskReminderTimePicker && (
-                    <DateTimePicker
-                      value={taskReminderObj}
-                      mode="time"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(_: DateTimePickerEvent, d?: Date) => {
-                        setShowTaskReminderTimePicker(false);
-                        if (d) {
-                          const merged = new Date(taskReminderObj);
-                          merged.setHours(d.getHours(), d.getMinutes());
-                          setTaskReminderObj(merged);
-                        }
-                      }}
-                    />
-                  )}
-                </>
-              )}
-              </ScrollView>
-              <View style={[styles.modalActions, { flexDirection }]}>
-                <Button
-                  mode="outlined"
-                  onPress={() => {
-                    setAddTaskVisible(false);
-                    setTaskTitle('');
-                    setTaskDueDate('');
-                    setTaskPriority('medium');
-                    setTaskReminderEnabled(false);
-                  }}
-                  style={styles.addTaskModalBtn}
-                  textColor={theme.colors.onSurface}
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={handleAddTask}
-                  loading={creatingTask}
-                  disabled={creatingTask}
-                  style={[styles.addTaskModalBtn, { backgroundColor: theme.colors.primary }]}
-                  textColor="#FFFFFF"
-                >
-                  {t('common.create')}
-                </Button>
-              </View>
-            </Pressable>
-          </Pressable>
-      </Modal>
+        onDismiss={() => setAddTaskVisible(false)}
+        onCreated={() => { fetchLeadTimeline().catch(() => {}); }}
+        organization={organization || ''}
+        user={user}
+        relatedPhone={lead?.contactPhone || lead?.phoneNumber || ''}
+        relatedTo={{
+          type: 'lead',
+          entityId: lead?.id || '',
+          entityName: lead?.title ?? '',
+        }}
+        defaultTitle={lead?.contactName ? `${t('contacts.phoneCall')} - ${lead.contactName}` : undefined}
+      />
 
       <Modal
         visible={noteModalVisible}
@@ -2691,6 +2380,8 @@ function TimelineSection({
   flexDirection,
   events,
   loading,
+  onOpenTask,
+  onCompleteTask,
 }: {
   theme: any;
   t: any;
@@ -2699,8 +2390,21 @@ function TimelineSection({
   flexDirection: 'row' | 'row-reverse';
   events: any[];
   loading: boolean;
+  onOpenTask?: (taskId: string) => void;
+  onCompleteTask?: (taskId: string) => Promise<void> | void;
 }) {
   const [activeFilter, setActiveFilter] = useState<LeadTimelineFilterKey>('all');
+  const [completingId, setCompletingId] = useState<string | null>(null);
+
+  const handleComplete = async (taskId: string) => {
+    if (!taskId || completingId) return;
+    setCompletingId(taskId);
+    try {
+      await onCompleteTask?.(taskId);
+    } finally {
+      setCompletingId(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -2766,6 +2470,10 @@ function TimelineSection({
         const creator = event.CreatedByName || event.createdByName || '';
         const ts = event.CreateDateTimeUTC || event.createDateTimeUTC || event.timestamp || event.createdOn || '';
         const { icon, color, label, detail } = buildTimelineItem(event, lang);
+        const rawType = (event.TimelineType || event.timelineType || event.Type || event.type || '').toLowerCase().trim();
+        const taskId = event.taskId || event.TaskId || (rawType.startsWith('task') ? (event.entityId || event.relatedId) : '');
+        const isTask = rawType.startsWith('task') && !!taskId;
+        const taskDone = rawType === 'task_completed' || (event.taskStatus || event.TaskStatus || '').toLowerCase() === 'completed';
         return (
           <View key={id} style={[styles.timelineItem, { flexDirection }]}>
             <View style={[styles.timelineDot, { backgroundColor: color }]} />
@@ -2795,6 +2503,32 @@ function TimelineSection({
                   </Text>
                 ) : null}
               </View>
+              {isTask ? (
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                  <Pressable
+                    onPress={() => onOpenTask?.(String(taskId))}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.colors.primary, paddingVertical: 5, paddingHorizontal: 12, borderRadius: 14 }}
+                  >
+                    <MaterialCommunityIcons name="pencil-outline" size={13} color="#fff" />
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{lang === 'he' ? 'ערוך' : 'Edit'}</Text>
+                  </Pressable>
+                  {!taskDone ? (
+                    <Pressable
+                      onPress={() => handleComplete(String(taskId))}
+                      disabled={completingId === taskId}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#10B98122', borderWidth: 1, borderColor: '#10B981', paddingVertical: 5, paddingHorizontal: 12, borderRadius: 14, opacity: completingId === taskId ? 0.6 : 1 }}
+                    >
+                      <MaterialCommunityIcons name="check" size={13} color="#059669" />
+                      <Text style={{ color: '#059669', fontSize: 12, fontWeight: '700' }}>{completingId === taskId ? '…' : (lang === 'he' ? 'הושלם' : 'Complete')}</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <MaterialCommunityIcons name="check-circle" size={14} color="#059669" />
+                      <Text style={{ color: '#059669', fontSize: 12, fontWeight: '700' }}>{lang === 'he' ? 'הושלמה' : 'Done'}</Text>
+                    </View>
+                  )}
+                </View>
+              ) : null}
             </View>
           </View>
         );

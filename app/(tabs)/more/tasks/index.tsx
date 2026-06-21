@@ -39,6 +39,7 @@ import { useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { tasksApi } from '../../../../services/api/tasks';
 import { cacheEntities } from '../../../../services/entityCache';
+import { readList as readDiskList, cacheList as cacheDiskList } from '../../../../services/db/genericCache';
 import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
@@ -142,6 +143,7 @@ export default function TasksMoreScreen() {
         tasksDV === 'own' ? 'own' : 'all',
       );
       cacheEntities('tasks', data);
+      cacheDiskList('tasks', user.organization, data, (tk) => tk.id);
       setTasks(data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
@@ -149,6 +151,20 @@ export default function TasksMoreScreen() {
       setLoading(false);
     }
   }, [user?.organization, t, tasksDV]);
+
+  // Instant open after an app restart: hydrate from the on-device DB before the network responds.
+  useEffect(() => {
+    if (!user?.organization) return;
+    let active = true;
+    readDiskList<Task>('tasks', user.organization).then((cached) => {
+      if (active && cached.length > 0) {
+        setTasks((prev) => (prev.length > 0 ? prev : cached));
+        setLoading(false);
+      }
+    });
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.organization]);
 
   useEffect(() => {
     fetchTasks();
@@ -235,16 +251,19 @@ export default function TasksMoreScreen() {
   });
 
   const resetForm = useCallback(() => {
+    // Default due date + reminder to "now" so the user only nudges it to the nearest convenient
+    // time. Kept consistent with the shared AddTaskSheet used by contacts/leads/cases/orders.
+    const now = new Date();
     setFormTitle('');
     setFormDescription('');
     setFormPriority('medium');
-    setFormDueDate('');
+    setFormDueDate(now.toISOString());
     setFormAssignedTo('');
     setFormTaskType('general');
     setFormRelatedEntityName('');
-    setDueDateObj(new Date());
-    setReminderEnabled(false);
-    setReminderDateObj(new Date());
+    setDueDateObj(new Date(now));
+    setReminderEnabled(true);
+    setReminderDateObj(new Date(now));
     resetContactLookup();
   }, [resetContactLookup]);
 
@@ -665,7 +684,7 @@ export default function TasksMoreScreen() {
 
       <FAB
         icon="plus"
-        onPress={() => setCreateModalVisible(true)}
+        onPress={() => { resetForm(); setCreateModalVisible(true); }}
         style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFFFFF"
         label={t('tasks.addTask')}
@@ -677,7 +696,7 @@ export default function TasksMoreScreen() {
           onDismiss={() => { setCreateModalVisible(false); resetForm(); }}
           contentContainerStyle={[styles.modalContainer, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={80}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>

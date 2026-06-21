@@ -1036,7 +1036,7 @@ export default function TaskDetailScreen() {
             { backgroundColor: theme.colors.surface },
           ]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             {/* Bounded maxHeight lets the ScrollView scroll. A bare `flex:1` collapses the content
                 to height 0 inside a Paper Modal whose container only has `maxHeight` (grey backdrop). */}
             <ScrollView style={{ maxHeight: windowHeight * 0.74 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">

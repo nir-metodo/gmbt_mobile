@@ -289,7 +289,7 @@ export default function SuppliersScreen() {
 
       <Portal>
         <Modal visible={modalVisible} onDismiss={() => setModalVisible(false)} contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             <ScrollView>
               <Text variant="titleMedium" style={{ textAlign, marginBottom: 16, fontWeight: '700' }}>
                 {editingSupplier ? t('common.edit') : t('common.add')} {t('more.suppliers')}

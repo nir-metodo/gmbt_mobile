@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Lead } from '../types';
 import { leadsApi } from '../services/api/leads';
-import { appCache } from '../services/cache';
+import { readList, cacheList, removeFromCache } from '../services/db/genericCache';
 
 interface LeadState {
   leads: Lead[];
@@ -33,17 +33,19 @@ export const useLeadStore = create<LeadState>((set, get) => ({
   selectedLead: null,
 
   loadLeads: async (organization) => {
-    const cacheKey = `leads_${organization}`;
-    const cached = appCache.get<Lead[]>(cacheKey);
-    if (cached && get().leads.length === 0) {
-      set({ leads: cached, isLoading: false });
-    } else {
-      set({ isLoading: true });
+    // Instant open from the on-device cache (survives app restarts), then refresh from server.
+    if (get().leads.length === 0) {
+      const cached = await readList<Lead>('leads', organization);
+      if (cached.length > 0 && get().leads.length === 0) {
+        set({ leads: cached, isLoading: false });
+      } else {
+        set({ isLoading: true });
+      }
     }
     try {
       const result = await leadsApi.getAll(organization, { pageSize: 5000 });
       const arr = Array.isArray(result?.data) ? result.data : (Array.isArray(result) ? result : []);
-      appCache.set(cacheKey, arr);
+      cacheList('leads', organization, arr, (l) => l.id);
       set({ leads: arr, isLoading: false });
     } catch {
       set({ isLoading: false });
@@ -55,6 +57,7 @@ export const useLeadStore = create<LeadState>((set, get) => ({
       const result = await leadsApi.create(organization, lead);
       if (result) {
         set((state) => ({ leads: [result, ...state.leads] }));
+        cacheList('leads', organization, [result], (l) => l.id);
       }
     } catch (err) {
       throw err;
@@ -71,6 +74,8 @@ export const useLeadStore = create<LeadState>((set, get) => ({
     }));
     try {
       await leadsApi.update(organization, lead);
+      const updated = get().leads.find((l) => l.id === lead.id);
+      if (updated) cacheList('leads', organization, [updated], (l) => l.id);
     } catch (err) {
       // Revert on failure
       set({ leads: prevLeads });
@@ -84,6 +89,7 @@ export const useLeadStore = create<LeadState>((set, get) => ({
       set((state) => ({
         leads: state.leads.filter((l) => l.id !== leadId),
       }));
+      removeFromCache('leads', leadId);
     } catch (err) {
       throw err;
     }

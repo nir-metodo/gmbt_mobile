@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import { CallEvents } from '../modules/call-events';
 import { API_BASE_URL, ENDPOINTS } from '../constants/api';
 import { secureStorage } from './storage';
@@ -23,10 +24,24 @@ export async function syncDeviceCallEventsConfig(): Promise<void> {
     baseUrl: API_BASE_URL,
     token,
     organization: user?.organization || '',
+    // Attribute device call events to the logged-in app user so automations can target
+    // the specific salesperson whose phone took/missed the call (multi-agent orgs).
+    userId: user?.userId || user?.uID || '',
+    userName: user?.fullname || '',
+    // The "to" of an incoming device call = this agent's own line (the device can't read its own
+    // number reliably), used for display and optional number-filtering in botomations.
+    selfNumber: user?.phoneNumber || (user as any)?.PhoneNumber || user?.wabaNumber || '',
     reportOutgoing: false,
   });
 
   await flushPendingDeviceCallEvents();
+
+  // Safety net: scan the system Call Log for any calls the real-time background receiver missed
+  // (OEMs like Xiaomi/Samsung/Huawei routinely suppress background broadcast receivers). This runs
+  // on every foreground, so a missed/answered call is reported as soon as the user opens the app.
+  if (enabled && user?.organization) {
+    await CallEvents.scanRecentCalls();
+  }
 }
 
 /** Re-sends events the native receiver queued after a failed delivery, using a fresh token. */
@@ -56,7 +71,10 @@ export async function enableDeviceCallEvents(): Promise<boolean> {
     await CallEvents.requestPermissions();
   }
   await syncDeviceCallEventsConfig();
-  return CallEvents.hasPermissions();
+  const granted = CallEvents.hasPermissions();
+  // Persist state to the DB so admins can see/verify which devices report calls.
+  reportDeviceCallReportingState(true, granted);
+  return granted;
 }
 
 export function disableDeviceCallEvents(): void {
@@ -67,4 +85,25 @@ export function disableDeviceCallEvents(): void {
     token: '',
     organization: '',
   });
+  reportDeviceCallReportingState(false, false);
+}
+
+/** Records the toggle state server-side (visible in DB + activity log). Best-effort, never throws. */
+function reportDeviceCallReportingState(enabled: boolean, hasPermissions: boolean): void {
+  try {
+    const user = useAuthStore.getState().user;
+    if (!user?.organization) return;
+    axiosInstance
+      .post(ENDPOINTS.SET_DEVICE_CALL_REPORTING, {
+        organization: user.organization,
+        enabled,
+        hasPermissions,
+        platform: Platform.OS,
+        userId: user.userId || user.uID || '',
+        userName: user.fullname || '',
+      })
+      .catch(() => {});
+  } catch {
+    // ignore — local state is the source of truth for the receiver
+  }
 }

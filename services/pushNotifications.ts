@@ -138,12 +138,38 @@ export const pushNotificationService = {
         deviceName: Device.deviceName || `${Device.brand} ${Device.modelName}`,
       });
       await setStoredRegistrationToken(registrationKey);
+      return expoPushToken;
     } catch {
-      // Non-critical — device still receives push via existing channel. We deliberately do NOT
-      // persist the registration key on failure, so the next foreground/login retries the POST.
+      // POST failed — deliberately do NOT persist the registration key, and return null so callers
+      // (registerPushTokenWithRetry) know it didn't stick and try again. Previously this returned
+      // the token even on failure, which masked the error and left push silently unregistered.
+      return null;
     }
+  },
 
-    return expoPushToken;
+  // Register with a few spaced retries. On a FRESH login the OS permission dialog may still be open
+  // (first attempt sees "not granted" → null), or the Expo/FCM push token may not be ready yet, or
+  // the backend POST can transiently fail. Retrying within the session means push starts working
+  // immediately instead of only after the user kills & reopens the app. Safe to call repeatedly:
+  // once permission is resolved the OS won't re-prompt, and a successful registration short-circuits.
+  async registerPushTokenWithRetry(
+    organization: string,
+    userId: string,
+    attempts = 5,
+    delayMs = 3000
+  ): Promise<string | null> {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const token = await pushNotificationService.registerPushToken(organization, userId);
+        if (token) return token;
+      } catch {
+        // ignore and retry
+      }
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    return null;
   },
 
   async getPushSettings(organization: string, userId: string): Promise<PushNotificationSettings> {

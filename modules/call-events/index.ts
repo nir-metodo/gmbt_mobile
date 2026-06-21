@@ -6,6 +6,9 @@ export interface CallEventsConfig {
   baseUrl: string;
   token: string;
   organization: string;
+  userId?: string;
+  userName?: string;
+  selfNumber?: string;
   reportOutgoing?: boolean;
 }
 
@@ -43,5 +46,18 @@ export const CallEvents = {
 
   clearPending(): void {
     Native?.clearPending?.();
+  },
+
+  /**
+   * Reads finished calls from the system Call Log and reports any not-yet-sent ones to the backend.
+   * Safety net for when the OS/OEM suppressed the real-time background broadcast. No-op off Android.
+   */
+  async scanRecentCalls(): Promise<boolean> {
+    if (!Native?.scanRecentCalls) return false;
+    try {
+      return await Native.scanRecentCalls();
+    } catch {
+      return false;
+    }
   },
 };

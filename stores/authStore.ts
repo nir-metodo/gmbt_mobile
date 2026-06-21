@@ -6,6 +6,7 @@ import WebSocketService from '../services/websocket';
 import axiosInstance, { setTokenCache } from '../services/api/axiosInstance';
 import { ENDPOINTS } from '../constants/api';
 import { pushNotificationService } from '../services/pushNotifications';
+import { resetLocalDb } from '../services/db/repository';
 import i18n from '../i18n';
 
 export interface OrgFeatureToggles {
@@ -50,7 +51,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ user, isInitialized: true });
 
         pushNotificationService
-          .registerPushToken(user.organization, user.uID || user.userId)
+          .registerPushTokenWithRetry(user.organization, user.uID || user.userId)
           .catch(() => {});
         get().fetchOrgFeatureToggles().catch(() => {});
       } else {
@@ -69,7 +70,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ user, isLoading: false });
 
       pushNotificationService
-        .registerPushToken(user.organization, user.uID || user.userId)
+        .registerPushTokenWithRetry(user.organization, user.uID || user.userId)
         .catch(() => {});
       get().fetchOrgFeatureToggles().catch(() => {});
     } catch (error: any) {
@@ -101,6 +102,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await authApi.logout();
     } finally {
       setTokenCache(null);
+      // Wipe the on-device cache so one account's contacts/messages never leak into the next.
+      resetLocalDb().catch(() => {});
       set({ user: null, error: null, orgFeatureToggles: {} });
     }
   },

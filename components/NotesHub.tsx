@@ -306,7 +306,7 @@ export default function NotesHub({ visible, onClose }: Props) {
         onDismiss={onClose}
         contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.background }]}
       >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           {/* Header */}
           <View style={[styles.header, { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 8 }]}>
             <Text style={styles.headerTitle}>📝 {t('notesHub.title', isHe ? 'מרכז הערות' : 'Notes Hub')}</Text>

@@ -34,6 +34,7 @@ import { casesApi } from '../../../../services/api/cases';
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { usersApi } from '../../../../services/api/users';
+import { tasksApi } from '../../../../services/api/tasks';
 import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import ContactLookup from '../../../../components/ContactLookup';
@@ -160,6 +161,27 @@ export default function CaseDetailScreen() {
       setTimelineLoading(false);
     }
   }, [user?.organization, id, isNew]);
+
+  const [completingTaskId, setCompletingTaskId] = useState<string | null>(null);
+
+  const openTaskFromTimeline = useCallback((taskId: string) => {
+    if (!taskId) return;
+    router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any);
+  }, [router]);
+
+  const completeTaskFromTimeline = useCallback(async (taskId: string) => {
+    if (!taskId || !user?.organization || completingTaskId) return;
+    setCompletingTaskId(taskId);
+    try {
+      await tasksApi.complete(user.organization, taskId, user?.uID || user?.userId || '', user?.fullname || user?.name || 'Gambot');
+      await fetchTimeline();
+    } catch {
+      Alert.alert(t('common.error'));
+    } finally {
+      setCompletingTaskId(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, completingTaskId, fetchTimeline]);
 
   const fetchCase = useCallback(async () => {
     if (!user?.organization) return;
@@ -534,6 +556,21 @@ export default function CaseDetailScreen() {
             </Button>
           </View>
         </KeyboardAvoidingView>
+
+        {/* Contact picker for create mode. Nested inside this return so the RN <Modal> actually
+            renders here — previously the only <ContactLookup> lived in the detail/edit return, so
+            in create mode tapping "select contact" set state but rendered nothing. */}
+        <ContactLookup
+          visible={contactLookupVisible}
+          organization={user?.organization || ''}
+          onSelect={(contact) => {
+            setFormContactName(contact.name);
+            setFormContactPhone(contact.phoneNumber);
+            setFormContactId(contact.id);
+            setContactLookupVisible(false);
+          }}
+          onDismiss={() => setContactLookupVisible(false)}
+        />
       </View>
     );
   }
@@ -1054,6 +1091,38 @@ export default function CaseDetailScreen() {
                       </Text>
                     ) : null}
                   </View>
+                  {(() => {
+                    const evType = (ev.TimelineType || ev.timelineType || ev.type || '').toLowerCase();
+                    const taskId = ev.taskId || ev.TaskId || (evType.startsWith('task') ? (ev.entityId || ev.relatedId) : '');
+                    if (!evType.startsWith('task') || !taskId) return null;
+                    const taskDone = evType === 'task_completed' || (ev.taskStatus || ev.TaskStatus || '').toLowerCase() === 'completed';
+                    return (
+                      <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <Pressable
+                          onPress={() => openTaskFromTimeline(String(taskId))}
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.colors.primary, paddingVertical: 5, paddingHorizontal: 12, borderRadius: 14 }}
+                        >
+                          <MaterialCommunityIcons name="pencil-outline" size={13} color="#fff" />
+                          <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{lang === 'he' ? 'ערוך' : 'Edit'}</Text>
+                        </Pressable>
+                        {!taskDone ? (
+                          <Pressable
+                            onPress={() => completeTaskFromTimeline(String(taskId))}
+                            disabled={completingTaskId === taskId}
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#10B98122', borderWidth: 1, borderColor: '#10B981', paddingVertical: 5, paddingHorizontal: 12, borderRadius: 14, opacity: completingTaskId === taskId ? 0.6 : 1 }}
+                          >
+                            <MaterialCommunityIcons name="check" size={13} color="#059669" />
+                            <Text style={{ color: '#059669', fontSize: 12, fontWeight: '700' }}>{completingTaskId === taskId ? '…' : (lang === 'he' ? 'הושלם' : 'Complete')}</Text>
+                          </Pressable>
+                        ) : (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <MaterialCommunityIcons name="check-circle" size={14} color="#059669" />
+                            <Text style={{ color: '#059669', fontSize: 12, fontWeight: '700' }}>{lang === 'he' ? 'הושלמה' : 'Done'}</Text>
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })()}
                 </View>
               ))}
             </>
@@ -1085,7 +1154,7 @@ export default function CaseDetailScreen() {
             { backgroundColor: theme.colors.surface },
           ]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             {/* maxHeight bounds the ScrollView so it can scroll. A bare `flex:1` here collapses the
                 content to height 0 inside a Paper Modal whose container only has `maxHeight` (no
                 definite height), which is what made the modal show only a grey backdrop. */}

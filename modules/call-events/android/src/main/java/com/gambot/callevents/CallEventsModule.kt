@@ -3,6 +3,12 @@ package com.gambot.callevents
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.database.ContentObserver
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.provider.CallLog
+import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.Promise
@@ -38,6 +44,7 @@ class CallEventsModule : Module() {
       }
       val perms = arrayOf(
         Manifest.permission.READ_PHONE_STATE,
+        Manifest.permission.READ_PHONE_NUMBERS,
         Manifest.permission.READ_CALL_LOG
       )
       ActivityCompat.requestPermissions(activity, perms, PERMISSION_REQUEST_CODE)
@@ -48,14 +55,55 @@ class CallEventsModule : Module() {
 
     Function("configure") { config: Map<String, Any?> ->
       appContext.reactContext?.let { ctx ->
-        val editor = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-        editor.putBoolean(KEY_ENABLED, (config["enabled"] as? Boolean) ?: false)
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val enabled = (config["enabled"] as? Boolean) ?: false
+        val editor = prefs.edit()
+        editor.putBoolean(KEY_ENABLED, enabled)
         editor.putString(KEY_BASE_URL, (config["baseUrl"] as? String) ?: "")
         editor.putString(KEY_TOKEN, (config["token"] as? String) ?: "")
         editor.putString(KEY_ORG, (config["organization"] as? String) ?: "")
+        editor.putString(KEY_USER_ID, (config["userId"] as? String) ?: "")
+        editor.putString(KEY_USER_NAME, (config["userName"] as? String) ?: "")
+        editor.putString(KEY_SELF_NUMBER, (config["selfNumber"] as? String) ?: "")
         editor.putBoolean(KEY_REPORT_OUTGOING, (config["reportOutgoing"] as? Boolean) ?: false)
+        if (enabled) {
+          // Arm the scan floor the first time reporting is turned on so we never report calls that
+          // happened before the user opted in. configure() runs on every foreground sync, so only
+          // set it when missing — otherwise we'd keep pushing the floor forward and miss calls that
+          // happened while the app was backgrounded.
+          if (prefs.getLong(KEY_SCAN_FLOOR, 0L) == 0L) {
+            editor.putLong(KEY_SCAN_FLOOR, System.currentTimeMillis())
+          }
+        } else {
+          // Disabling re-arms the floor: a later re-enable will only report calls from that point on.
+          editor.remove(KEY_SCAN_FLOOR)
+        }
         editor.apply()
+
+        // Watch the Call Log directly. This is what makes MISSED calls reliable: a missed call never
+        // brings the app to the foreground (so the foreground scan wouldn't run) and the PHONE_STATE
+        // broadcast is often suppressed by OEM background limits. The ContentObserver fires the instant
+        // the OS writes the call row — while the app process is alive — so we report it immediately.
+        if (enabled) registerCallLogObserver(ctx.applicationContext)
+        else unregisterCallLogObserver(ctx.applicationContext)
       }
+    }
+
+    /** Reads finished calls from the system Call Log and reports any not-yet-sent ones. */
+    AsyncFunction("scanRecentCalls") { promise: Promise ->
+      val ctx = appContext.reactContext
+      if (ctx == null) {
+        promise.resolve(false)
+        return@AsyncFunction
+      }
+      Thread {
+        try {
+          CallReporter.scan(ctx, waitForFresh = false)
+          promise.resolve(true)
+        } catch (e: Exception) {
+          promise.resolve(false)
+        }
+      }.start()
     }
 
     Function("getPending") {
@@ -76,6 +124,8 @@ class CallEventsModule : Module() {
     ContextCompat.checkSelfPermission(ctx, permission) == PackageManager.PERMISSION_GRANTED
 
   companion object {
+    private const val TAG = "GambotCallEvents"
+
     const val PREFS = "gambot_call_events"
     const val PERMISSION_REQUEST_CODE = 7321
 
@@ -83,7 +133,44 @@ class CallEventsModule : Module() {
     const val KEY_BASE_URL = "baseUrl"
     const val KEY_TOKEN = "token"
     const val KEY_ORG = "organization"
+    const val KEY_USER_ID = "userId"
+    const val KEY_USER_NAME = "userName"
+    const val KEY_SELF_NUMBER = "selfNumber"
     const val KEY_REPORT_OUTGOING = "reportOutgoing"
     const val KEY_PENDING = "pending"
+    const val KEY_SCAN_FLOOR = "scanFloor"
+    const val KEY_SENT = "sentCallIds"
+
+    @Volatile
+    private var callLogObserver: ContentObserver? = null
+
+    /** Idempotent: registers a single Call Log observer that scans on any change while the app lives. */
+    @Synchronized
+    fun registerCallLogObserver(appCtx: Context) {
+      if (callLogObserver != null) return
+      val obs = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) = onChange(selfChange, null)
+        override fun onChange(selfChange: Boolean, uri: Uri?) {
+          Thread {
+            try { CallReporter.scan(appCtx, waitForFresh = false) } catch (_: Exception) {}
+          }.start()
+        }
+      }
+      try {
+        appCtx.contentResolver.registerContentObserver(CallLog.Calls.CONTENT_URI, true, obs)
+        callLogObserver = obs
+        Log.d(TAG, "Call Log observer registered")
+      } catch (e: Exception) {
+        Log.e(TAG, "Failed to register Call Log observer: ${e.message}")
+      }
+    }
+
+    @Synchronized
+    fun unregisterCallLogObserver(appCtx: Context) {
+      val obs = callLogObserver ?: return
+      try { appCtx.contentResolver.unregisterContentObserver(obs) } catch (_: Exception) {}
+      callLogObserver = null
+      Log.d(TAG, "Call Log observer unregistered")
+    }
   }
 }

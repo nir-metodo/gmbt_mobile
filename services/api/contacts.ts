@@ -5,7 +5,7 @@ import type { Contact } from '../../types';
 export const contactsApi = {
   async getAll(
     organization: string,
-    options?: { userId?: string; dataVisibility?: string; pageSize?: number; pageNumber?: number },
+    options?: { userId?: string; dataVisibility?: string; pageSize?: number; pageNumber?: number; modifiedSince?: string },
   ): Promise<Contact[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_CONTACTS_PAGINATED, {
       organizationiD: organization,
@@ -13,6 +13,9 @@ export const contactsApi = {
       pageSize: options?.pageSize || 100,
       userId: options?.userId || '',
       dataVisibility: options?.dataVisibility || 'all',
+      // Incremental-sync cursor. Ignored by the backend until it supports delta pulls, at which
+      // point only contacts modified since this timestamp are returned.
+      ...(options?.modifiedSince ? { modifiedSince: options.modifiedSince } : {}),
     });
     const raw = response.data;
     const items = raw?.Contacts || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);

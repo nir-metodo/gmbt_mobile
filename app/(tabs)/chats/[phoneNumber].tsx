@@ -4,6 +4,8 @@ import React, {
   useEffect,
   useRef,
   useMemo,
+  forwardRef,
+  useImperativeHandle,
 } from 'react';
 import {
   View,
@@ -144,6 +146,33 @@ const ConversationCountdownBadge = React.memo(function ConversationCountdownBadg
   );
 });
 
+// Scroll-to-bottom FAB isolated into its own component. The visibility flag changes on
+// nearly every scroll frame; if it lived as state on the chat screen it would re-render the
+// entire screen (and the message FlashList) constantly while scrolling. Here it owns its own
+// `visible` state and exposes an imperative `setVisible`, so a scroll only re-renders this
+// ~38px button instead of the whole conversation.
+export type ScrollToBottomHandle = { setVisible: (v: boolean) => void };
+
+const ScrollToBottomButton = forwardRef<
+  ScrollToBottomHandle,
+  { onPress: () => void; style: any; backgroundColor: string; iconColor: string }
+>(({ onPress, style, backgroundColor, iconColor }, ref) => {
+  const [visible, setVisible] = useState(false);
+  useImperativeHandle(
+    ref,
+    () => ({
+      setVisible: (v: boolean) => setVisible((prev) => (prev === v ? prev : v)),
+    }),
+    [],
+  );
+  if (!visible) return null;
+  return (
+    <Pressable onPress={onPress} style={[style, { backgroundColor }]}>
+      <MaterialCommunityIcons name="chevron-down" size={22} color={iconColor} />
+    </Pressable>
+  );
+});
+
 // Build a human-readable line for a chat timeline/activity entry (mirrors the web
 // ChatTimelineMessage.buildTimelineMessage). Action events (tasks, status changes,
 // assignments, etc.) don't carry a `note`/`text`, so without this they render blank.
@@ -267,7 +296,6 @@ export default function ChatConversationScreen() {
   const [mediaPanelVisible, setMediaPanelVisible] = useState(false);
   const [selectedMessage, setSelectedMessage] =
     useState<Message | null>(null);
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -295,9 +323,34 @@ export default function ChatConversationScreen() {
   const [quickTemplateSearch, setQuickTemplateSearch] = useState('');
   const [quickOpenVarValues, setQuickOpenVarValues] = useState<Record<string, string>>({});
   const flatListRef = useRef<FlashList<ListItem>>(null);
+  const scrollBtnRef = useRef<ScrollToBottomHandle>(null);
   const chatInputRef = useRef<ChatInputRef>(null);
   const wsRef = useRef<WebSocketService | null>(null);
-  const prevMessageCount = useRef(0);
+  // Timestamp of the last messages fetch for this chat. Used to throttle the
+  // AppState->active reload so foregrounding the app doesn't trigger a redundant
+  // getMessages (and the visual churn that comes with it) right after open.
+  const lastMessagesFetchAtRef = useRef(0);
+
+  // Keeps the message list invisible until FlashList has finished its first layout. With
+  // maintainVisibleContentPosition.startRenderingFromBottom the list opens already pinned to the
+  // newest message, but the variable-height rows can visibly "travel" into place for a moment.
+  // Revealing only after onLoad means the chat appears already locked on the last message.
+  const [listReady, setListReady] = useState(false);
+  const handleListLoad = useCallback(() => setListReady(true), []);
+
+  // Imperative "snap to newest". With startRenderingFromBottom the newest message is at the END of
+  // the (oldest→newest) data, so scrolling to the bottom is scrollToEnd.
+  const scrollToNewest = useCallback((animated = true) => {
+    try { flatListRef.current?.scrollToEnd({ animated }); } catch {}
+  }, []);
+
+  // Re-hide on chat switch (the FlashList remounts via key={phoneNumber}, so onLoad fires again).
+  // A timeout fallback guarantees the list is always revealed even if onLoad somehow doesn't fire.
+  useEffect(() => {
+    setListReady(false);
+    const t = setTimeout(() => setListReady(true), 1200);
+    return () => clearTimeout(t);
+  }, [phoneNumber]);
 
   // Search
   const [searchVisible, setSearchVisible] = useState(false);
@@ -539,8 +592,15 @@ export default function ChatConversationScreen() {
     // activeWabaNumber — the latter is a shared Zustand value that can still hold the
     // PREVIOUS chat's number, which makes the backend filter inbound messages by the
     // wrong number and reply "not live" for every chat (the "all chats closed" bug).
+    // Only ever scope the query to THIS contact's own resolved number (contactWabaId).
+    // Never fall back to the global activeWabaNumber here: while switching chats it can still
+    // hold the PREVIOUS chat's number, which makes the backend filter by the wrong number and
+    // reply "not live" → the composer wrongly flips to template buttons until a refetch fixes
+    // it (the intermittent "shows template buttons on an open chat" bug). When contactWabaId
+    // isn't resolved yet we send undefined and let the backend resolve by phone (same as the
+    // single-number path), then refetch once contactWabaId loads (it's in this cb's deps).
     const fromNumberId = wabaNumbers.length > 1
-      ? (contactWabaId || activeWabaNumber || undefined)
+      ? (contactWabaId || undefined)
       : undefined;
     chatsApi.getConversationStatus(user.organization, phoneNumber as string, fromNumberId).then((res) => {
       if (requestId !== statusRequestIdRef.current) return; // ignore stale responses
@@ -1342,8 +1402,8 @@ export default function ChatConversationScreen() {
   // Load messages & mark as read
   useEffect(() => {
     if (!user?.organization || !phoneNumber) return;
-    prevMessageCount.current = 0;
     setTimelineEntries([]);
+    lastMessagesFetchAtRef.current = Date.now();
     loadMessages(user.organization, phoneNumber);
     markAsRead(user.organization, phoneNumber, user.uID || user.userId, user.fullname || user.displayName || '');
     return () => {
@@ -1356,7 +1416,14 @@ export default function ChatConversationScreen() {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active' && user?.organization && phoneNumber) {
         WebSocketService.reconnectAll();
-        loadMessages(user.organization, phoneNumber);
+        // Throttle: skip the reload if we already fetched this chat within the last 15s.
+        // Live updates arrive over WebSocket (reconnected just above), so a fresh getMessages
+        // right after open is redundant and only adds visual churn.
+        const sinceLastFetch = Date.now() - lastMessagesFetchAtRef.current;
+        if (sinceLastFetch > 15000) {
+          lastMessagesFetchAtRef.current = Date.now();
+          loadMessages(user.organization, phoneNumber);
+        }
         fetchConversationStatus();
       }
     });
@@ -1499,38 +1566,12 @@ export default function ChatConversationScreen() {
     };
   }, [user?.organization, phoneNumber, addMessage, updateMessage, markAsRead, activeWabaNumber, contactWabaId]);
 
-  const scrollToBottom = useCallback((animated = false) => {
-    requestAnimationFrame(() => {
-      flatListRef.current?.scrollToEnd({ animated });
-    });
-  }, []);
-
-  // Tracks whether the viewport is currently pinned near the newest message. We only force a
-  // scroll-to-bottom for new messages when the user is already at the bottom — otherwise the
-  // manual scroll fights FlashList's maintainVisibleContentPosition and yanks the user away from
-  // the history they're reading (the "jumps to old messages and back" flicker).
+  // Tracks whether the viewport is currently pinned near the newest message. Used only to
+  // decide when to reveal the scroll-to-bottom FAB. Auto-scrolling on new messages is handled
+  // entirely by FlashList v2's maintainVisibleContentPosition (autoscrollToBottomThreshold) —
+  // a manual scrollToEnd here fought MVCP and produced the "jumps to old messages and back"
+  // flicker, so it has been removed.
   const isNearBottomRef = useRef(true);
-
-  // Auto-scroll to bottom (newest) on new messages.
-  // Initial positioning is handled by FlashList's maintainVisibleContentPosition
-  // (startRenderingFromBottom) so we must NOT force a scroll on first load — doing
-  // so makes the list visibly "travel" from top to the last message and flicker.
-  useEffect(() => {
-    if (currentMessages.length > prevMessageCount.current) {
-      const isInitialLoad = prevMessageCount.current === 0;
-      const addedCount = currentMessages.length - prevMessageCount.current;
-      if (
-        !isInitialLoad &&
-        !isLoadingOlderMessages &&
-        !loadingOlderRef.current &&
-        addedCount <= 3 &&
-        isNearBottomRef.current
-      ) {
-        scrollToBottom(true);
-      }
-    }
-    prevMessageCount.current = currentMessages.length;
-  }, [currentMessages.length, isLoadingOlderMessages, scrollToBottom]);
 
   // Pre-cache media from ALL messages in the background (without blocking message rendering)
   const allMessages = useChatStore((s) => s.allMessages);
@@ -1581,15 +1622,22 @@ export default function ChatConversationScreen() {
       .sort((a, b) => new Date(getTs(b)).getTime() - new Date(getTs(a)).getTime());
   }, [currentMessages]);
 
+  // Keep the latest gallery list in a ref so handleMediaPress can stay referentially STABLE.
+  // If this callback changed identity whenever messages change, every memoized MessageBubble
+  // would re-render (and reload its media) on each new message / status tick — the root of the
+  // "flicker / list won't stop scrolling / messages disappear" loop on heavy chats.
+  const mediaMessagesRef = useRef(mediaMessages);
+  mediaMessagesRef.current = mediaMessages;
   const handleMediaPress = useCallback((message: Message) => {
-    const idx = mediaMessages.findIndex((m) => m.messageId === message.messageId);
+    const idx = mediaMessagesRef.current.findIndex((m) => m.messageId === message.messageId);
     if (idx >= 0) {
       setGalleryIndex(idx);
       setGalleryVisible(true);
     }
-  }, [mediaMessages]);
+  }, []);
 
-  // Build list data with date separators + timeline entries (newest first for inverted list)
+  // Build list data with date separators + timeline entries, oldest→newest (data[0] = top). The
+  // view is pinned to the newest message by maintainVisibleContentPosition.startRenderingFromBottom.
   const listData = useMemo<ListItem[]>(() => {
     let msgs = currentMessages;
     if (messageMode === 'internal') {
@@ -1611,21 +1659,27 @@ export default function ChatConversationScreen() {
     // server-confirmed twin (same direction + identical text) is already present. This is the
     // last line of defense so a just-sent message can never render twice (optimistic + WS echo)
     // while the chat is open, regardless of any reconciliation race in the store.
-    const confirmedTextSigs = new Set<string>();
+    // A temp_ row is ALWAYS our own optimistic outbound message, so collapse it whenever a
+    // server-confirmed (non-temp) message with the same text exists. We deliberately key by text
+    // only (not direction+text): the WS echo's `direction` casing/presence frequently differs from
+    // the optimistic temp's 'Outbound', and a direction-sensitive key let both bubbles survive
+    // until reload. Confirmed inbound messages are excluded so an inbound message that happens to
+    // share text can never swallow our outbound temp.
+    const confirmedOutboundTexts = new Set<string>();
     for (const m of msgs) {
       const id = String((m as any).messageId || '');
-      if (id && !id.startsWith('temp_')) {
+      if (id && !id.startsWith('temp_') && (m.direction || '').toLowerCase() !== 'inbound') {
         const txt = (m.text || (m as any).body || '').trim();
-        if (txt) confirmedTextSigs.add(`${(m.direction || '').toLowerCase()}|${txt}`);
+        if (txt) confirmedOutboundTexts.add(txt);
       }
     }
-    if (confirmedTextSigs.size > 0) {
+    if (confirmedOutboundTexts.size > 0) {
       msgs = msgs.filter((m) => {
         const id = String((m as any).messageId || '');
         if (!id.startsWith('temp_')) return true;
         const txt = (m.text || (m as any).body || '').trim();
         if (!txt) return true; // media/voice temps are reconciled in the store
-        return !confirmedTextSigs.has(`${(m.direction || '').toLowerCase()}|${txt}`);
+        return !confirmedOutboundTexts.has(txt);
       });
     }
 
@@ -1634,6 +1688,23 @@ export default function ChatConversationScreen() {
       | { ts: number; idx: number; kind: 'message'; msg: Message }
       | { ts: number; idx: number; kind: 'timeline'; entry: any };
 
+    // The timeline endpoint returns the ENTIRE history. Rendering all of it ignores message
+    // pagination and floods a long chat with hundreds of extra rows on open (the "timeline shows
+    // first, messages trickle in" effect). Bound timeline entries to the currently-displayed
+    // message window: only entries at/after the oldest visible message are shown. As the user
+    // scrolls up and older messages page in, the matching older timeline entries appear too.
+    const oldestMsgTs = msgs.length > 0
+      ? msgs.reduce(
+          (min, m) => Math.min(min, parseTimestamp((m as any).createdOn || (m as any).timestamp)),
+          Infinity,
+        )
+      : 0;
+    const visibleTimeline = msgs.length === 0
+      ? timelineEntries
+      : timelineEntries.filter((entry: any) =>
+          parseTimestamp(entry.createdOn || entry.timestamp || entry.CreatedOn) >= oldestMsgTs,
+        );
+
     const combined: Combined[] = [
       ...msgs.map((msg, idx) => ({
         ts: parseTimestamp((msg as any).createdOn || (msg as any).timestamp),
@@ -1641,7 +1712,7 @@ export default function ChatConversationScreen() {
         kind: 'message' as const,
         msg,
       })),
-      ...timelineEntries.map((entry: any, idx: number) => {
+      ...visibleTimeline.map((entry: any, idx: number) => {
         return {
           ts: parseTimestamp(entry.createdOn || entry.timestamp || entry.CreatedOn),
           idx: msgs.length + idx,
@@ -1697,17 +1768,26 @@ export default function ChatConversationScreen() {
       items.push({ kind: 'message', data: msg, isOutbound, showTail });
     }
 
+    // Data stays oldest→newest (data[0] = oldest = top). FlashList v2 pins the view to the newest
+    // message via maintainVisibleContentPosition.startRenderingFromBottom — this is the v2-correct
+    // equivalent of the web's column-reverse container. We deliberately do NOT reverse the array:
+    // reversing it while MVCP is active corrupts v2's scroll-position math and causes jumps on
+    // pagination (a documented v2 regression), and the `inverted` prop is a no-op in v2.
     return items;
   }, [currentMessages, timelineEntries, lang, messageMode, starredFilter, searchQuery, user, phoneNumber]);
 
+  // Stable via ref (see handleMediaPress note) — a listData-dependent callback here would change
+  // on every message change and re-render the whole list through renderItem.
+  const listDataRef = useRef(listData);
+  listDataRef.current = listData;
   const handleQuotedPress = useCallback((contextMessageId: string) => {
-    const idx = listData.findIndex(
+    const idx = listDataRef.current.findIndex(
       (item) => item.kind === 'message' && (item.data.messageId === contextMessageId || item.data.id === contextMessageId),
     );
     if (idx >= 0) {
       flatListRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.5 });
     }
-  }, [listData]);
+  }, []);
 
   // Quick Actions sheet
   const handleQuickActionsPress = useCallback(() => {
@@ -1781,6 +1861,7 @@ export default function ChatConversationScreen() {
       if (!user?.organization || !phoneNumber) return;
       // Sending is an explicit user action — always snap to the newest message so they see it.
       isNearBottomRef.current = true;
+      scrollToNewest(false);
       try {
         // Internal note vs WhatsApp message is decided by whether the agent actually @-mentioned
         // teammates (mirrors web). Keying off the sticky `isInternalNote` flag was a bug: it was
@@ -1815,12 +1896,13 @@ export default function ChatConversationScreen() {
         Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
       }
     },
-    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber, sendFromNumberId],
+    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber, sendFromNumberId, scrollToNewest],
   );
 
   const sendPickedMedia = useCallback(async (uri: string, fileName: string, mimeType: string, fileSize?: number) => {
     if (!user?.organization || !phoneNumber) return;
     isNearBottomRef.current = true;
+    scrollToNewest(false);
     const mt = (mimeType || '').toLowerCase();
     const mediaType = mt.startsWith('video') ? 'video' : mt.startsWith('audio') ? 'audio' : mt.startsWith('image') ? 'image' : 'document';
     // Show the bubble immediately (optimistic); the WS echo replaces this temp.
@@ -1840,7 +1922,7 @@ export default function ChatConversationScreen() {
       updateMessageStatus(tempId, 'failed');
       Alert.alert(t('common.error'), t('chats.sendFailed', 'Failed to send media'));
     }
-  }, [user?.organization, phoneNumber, user?.uID, user?.userId, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus]);
+  }, [user?.organization, phoneNumber, user?.uID, user?.userId, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus, scrollToNewest]);
 
   const handleAttachment = useCallback(() => {
     setShowAttachSheet(true);
@@ -1902,6 +1984,7 @@ export default function ChatConversationScreen() {
   const handleVoiceMessage = useCallback(async (uri: string, durationMs: number) => {
     if (!user?.organization || !phoneNumber) return;
     isNearBottomRef.current = true;
+    scrollToNewest(false);
     const fileName = `voice_${Date.now()}.mp4`;
     const mimeType = 'audio/mp4';
     let fileSize = 0;
@@ -1924,7 +2007,7 @@ export default function ChatConversationScreen() {
       updateMessageStatus(tempId, 'failed');
       Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההקלטה נכשלה'));
     }
-  }, [user?.organization, user?.uID, user?.userId, phoneNumber, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus]);
+  }, [user?.organization, user?.uID, user?.userId, phoneNumber, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus, scrollToNewest]);
 
   // Long press context actions
   const handleMessageLongPress = useCallback(
@@ -2055,35 +2138,63 @@ export default function ChatConversationScreen() {
   }, []);
 
   const loadingOlderRef = useRef(false);
-  const prevListLengthRef = useRef(0);
+  // Blocks scroll-up pagination right after a chat opens. startRenderingFromBottom emits transient
+  // onScroll events while the list settles to the bottom; without this guard those events can
+  // satisfy the pagination check and immediately load older messages, prepending history that makes
+  // the list visibly jump (the long-reported "flicker / jump / won't stop loading" on open).
+  const initialPaginationGuardRef = useRef(true);
 
-  // Maintain scroll position after loading older messages
-  useEffect(() => {
-    if (isLoadingOlderMessages) {
-      prevListLengthRef.current = listData.length;
-    }
-  }, [isLoadingOlderMessages]);
-
-  useEffect(() => {
-    // FlashList v2's maintainVisibleContentPosition keeps the viewport anchored when
-    // older messages are prepended at the top, so no manual scrollToIndex is needed
-    // (a manual scroll here would fight MVCP and cause a visible jump/flicker).
-    if (!isLoadingOlderMessages && loadingOlderRef.current && prevListLengthRef.current > 0) {
-      prevListLengthRef.current = 0;
-    }
-  }, [listData.length, isLoadingOlderMessages]);
-
+  // onScroll only tracks UI affordances: near-bottom (for the FAB + the pagination guard below).
+  // Pagination is driven by FlashList's onStartReached (the v2 API for "reached the top").
   const handleScroll = useCallback((e: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
     isNearBottomRef.current = distanceFromBottom < 120;
-    setShowScrollBtn(distanceFromBottom > 400);
-    if (contentOffset.y < 150 && hasMoreMessages && !isLoadingOlderMessages && !loadingOlderRef.current) {
-      loadingOlderRef.current = true;
-      loadOlderMessages();
-      setTimeout(() => { loadingOlderRef.current = false; }, 1000);
-    }
+    // Update the FAB via its imperative handle so toggling it does NOT re-render the screen.
+    scrollBtnRef.current?.setVisible(distanceFromBottom > 400);
+  }, []);
+
+  // Load older messages when the user scrolls to the top. onStartReached is the v2 API for the
+  // leading edge; startRenderingFromBottom places the initial viewport at the END (newest), so on a
+  // normal-length chat this does not fire on open.
+  const handleStartReached = useCallback(() => {
+    if (initialPaginationGuardRef.current) return;
+    // NEVER auto-load history while the viewport is pinned to the newest message. On a short/medium
+    // chat the top is permanently within onStartReached's threshold, so without this guard the list
+    // would fire pagination the instant the open-guard released — fetching the FULL server history
+    // and prepending hundreds of rows, which makes the list jump and re-measure for several seconds
+    // ("won't stop loading / jumps up and down / takes ~10s to settle at the bottom"). Older history
+    // should only load when the user has deliberately scrolled UP toward the top.
+    if (isNearBottomRef.current) return;
+    if (!hasMoreMessages || isLoadingOlderMessages || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    loadOlderMessages();
+    setTimeout(() => { loadingOlderRef.current = false; }, 800);
   }, [hasMoreMessages, isLoadingOlderMessages, loadOlderMessages]);
+
+  // Explicit tap on the "Load older messages" header button. Unlike the auto onStartReached path,
+  // this is a deliberate user action, so it bypasses both the open-time guard and the
+  // pinned-to-bottom guard (on a short chat the header can be visible while still at the bottom).
+  const handleLoadOlderPress = useCallback(() => {
+    if (!hasMoreMessages || isLoadingOlderMessages || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    loadOlderMessages();
+    setTimeout(() => { loadingOlderRef.current = false; }, 800);
+  }, [hasMoreMessages, isLoadingOlderMessages, loadOlderMessages]);
+
+  // Release the pagination guard only once the freshly-opened chat has finished its initial load,
+  // the list has actually laid out (listReady), and it has had a moment to settle at the bottom.
+  // Re-armed on every chat switch (phoneNumber) and on every load — including instant cache renders
+  // where isLoadingMessages never flips to true. Gating on listReady (not a fixed delay that can be
+  // too short on a heavy chat) keeps history pagination from firing during the open-time settle.
+  useEffect(() => {
+    initialPaginationGuardRef.current = true;
+    if (isLoadingMessages || !listReady) return;
+    const id = setTimeout(() => {
+      initialPaginationGuardRef.current = false;
+    }, 900);
+    return () => clearTimeout(id);
+  }, [isLoadingMessages, phoneNumber, listReady]);
 
   // Render each list item
   const renderItem = useCallback(
@@ -2244,19 +2355,34 @@ export default function ChatConversationScreen() {
     return `msg-${getTs(item.data)}-${(item.data.text || (item.data as any).body || '').slice(0, 24)}`;
   }, []);
 
+  // CRITICAL for media chats: FlashList recycles a cell only into another cell of the SAME item
+  // type. If every message shares one type, a ~40px text row gets recycled into a ~220px media
+  // row (and back) as you scroll, so FlashList constantly re-measures wildly different heights —
+  // which thrashes layout and blanks/“disappears” rows. Splitting messages into homogeneous pools
+  // (text vs each media kind) keeps every recycle within a consistent height, killing that churn.
   const getItemType = useCallback((item: ListItem) => {
-    return item.kind;
+    if (item.kind !== 'message') return item.kind; // 'separator' | 'timeline'
+    const m: any = item.data;
+    const t = String(m.type || m.messageType || '').toLowerCase();
+    if (t === 'image' || t.startsWith('image/')) return 'msg-image';
+    if (t === 'video' || t.startsWith('video/')) return 'msg-video';
+    if (t === 'audio' || t.startsWith('audio/') || t === 'voice' || t === 'ptt') return 'msg-audio';
+    if (t === 'document' || t === 'file' || t.startsWith('application/')) return 'msg-document';
+    if (t === 'template') return 'msg-template';
+    // Type missing but a media URL is present → still a (tall) media row, not a text row.
+    const url = m.gmbt_mediaUrl || m.mediaUrl || m.MediaUrl || m.media_url;
+    if (url) return 'msg-media';
+    return 'msg-text';
   }, []);
 
-  // Stable config object — recreating this inline on every screen re-render (scroll button
-  // toggles, conversation-status updates, etc.) makes FlashList reconfigure unnecessarily.
+  // The v2-correct equivalent of the web's column-reverse chat container: render from the bottom
+  // and keep the newest message pinned. Stable object so screen re-renders (FAB toggles, status
+  // ticks) don't make FlashList reconfigure. animateAutoScrollToBottom:false snaps instantly
+  // instead of visibly "travelling" up/down while variable-height media rows mount on open.
   const maintainVisibleContentPositionConfig = useMemo(
     () => ({
       startRenderingFromBottom: true,
       autoscrollToBottomThreshold: 0.2,
-      // Animating every auto-scroll makes the list visibly "travel" up/down for a few
-      // seconds while variable-height media rows mount and re-measure on chat open.
-      // Snapping instantly removes that flicker.
       animateAutoScrollToBottom: false,
     }),
     [],
@@ -2627,7 +2753,9 @@ export default function ChatConversationScreen() {
           </View>
         )}
 
-        {/* Messages */}
+        {/* Messages — wrapped in a flex:1 region so the list (not the input) shrinks when
+            the keyboard opens, keeping the send button visible above the keyboard. */}
+        <View style={styles.messagesRegion}>
         {isLoadingMessages && listData.length === 0 ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator
@@ -2636,6 +2764,8 @@ export default function ChatConversationScreen() {
             />
           </View>
         ) : (
+          <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, opacity: listReady ? 1 : 0 }}>
           <FlashList
             key={String(phoneNumber)}
             ref={flatListRef}
@@ -2644,12 +2774,14 @@ export default function ChatConversationScreen() {
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             onScroll={handleScroll}
-            scrollEventThrottle={200}
-            onEndReachedThreshold={0.3}
+            scrollEventThrottle={16}
+            onStartReached={handleStartReached}
+            onStartReachedThreshold={0.1}
+            onLoad={handleListLoad}
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
-            drawDistance={750}
+            drawDistance={1000}
             maintainVisibleContentPosition={maintainVisibleContentPositionConfig}
             ListHeaderComponent={
               isLoadingOlderMessages ? (
@@ -2659,6 +2791,12 @@ export default function ChatConversationScreen() {
                     טוען הודעות ישנות...
                   </Text>
                 </View>
+              ) : hasMoreMessages ? (
+                <Pressable onPress={handleLoadOlderPress} style={styles.olderMsgsLoader} hitSlop={8}>
+                  <Text variant="labelMedium" style={{ color: theme.colors.primary, fontWeight: '600' }}>
+                    {isRTL ? '⬆️ טען הודעות ישנות יותר' : '⬆️ Load older messages'}
+                  </Text>
+                </Pressable>
               ) : null
             }
             ListEmptyComponent={
@@ -2684,29 +2822,25 @@ export default function ChatConversationScreen() {
               </View>
             }
           />
+          </View>
+          {!listReady && (
+            <View style={[styles.loadingContainer, StyleSheet.absoluteFill]} pointerEvents="none">
+              <ActivityIndicator size="large" color={theme.colors.primary} />
+            </View>
+          )}
+          </View>
         )}
 
-        {/* Scroll to bottom */}
-        {showScrollBtn && (
-          <Pressable
-            onPress={() =>
-              flatListRef.current?.scrollToEnd({ animated: true })
-            }
-            style={[
-              styles.scrollDownBtn,
-              {
-                backgroundColor: theme.colors.surface,
-                bottom: 80,
-              },
-            ]}
-          >
-            <MaterialCommunityIcons
-              name="chevron-down"
-              size={22}
-              color={theme.colors.primary}
-            />
-          </Pressable>
-        )}
+        {/* Scroll to bottom — isolated component, toggled imperatively so scrolling does
+            not re-render the whole screen. */}
+        <ScrollToBottomButton
+          ref={scrollBtnRef}
+          onPress={() => scrollToNewest(true)}
+          backgroundColor={theme.colors.surface}
+          iconColor={theme.colors.primary}
+          style={[styles.scrollDownBtn, { bottom: 16 }]}
+        />
+        </View>
 
         {/* Template send banner — shown whenever free-text input is not allowed (matches web) */}
         {!canSendFreeText ? (
@@ -2859,8 +2993,13 @@ export default function ChatConversationScreen() {
           visible={showTemplateSelector}
           transparent
           animationType="slide"
-          onRequestClose={() => { setShowTemplateSelector(false); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }}
+          onRequestClose={() => { Keyboard.dismiss(); setShowTemplateSelector(false); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }}
         >
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+          >
           <View style={styles.modalOverlay}>
             <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
               <View style={styles.actionSheetHandle} />
@@ -3066,6 +3205,7 @@ export default function ChatConversationScreen() {
               )}
             </View>
           </View>
+          </KeyboardAvoidingView>
         </Modal>
 
         {/* Template Variables Modal - when template has {{1}}, {{2}}, etc. */}
@@ -3074,10 +3214,16 @@ export default function ChatConversationScreen() {
           transparent
           animationType="slide"
           onRequestClose={() => {
+            Keyboard.dismiss();
             setSelectedTemplateForVars(null);
             setTemplateVariableValues({});
           }}
         >
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+          >
           <View style={styles.modalOverlay}>
             <View
               style={[
@@ -3154,6 +3300,7 @@ export default function ChatConversationScreen() {
               )}
             </View>
           </View>
+          </KeyboardAvoidingView>
         </Modal>
 
         {/* Schedule Message Modal */}
@@ -3935,7 +4082,7 @@ export default function ChatConversationScreen() {
         >
           <KeyboardAvoidingView
             style={{ flex: 1 }}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
           >
             <Pressable
@@ -4326,6 +4473,9 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  messagesRegion: {
+    flex: 1,
   },
   messagesContent: {
     paddingVertical: 8,

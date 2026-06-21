@@ -3,10 +3,37 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Chat, Message } from '../types';
 import { chatsApi } from '../services/api/chats';
 import { contactsApi } from '../services/api/contacts';
+import { queryPage, upsertMany } from '../services/db/repository';
+import { MESSAGES_TABLE, makeMessageMapper } from '../services/db/messagesTable';
 
 const CHATS_CACHE_KEY = 'gambot_chats_cache';
 const PAGE_SIZE = 50;
+// How many most-recent messages we keep on disk per chat for instant cold-open.
+const DB_CACHE_LIMIT = 100;
 let messagesRequestSeq = 0;
+
+// Read the last N messages of a chat straight from SQLite (oldest->newest), for an instant
+// render on cold open before the network responds. Returns [] if nothing is cached yet.
+async function loadMessagesFromDb(phone: string): Promise<any[]> {
+  try {
+    const rows = await queryPage<any>(MESSAGES_TABLE, {
+      where: 'chatPhone = ?',
+      params: [phone],
+      orderBy: 'createdOnMs DESC',
+      limit: DB_CACHE_LIMIT,
+    });
+    return rows.reverse();
+  } catch {
+    return [];
+  }
+}
+
+// Persist a chat's messages to SQLite (fire-and-forget). Optimistic temp_ rows are skipped by
+// the mapper so the on-disk cache only ever holds server-confirmed messages.
+function persistMessages(phone: string, msgs: any[]): void {
+  if (!phone || !msgs || msgs.length === 0) return;
+  upsertMany(MESSAGES_TABLE, msgs, makeMessageMapper(phone)).catch(() => {});
+}
 
 interface ChatState {
   chats: Chat[];
@@ -51,6 +78,27 @@ interface ChatState {
 }
 
 const messageIdSet = new Set<string>();
+
+// Guards against the SAME outbound message being POSTed twice (which creates two real rows in
+// the DB). Double-fires happen on mobile from rapid taps across the async gap, re-renders, or
+// gesture/press races — the web client doesn't hit this. We key by recipient+text and block an
+// identical send that arrives within a short window of the previous one. The window is small
+// enough that a human re-typing the same word is never blocked (that takes far longer than this),
+// but tight enough to absorb accidental double dispatches.
+const recentSendSignatures = new Map<string, number>();
+const DUPLICATE_SEND_WINDOW_MS = 1500;
+function isDuplicateSend(to: string, text: string): boolean {
+  const sig = `${(to || '').replace(/\D/g, '')}|${(text || '').trim()}`;
+  const now = Date.now();
+  // Opportunistic cleanup so the map can't grow unbounded.
+  for (const [k, t] of recentSendSignatures) {
+    if (now - t > DUPLICATE_SEND_WINDOW_MS) recentSendSignatures.delete(k);
+  }
+  const last = recentSendSignatures.get(sig);
+  if (last !== undefined && now - last < DUPLICATE_SEND_WINDOW_MS) return true;
+  recentSendSignatures.set(sig, now);
+  return false;
+}
 
 // How many messages we last requested from the server, and whether the server returned a
 // full page (meaning older history likely exists). Used for real server-side pagination:
@@ -294,6 +342,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
         } : {}),
       });
       currentServerLimit = PAGE_SIZE * 2;
+
+      // Cold open with no in-memory cache (e.g. first open after an app restart): render the
+      // last messages straight from SQLite so the chat appears instantly instead of showing a
+      // spinner while we wait on the network. The server fetch below then merges in-place.
+      if (switchingChat) {
+        const diskMsgs = await loadMessagesFromDb(phoneNumber);
+        if (
+          diskMsgs.length > 0 &&
+          requestId === messagesRequestSeq &&
+          get().currentPhoneNumber === phoneNumber &&
+          get().allMessages.length === 0
+        ) {
+          messageIdSet.clear();
+          diskMsgs.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
+          const displayed = diskMsgs.slice(-PAGE_SIZE);
+          set({
+            allMessages: diskMsgs,
+            currentMessages: displayed,
+            displayedCount: Math.min(PAGE_SIZE, diskMsgs.length) || PAGE_SIZE,
+            hasMoreMessages: true,
+            isLoadingMessages: false,
+          });
+        }
+      }
     }
 
     try {
@@ -308,14 +380,64 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (requestId !== messagesRequestSeq) return;
       if (get().currentPhoneNumber !== phoneNumber) return;
 
+      // In-place merge: reuse the object reference of every message we already hold whose
+      // visible fields are unchanged, so FlashList does NOT re-diff/remeasure unchanged rows
+      // on refresh (foreground reload, cache->API). Replacing the whole array with brand-new
+      // objects was the main cause of the "flicker / jump to old messages and back" churn.
+      const existingForMerge = get().allMessages;
+      const mergeById = new Map(existingForMerge.map((m: any) => [m.messageId, m]));
+      const merged = deduped.map((m: any) => {
+        const prev = mergeById.get(m.messageId);
+        if (!prev) return m;
+        const sameStatus = (prev.status || '') === (m.status || '');
+        const sameText = (prev.text || '') === (m.text || '');
+        const sameReactions =
+          JSON.stringify(prev.reactions || null) === JSON.stringify(m.reactions || null);
+        if (sameStatus && sameText && sameReactions) return prev;
+        return { ...prev, ...m };
+      });
+      // Carry over optimistic/local messages (temp_*) the server doesn't know about yet,
+      // so a refresh mid-send doesn't make the pending bubble disappear. BUT drop any temp whose
+      // real server twin is already present in this fetch — otherwise a refresh that lands after
+      // the message persisted (but before the WS echo replaced the temp) leaves BOTH the temp and
+      // the real message on screen, and the later WS echo can't fix it (its id is already known).
+      const serverIds = new Set(deduped.map((m: any) => m.messageId));
+      const hasServerTwin = (temp: any) => {
+        const tText = (temp.text || temp.body || '').trim();
+        const tMedia = temp.gmbt_mediaUrl || temp.mediaUrl || temp.MediaUrl || '';
+        const tDir = (temp.direction || '').toLowerCase();
+        const tTs = new Date(temp.createdOn || temp.timestamp || '').getTime() || 0;
+        return deduped.some((s: any) => {
+          if (s.messageId?.startsWith('temp_')) return false;
+          const sDir = (s.direction || '').toLowerCase();
+          if (tDir && sDir && tDir !== sDir) return false;
+          const sTs = new Date(s.createdOn || s.timestamp || '').getTime() || 0;
+          if (tTs && sTs && Math.abs(sTs - tTs) > 120000) return false;
+          const sText = (s.text || s.body || '').trim();
+          if (tText) return sText === tText;
+          // No text → reconcile media temps by type proximity (local optimistic uri can't equal
+          // the server url), otherwise keep the temp.
+          if (tMedia) {
+            const tType = String(temp.type || temp.messageType || '').toLowerCase();
+            const sType = String(s.type || s.messageType || '').toLowerCase();
+            return !!sTs && (!tType || !sType || tType === sType);
+          }
+          return false;
+        });
+      };
+      const pendingExtras = existingForMerge.filter(
+        (m: any) => m.messageId?.startsWith('temp_') && !serverIds.has(m.messageId) && !hasServerTwin(m),
+      );
+      if (pendingExtras.length > 0) merged.push(...pendingExtras);
+
       // Preserve how many messages are currently revealed (e.g. user scrolled up) when
       // refreshing a cached chat; otherwise start at one page.
       const desiredCount = Math.max(PAGE_SIZE, get().displayedCount || PAGE_SIZE);
-      const displayed = deduped.slice(-desiredCount);
-      const newDisplayedCount = Math.min(desiredCount, deduped.length) || PAGE_SIZE;
-      const newHasMore = deduped.length > desiredCount || serverMayHaveMore;
+      const displayed = merged.slice(-desiredCount);
+      const newDisplayedCount = Math.min(desiredCount, merged.length) || PAGE_SIZE;
+      const newHasMore = merged.length > desiredCount || serverMayHaveMore;
       messageIdSet.clear();
-      deduped.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
+      merged.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
 
       // Anti-flicker: when the refresh (cache -> API, AppState foreground, etc.) yields the
       // exact same visible messages (same ids + statuses in the same order), keep the previous
@@ -331,19 +453,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         );
 
       set({
-        allMessages: deduped,
+        allMessages: merged,
         currentMessages: sameVisibleList ? prevVisible : displayed,
         displayedCount: newDisplayedCount,
         hasMoreMessages: newHasMore,
         isLoadingMessages: false,
       });
       setMessageCache(phoneNumber, {
-        allMessages: deduped,
+        allMessages: merged,
         displayedCount: newDisplayedCount,
         hasMoreMessages: newHasMore,
         serverLimit: limit,
         serverMayHaveMore,
       });
+      persistMessages(phoneNumber, merged);
     } catch {
       if (requestId !== messagesRequestSeq) return;
       if (get().currentPhoneNumber !== phoneNumber) return;
@@ -370,28 +493,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    // Case 2: local cache exhausted but the server has more → fetch a bigger batch.
+    // Case 2: local cache exhausted but the server has more → fetch the FULL history once.
     if (serverMayHaveMore && currentPhoneNumber && currentOrg) {
       const org = currentOrg;
       set({ isLoadingOlderMessages: true });
       const phoneAtRequest = currentPhoneNumber;
       try {
-        const nextLimit = currentServerLimit + PAGE_SIZE * 4;
-        const raw = await chatsApi.getMessages(org, phoneAtRequest, nextLimit);
+        // Re-fetching an ever-growing window on every scroll-up replaced every message object
+        // on every page. FlashList v2's maintainVisibleContentPosition then loses its anchor and
+        // the list visibly JUMPS. Instead we fetch all remaining history a single time (no limit),
+        // merge it while PRESERVING the identity of messages we already hold, and reveal it
+        // locally page-by-page via Case 1 — which is a pure prepend that MVCP handles smoothly.
+        const raw = await chatsApi.getMessages(org, phoneAtRequest);
         if (get().currentPhoneNumber !== phoneAtRequest) return;
-        const rawCount = Array.isArray(raw) ? raw.length : 0;
-        serverMayHaveMore = rawCount >= nextLimit;
-        currentServerLimit = nextLimit;
-        const deduped = normalizeAndDedupeMessages(raw);
-        deduped.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
-        const revealed = Math.min(newCount, deduped.length);
+        const dedupedAll = normalizeAndDedupeMessages(raw);
+
+        // Reuse existing object refs for messages we already rendered so their rows don't
+        // re-diff/remeasure; only the older rows are new objects, prepended at the front.
+        const existing = get().allMessages;
+        const byId = new Map(existing.map((m: any) => [m.messageId, m]));
+        const merged = dedupedAll.map((m: any) => byId.get(m.messageId) || m);
+        // Carry over optimistic/local messages (temp_*) that the server doesn't know about yet.
+        const allIds = new Set(dedupedAll.map((m: any) => m.messageId));
+        const extras = existing.filter((m: any) => !allIds.has(m.messageId));
+        if (extras.length > 0) merged.push(...extras);
+
+        merged.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
+        serverMayHaveMore = false;
+        currentServerLimit = merged.length;
+        const revealed = Math.min(newCount, merged.length);
+        const newHasMore = merged.length > revealed;
         set({
-          allMessages: deduped,
-          currentMessages: deduped.slice(-revealed),
+          allMessages: merged,
+          currentMessages: merged.slice(-revealed),
           displayedCount: revealed,
-          hasMoreMessages: deduped.length > revealed || serverMayHaveMore,
+          hasMoreMessages: newHasMore,
           isLoadingOlderMessages: false,
         });
+        setMessageCache(phoneAtRequest, {
+          allMessages: merged,
+          displayedCount: revealed,
+          hasMoreMessages: newHasMore,
+          serverLimit: currentServerLimit,
+          serverMayHaveMore: false,
+        });
+        persistMessages(phoneAtRequest, merged);
       } catch {
         set({ isLoadingOlderMessages: false });
       }
@@ -408,6 +554,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (organization, to, message, senderName, userId, replyToMessageId?, wabaNumber?, senderEmail?, fromNumberId?) => {
+    // Absorb accidental double dispatches so the same text never creates two DB rows.
+    if (isDuplicateSend(to, message)) {
+      return;
+    }
     set({ isSending: true });
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const fromNumber = wabaNumber || get().activeWabaNumber || '';
@@ -607,12 +757,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (allMessages.some((m) => m.messageId === message.messageId)) return;
     if (currentMessages.some((m) => m.messageId === message.messageId)) return;
 
-    // Content-based duplicate check: same text + direction within 2s window
+    // Content-based duplicate check: same text + direction within 2s window. Skip optimistic
+    // temp_ rows here — those are reconciled by the temp-replacement step below. If we treated a
+    // matching temp as a "duplicate" and dropped the echo, the temp would linger with its temp id
+    // (never picking up the real messageId/status), and any direction-casing mismatch downstream
+    // could then surface BOTH the temp and a later refetch of the real message as two bubbles.
     const msgText = message.text || (message as any).body || '';
     if (msgText) {
       const msgTs = new Date(message.createdOn || message.timestamp || '').getTime();
       const isDuplicate = currentMessages.some((m) => {
-        if (m.direction !== message.direction) return false;
+        if (m.messageId?.startsWith('temp_')) return false;
+        if ((m.direction || '').toLowerCase() !== (message.direction || '').toLowerCase()) return false;
         const mText = m.text || (m as any).body || '';
         if (mText !== msgText) return false;
         const mTs = new Date(m.createdOn || m.timestamp || '').getTime();
@@ -635,14 +790,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // We already gated to the current chat above, so we match the pending temp by content +
     // outbound (NOT by an exact `to` string — phone formats from the WS echo frequently differ
     // from what we sent, which used to leave both the optimistic and the echo on screen).
+    // Optimistic temps are ALWAYS our own outbound messages, so we attempt reconciliation for any
+    // echo that isn't explicitly inbound. Requiring dir === 'outbound' was a bug: a WS echo with a
+    // missing/lowercase direction skipped replacement and got appended as a second bubble.
     const dir = (message.direction || '').toLowerCase();
-    if (dir === 'outbound' || message.sentFromApp) {
+    if (dir !== 'inbound') {
       const incomingText = (message.text || (message as any).body || '').trim();
       const incomingMedia = (message as any).gmbt_mediaUrl || (message as any).mediaUrl || (message as any).MediaUrl || '';
       const incomingType = String((message as any).type || (message as any).messageType || '').toLowerCase();
       const isLocalUri = (u: string) => /^(file:|content:|ph:|assets-library:)/i.test(u);
-      const tempIdx = currentMessages.findIndex((m) => {
-        if (!m.messageId?.startsWith('temp_') || m.status === 'failed') return false;
+      const isReconcilableTemp = (m: any) =>
+        m.messageId?.startsWith('temp_') && !m.messageId.startsWith('temp_internal_') && m.status !== 'failed';
+      let tempIdx = currentMessages.findIndex((m) => {
+        if (!isReconcilableTemp(m)) return false;
         const mText = (m.text || (m as any).body || '').trim();
         const mMedia = (m as any).gmbt_mediaUrl || (m as any).mediaUrl || (m as any).MediaUrl || '';
         const mType = String((m as any).type || (m as any).messageType || '').toLowerCase();
@@ -658,6 +818,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         return mText === '' && !mMedia;
       });
+      // Time-proximity fallback (mirrors web): an OUTBOUND echo always corresponds to one of our
+      // pending optimistic temps. If the exact text/media match above missed (e.g. the server
+      // normalized the text, returned it in a different field, or used different phone/url
+      // formatting), reconcile against the OLDEST pending non-failed temp created within the last
+      // 60s. Without this, the echo gets appended as a 2nd bubble that the WS path can never clean
+      // up later (the real id lands in messageIdSet, so a re-delivery short-circuits) — exactly the
+      // "message shows twice only right after sending" report.
+      if (tempIdx === -1) {
+        const echoTs = new Date(message.createdOn || message.timestamp || Date.now()).getTime();
+        let bestTs = Infinity;
+        currentMessages.forEach((m, i) => {
+          if (!isReconcilableTemp(m)) return;
+          const mTs = new Date(m.createdOn || (m as any).timestamp || '').getTime() || 0;
+          if (Math.abs(echoTs - mTs) > 60000) return;
+          if (mTs < bestTs) { bestTs = mTs; tempIdx = i; }
+        });
+      }
       if (tempIdx !== -1) {
         messageIdSet.add(message.messageId);
         set({
@@ -666,6 +843,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             m.messageId === currentMessages[tempIdx].messageId ? message : m
           ),
         });
+        persistMessages(currentPhoneNumber, [message]);
         return;
       }
     }
@@ -675,6 +853,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentMessages: [...currentMessages, message],
       allMessages: [...allMessages, message],
     });
+    persistMessages(currentPhoneNumber, [message]);
   },
 
   updateMessage: (messageId, updates) => {

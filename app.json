@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gambot",
     "slug": "gambot-mobile",
-    "version": "1.36.0",
+    "version": "1.54.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "50",
+      "buildNumber": "59",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -34,7 +34,7 @@
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 81,
+      "versionCode": 114,
       "minSdkVersion": 26,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
@@ -91,7 +91,8 @@
         {
           "calendarPermission": "Allow Gambot to access your calendar to create events."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "extra": {
       "router": {},

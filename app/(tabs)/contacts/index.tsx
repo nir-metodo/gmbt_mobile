@@ -53,8 +53,12 @@ export default function ContactsListScreen() {
 
   const contacts = useContactStore((s) => s.contacts);
   const isLoading = useContactStore((s) => s.isLoading);
+  const isLoadingMore = useContactStore((s) => s.isLoadingMore);
+  const facets = useContactStore((s) => s.facets);
   const storeSetSearchQuery = useContactStore((s) => s.setSearchQuery);
+  const setStoreFilters = useContactStore((s) => s.setFilters);
   const loadContacts = useContactStore((s) => s.loadContacts);
+  const loadMore = useContactStore((s) => s.loadMore);
   const deleteContact = useContactStore((s) => s.deleteContact);
 
   const [searchInput, setSearchInput] = useState('');
@@ -79,6 +83,22 @@ export default function ContactsListScreen() {
   const swipeableRefs = useRef(new Map<string, Swipeable>()).current;
 
   const contactsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'contacts');
+
+  // Push the debounced search term and the active filters down into the store, which runs them
+  // as indexed/FTS queries against SQLite (so we never filter a huge in-memory array on the JS thread).
+  useEffect(() => {
+    storeSetSearchQuery(debouncedSearch.trim());
+  }, [debouncedSearch, storeSetSearchQuery]);
+
+  useEffect(() => {
+    setStoreFilters({
+      mode: filterMode,
+      tag: selectedTag,
+      ownerName: filterOwner,
+      status: filterStatus,
+      sortBy,
+    });
+  }, [filterMode, selectedTag, filterOwner, filterStatus, sortBy, setStoreFilters]);
 
   useEffect(() => {
     if (organization) {
@@ -107,94 +127,28 @@ export default function ContactsListScreen() {
     }, [organization, loadContacts, contactsDV, currentUserId])
   );
 
-  const allTags = useMemo(() => {
-    const tagSet = new Set<string>();
-    contacts.forEach((c) => {
-      extractContactTags(c.keys).forEach((tag) => tagSet.add(tag));
-    });
-    return Array.from(tagSet).sort();
-  }, [contacts]);
+  // Facets (tags/owners/statuses) come from the store, which derives them from the whole DB
+  // rather than only the rows currently loaded into the window.
+  const allTags = facets.tags;
+  const allOwners = facets.owners;
+  const allStatuses = facets.statuses;
 
-  const allOwners = useMemo(() => {
-    const ownerSet = new Set<string>();
-    contacts.forEach((c) => {
-      if (c.ownerName?.trim()) ownerSet.add(c.ownerName.trim());
-    });
-    return Array.from(ownerSet).sort();
-  }, [contacts]);
-
-  const allStatuses = useMemo(() => {
-    const statusSet = new Set<string>();
-    contacts.forEach((c) => {
-      if (c.lastConversationStatus?.trim()) statusSet.add(c.lastConversationStatus.trim());
-    });
-    return Array.from(statusSet).sort();
-  }, [contacts]);
-
+  // Search + filters + sort are now applied at the DB level inside the store; `contacts` is the
+  // already-filtered window. The only remaining client-side pass is the assignedWhatsAppNumbers
+  // visibility rule (an org-level config not modeled as an indexed column), applied over the
+  // small visible window.
   const filteredContacts = useMemo(() => {
-    let result = contacts;
-
-    // Auto-filter by assignedWhatsAppNumbers (same as web Contacts page)
     const assignedNums = user?.assignedWhatsAppNumbers || [];
-    if (assignedNums.length > 0) {
-      result = result.filter((c: any) => {
-        const ids = c.wabaPhoneNumberIds;
-        if (Array.isArray(ids) && ids.length > 0) return ids.some((id: string) => assignedNums.includes(id));
-        if (typeof ids === 'string' && ids) return assignedNums.includes(ids);
-        if (c.wabaPhoneNumberId) return assignedNums.includes(c.wabaPhoneNumberId);
-        if (c.lastFromNumberId) return assignedNums.includes(c.lastFromNumberId);
-        return true; // contacts without number association are visible to all
-      });
-    }
-
-    if (debouncedSearch.trim()) {
-      const q = debouncedSearch.trim().toLowerCase();
-      result = result.filter(
-        (c) =>
-          c.name?.toLowerCase().includes(q) ||
-          c.phoneNumber?.includes(q) ||
-          c.email?.toLowerCase().includes(q) ||
-          extractContactTags(c.keys).some((tag) => tag.toLowerCase().includes(q)),
-      );
-    }
-
-    if (filterMode === 'myContacts') {
-      result = result.filter((c) => c.ownerId === currentUserId);
-    } else if (filterMode === 'recent') {
-      result = [...result].sort((a, b) => {
-        const dateA = a.modifiedOn || a.createdOn || '';
-        const dateB = b.modifiedOn || b.createdOn || '';
-        return dateB.localeCompare(dateA);
-      });
-    }
-
-    if (selectedTag) {
-      result = result.filter((c) => {
-        const tags = extractContactTags(c.keys);
-        return tags.includes(selectedTag);
-      });
-    }
-
-    if (filterOwner) {
-      result = result.filter((c) => c.ownerName?.trim() === filterOwner);
-    }
-
-    if (filterStatus) {
-      result = result.filter((c) =>
-        c.lastConversationStatus?.toLowerCase() === filterStatus.toLowerCase(),
-      );
-    }
-
-    if (sortBy === 'name') {
-      result = [...result].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    } else if (sortBy === 'createdOn') {
-      result = [...result].sort((a, b) => (b.createdOn || '').localeCompare(a.createdOn || ''));
-    } else if (sortBy === 'modifiedOn') {
-      result = [...result].sort((a, b) => (b.modifiedOn || '').localeCompare(a.modifiedOn || ''));
-    }
-
-    return result;
-  }, [contacts, debouncedSearch, filterMode, currentUserId, selectedTag, filterOwner, filterStatus, sortBy, user?.assignedWhatsAppNumbers]);
+    if (assignedNums.length === 0) return contacts;
+    return contacts.filter((c: any) => {
+      const ids = c.wabaPhoneNumberIds;
+      if (Array.isArray(ids) && ids.length > 0) return ids.some((id: string) => assignedNums.includes(id));
+      if (typeof ids === 'string' && ids) return assignedNums.includes(ids);
+      if (c.wabaPhoneNumberId) return assignedNums.includes(c.wabaPhoneNumberId);
+      if (c.lastFromNumberId) return assignedNums.includes(c.lastFromNumberId);
+      return true; // contacts without number association are visible to all
+    });
+  }, [contacts, user?.assignedWhatsAppNumbers]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
@@ -657,6 +611,15 @@ export default function ContactsListScreen() {
             keyExtractor={(item) => item.id}
             ItemSeparatorComponent={ContactDivider}
             ListEmptyComponent={renderEmpty}
+            onEndReached={loadMore}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              isLoadingMore ? (
+                <View style={{ paddingVertical: 16 }}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                </View>
+              ) : null
+            }
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}

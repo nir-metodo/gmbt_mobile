@@ -194,6 +194,7 @@ export const ENDPOINTS = {
   GET_RECORDING_SETTINGS: '/api/Webhooks/GetRecordingSettings',
   UPDATE_RECORDING_SETTINGS: '/api/Webhooks/UpdateRecordingSettings',
   REPORT_DEVICE_CALL_EVENT: '/api/Webhooks/ReportDeviceCallEvent',
+  SET_DEVICE_CALL_REPORTING: '/api/Webhooks/SetDeviceCallReporting',
 
   // Media Manager
   GET_MEDIA_FOLDERS: '/api/Webhooks/GetMediaFolders',

@@ -14,7 +14,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "^8.4.4",
-    "@shopify/flash-list": "2.0.2",
+    "@shopify/flash-list": "2.3.2",
     "axios": "^1.13.6",
     "date-fns": "^4.1.0",
     "expo": "~54.0.0",
@@ -34,6 +34,7 @@
     "expo-router": "~6.0.23",
     "expo-secure-store": "~15.0.8",
     "expo-splash-screen": "~31.0.13",
+    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "expo-updates": "~29.0.17",
     "expo-web-browser": "~15.0.11",
@@ -57,6 +58,13 @@
     "@types/react": "~19.1.10",
     "babel-plugin-transform-remove-console": "^6.9.4",
     "typescript": "~5.9.2"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "@shopify/flash-list"
+      ]
+    }
   },
   "private": true
 }
