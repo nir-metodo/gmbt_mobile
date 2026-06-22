@@ -26,7 +26,6 @@ import {
   TouchableOpacity,
   InteractionManager,
 } from 'react-native';
-import { FlashList } from '@shopify/flash-list';
 import { Text, IconButton, Menu, Avatar, Button, Divider } from 'react-native-paper';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import {
@@ -322,7 +321,7 @@ export default function ChatConversationScreen() {
   const [templateActiveTab, setTemplateActiveTab] = useState<'quick' | 'manual'>('quick');
   const [quickTemplateSearch, setQuickTemplateSearch] = useState('');
   const [quickOpenVarValues, setQuickOpenVarValues] = useState<Record<string, string>>({});
-  const flatListRef = useRef<FlashList<ListItem>>(null);
+  const flatListRef = useRef<FlatList<ListItem>>(null);
   const scrollBtnRef = useRef<ScrollToBottomHandle>(null);
   const chatInputRef = useRef<ChatInputRef>(null);
   const wsRef = useRef<WebSocketService | null>(null);
@@ -336,16 +335,20 @@ export default function ChatConversationScreen() {
   // newest message, but the variable-height rows can visibly "travel" into place for a moment.
   // Revealing only after onLoad means the chat appears already locked on the last message.
   const [listReady, setListReady] = useState(false);
-  const handleListLoad = useCallback(() => setListReady(true), []);
+  // FlatList has no onLoad; reveal the list the moment it first has measurable content. Inverted
+  // lists open at offset 0 (newest) instantly, so there's nothing to wait for beyond first layout.
+  const handleContentSizeChange = useCallback(() => setListReady(true), []);
 
-  // Imperative "snap to newest". With startRenderingFromBottom the newest message is at the END of
-  // the (oldest→newest) data, so scrolling to the bottom is scrollToEnd.
+  // Imperative "snap to newest". The list is INVERTED (mirrors the web's column-reverse), so the
+  // newest message sits at the visual bottom == scroll offset 0. scrollToOffset(0) is the rock-solid
+  // way to jump to it (scrollToEnd on an inverted list goes to the OLDEST message).
   const scrollToNewest = useCallback((animated = true) => {
-    try { flatListRef.current?.scrollToEnd({ animated }); } catch {}
+    try { flatListRef.current?.scrollToOffset({ offset: 0, animated }); } catch {}
   }, []);
 
-  // Re-hide on chat switch (the FlashList remounts via key={phoneNumber}, so onLoad fires again).
-  // A timeout fallback guarantees the list is always revealed even if onLoad somehow doesn't fire.
+  // Re-hide on chat switch (the list remounts via key={phoneNumber}). An inverted FlatList opens
+  // already pinned to the newest message (offset 0) with no "travel", so we reveal it as soon as it
+  // has content (onContentSizeChange) — a timeout fallback guarantees it's always shown.
   useEffect(() => {
     setListReady(false);
     const t = setTimeout(() => setListReady(true), 1200);
@@ -1768,11 +1771,14 @@ export default function ChatConversationScreen() {
       items.push({ kind: 'message', data: msg, isOutbound, showTail });
     }
 
-    // Data stays oldest→newest (data[0] = oldest = top). FlashList v2 pins the view to the newest
-    // message via maintainVisibleContentPosition.startRenderingFromBottom — this is the v2-correct
-    // equivalent of the web's column-reverse container. We deliberately do NOT reverse the array:
-    // reversing it while MVCP is active corrupts v2's scroll-position math and causes jumps on
-    // pagination (a documented v2 regression), and the `inverted` prop is a no-op in v2.
+    // Return NEWEST-FIRST for the INVERTED FlatList (data[0] = newest = visual bottom). This is the
+    // exact RN equivalent of the web's column-reverse chat container, and the single most stable
+    // chat-list pattern: the list auto-pins to the bottom, new messages prepend at index 0 without
+    // shifting the viewport, and older messages append at the end (loaded via onEndReached) without
+    // any maintainVisibleContentPosition math to corrupt. Reversing the already-built items array
+    // (separators + messages) keeps every date separator correctly placed above its day's group once
+    // rendered bottom-up by the inverted list.
+    items.reverse();
     return items;
   }, [currentMessages, timelineEntries, lang, messageMode, starredFilter, searchQuery, user, phoneNumber]);
 
@@ -2138,33 +2144,29 @@ export default function ChatConversationScreen() {
   }, []);
 
   const loadingOlderRef = useRef(false);
-  // Blocks scroll-up pagination right after a chat opens. startRenderingFromBottom emits transient
-  // onScroll events while the list settles to the bottom; without this guard those events can
-  // satisfy the pagination check and immediately load older messages, prepending history that makes
-  // the list visibly jump (the long-reported "flicker / jump / won't stop loading" on open).
+  // Blocks pagination right after a chat opens. On a short chat that fits entirely on screen the
+  // far (oldest) edge is within onEndReached's threshold immediately, so without this guard the list
+  // would fetch the FULL server history and append hundreds of rows on open. Older history should
+  // only load when the user has deliberately scrolled UP toward the oldest message.
   const initialPaginationGuardRef = useRef(true);
 
   // onScroll only tracks UI affordances: near-bottom (for the FAB + the pagination guard below).
-  // Pagination is driven by FlashList's onStartReached (the v2 API for "reached the top").
+  // The list is INVERTED, so the visual bottom (newest) is scroll offset 0.
   const handleScroll = useCallback((e: any) => {
-    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-    const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+    const { contentOffset } = e.nativeEvent;
+    const distanceFromBottom = contentOffset.y; // inverted: 0 == pinned to newest
     isNearBottomRef.current = distanceFromBottom < 120;
     // Update the FAB via its imperative handle so toggling it does NOT re-render the screen.
     scrollBtnRef.current?.setVisible(distanceFromBottom > 400);
   }, []);
 
-  // Load older messages when the user scrolls to the top. onStartReached is the v2 API for the
-  // leading edge; startRenderingFromBottom places the initial viewport at the END (newest), so on a
-  // normal-length chat this does not fire on open.
-  const handleStartReached = useCallback(() => {
+  // Load older messages when the user scrolls toward the oldest message. On an INVERTED list the
+  // oldest message is at the END of the data, so "reached the top" maps to onEndReached — which is
+  // well-behaved (no transient open-time fires like FlashList's onStartReached).
+  const handleEndReached = useCallback(() => {
     if (initialPaginationGuardRef.current) return;
-    // NEVER auto-load history while the viewport is pinned to the newest message. On a short/medium
-    // chat the top is permanently within onStartReached's threshold, so without this guard the list
-    // would fire pagination the instant the open-guard released — fetching the FULL server history
-    // and prepending hundreds of rows, which makes the list jump and re-measure for several seconds
-    // ("won't stop loading / jumps up and down / takes ~10s to settle at the bottom"). Older history
-    // should only load when the user has deliberately scrolled UP toward the top.
+    // Never auto-load history while still pinned to the newest message (covers short chats where the
+    // oldest edge is permanently within the onEndReached threshold).
     if (isNearBottomRef.current) return;
     if (!hasMoreMessages || isLoadingOlderMessages || loadingOlderRef.current) return;
     loadingOlderRef.current = true;
@@ -2354,39 +2356,6 @@ export default function ChatConversationScreen() {
     if (id) return id;
     return `msg-${getTs(item.data)}-${(item.data.text || (item.data as any).body || '').slice(0, 24)}`;
   }, []);
-
-  // CRITICAL for media chats: FlashList recycles a cell only into another cell of the SAME item
-  // type. If every message shares one type, a ~40px text row gets recycled into a ~220px media
-  // row (and back) as you scroll, so FlashList constantly re-measures wildly different heights —
-  // which thrashes layout and blanks/“disappears” rows. Splitting messages into homogeneous pools
-  // (text vs each media kind) keeps every recycle within a consistent height, killing that churn.
-  const getItemType = useCallback((item: ListItem) => {
-    if (item.kind !== 'message') return item.kind; // 'separator' | 'timeline'
-    const m: any = item.data;
-    const t = String(m.type || m.messageType || '').toLowerCase();
-    if (t === 'image' || t.startsWith('image/')) return 'msg-image';
-    if (t === 'video' || t.startsWith('video/')) return 'msg-video';
-    if (t === 'audio' || t.startsWith('audio/') || t === 'voice' || t === 'ptt') return 'msg-audio';
-    if (t === 'document' || t === 'file' || t.startsWith('application/')) return 'msg-document';
-    if (t === 'template') return 'msg-template';
-    // Type missing but a media URL is present → still a (tall) media row, not a text row.
-    const url = m.gmbt_mediaUrl || m.mediaUrl || m.MediaUrl || m.media_url;
-    if (url) return 'msg-media';
-    return 'msg-text';
-  }, []);
-
-  // The v2-correct equivalent of the web's column-reverse chat container: render from the bottom
-  // and keep the newest message pinned. Stable object so screen re-renders (FAB toggles, status
-  // ticks) don't make FlashList reconfigure. animateAutoScrollToBottom:false snaps instantly
-  // instead of visibly "travelling" up/down while variable-height media rows mount on open.
-  const maintainVisibleContentPositionConfig = useMemo(
-    () => ({
-      startRenderingFromBottom: true,
-      autoscrollToBottomThreshold: 0.2,
-      animateAutoScrollToBottom: false,
-    }),
-    [],
-  );
 
   return (
     <>
@@ -2766,24 +2735,27 @@ export default function ChatConversationScreen() {
         ) : (
           <View style={{ flex: 1 }}>
           <View style={{ flex: 1, opacity: listReady ? 1 : 0 }}>
-          <FlashList
+          <FlatList
             key={String(phoneNumber)}
             ref={flatListRef}
             data={listData}
             renderItem={renderItem}
             keyExtractor={keyExtractor}
-            getItemType={getItemType}
+            inverted
             onScroll={handleScroll}
             scrollEventThrottle={16}
-            onStartReached={handleStartReached}
-            onStartReachedThreshold={0.1}
-            onLoad={handleListLoad}
+            onEndReached={handleEndReached}
+            onEndReachedThreshold={0.15}
+            onContentSizeChange={handleContentSizeChange}
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
-            drawDistance={1000}
-            maintainVisibleContentPosition={maintainVisibleContentPositionConfig}
-            ListHeaderComponent={
+            removeClippedSubviews={false}
+            windowSize={11}
+            maxToRenderPerBatch={10}
+            initialNumToRender={15}
+            updateCellsBatchingPeriod={50}
+            ListFooterComponent={
               isLoadingOlderMessages ? (
                 <View style={styles.olderMsgsLoader}>
                   <ActivityIndicator size="small" color={theme.colors.primary} />
