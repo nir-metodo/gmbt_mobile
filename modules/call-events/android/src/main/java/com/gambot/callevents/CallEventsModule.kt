@@ -61,6 +61,9 @@ class CallEventsModule : Module() {
         editor.putBoolean(KEY_ENABLED, enabled)
         editor.putString(KEY_BASE_URL, (config["baseUrl"] as? String) ?: "")
         editor.putString(KEY_TOKEN, (config["token"] as? String) ?: "")
+        // Refresh token + endpoint let the background sender renew an expired access token on its own.
+        editor.putString(KEY_REFRESH_TOKEN, (config["refreshToken"] as? String) ?: "")
+        editor.putString(KEY_REFRESH_URL, (config["refreshUrl"] as? String) ?: "")
         editor.putString(KEY_ORG, (config["organization"] as? String) ?: "")
         editor.putString(KEY_USER_ID, (config["userId"] as? String) ?: "")
         editor.putString(KEY_USER_NAME, (config["userName"] as? String) ?: "")
@@ -132,6 +135,8 @@ class CallEventsModule : Module() {
     const val KEY_ENABLED = "enabled"
     const val KEY_BASE_URL = "baseUrl"
     const val KEY_TOKEN = "token"
+    const val KEY_REFRESH_TOKEN = "refreshToken"
+    const val KEY_REFRESH_URL = "refreshUrl"
     const val KEY_ORG = "organization"
     const val KEY_USER_ID = "userId"
     const val KEY_USER_NAME = "userName"

@@ -136,6 +136,10 @@ export default function ContactDetailScreen() {
   const [ownerPickerExpanded, setOwnerPickerExpanded] = useState(false);
   const [flagSaving, setFlagSaving] = useState(false);
   const [addTaskVisible, setAddTaskVisible] = useState(false);
+  const [consentModalVisible, setConsentModalVisible] = useState(false);
+  const [consentSource, setConsentSource] = useState('manual');
+  const [consentCustomSource, setConsentCustomSource] = useState('');
+  const [consentType, setConsentType] = useState('Explicit');
 
   useEffect(() => {
     // Always load the full record for an existing contact (even if a sparse copy is in the list
@@ -507,44 +511,98 @@ export default function ContactDetailScreen() {
     [organization, contact, user, refetchContact],
   );
 
-  const handleMarkConsent = useCallback(
-    (value: boolean) => {
-      setMenuVisible(false);
-      const run = async () => {
-        setFlagSaving(true);
-        try {
-          const nowIso = new Date().toISOString();
-          const patch: Partial<Contact> = value
-            ? {
-                consent: true,
-                consentSource: 'manual',
-                consentDate: nowIso,
-                consentText: i18n.language !== 'en' ? 'הסכמה ידנית' : 'Manual consent',
-                consentType: 'Explicit',
-              }
-            : { consent: false, consentSource: null, consentDate: null, consentText: null, consentType: null };
-          await persistContactFlags(patch);
-        } catch {
-          Alert.alert(t('common.error'));
-        } finally {
-          setFlagSaving(false);
-        }
+  const buildConsentText = useCallback(
+    (source: string) => {
+      const he: Record<string, string> = {
+        manual: 'הסכמה ידנית',
+        website_form: 'הלקוח אישר קבלת פניות דרך טופס באתר',
+        facebook_lead_ads: 'הלקוח אישר קבלת פניות דרך טופס לידים בפייסבוק',
+        google_lead_gen: 'הלקוח אישר קבלת פניות דרך טופס לידים בגוגל',
+        excel_import: 'הלקוח נוסף ברשימה מיובאת עם אישור consent',
+        physical_form: 'הלקוח חתם על טופס פיזי',
+        phone_call: 'הלקוח אישר טלפונית קבלת פניות',
+        event_registration: 'הלקוח נרשם לאירוע והסכים לקבלת עדכונים',
+        whatsapp_optin: 'הלקוח אישר קבלת הודעות וואטסאפ',
       };
-      if (!value) {
-        Alert.alert(
-          t('contacts.consentNotAgreed', 'לא הסכימו'),
-          t('contacts.markNotAgreedConfirm', 'לסמן שאיש הקשר אינו מסכים לקבל הודעות?'),
-          [
-            { text: t('common.cancel'), style: 'cancel' },
-            { text: t('common.confirm', 'אישור'), style: 'destructive', onPress: run },
-          ],
-        );
-      } else {
-        run();
-      }
+      const en: Record<string, string> = {
+        manual: 'Manual consent',
+        website_form: 'Customer opted in via website form',
+        facebook_lead_ads: 'Customer opted in via Facebook lead form',
+        google_lead_gen: 'Customer opted in via Google lead form',
+        excel_import: 'Added from an imported list with consent',
+        physical_form: 'Customer signed a physical form',
+        phone_call: 'Customer agreed over the phone',
+        event_registration: 'Customer registered for an event and opted in',
+        whatsapp_optin: 'Customer opted in to WhatsApp messages',
+      };
+      const map = i18n.language !== 'en' ? he : en;
+      if (map[source]) return map[source];
+      return i18n.language !== 'en'
+        ? `הלקוח אישר קבלת פניות (${source})`
+        : `Customer opted in (${source})`;
     },
-    [persistContactFlags, t, i18n.language],
+    [i18n.language],
   );
+
+  const handleSaveConsent = useCallback(() => {
+    const finalSource = (consentSource === 'other' ? consentCustomSource.trim() : consentSource) || 'manual';
+    const run = async () => {
+      setFlagSaving(true);
+      try {
+        const nowIso = new Date().toISOString();
+        await persistContactFlags({
+          consent: true,
+          consentSource: finalSource,
+          consentDate: nowIso,
+          consentText: buildConsentText(finalSource),
+          consentType,
+        });
+        setConsentModalVisible(false);
+      } catch {
+        Alert.alert(t('common.error'));
+      } finally {
+        setFlagSaving(false);
+      }
+    };
+    run();
+  }, [consentSource, consentCustomSource, consentType, persistContactFlags, buildConsentText, t]);
+
+  const openConsentModal = useCallback(() => {
+    setMenuVisible(false);
+    const knownSources = ['manual', 'website_form', 'facebook_lead_ads', 'google_lead_gen', 'excel_import', 'physical_form', 'phone_call', 'event_registration', 'whatsapp_optin'];
+    const existing = ((contact as any)?.consentSource || '').toString();
+    if (existing && !knownSources.includes(existing)) {
+      setConsentSource('other');
+      setConsentCustomSource(existing);
+    } else {
+      setConsentSource(existing || 'manual');
+      setConsentCustomSource('');
+    }
+    setConsentType((contact as any)?.consentType || 'Explicit');
+    setConsentModalVisible(true);
+  }, [contact]);
+
+  const handleRevokeConsent = useCallback(() => {
+    setMenuVisible(false);
+    const run = async () => {
+      setFlagSaving(true);
+      try {
+        await persistContactFlags({ consent: false, consentSource: null, consentDate: null, consentText: null, consentType: null });
+      } catch {
+        Alert.alert(t('common.error'));
+      } finally {
+        setFlagSaving(false);
+      }
+    };
+    Alert.alert(
+      t('contacts.consentNotAgreed', 'לא הסכימו'),
+      t('contacts.markNotAgreedConfirm', 'לסמן שאיש הקשר אינו מסכים לקבל הודעות?'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('common.confirm', 'אישור'), style: 'destructive', onPress: run },
+      ],
+    );
+  }, [persistContactFlags, t]);
 
   const handleToggleSpam = useCallback(() => {
     setMenuVisible(false);
@@ -659,18 +717,16 @@ export default function ContactDetailScreen() {
               title={t('contacts.mediaAndFiles', 'מדיה וקבצים')}
             />
             <Divider />
-            {(contact as any)?.consent !== true ? (
-              <Menu.Item
-                leadingIcon="check-decagram"
-                onPress={() => handleMarkConsent(true)}
-                title={t('contacts.markAgreed', 'סמן כהסכמה')}
-                titleStyle={{ color: '#16A34A' }}
-              />
-            ) : null}
+            <Menu.Item
+              leadingIcon="shield-check"
+              onPress={openConsentModal}
+              title={t('contacts.documentConsent', 'תעד הסכמה לדיוור')}
+              titleStyle={{ color: '#16A34A' }}
+            />
             {(contact as any)?.consent !== false ? (
               <Menu.Item
                 leadingIcon="cancel"
-                onPress={() => handleMarkConsent(false)}
+                onPress={handleRevokeConsent}
                 title={t('contacts.markNotAgreed', 'סמן כאי-הסכמה')}
                 titleStyle={{ color: '#D97706' }}
               />
@@ -733,9 +789,10 @@ export default function ContactDetailScreen() {
               );
             }
             if (c?.consent === true) {
+              const srcLabel = c?.consentSource ? ` · ${c.consentSource}` : '';
               chips.push(
                 <Chip key="consent-yes" compact icon="check-decagram" style={{ backgroundColor: '#DCFCE7' }} textStyle={{ color: '#16A34A', fontWeight: '700', fontSize: 12 }}>
-                  {t('contacts.consentAgreed', 'הסכים')}
+                  {t('contacts.consentAgreed', 'הסכים')}{srcLabel}
                 </Chip>,
               );
             } else if (c?.consent === false) {
@@ -1248,6 +1305,147 @@ export default function ContactDetailScreen() {
         </Modal>
       </Portal>
 
+      <Portal>
+        <Modal
+          visible={consentModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setConsentModalVisible(false)}
+        >
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
+            <Pressable
+              style={styles.noteOverlay}
+              onPress={() => { Keyboard.dismiss(); setConsentModalVisible(false); }}
+            >
+              <Pressable
+                onPress={(e) => e.stopPropagation()}
+                style={[styles.noteSheet, { backgroundColor: theme.colors.surface, paddingBottom: Math.max(insets.bottom, 12) + 8 }]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                    {t('contacts.documentConsent', 'תעד הסכמה לדיוור')}
+                  </Text>
+                  <Pressable onPress={() => { Keyboard.dismiss(); setConsentModalVisible(false); }} hitSlop={8}>
+                    <MaterialCommunityIcons name="close" size={22} color={theme.colors.onSurfaceVariant} />
+                  </Pressable>
+                </View>
+
+                <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 420 }}>
+                  <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8, textAlign }}>
+                    {t('contacts.consentSource', 'מקור ההסכמה')}
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {([
+                      ['manual', t('contacts.consentSourceManual', 'ידני')],
+                      ['website_form', t('contacts.consentSourceWebsite', 'טופס באתר')],
+                      ['phone_call', t('contacts.consentSourcePhone', 'שיחת טלפון')],
+                      ['physical_form', t('contacts.consentSourcePhysical', 'טופס פיזי')],
+                      ['event_registration', t('contacts.consentSourceEvent', 'הרשמה לאירוע')],
+                      ['whatsapp_optin', t('contacts.consentSourceWhatsapp', 'אישור וואטסאפ')],
+                      ['other', t('contacts.consentSourceOther', 'אחר')],
+                    ] as [string, string][]).map(([val, label]) => {
+                      const selected = consentSource === val;
+                      return (
+                        <Pressable
+                          key={val}
+                          onPress={() => setConsentSource(val)}
+                          style={{
+                            paddingVertical: 6,
+                            paddingHorizontal: 12,
+                            borderRadius: 16,
+                            borderWidth: 1,
+                            backgroundColor: selected ? theme.colors.primary : theme.colors.surfaceVariant,
+                            borderColor: selected ? theme.colors.primary : theme.colors.outline,
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: selected ? '700' : '500', color: selected ? '#FFFFFF' : theme.colors.onSurface }}>
+                            {label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+
+                  {consentSource === 'other' ? (
+                    <TextInput
+                      value={consentCustomSource}
+                      onChangeText={setConsentCustomSource}
+                      placeholder={t('contacts.consentSourceCustomHint', 'הקלד מקור הסכמה...')}
+                      placeholderTextColor={theme.custom?.placeholder || '#999'}
+                      style={[
+                        styles.noteInput,
+                        {
+                          minHeight: 44,
+                          marginTop: 10,
+                          backgroundColor: theme.custom?.inputBackground || theme.colors.surfaceVariant,
+                          color: theme.colors.onSurface,
+                          borderColor: theme.colors.outline,
+                          textAlign,
+                          writingDirection,
+                        },
+                      ]}
+                    />
+                  ) : null}
+
+                  <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, marginTop: 18, marginBottom: 8, textAlign }}>
+                    {t('contacts.consentType', 'סוג ההסכמה')}
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {([
+                      ['Explicit', `🟢 ${t('contacts.consentTypeExplicit', 'הסכמה מפורשת')}`],
+                      ['ExistingCustomer', `🟡 ${t('contacts.consentTypeExisting', 'לקוח קיים')}`],
+                      ['CTWA', `🟡 ${t('contacts.consentTypeCtwa', 'פתח שיחה ממודעה')}`],
+                      ['Unknown', `⚪ ${t('contacts.consentTypeUnknown', 'לא ידוע')}`],
+                    ] as [string, string][]).map(([val, label]) => {
+                      const selected = consentType === val;
+                      return (
+                        <Pressable
+                          key={val}
+                          onPress={() => setConsentType(val)}
+                          style={{
+                            paddingVertical: 6,
+                            paddingHorizontal: 12,
+                            borderRadius: 16,
+                            borderWidth: 1,
+                            backgroundColor: selected ? theme.colors.primary : theme.colors.surfaceVariant,
+                            borderColor: selected ? theme.colors.primary : theme.colors.outline,
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: selected ? '700' : '500', color: selected ? '#FFFFFF' : theme.colors.onSurface }}>
+                            {label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+
+                <View style={[styles.noteActions, { flexDirection }]}>
+                  <Button
+                    mode="outlined"
+                    onPress={() => { Keyboard.dismiss(); setConsentModalVisible(false); }}
+                    style={{ minWidth: 100, borderRadius: 10 }}
+                    textColor={theme.colors.onSurface}
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                  <Button
+                    mode="contained"
+                    onPress={() => { Keyboard.dismiss(); handleSaveConsent(); }}
+                    loading={flagSaving}
+                    disabled={flagSaving || (consentSource === 'other' && !consentCustomSource.trim())}
+                    style={{ minWidth: 100, borderRadius: 10, backgroundColor: theme.colors.primary }}
+                    textColor="#FFFFFF"
+                  >
+                    {t('contacts.saveConsent', 'שמור הסכמה')}
+                  </Button>
+                </View>
+              </Pressable>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Modal>
+      </Portal>
+
       <MediaPanel
         visible={mediaPanelVisible}
         onClose={() => setMediaPanelVisible(false)}
@@ -1708,10 +1906,10 @@ function RelatedRecordsSection({
           <View style={[styles.relatedHeader, { flexDirection }]}>
             <MaterialCommunityIcons name="file-document-outline" size={18} color="#8b5cf6" />
             <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-              {t('tabs.quotes')} ({data.quotes.length})
+              {t('tabs.quotes')} ({data.quotes?.length ?? 0})
             </Text>
           </View>
-          {data.quotes.map((quote: any) => (
+          {(data.quotes ?? []).map((quote: any) => (
             <Pressable
               key={quote.id}
               onPress={() => router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: quote.id } })}

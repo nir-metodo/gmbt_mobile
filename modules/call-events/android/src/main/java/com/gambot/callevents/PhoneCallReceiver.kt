@@ -44,16 +44,10 @@ class PhoneCallReceiver : BroadcastReceiver() {
     // OFFHOOK and never ring, so this fires for inbound calls only.
     if (state == STATE_RINGING && lastState != STATE_RINGING) {
       val incomingNumber = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)?.trim() ?: ""
-      Log.d(TAG, "incoming ringing -> reporting incoming_call (number present=${incomingNumber.isNotEmpty()})")
-      val appCtx = context.applicationContext
-      val pr = goAsync()
-      Thread {
-        try {
-          CallReporter.reportIncomingRinging(appCtx, incomingNumber)
-        } finally {
-          pr.finish()
-        }
-      }.start()
+      Log.d(TAG, "incoming ringing -> enqueue incoming_call (number present=${incomingNumber.isNotEmpty()})")
+      // Hand off to WorkManager rather than doing the network call inside the ~10s broadcast window:
+      // the work then completes even if this process is killed and the app is never reopened.
+      CallReportWorker.enqueueRing(context.applicationContext, incomingNumber)
       return
     }
 
@@ -61,16 +55,8 @@ class PhoneCallReceiver : BroadcastReceiver() {
     // broadcasts are ignored; CallReporter de-dupes anything that slips through anyway.
     if (state != STATE_IDLE || lastState == STATE_IDLE) return
 
-    Log.d(TAG, "call ended -> scanning Call Log")
-    val appCtx = context.applicationContext
-    val pendingResult = goAsync()
-    Thread {
-      try {
-        CallReporter.scan(appCtx, waitForFresh = true)
-      } finally {
-        pendingResult.finish()
-      }
-    }.start()
+    Log.d(TAG, "call ended -> enqueue Call Log scan")
+    CallReportWorker.enqueueScan(context.applicationContext)
   }
 
   companion object {

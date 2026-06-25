@@ -13,6 +13,7 @@ export interface WabaNumberInfo {
 
 export interface User {
   fullname: string;
+  name?: string;
   email: string;
   photoURL: string | null;
   userId: string;

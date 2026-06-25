@@ -561,6 +561,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isSending: true });
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const fromNumber = wabaNumber || get().activeWabaNumber || '';
+    // Resolve the replied-to message so the optimistic bubble renders the reply quote
+    // immediately (mirrors web). Without this the just-sent bubble looks like a regular
+    // message until the WS echo / refetch lands and re-attaches the quote.
+    const quotedMessage = replyToMessageId
+      ? get().allMessages.find((m) => m.messageId === replyToMessageId)
+      : undefined;
     const optimisticMsg: Message = {
       messageId: tempId,
       text: message,
@@ -575,6 +581,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       from: fromNumber,
       to,
       contextMessageId: replyToMessageId,
+      ContextMessageId: replyToMessageId,
+      quotedMessage,
     } as Message;
     set((state) => ({
       currentMessages: [...state.currentMessages, optimisticMsg],
@@ -591,6 +599,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
           m.messageId === tempId ? { ...m, status: 'sent' as const } : m
         ),
       }));
+      // Optimistically reflect the sent message in the chats list so it shows immediately when the
+      // user navigates back — without waiting for the WS echo / 60s polling. Preserves the existing
+      // contact name (falls back to the phone number for a brand-new conversation).
+      const toNorm = (to || '').replace(/\D/g, '');
+      const existingChat = get().chats.find((c) => (c.phoneNumber || '').replace(/\D/g, '') === toNorm);
+      get().addOrUpdateChat({
+        ...(existingChat || {}),
+        phoneNumber: to,
+        contactName: existingChat?.contactName || to,
+        lastMessage: message,
+        lastMessageTime: new Date().toISOString(),
+        lastMessageDirection: 'Outbound',
+        isRead: true,
+        unreadCount: 0,
+      } as Chat);
     } catch (err) {
       console.error('[sendMessage] Failed:', err);
       set((state) => ({

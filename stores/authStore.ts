@@ -13,6 +13,68 @@ export interface OrgFeatureToggles {
   [key: string]: boolean;
 }
 
+// Login failures often surface as raw Firebase/Google Identity Toolkit dumps
+// (e.g. "INVALID_LOGIN_CREDENTIALS", a full verifyPassword URL, or a stack trace).
+// We never want to show those to the user, so map known patterns to friendly,
+// localized messages and fall back to a generic one for anything unexpected.
+const mapAuthError = (error: any): string => {
+  const errorCode = error?.response?.data?.ErrorCode;
+  switch (errorCode) {
+    case 'invalid_credentials':
+      return i18n.t('login.invalidCredentials');
+    case 'trial_expired':
+      return i18n.t('login.trialExpired');
+    case 'suspended':
+      return i18n.t('login.accountSuspended');
+  }
+
+  const rawMessage =
+    error?.response?.data?.Message || error?.message || '';
+  const normalized = String(rawMessage).toUpperCase();
+
+  if (
+    normalized.includes('INVALID_LOGIN_CREDENTIALS') ||
+    normalized.includes('INVALID_PASSWORD') ||
+    normalized.includes('INVALID_EMAIL') ||
+    normalized.includes('WRONG_PASSWORD') ||
+    normalized.includes('INVALID_CREDENTIAL')
+  ) {
+    return i18n.t('login.invalidCredentials');
+  }
+  if (
+    normalized.includes('EMAIL_NOT_FOUND') ||
+    normalized.includes('USER_NOT_FOUND') ||
+    normalized.includes('USER_DISABLED')
+  ) {
+    return i18n.t('login.invalidCredentials');
+  }
+  if (
+    normalized.includes('TOO_MANY_ATTEMPTS') ||
+    normalized.includes('TOO_MANY_REQUESTS')
+  ) {
+    return i18n.t('login.tooManyAttempts');
+  }
+  if (
+    normalized.includes('NETWORK') ||
+    normalized.includes('TIMEOUT') ||
+    error?.code === 'ECONNABORTED' ||
+    error?.code === 'ERR_NETWORK'
+  ) {
+    return i18n.t('login.networkError');
+  }
+
+  // A short, clean backend message is fine to surface; anything that looks like a
+  // raw dump (URLs, JSON, exception text, very long strings) is replaced.
+  const looksLikeDump =
+    !rawMessage ||
+    rawMessage.length > 120 ||
+    /https?:\/\//i.test(rawMessage) ||
+    /[{}\[\]]/.test(rawMessage) ||
+    /exception|firebase|identitytoolkit|relyingparty/i.test(rawMessage);
+
+  return looksLikeDump ? i18n.t('login.loginError') : rawMessage;
+};
+
 interface AuthState {
   user: User | null;
   isLoading: boolean;
@@ -74,23 +136,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         .catch(() => {});
       get().fetchOrgFeatureToggles().catch(() => {});
     } catch (error: any) {
-      const errorCode = error.response?.data?.ErrorCode;
-      let errorMessage: string;
-
-      switch (errorCode) {
-        case 'invalid_credentials':
-          errorMessage = i18n.t('login.invalidCredentials');
-          break;
-        case 'trial_expired':
-          errorMessage = i18n.t('login.trialExpired');
-          break;
-        case 'suspended':
-          errorMessage = i18n.t('login.accountSuspended');
-          break;
-        default:
-          errorMessage = error.response?.data?.Message || error.message || i18n.t('login.loginError');
-      }
-
+      const errorMessage = mapAuthError(error);
       set({ isLoading: false, error: errorMessage });
       throw new Error(errorMessage);
     }

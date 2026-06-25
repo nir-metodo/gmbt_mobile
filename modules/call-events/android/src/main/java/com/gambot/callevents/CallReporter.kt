@@ -31,6 +31,12 @@ object CallReporter {
   private val LOCK = Any()
   private const val MAX_LOOKBACK_MS = 24L * 60 * 60 * 1000 // never look further back than 24h
   private const val SENT_CAP = 300
+  // Only report a finished call if it ended within this window. The real-time IDLE broadcast is
+  // frequently suppressed by OEM background limits (Xiaomi/Samsung/Huawei/…); when that happens the
+  // call would otherwise only be picked up by a later foreground/periodic scan and fire HOURS later
+  // as a confusing batch ("all of them at once"). Per product requirement: if a call isn't reported
+  // right after it ends, we skip it entirely rather than send a stale notification.
+  private const val FRESH_WINDOW_MS = 5L * 60 * 1000 // 5 minutes
 
   /**
    * @param waitForFresh when true (real-time receiver path) retry briefly, because the OS may not
@@ -74,12 +80,21 @@ object CallReporter {
     synchronized(LOCK) {
       val attempts = if (waitForFresh) 6 else 1
       repeat(attempts) { attempt ->
+        val now = System.currentTimeMillis()
         val rows = queryCalls(ctx, since)
         Log.d(TAG, "scan attempt ${attempt + 1}/$attempts: ${rows.size} row(s) since=$since")
         var sentAny = false
         for (row in rows) {
           val callType = mapType(row.type, reportOutgoing) ?: continue
           if (row.number.isEmpty()) continue
+          // Skip stale calls: if it didn't get reported in real time (OEM suppressed the broadcast) and
+          // we only see it now — hours later, on a foreground/periodic scan — don't fire a late batch.
+          val callEndMs = row.dateMs + row.durationSec * 1000L
+          val ageMs = now - callEndMs
+          if (ageMs > FRESH_WINDOW_MS) {
+            Log.d(TAG, "skip stale call: ended ${ageMs / 1000}s ago (> ${FRESH_WINDOW_MS / 1000}s window) number=${digits(row.number)}")
+            continue
+          }
           val incoming = row.type != CallLog.Calls.OUTGOING_TYPE
           val callId = "dev_${digits(row.number)}_${row.dateMs}"
           if (isSent(prefs, callId)) continue
@@ -235,6 +250,32 @@ object CallReporter {
     }
     val body = json.toString()
 
+    var code = postEvent(baseUrl, token, body)
+    Log.d(TAG, "POST ReportDeviceCallEvent -> HTTP $code (callId=$callId)")
+
+    // The stored Firebase access token expires ~1h after login. When a call ends while the app has
+    // been closed/backgrounded past that, the POST 401/403s. Instead of deferring to the next app
+    // open (which produced the confusing late batch), mint a fresh token right here via the refresh
+    // token and retry once — so real-time reporting keeps working even after long inactivity.
+    if (code == 401 || code == 403) {
+      val fresh = refreshAccessToken(prefs)
+      if (!fresh.isNullOrEmpty()) {
+        code = postEvent(baseUrl, fresh, body)
+        Log.d(TAG, "POST retry after token refresh -> HTTP $code (callId=$callId)")
+      }
+    }
+
+    return if (code in 200..299) {
+      true
+    } else {
+      // Refresh unavailable/failed or network down — queue for JS to re-send with a fresh token.
+      queuePending(prefs, body)
+      false
+    }
+  }
+
+  /** POSTs the event body with the given bearer token. Returns the HTTP status code, or -1 on error. */
+  private fun postEvent(baseUrl: String, token: String, body: String): Int {
     return try {
       val conn = URL("$baseUrl/api/Webhooks/ReportDeviceCallEvent").openConnection() as HttpURLConnection
       conn.requestMethod = "POST"
@@ -246,18 +287,55 @@ object CallReporter {
       conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
       val code = conn.responseCode
       conn.disconnect()
-      Log.d(TAG, "POST ReportDeviceCallEvent -> HTTP $code (callId=$callId)")
-      if (code in 200..299) {
-        true
-      } else {
-        // Likely an expired token while the app was killed. Queue for JS to re-send with a fresh one.
-        queuePending(prefs, body)
-        false
-      }
+      code
     } catch (e: Exception) {
       Log.e(TAG, "POST ReportDeviceCallEvent failed: ${e.message}")
-      queuePending(prefs, body)
-      false
+      -1
+    }
+  }
+
+  /**
+   * Exchanges the stored long-lived refresh token for a fresh access token (same endpoint the JS
+   * axios layer uses) and persists it to KEY_TOKEN. Returns the new token, or null if unavailable.
+   */
+  private fun refreshAccessToken(prefs: SharedPreferences): String? {
+    val refreshToken = prefs.getString(CallEventsModule.KEY_REFRESH_TOKEN, "") ?: ""
+    val refreshUrl = prefs.getString(CallEventsModule.KEY_REFRESH_URL, "") ?: ""
+    if (refreshToken.isEmpty() || refreshUrl.isEmpty()) {
+      Log.d(TAG, "token refresh skipped: no refresh token/url configured")
+      return null
+    }
+    return try {
+      val conn = URL(refreshUrl).openConnection() as HttpURLConnection
+      conn.requestMethod = "POST"
+      conn.connectTimeout = 15000
+      conn.readTimeout = 15000
+      conn.doOutput = true
+      conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+      val reqBody = JSONObject().put("refreshToken", refreshToken).toString()
+      conn.outputStream.use { it.write(reqBody.toByteArray(Charsets.UTF_8)) }
+      val httpCode = conn.responseCode
+      val respText = if (httpCode in 200..299)
+        conn.inputStream.bufferedReader().use { it.readText() }
+      else ""
+      conn.disconnect()
+      if (httpCode in 200..299 && respText.isNotEmpty()) {
+        val idToken = JSONObject(respText).optString("IdToken", "")
+        if (idToken.isNotEmpty()) {
+          prefs.edit().putString(CallEventsModule.KEY_TOKEN, idToken).apply()
+          Log.d(TAG, "background token refresh succeeded")
+          idToken
+        } else {
+          Log.d(TAG, "token refresh: no IdToken in response")
+          null
+        }
+      } else {
+        Log.d(TAG, "token refresh failed: HTTP $httpCode")
+        null
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "token refresh error: ${e.message}")
+      null
     }
   }
 

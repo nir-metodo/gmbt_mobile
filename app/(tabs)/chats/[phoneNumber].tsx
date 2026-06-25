@@ -40,7 +40,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
-import DateTimePicker from '@react-native-community/datetimepicker';
+import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useChatStore } from '../../../stores/chatStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -230,6 +230,21 @@ function buildTimelineText(entry: any, isHe: boolean): string {
   }
 }
 
+// Crash-proof date/time formatter. On Android (Hermes) `Date.toLocaleString(locale, { dateStyle,
+// timeStyle })` can throw when full ICU/Intl isn't bundled, which closes the whole app in a release
+// build. Mirrors the helper used by the shared AddTaskSheet so scheduling matches the task due-date UX.
+function formatScheduleDateTime(value: Date | null | undefined, lang: string): string {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' });
+  } catch {
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+}
+
 // Build a full template variable-query entry matching the web SendTemplateMessage payload.
 // Backend maps variables by `index` + `bodyVarIndex`; minimal entries cause unresolved {{n}}
 // placeholders and Meta rejects the send. Keep this identical across all send/schedule paths.
@@ -300,6 +315,10 @@ export default function ChatConversationScreen() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   const [isSendingTemplate, setIsSendingTemplate] = useState(false);
+  // Whether a default ("open conversation") template is configured for this org / selected number.
+  // null = not yet checked; false = none configured → the quick-send button is shown disabled/greyed
+  // so it doesn't confuse the user, and tapping it explains how to set one in Settings.
+  const [hasDefaultTemplate, setHasDefaultTemplate] = useState<boolean | null>(null);
   // Synchronous guard against double template sends. `isSendingTemplate` is React state and
   // updates asynchronously, so two fast taps can both pass the check and send the template
   // twice to the customer. A ref flips immediately and blocks the second call.
@@ -984,37 +1003,55 @@ export default function ChatConversationScreen() {
     setShowTemplateSelector(true);
   }, [loadTemplates]);
 
+  // Resolve the default ("open conversation") template id for the current org / selected number.
+  // Shared by both the quick-send handler and the "is a default configured?" detection effect so
+  // the greyed-out state and the actual send path always agree on what counts as "configured".
+  const resolveDefaultTemplate = useCallback(async (): Promise<{ templateId: string; savedMappings: any[] }> => {
+    let templateId = '';
+    if (activeWabaNumber && allWabaNumbers.length > 1) {
+      const selectedNum = allWabaNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
+      if (selectedNum?.DefaultTemplateId || selectedNum?.defaultTemplateId) {
+        templateId = selectedNum.DefaultTemplateId || selectedNum.defaultTemplateId || '';
+      }
+    }
+    let savedMappings: any[] = [];
+    if (!templateId && user?.organization) {
+      const defRes = await axiosInstance.post(ENDPOINTS.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
+      // Tolerate both wrapped ({ Data: { templates } }) and unwrapped ({ templates }) shapes.
+      const root = defRes.data?.Data ?? defRes.data;
+      const tplAssignment = root?.templates?.openConversation;
+      templateId = Array.isArray(tplAssignment?.templateId)
+        ? (tplAssignment.templateId[0] || '')
+        : (tplAssignment?.templateId || '');
+      savedMappings = Array.isArray(tplAssignment?.varMappings)
+        ? tplAssignment.varMappings.filter((m: any) => !Array.isArray(m.index) && m.index != null)
+        : [];
+    }
+    return { templateId, savedMappings };
+  }, [activeWabaNumber, allWabaNumbers, user]);
+
+  // Guidance shown when no default template is configured — points the user to where to set one.
+  const noDefaultTemplateMessage = isRTL
+    ? 'לא הוגדרה תבנית ברירת מחדל. כדי להשתמש בשליחה מהירה, היכנס להגדרות ← הודעות ברירת מחדל וצור או בחר תבנית פתיחת שיחה.'
+    : 'No default template is set. To use quick-send, go to Settings → Default Messages and create or select an open-conversation template.';
+
   const handleSendDefaultTemplate = useCallback(async () => {
     if (!user?.organization || !phoneNumber || isSendingTemplate) return;
     if (sendingTemplateRef.current) return; // already sending — block double tap
+    // No default configured → don't silently fail; explain how to set one (matches web).
+    if (hasDefaultTemplate === false) {
+      Alert.alert(t('chats.noDefaultTemplate', 'תבנית ברירת מחדל'), noDefaultTemplateMessage);
+      return;
+    }
     sendingTemplateRef.current = true;
     setIsSendingTemplate(true);
     setShowTemplateSelector(false);
     try {
-      let templateId = '';
-      if (activeWabaNumber && allWabaNumbers.length > 1) {
-        const selectedNum = allWabaNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
-        if (selectedNum?.DefaultTemplateId || selectedNum?.defaultTemplateId) {
-          templateId = selectedNum.DefaultTemplateId || selectedNum.defaultTemplateId || '';
-        }
-      }
-
-      let savedMappings: any[] = [];
-      if (!templateId) {
-        const defRes = await axiosInstance.post(ENDPOINTS.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
-        // Tolerate both wrapped ({ Data: { templates } }) and unwrapped ({ templates }) shapes.
-        const root = defRes.data?.Data ?? defRes.data;
-        const tplAssignment = root?.templates?.openConversation;
-        templateId = Array.isArray(tplAssignment?.templateId)
-          ? (tplAssignment.templateId[0] || '')
-          : (tplAssignment?.templateId || '');
-        savedMappings = Array.isArray(tplAssignment?.varMappings)
-          ? tplAssignment.varMappings.filter((m: any) => !Array.isArray(m.index) && m.index != null)
-          : [];
-      }
+      const { templateId, savedMappings } = await resolveDefaultTemplate();
 
       if (!templateId) {
-        Alert.alert(t('common.error'), t('chats.noDefaultTemplate', 'לא הוגדרה תבנית ברירת מחדל'));
+        setHasDefaultTemplate(false);
+        Alert.alert(t('chats.noDefaultTemplate', 'תבנית ברירת מחדל'), noDefaultTemplateMessage);
         return;
       }
 
@@ -1087,7 +1124,24 @@ export default function ChatConversationScreen() {
       sendingTemplateRef.current = false;
       setIsSendingTemplate(false);
     }
-  }, [user, phoneNumber, isSendingTemplate, activeWabaNumber, allWabaNumbers, chat, loadMessages, isRTL, t, sendFromNumberId]);
+  }, [user, phoneNumber, isSendingTemplate, hasDefaultTemplate, noDefaultTemplateMessage, resolveDefaultTemplate, chat, loadMessages, isRTL, t, sendFromNumberId]);
+
+  // Detect whether a default template exists once the conversation is known to be closed (the
+  // template banner is shown). Drives the greyed-out / disabled state of the quick-send button so
+  // the user isn't offered an action that can't work. Re-checks when the selected WABA number
+  // changes (per-number defaults) and resets on chat switch.
+  useEffect(() => {
+    if (canSendFreeText || isStatusLoading || !user?.organization || !phoneNumber) {
+      setHasDefaultTemplate(null);
+      return;
+    }
+    let cancelled = false;
+    setHasDefaultTemplate(null);
+    resolveDefaultTemplate()
+      .then(({ templateId }) => { if (!cancelled) setHasDefaultTemplate(!!templateId); })
+      .catch(() => { if (!cancelled) setHasDefaultTemplate(false); });
+    return () => { cancelled = true; };
+  }, [canSendFreeText, isStatusLoading, user?.organization, phoneNumber, activeWabaNumber, resolveDefaultTemplate]);
 
   const getTemplateBodyText = useCallback((template: Template) => {
     const body = template.components?.find(
@@ -1263,6 +1317,48 @@ export default function ChatConversationScreen() {
     loadTemplates();
     setShowScheduleModal(true);
   }, [loadTemplates]);
+
+  // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inline inside a React Native <Modal> on
+  // Android — the native date/time dialog clashes with the modal host and the chained date→time
+  // flow throws "IllegalStateException: Fragment already added", closing the whole app. So on
+  // Android we open the pickers imperatively (date, then time); iOS keeps the inline datetime
+  // spinner. This mirrors the shared AddTaskSheet due-date picker exactly.
+  const pickScheduleDateTimeAndroid = useCallback((current: Date) => {
+    const now = new Date();
+    const base = current && !isNaN(current.getTime()) ? new Date(current) : now;
+    try {
+      DateTimePickerAndroid.open({
+        value: base,
+        mode: 'date',
+        minimumDate: now,
+        onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
+          if (e.type !== 'set' || !dateVal) return;
+          const merged = new Date(base);
+          merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
+          // Defer the time picker so it doesn't open while the date dialog's fragment is still
+          // attached ("Fragment already added" -> app crash on some Android versions).
+          setTimeout(() => {
+            try {
+              DateTimePickerAndroid.open({
+                value: merged,
+                mode: 'time',
+                is24Hour: true,
+                onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
+                  if (e2.type !== 'set' || !timeVal) return;
+                  merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
+                  setScheduledDateTime(merged);
+                },
+              });
+            } catch {
+              setScheduledDateTime(merged);
+            }
+          }, 150);
+        },
+      });
+    } catch {
+      // Picker unavailable — fail silently rather than crash.
+    }
+  }, []);
 
   // Pre-fill a scheduled template's variables from its saved auto-mapping (variableMappingJson),
   // exactly like the Quick template flow — the user can still edit any value manually.
@@ -2171,7 +2267,10 @@ export default function ChatConversationScreen() {
     if (!hasMoreMessages || isLoadingOlderMessages || loadingOlderRef.current) return;
     loadingOlderRef.current = true;
     loadOlderMessages();
-    setTimeout(() => { loadingOlderRef.current = false; }, 800);
+    // Short debounce only: revealing locally-cached pages is instant, so a tight cooldown lets the
+    // next page stream in as the user keeps scrolling up (no need to lift the finger and tap). A
+    // real server fetch is separately guarded by isLoadingOlderMessages, so this can't double-fetch.
+    setTimeout(() => { loadingOlderRef.current = false; }, 250);
   }, [hasMoreMessages, isLoadingOlderMessages, loadOlderMessages]);
 
   // Explicit tap on the "Load older messages" header button. Unlike the auto onStartReached path,
@@ -2745,7 +2844,7 @@ export default function ChatConversationScreen() {
             onScroll={handleScroll}
             scrollEventThrottle={16}
             onEndReached={handleEndReached}
-            onEndReachedThreshold={0.15}
+            onEndReachedThreshold={1.5}
             onContentSizeChange={handleContentSizeChange}
             contentContainerStyle={styles.messagesContent}
             keyboardDismissMode="interactive"
@@ -2864,27 +2963,35 @@ export default function ChatConversationScreen() {
                 paddingBottom: Math.max(insets.bottom, 8) + 4,
               },
             ]}>
-              {/* ⚡ Send default template */}
+              {/* ⚡ Send default template — greyed out when no default template is configured. We keep
+                  onPress active in that case (only block sending) so tapping it explains how to set one. */}
               <Pressable
                 onPress={handleSendDefaultTemplate}
                 disabled={isSendingTemplate || isStatusLoading}
-                style={({ pressed }) => ({
-                  flex: 1,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 5,
-                  backgroundColor: pressed ? '#1a7a5e' : '#25D366',
-                  paddingVertical: 11,
-                  borderRadius: 10,
-                  opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : 1,
-                })}
+                style={({ pressed }) => {
+                  const noDefault = hasDefaultTemplate === false;
+                  return {
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 5,
+                    backgroundColor: noDefault
+                      ? (theme.dark ? '#3f3f46' : '#d1d5db')
+                      : (pressed ? '#1a7a5e' : '#25D366'),
+                    paddingVertical: 11,
+                    borderRadius: 10,
+                    opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : (noDefault ? 0.7 : 1),
+                  };
+                }}
               >
                 {isSendingTemplate
                   ? <ActivityIndicator size="small" color="#fff" />
-                  : <MaterialCommunityIcons name="lightning-bolt" size={18} color="#fff" />}
-                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
-                  {isRTL ? 'ברירת מחדל' : 'Default'}
+                  : <MaterialCommunityIcons name="lightning-bolt" size={18} color={hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff'} />}
+                <Text style={{ color: hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff', fontSize: 13, fontWeight: '700' }}>
+                  {isSendingTemplate
+                    ? (isRTL ? 'שולח...' : 'Sending...')
+                    : (isRTL ? 'ברירת מחדל' : 'Default')}
                 </Text>
               </Pressable>
 
@@ -3456,64 +3563,45 @@ export default function ChatConversationScreen() {
                 >
                   {t('chats.pickDateTime', 'תאריך ושעה')}
                 </Text>
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                  {/* Date picker */}
-                  <Pressable
-                    onPress={() => setShowScheduleDatePicker(true)}
-                    style={[styles.scheduleInput, { flex: 1, borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db', backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f9fafb', flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10 }]}
-                  >
-                    <MaterialCommunityIcons name="calendar" size={18} color={theme.colors.onSurfaceVariant} />
-                    <Text style={{ flex: 1, color: scheduledDateTime ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 14 }}>
-                      {scheduledDateTime
-                        ? scheduledDateTime.toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: 'numeric' })
-                        : 'בחר תאריך'}
-                    </Text>
-                  </Pressable>
-                  {/* Time picker */}
-                  <Pressable
-                    onPress={() => setShowScheduleTimePicker(true)}
-                    style={[styles.scheduleInput, { flex: 1, borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db', backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f9fafb', flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10 }]}
-                  >
-                    <MaterialCommunityIcons name="clock-outline" size={18} color={theme.colors.onSurfaceVariant} />
-                    <Text style={{ flex: 1, color: scheduledDateTime ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 14 }}>
-                      {scheduledDateTime
-                        ? scheduledDateTime.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })
-                        : 'בחר שעה'}
-                    </Text>
-                  </Pressable>
-                </View>
-                {showScheduleDatePicker && (
-                  <DateTimePicker
-                    value={scheduledDateTime || new Date()}
-                    mode="date"
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    minimumDate={new Date()}
-                    onChange={(_, date) => {
-                      setShowScheduleDatePicker(Platform.OS === 'ios');
-                      if (date) {
-                        const prev = scheduledDateTime || new Date();
-                        const merged = new Date(date);
-                        merged.setHours(prev.getHours(), prev.getMinutes(), 0, 0);
-                        setScheduledDateTime(merged);
-                      }
-                    }}
-                  />
-                )}
-                {showScheduleTimePicker && (
-                  <DateTimePicker
-                    value={scheduledDateTime || new Date()}
-                    mode="time"
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    onChange={(_, date) => {
-                      setShowScheduleTimePicker(Platform.OS === 'ios');
-                      if (date) {
-                        const prev = scheduledDateTime || new Date();
-                        const merged = new Date(prev);
-                        merged.setHours(date.getHours(), date.getMinutes(), 0, 0);
-                        setScheduledDateTime(merged);
-                      }
-                    }}
-                  />
+                {/* Single combined date+time field — matches the AddTaskSheet due-date picker:
+                    Android opens the native date→time dialogs imperatively (no in-Modal crash),
+                    iOS shows an inline datetime spinner. */}
+                <Pressable
+                  onPress={() => {
+                    const base = scheduledDateTime || new Date();
+                    if (Platform.OS === 'android') {
+                      pickScheduleDateTimeAndroid(base);
+                    } else {
+                      setShowScheduleTimePicker(false);
+                      setShowScheduleDatePicker((v) => !v);
+                    }
+                  }}
+                  style={[styles.scheduleInput, { borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db', backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f9fafb', flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10 }]}
+                >
+                  <MaterialCommunityIcons name="calendar-clock" size={18} color={theme.colors.onSurfaceVariant} />
+                  <Text style={{ flex: 1, color: scheduledDateTime ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}>
+                    {scheduledDateTime
+                      ? formatScheduleDateTime(scheduledDateTime, i18n.language)
+                      : t('tasks.selectDueDate', 'בחר תאריך ושעה')}
+                  </Text>
+                </Pressable>
+                {Platform.OS === 'ios' && showScheduleDatePicker && (
+                  <View style={[styles.scheduleIosPickerWrap, { borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db' }]}>
+                    <DateTimePicker
+                      value={scheduledDateTime || new Date()}
+                      mode="datetime"
+                      display="spinner"
+                      minimumDate={new Date()}
+                      themeVariant={theme.dark ? 'dark' : 'light'}
+                      style={{ alignSelf: 'stretch' }}
+                      onChange={(_: DateTimePickerEvent, date?: Date) => {
+                        if (date) setScheduledDateTime(date);
+                      }}
+                    />
+                    <Button mode="contained-tonal" compact onPress={() => setShowScheduleDatePicker(false)} style={{ alignSelf: 'center', marginTop: 4 }}>
+                      {t('common.done', 'סיום')}
+                    </Button>
+                  </View>
                 )}
                 {scheduleMessageType === 'text' && scheduleIsFarFuture && (
                   <Text style={{ color: theme.dark ? '#fdba74' : '#9a3412', fontSize: 12, marginTop: 8 }}>
@@ -4213,8 +4301,10 @@ export default function ChatConversationScreen() {
         {showInlineQuickMessages && (() => {
           const filtered = quickMessages.filter((qm: any) => {
             if (!quickSlashFilter) return true;
+            const needle = quickSlashFilter.toLowerCase();
             const sc = (qm.shortcut || qm.title || qm.name || '').toLowerCase();
-            return sc.includes(quickSlashFilter.toLowerCase());
+            const content = (qm.messageText || qm.text || qm.message || qm.body || '').toLowerCase();
+            return sc.includes(needle) || content.includes(needle);
           });
           if (filtered.length === 0 && !isLoadingQuickMessages) return null;
           return (
@@ -4683,6 +4773,13 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 12,
     minHeight: 44,
+  },
+  scheduleIosPickerWrap: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 8,
+    marginTop: 10,
+    alignItems: 'stretch',
   },
   scheduleSubmitBtn: {
     flexDirection: 'row',

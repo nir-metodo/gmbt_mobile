@@ -23,4 +23,8 @@ android {
 
 dependencies {
   implementation "androidx.core:core-ktx:1.12.0"
+  // WorkManager guarantees the call-event report runs to completion (incl. its network call + token
+  // refresh) even when the app is never opened: it survives process death, isn't bound by the ~10s
+  // BroadcastReceiver window, waits for connectivity, and retries on failure.
+  implementation "androidx.work:work-runtime-ktx:2.9.1"
 }

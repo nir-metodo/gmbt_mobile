@@ -10,6 +10,12 @@ export interface CallEventsConfig {
   userName?: string;
   selfNumber?: string;
   reportOutgoing?: boolean;
+  // Long-lived refresh token + endpoint so the native background sender can mint a fresh access
+  // token on its own (Firebase ID tokens expire ~1h). Without these, a call that ends while the
+  // app has been closed for over an hour would fail to POST (expired token) and only get delivered
+  // — as a confusing batch — when the app is next opened.
+  refreshToken?: string;
+  refreshUrl?: string;
 }
 
 // `requireOptionalNativeModule` returns null when the native module isn't present
