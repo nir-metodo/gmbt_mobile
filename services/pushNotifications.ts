@@ -15,7 +15,10 @@ export interface PushNotificationSettings {
   newCaseCreated: boolean;
   caseAssignedToMe: boolean;
   casesOnlyMyCases: boolean;
+  contactAssignedToMe: boolean;
   newOrderCreated: boolean;
+  orderAssignedToMe: boolean;
+  ordersOnlyMyOrders: boolean;
   taskReminder: boolean;
   taskAssignedToMe: boolean;
   calendarEventReminder: boolean;
@@ -32,7 +35,10 @@ export const DEFAULT_PUSH_SETTINGS: PushNotificationSettings = {
   newCaseCreated: true,
   caseAssignedToMe: true,
   casesOnlyMyCases: false,
+  contactAssignedToMe: true,
   newOrderCreated: true,
+  orderAssignedToMe: true,
+  ordersOnlyMyOrders: false,
   taskReminder: true,
   taskAssignedToMe: true,
   calendarEventReminder: true,
@@ -62,6 +68,14 @@ async function setStoredRegistrationToken(token: string): Promise<void> {
     await AsyncStorage.setItem(PUSH_TOKEN_REGISTERED_KEY, token);
   } catch {
     // Non-critical — worst case we re-POST the same token next time.
+  }
+}
+
+async function clearStoredRegistrationToken(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(PUSH_TOKEN_REGISTERED_KEY);
+  } catch {
+    // Non-critical.
   }
 }
 
@@ -172,13 +186,56 @@ export const pushNotificationService = {
     return null;
   },
 
+  // Remove this device's push token from the backend so a user stops receiving notifications
+  // after logging out. Must run BEFORE auth state is cleared (we still need org + userId + a valid
+  // request token). Without this, the previous account's token lingers server-side and keeps
+  // delivering its messages to this device even after switching accounts.
+  async unregisterPushToken(organization: string, userId: string): Promise<void> {
+    try {
+      let expoPushToken: string | null = null;
+      // Prefer the OS token (no prompt when permission is already granted).
+      try {
+        if (Device.isDevice) {
+          const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+          const tokenData = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined);
+          expoPushToken = tokenData.data;
+        }
+      } catch {
+        // ignore — fall back to the stored registration key below
+      }
+      // Fallback: recover the token from the stored `${org}:${userId}:${token}` key.
+      if (!expoPushToken) {
+        const stored = await getStoredRegistrationToken();
+        if (stored) {
+          const parts = stored.split(':');
+          if (parts.length >= 3) expoPushToken = parts.slice(2).join(':');
+        }
+      }
+      if (expoPushToken) {
+        await axiosInstance.post(ENDPOINTS.UNREGISTER_PUSH_TOKEN, {
+          organization,
+          userId,
+          expoPushToken,
+        });
+      }
+    } catch {
+      // Best-effort — never block logout on this.
+    } finally {
+      await clearStoredRegistrationToken();
+    }
+  },
+
   async getPushSettings(organization: string, userId: string): Promise<PushNotificationSettings> {
     try {
       const response = await axiosInstance.post(ENDPOINTS.GET_PUSH_SETTINGS, {
         organization,
         userId,
       });
-      return { ...DEFAULT_PUSH_SETTINGS, ...response.data };
+      // The backend returns the saved values nested under `settings`
+      // ({ success, settings: { ... } }). Fall back to the raw body for
+      // backwards-compatibility with any flat response shape.
+      const saved = response.data?.settings ?? response.data ?? {};
+      return { ...DEFAULT_PUSH_SETTINGS, ...saved };
     } catch {
       return DEFAULT_PUSH_SETTINGS;
     }

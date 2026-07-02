@@ -4,6 +4,16 @@
   <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
   <uses-permission android:name="android.permission.READ_CALL_LOG" />
   <uses-permission android:name="android.permission.INTERNET" />
+  <!-- Keep the call-detection process alive so reporting works while the app is closed. -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <!-- Restart monitoring after reboot. -->
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!-- Show the ongoing service notification on Android 13+. -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <!-- Let the user exempt the app from battery optimization (required for OEM reliability). -->
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
   <application>
     <receiver
@@ -14,5 +24,22 @@
         <action android:name="android.intent.action.PHONE_STATE" />
       </intent-filter>
     </receiver>
+
+    <receiver
+      android:name="com.gambot.callevents.BootReceiver"
+      android:enabled="true"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
+
+    <service
+      android:name="com.gambot.callevents.CallMonitorService"
+      android:enabled="true"
+      android:exported="false"
+      android:foregroundServiceType="dataSync" />
   </application>
 </manifest>

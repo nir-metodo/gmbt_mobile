@@ -42,6 +42,21 @@ export const CallEvents = {
     }
   },
 
+  /** Whether the app is exempt from battery optimization — required for reliable background detection. */
+  isIgnoringBatteryOptimizations(): boolean {
+    return !!Native && Native.isIgnoringBatteryOptimizations?.() === true;
+  },
+
+  /** Opens the system battery-optimization exemption dialog. Resolves true if already exempt or shown. */
+  async requestIgnoreBatteryOptimizations(): Promise<boolean> {
+    if (!Native?.requestIgnoreBatteryOptimizations) return false;
+    try {
+      return await Native.requestIgnoreBatteryOptimizations();
+    } catch {
+      return false;
+    }
+  },
+
   configure(config: CallEventsConfig): void {
     Native?.configure?.(config);
   },

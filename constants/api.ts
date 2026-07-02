@@ -111,6 +111,9 @@ export const ENDPOINTS = {
   GET_QUOTE_BRANDING: '/api/Webhooks/GetQuoteBranding',
   SAVE_QUOTE_BRANDING: '/api/Webhooks/SaveQuoteBranding',
 
+  // Public catalog (shareable page + customer selections)
+  GET_CATALOG_SELECTIONS: '/api/Webhooks/GetCatalogSelections',
+
   // E-Signature
   GET_ESIGNATURE_DOC: '/api/Webhooks/ESignature_GetDocumentByToken',
   GET_ESIGNATURE_DOC_BY_ID: '/api/Webhooks/ESignature_GetDocumentById',
@@ -228,6 +231,7 @@ export const ENDPOINTS = {
   REGISTER_DEVICE: '/api/Webhooks/RegisterDeviceToken',
   UNREGISTER_DEVICE: '/api/Webhooks/UnregisterDeviceToken',
   REGISTER_PUSH_TOKEN: '/api/Webhooks/RegisterPushToken',
+  UNREGISTER_PUSH_TOKEN: '/api/Webhooks/UnregisterPushToken',
   UPDATE_PUSH_SETTINGS: '/api/Webhooks/UpdatePushNotificationSettings',
   GET_PUSH_SETTINGS: '/api/Webhooks/GetPushNotificationSettings',
 

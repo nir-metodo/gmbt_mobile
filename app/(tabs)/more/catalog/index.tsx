@@ -10,6 +10,8 @@ import {
   Platform,
   ScrollView,
   TextInput as RNTextInput,
+  Share,
+  Linking,
 } from 'react-native';
 import {
   Text,
@@ -34,12 +36,12 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
-import { catalogApi, CatalogItem, CatalogCustomColumn, CatalogFieldsConfig } from '../../../../services/api/catalog';
+import { catalogApi, CatalogItem, CatalogCustomColumn, CatalogFieldsConfig, CatalogSelection } from '../../../../services/api/catalog';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { appCache } from '../../../../services/cache';
 import axiosInstance from '../../../../services/api/axiosInstance';
-import { ENDPOINTS } from '../../../../constants/api';
+import { ENDPOINTS, WEB_APP_BASE_URL } from '../../../../constants/api';
 
 const BRAND_COLOR = '#059669';
 
@@ -84,6 +86,12 @@ export default function CatalogScreen() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [saving, setSaving] = useState(false);
 
+  // Public catalog sharing + customer selections
+  const [sharing, setSharing] = useState(false);
+  const [selectionsVisible, setSelectionsVisible] = useState(false);
+  const [selections, setSelections] = useState<CatalogSelection[]>([]);
+  const [selectionsLoading, setSelectionsLoading] = useState(false);
+
   // Form modal
   const [modalVisible, setModalVisible] = useState(false);
   const [editingItem, setEditingItem] = useState<CatalogItem | null>(null);
@@ -96,6 +104,27 @@ export default function CatalogScreen() {
   const [formImageUrl, setFormImageUrl] = useState('');
   const [formCustomFields, setFormCustomFields] = useState<Record<string, any>>({});
   const [uploading, setUploading] = useState(false);
+
+  // Honor the display order configured in the web Catalog → Columns settings.
+  // `columnOrder` holds tokens like `custom:<id>`; we use it to order the custom
+  // columns shown on cards and in the edit form. Any column missing from the saved
+  // order keeps its natural position at the end.
+  const orderedCustomColumns = useMemo(() => {
+    const order = Array.isArray(fieldsConfig.columnOrder) ? fieldsConfig.columnOrder : [];
+    if (!order.length || !customColumns.length) return customColumns;
+    const rank = new Map<string, number>();
+    order.forEach((tok, i) => {
+      if (typeof tok === 'string' && tok.startsWith('custom:')) rank.set(tok.slice(7), i);
+    });
+    return [...customColumns]
+      .map((col, i) => ({ col, i }))
+      .sort((a, b) => {
+        const ra = rank.has(a.col.id) ? (rank.get(a.col.id) as number) : Number.MAX_SAFE_INTEGER;
+        const rb = rank.has(b.col.id) ? (rank.get(b.col.id) as number) : Number.MAX_SAFE_INTEGER;
+        return ra === rb ? a.i - b.i : ra - rb;
+      })
+      .map((x) => x.col);
+  }, [customColumns, fieldsConfig.columnOrder]);
 
   const setCustomField = useCallback((key: string, value: any) => {
     setFormCustomFields((p) => ({ ...p, [key]: value }));
@@ -178,6 +207,68 @@ export default function CatalogScreen() {
     await fetchData();
     setRefreshing(false);
   }, [fetchData]);
+
+  // Share the public catalog link — enabling public sharing on the fly if it isn't enabled yet.
+  const handleShareCatalog = useCallback(async () => {
+    if (!user?.organization) return;
+    setSharing(true);
+    try {
+      let cfg = await catalogApi.getPublicConfig(user.organization);
+      if (!cfg?.enabled || !cfg?.slug) {
+        cfg = await catalogApi.enablePublicCatalog(user.organization);
+      }
+      const url = `${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?t=${cfg.slug}`;
+      await Share.share({
+        message: isRTL ? `הקטלוג שלנו:\n${url}` : `Our catalog:\n${url}`,
+        url,
+      });
+    } catch {
+      Alert.alert(t('common.error'), isRTL ? 'שגיאה בשיתוף הקטלוג' : 'Failed to share catalog');
+    } finally {
+      setSharing(false);
+    }
+  }, [user?.organization, isRTL, t]);
+
+  const loadSelections = useCallback(async () => {
+    if (!user?.organization) return;
+    setSelectionsLoading(true);
+    try {
+      const data = await catalogApi.getSelections(user.organization);
+      setSelections(data);
+    } catch {
+      Alert.alert(t('common.error'), isRTL ? 'שגיאה בטעינת הפניות' : 'Failed to load selections');
+    } finally {
+      setSelectionsLoading(false);
+    }
+  }, [user?.organization, isRTL, t]);
+
+  const openSelections = useCallback(() => {
+    setSelectionsVisible(true);
+    loadSelections();
+  }, [loadSelections]);
+
+  // Opens the full read-only selection page (the same view the seller gets via the WhatsApp link).
+  const openSelectionLink = useCallback((sel: CatalogSelection) => {
+    if (!user?.organization) return;
+    const url = `${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}/r/${sel.id}`;
+    Linking.openURL(url).catch(() => {});
+  }, [user?.organization]);
+
+  const fmtSelDate = useCallback((iso?: string) => {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleString(isRTL ? 'he-IL' : 'en-US'); } catch { return iso; }
+  }, [isRTL]);
+
+  const selItemsSummary = useCallback((sel: CatalogSelection) => {
+    const its = Array.isArray(sel.items) ? sel.items : [];
+    if (its.length === 0) return '—';
+    return its.map((it) => `${it.name || ''}${(it.quantity && it.quantity > 1) ? ` ×${it.quantity}` : ''}`).join(', ');
+  }, []);
+
+  const purposeLabel = useCallback((p?: string) => {
+    if (isRTL) return ({ order: 'הזמנה', lead: 'ליד', inquiry: 'התעניינות', browse: 'צפייה' } as Record<string, string>)[p || ''] || p || '—';
+    return ({ order: 'Order', lead: 'Lead', inquiry: 'Inquiry', browse: 'Browse' } as Record<string, string>)[p || ''] || p || '—';
+  }, [isRTL]);
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -395,9 +486,10 @@ export default function CatalogScreen() {
                 </View>
               ) : null}
             </View>
-            {/* Custom column values (shows the columns added in the web Catalog settings). */}
-            {customColumns.length > 0 && (() => {
-              const filled = customColumns
+            {/* Custom column values (shows the columns added in the web Catalog settings,
+                in the display order configured there). */}
+            {orderedCustomColumns.length > 0 && (() => {
+              const filled = orderedCustomColumns
                 .filter((c) => c.key !== titleKey)
                 .map((c) => ({ label: c.label, val: cf[c.key] }))
                 .filter((x) => hasVal(x.val));
@@ -424,7 +516,7 @@ export default function CatalogScreen() {
         </View>
       </Pressable>
     );
-  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, customColumns, isRTL, fieldsConfig]);
+  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, customColumns, orderedCustomColumns, isRTL, fieldsConfig]);
 
   // Configurable mandatory field (defaults to name). On mobile only base fields are editable,
   // so if the required field is a custom column we don't block the save here.
@@ -465,6 +557,8 @@ export default function CatalogScreen() {
           titleStyle={styles.headerTitle}
           color="#fff"
         />
+        <Appbar.Action icon="inbox-arrow-down" color="#fff" onPress={openSelections} />
+        <Appbar.Action icon={sharing ? 'loading' : 'share-variant'} color="#fff" disabled={sharing} onPress={handleShareCatalog} />
         <Appbar.Action icon="magnify" color="#fff" onPress={() => setSearchVisible(!searchVisible)} />
       </Appbar.Header>
 
@@ -698,13 +792,14 @@ export default function CatalogScreen() {
                 </View>
               ) : null}
 
-              {/* Custom columns (defined in the web Catalog → Columns settings) — editable here too. */}
-              {customColumns.length > 0 && (
+              {/* Custom columns (defined in the web Catalog → Columns settings) — editable here too,
+                  rendered in the same display order configured on the web. */}
+              {orderedCustomColumns.length > 0 && (
                 <>
                   <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, marginBottom: 8, textAlign }}>
                     {isRTL ? 'שדות מותאמים' : 'Custom fields'}
                   </Text>
-                  {customColumns.map((col) => {
+                  {orderedCustomColumns.map((col) => {
                     const val = formCustomFields[col.key];
                     if (col.type === 'boolean') {
                       const on = val === true || val === 'true' || val === 'כן' || val === 'Yes';
@@ -776,6 +871,82 @@ export default function CatalogScreen() {
             </ScrollView>
           </KeyboardAvoidingView>
         </Modal>
+
+        {/* Catalog selections (customer inquiries from the public catalog) */}
+        <Modal
+          visible={selectionsVisible}
+          onDismiss={() => setSelectionsVisible(false)}
+          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+        >
+          <View style={{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
+              {isRTL ? 'פניות מהקטלוג' : 'Catalog inquiries'}
+            </Text>
+            <IconButton icon="refresh" size={20} onPress={loadSelections} iconColor={theme.colors.onSurfaceVariant} />
+          </View>
+
+          {selectionsLoading ? (
+            <View style={{ paddingVertical: 30 }}>
+              <ActivityIndicator color={BRAND_COLOR} />
+            </View>
+          ) : selections.length === 0 ? (
+            <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+              <MaterialCommunityIcons name="inbox-outline" size={48} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
+              <Text style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
+                {isRTL ? 'אין עדיין פניות מהקטלוג' : 'No catalog inquiries yet'}
+              </Text>
+            </View>
+          ) : (
+            <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
+              {selections.map((sel) => (
+                <Pressable
+                  key={sel.id}
+                  onPress={() => openSelectionLink(sel)}
+                  style={[styles.selCard, { borderColor: theme.colors.outlineVariant }]}
+                >
+                  <View style={{ flexDirection, justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text variant="titleSmall" style={{ color: theme.colors.onSurface }}>
+                      {sel.contactName || (isRTL ? 'ללא שם' : 'No name')}
+                    </Text>
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {fmtSelDate(sel.createdAt)}
+                    </Text>
+                  </View>
+                  {sel.contactPhone ? (
+                    <Text style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, writingDirection: 'ltr' }}>{sel.contactPhone}</Text>
+                  ) : null}
+                  <Text style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }} numberOfLines={2}>
+                    🛍️ {selItemsSummary(sel)}
+                  </Text>
+                  {sel.note ? (
+                    <Text style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, fontStyle: 'italic' }} numberOfLines={2}>
+                      📝 {sel.note}
+                    </Text>
+                  ) : null}
+                  <View style={{ flexDirection, justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+                    <View style={[styles.purposeBadge, { backgroundColor: BRAND_COLOR + '18' }]}>
+                      <Text variant="labelSmall" style={{ color: BRAND_COLOR }}>
+                        {purposeLabel(sel.purpose)}{sel.total ? ` · ₪${Number(sel.total).toLocaleString()}` : ''}
+                      </Text>
+                    </View>
+                    <Text variant="labelSmall" style={{ color: BRAND_COLOR }}>
+                      {isRTL ? 'צפה בבחירה ›' : 'View ›'}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+
+          <Button
+            mode="text"
+            onPress={() => setSelectionsVisible(false)}
+            textColor={theme.colors.onSurfaceVariant}
+            style={{ marginTop: 8 }}
+          >
+            {isRTL ? 'סגור' : 'Close'}
+          </Button>
+        </Modal>
       </Portal>
     </View>
   );
@@ -818,4 +989,6 @@ const styles = StyleSheet.create({
   previewImage: { width: '100%', height: 140, borderRadius: 10, marginBottom: 12 },
   modalActions: { marginTop: 8, gap: 10, justifyContent: 'flex-end' },
   actionBtn: { borderRadius: 8 },
+  selCard: { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 10 },
+  purposeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
 });

@@ -87,8 +87,49 @@ class CallEventsModule : Module() {
         // brings the app to the foreground (so the foreground scan wouldn't run) and the PHONE_STATE
         // broadcast is often suppressed by OEM background limits. The ContentObserver fires the instant
         // the OS writes the call row — while the app process is alive — so we report it immediately.
-        if (enabled) registerCallLogObserver(ctx.applicationContext)
-        else unregisterCallLogObserver(ctx.applicationContext)
+        if (enabled) {
+          registerCallLogObserver(ctx.applicationContext)
+          // Keep the process alive via a foreground service so detection works for HOURS while the
+          // app is closed (the previous in-process-only observer died with the backgrounded process,
+          // which is why calls only reached the server after re-opening the app). The periodic worker
+          // self-heals the service if an aggressive OEM still kills it.
+          CallMonitorService.start(ctx.applicationContext)
+          CallMonitorScheduler.ensurePeriodic(ctx.applicationContext)
+        } else {
+          unregisterCallLogObserver(ctx.applicationContext)
+          CallMonitorService.stop(ctx.applicationContext)
+          CallMonitorScheduler.cancelPeriodic(ctx.applicationContext)
+        }
+      }
+    }
+
+    /** Whether the app is exempt from battery optimization (required for OEM background reliability). */
+    Function("isIgnoringBatteryOptimizations") {
+      val ctx = appContext.reactContext ?: return@Function false
+      try {
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        pm.isIgnoringBatteryOptimizations(ctx.packageName)
+      } catch (e: Exception) {
+        false
+      }
+    }
+
+    /** Opens the system dialog asking the user to exempt the app from battery optimization. */
+    AsyncFunction("requestIgnoreBatteryOptimizations") { promise: Promise ->
+      val ctx = appContext.reactContext
+      if (ctx == null) { promise.resolve(false); return@AsyncFunction }
+      try {
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        if (pm.isIgnoringBatteryOptimizations(ctx.packageName)) { promise.resolve(true); return@AsyncFunction }
+        val intent = android.content.Intent(
+          android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+          android.net.Uri.parse("package:${ctx.packageName}")
+        )
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        ctx.startActivity(intent)
+        promise.resolve(true)
+      } catch (e: Exception) {
+        promise.resolve(false)
       }
     }
 

@@ -21,6 +21,7 @@ import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { leadsApi } from '../../../services/api/leads';
 import { quotesApi } from '../../../services/api/quotes';
+import { tasksApi } from '../../../services/api/tasks';
 import { ENDPOINTS } from '../../../constants/api';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -64,6 +65,11 @@ const PRIORITY_COLORS: Record<string, string> = {
   medium: '#FF9800',
   high: '#FF5722',
 };
+
+// Lead rating (score) 1..5 = Cold / Cool / Warm / Hot / Fire — matches the web lead form.
+const SCORE_COLORS = ['#9ca3af', '#3b82f6', '#06b6d4', '#f59e0b', '#f97316', '#ef4444'];
+const SCORE_LABELS = ['', 'Cold', 'Cool', 'Warm', 'Hot', 'Fire'];
+const scoreColor = (s?: number) => SCORE_COLORS[Math.min(5, Math.max(0, Math.round(Number(s) || 0)))] || '#9ca3af';
 
 
 interface SavedView {
@@ -117,6 +123,44 @@ function OptionChips({
           </Chip>
         );
       })}
+    </View>
+  );
+}
+
+// Compact clock badge shown on a lead card when it has open tasks. Mirrors the web Leads board:
+// red = has an overdue task, amber = due today, neutral = upcoming. Count appears when >1.
+function LeadTaskBadge({
+  info,
+  t,
+  formatDate,
+}: {
+  info: { count: number; hasOverdue: boolean; hasToday: boolean; nextDueDate: string | null };
+  t: (key: any, defaultValue?: any) => string;
+  formatDate: (v: string) => string;
+}) {
+  // Two clear states (per request): red = the task's time has passed, blue = still upcoming/before.
+  const color = info.hasOverdue ? '#ef4444' : '#3b82f6';
+  const label = info.hasOverdue
+    ? t('tasks.overdue', 'באיחור')
+    : info.hasToday
+      ? t('tasks.today', 'היום')
+      : (info.nextDueDate ? formatDate(info.nextDueDate) : t('tasks.task', 'משימה'));
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 3,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 10,
+        backgroundColor: withAlpha(color, 0.14),
+      }}
+    >
+      <MaterialCommunityIcons name="clock-outline" size={12} color={color} />
+      <Text style={{ fontSize: 10, color, fontWeight: '700' }}>
+        {label}{info.count > 1 ? ` (${info.count})` : ''}
+      </Text>
     </View>
   );
 }
@@ -177,7 +221,7 @@ export default function LeadsListScreen() {
   const latestLeadsRef = useRef<Lead[]>([]);
 
   // ── Sort state ──────────────────────────────────────────────────────────────
-  type SortKey = 'createdOn' | 'title' | 'value' | 'priority' | 'stageName';
+  type SortKey = 'createdOn' | 'title' | 'value' | 'priority' | 'score' | 'stageName';
   type SortDir = 'asc' | 'desc';
   const [sortKey, setSortKey] = useState<SortKey>('createdOn');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -185,6 +229,20 @@ export default function LeadsListScreen() {
   // ── Seen/Unseen leads tracking ─────────────────────────────────────────────
   const [seenLeadIds, setSeenLeadIds] = useState<Set<string>>(new Set());
   const [unseenOnly, setUnseenOnly] = useState(false);
+
+  // ── Active tasks per lead (clock badge, like the web) ───────────────────────
+  // Map<leadId, { count, hasOverdue, hasToday, nextTitle, nextDueDate }>
+  type LeadTaskInfo = { count: number; hasOverdue: boolean; hasToday: boolean; nextTitle: string; nextDueDate: string | null };
+  const [leadTaskMap, setLeadTaskMap] = useState<Map<string, LeadTaskInfo>>(new Map());
+
+  // ── Task quick-filters (like the web tabs: today / upcoming / overdue / has-tasks) ──
+  type TaskQuickFilter = 'today' | 'upcoming' | 'overdue' | 'withTasks';
+  const [taskQuickFilter, setTaskQuickFilter] = useState<TaskQuickFilter | null>(null);
+  // Lead ids that have a task matching each bucket — precomputed alongside the badge map.
+  const [taskFilterSets, setTaskFilterSets] = useState<{ today: Set<string>; upcoming: Set<string>; overdue: Set<string>; withTasks: Set<string> }>(
+    { today: new Set(), upcoming: new Set(), overdue: new Set(), withTasks: new Set() },
+  );
+  const [taskFilterLoading, setTaskFilterLoading] = useState(false);
 
   // ── Saved views ─────────────────────────────────────────────────────────────
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
@@ -365,6 +423,94 @@ export default function LeadsListScreen() {
       axiosInstance.post(ENDPOINTS.MARK_LEAD_SEEN, { organization, leadIds: allIds }).catch(() => {});
   }, [organization, leads]);
 
+  // Pull all open tasks for the org and bucket them by the lead they're attached to so each lead
+  // card can show a clock badge (overdue/today/upcoming) exactly like the web Leads board.
+  const fetchActiveTasksForCards = useCallback(async () => {
+    if (!organization) return;
+    try {
+      const allTasks = await tasksApi.getAll(organization, '', 'all');
+      const now = new Date();
+      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date(now); todayEnd.setHours(23, 59, 59, 999);
+      const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const map = new Map<string, LeadTaskInfo>();
+      const todaySet = new Set<string>();
+      const upcomingSet = new Set<string>();
+      const overdueSet = new Set<string>();
+      const withTasksSet = new Set<string>();
+      allTasks.forEach((task: any) => {
+        const statusVal = (task.status || task.Status || '').toLowerCase();
+        if (statusVal === 'completed' || statusVal === 'cancelled') return;
+        const rel = task.relatedTo || task.RelatedTo;
+        const relType = (rel?.type || rel?.Type || '').toLowerCase();
+        const relId = rel?.entityId || rel?.EntityId;
+        if (relType !== 'lead' || !relId) return;
+        const dueRaw = task.dueDate || task.DueDate || '';
+        const dueDate = dueRaw ? new Date(dueRaw) : null;
+        const hasValidDue = !!(dueDate && !isNaN(dueDate.getTime()));
+        const isOverdue = hasValidDue ? dueDate! < now : false;
+        const isToday = hasValidDue ? dueDate! >= todayStart && dueDate! <= todayEnd : false;
+        const title = task.title || task.Title || '';
+        const existing = map.get(relId);
+        if (existing) {
+          existing.count += 1;
+          if (isOverdue) existing.hasOverdue = true;
+          if (isToday && !isOverdue) existing.hasToday = true;
+        } else {
+          map.set(relId, { count: 1, hasOverdue: isOverdue, hasToday: isToday && !isOverdue, nextTitle: title, nextDueDate: dueRaw || null });
+        }
+
+        // Every lead that still has an open task → the "all leads with tasks" bucket.
+        withTasksSet.add(relId);
+
+        // Quick-filter buckets. overdue = past due, upcoming = due within the next 7 days,
+        // today = due anytime today (regardless of who it's assigned to — the previous
+        // "assigned to me" gate silently emptied this tab whenever tasks weren't assigned to
+        // the exact current user id, which is why "today" showed nothing).
+        if (hasValidDue) {
+          if (isOverdue) overdueSet.add(relId);
+          if (dueDate! >= now && dueDate! <= in7Days) upcomingSet.add(relId);
+          if (isToday) todaySet.add(relId);
+        }
+      });
+      setLeadTaskMap(map);
+      setTaskFilterSets({ today: todaySet, upcoming: upcomingSet, overdue: overdueSet, withTasks: withTasksSet });
+    } catch {
+      /* non-critical; leave previous badges */
+    }
+  }, [organization, user?.uID, user?.userId]);
+
+  // Apply a task quick-filter. Loads every lead page first so the client-side filter
+  // spans the whole dataset (matches the web, which raises pageSize to "all").
+  const applyTaskFilter = useCallback(async (type: TaskQuickFilter) => {
+    if (taskQuickFilter === type) {
+      setTaskQuickFilter(null);
+      return;
+    }
+    setTaskQuickFilter(type);
+    setActiveViewId('__all');
+    setFilterMine(false);
+    setUnseenOnly(false);
+    setSelectedStage(null);
+    setTaskFilterLoading(true);
+    try {
+      // Always recompute the task→lead buckets from fresh task data on tap, so the filter
+      // reflects the latest statuses/due dates (not a stale snapshot from screen mount).
+      const tasksRefresh = fetchActiveTasksForCards();
+      // Load every remaining lead page (sequentially, to match the paginated append) so the
+      // client-side filter spans the whole dataset.
+      const allPages = Math.ceil(totalCount / PAGE_SIZE);
+      for (let p = page + 1; p <= allPages; p++) await fetchPage(p, false);
+      await tasksRefresh;
+    } finally {
+      setTaskFilterLoading(false);
+    }
+  }, [taskQuickFilter, totalCount, page, fetchPage, fetchActiveTasksForCards]);
+
+  useEffect(() => {
+    fetchActiveTasksForCards();
+  }, [fetchActiveTasksForCards]);
+
   // Sync store changes into local state (e.g. stage change from detail screen)
   const storeLeads = useLeadStore((s) => s.leads);
   useEffect(() => {
@@ -391,8 +537,11 @@ export default function LeadsListScreen() {
         didMountRef.current = true;
         return;
       }
-      if (organization) fetchPage(1, true);
-    }, [organization, fetchPage])
+      if (organization) {
+        fetchPage(1, true);
+        fetchActiveTasksForCards();
+      }
+    }, [organization, fetchPage, fetchActiveTasksForCards])
   );
 
   const loadSavedView = useCallback((view: SavedView) => {
@@ -401,6 +550,7 @@ export default function LeadsListScreen() {
     setActiveViewId(view.id);
     setFilterMine(false);
     setUnseenOnly(false);
+    setTaskQuickFilter(null);
     setSelectedStage(filters.stage ?? null);
     setFilterSource(filters.source ?? '');
     setFilterOwner(filters.owner ?? '');
@@ -418,6 +568,7 @@ export default function LeadsListScreen() {
 
   const clearAllFilters = useCallback(() => {
     setActiveViewId('__all');
+    setTaskQuickFilter(null);
     setSelectedStage(null);
     setFilterSource('');
     setFilterOwner('');
@@ -501,16 +652,24 @@ export default function LeadsListScreen() {
     fetchPage(page + 1, false);
   }, [hasMore, loadingMore, isLoading, page, fetchPage]);
 
+  // Base lead list for the pipeline/kanban view, honoring the active task quick-filter so
+  // overdue/upcoming/today filtering applies to the board too (not just the list).
+  const pipelineLeads = useMemo(() => {
+    if (!taskQuickFilter) return leads;
+    const ids = taskFilterSets[taskQuickFilter];
+    return leads.filter((l) => ids.has(l.id));
+  }, [leads, taskQuickFilter, taskFilterSets]);
+
   // ── Pipeline view grouping (uses loaded leads) ──────────────────────────────
   const leadsByStage = useMemo(() => {
     const grouped = new Map<string, Lead[]>();
-    leads.forEach((lead) => {
+    pipelineLeads.forEach((lead) => {
       const stage = getLeadStageName(lead);
       if (!grouped.has(stage)) grouped.set(stage, []);
       grouped.get(stage)!.push(lead);
     });
     return grouped;
-  }, [leads, getLeadStageName]);
+  }, [pipelineLeads, getLeadStageName]);
 
   const parseTs = useCallback((val: any): number => {
     if (!val) return 0;
@@ -525,6 +684,10 @@ export default function LeadsListScreen() {
     let result = [...leads];
     if (selectedStage) result = result.filter((lead) => getLeadStageName(lead) === selectedStage);
     if (unseenOnly) result = result.filter((lead) => !seenLeadIds.has(lead.id));
+    if (taskQuickFilter) {
+      const ids = taskFilterSets[taskQuickFilter];
+      result = result.filter((lead) => ids.has(lead.id));
+    }
 
     result.sort((a: any, b: any) => {
       let aVal: any, bVal: any;
@@ -541,6 +704,9 @@ export default function LeadsListScreen() {
         const pri: Record<string, number> = { high: 3, medium: 2, low: 1 };
         aVal = pri[a.priority] || 0;
         bVal = pri[b.priority] || 0;
+      } else if (sortKey === 'score') {
+        aVal = Number(a.score) || 0;
+        bVal = Number(b.score) || 0;
       } else if (sortKey === 'stageName') {
         aVal = getLeadStageName(a);
         bVal = getLeadStageName(b);
@@ -554,7 +720,7 @@ export default function LeadsListScreen() {
     });
 
     return result;
-  }, [leads, selectedStage, getLeadStageName, unseenOnly, seenLeadIds, sortKey, sortDir, parseTs]);
+  }, [leads, selectedStage, getLeadStageName, unseenOnly, seenLeadIds, sortKey, sortDir, parseTs, taskQuickFilter, taskFilterSets]);
 
   const kanbanColumns = useMemo<KanbanColumn<Lead>[]>(() => {
     // When the real pipeline is loaded, build columns keyed by the stable stage id and
@@ -566,7 +732,7 @@ export default function LeadsListScreen() {
         id: s.id,
         title: STAGE_I18N[s.name] ? t(STAGE_I18N[s.name]) : s.name,
         color: s.color ?? stageColorMap[s.id] ?? theme.colors.primary,
-        items: leads.filter(
+        items: pipelineLeads.filter(
           (l) =>
             l.stageId === s.id ||
             l.stageName === s.name ||
@@ -583,7 +749,7 @@ export default function LeadsListScreen() {
       color: stageColorMap[stage] ?? theme.colors.primary,
       items: leadsByStage.get(stage) ?? [],
     }));
-  }, [pipelineStages, leads, stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary]);
+  }, [pipelineStages, pipelineLeads, stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary]);
 
   const handleKanbanMove = useCallback((item: Lead, _fromColumnId: string, toColumnId: string) => {
     handleStageChange(item, toColumnId);
@@ -604,9 +770,9 @@ export default function LeadsListScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchPage(1, true);
+    await Promise.all([fetchPage(1, true), fetchActiveTasksForCards()]);
     setRefreshing(false);
-  }, [fetchPage]);
+  }, [fetchPage, fetchActiveTasksForCards]);
 
   const openLead = useCallback(
     (lead: Lead) => {
@@ -818,10 +984,19 @@ export default function LeadsListScreen() {
             {item.value != null && item.value > 0 ? (
               <Text
                 variant="titleSmall"
-                style={{ color: theme.colors.primary, fontWeight: '700' }}
+                style={{ color: theme.colors.primary, fontWeight: '700', marginEnd: 6 }}
               >
                 {formatCurrency(item.value, item.currency ?? '₪')}
               </Text>
+            ) : null}
+            {(item as any).score ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1, backgroundColor: withAlpha(scoreColor((item as any).score), 0.16), borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1, marginEnd: 4 }}>
+                <MaterialCommunityIcons name="fire" size={12} color={scoreColor((item as any).score)} />
+                <Text style={{ fontSize: 10, fontWeight: '700', color: scoreColor((item as any).score) }}>{Number((item as any).score)}</Text>
+              </View>
+            ) : null}
+            {item.priority ? (
+              <MaterialCommunityIcons name="flag" size={14} color={PRIORITY_COLORS[item.priority] || theme.colors.onSurfaceVariant} />
             ) : null}
           </View>
 
@@ -860,6 +1035,9 @@ export default function LeadsListScreen() {
             >
               {getLeadStageName(item)}
             </Chip>
+            {leadTaskMap.get(item.id) ? (
+              <LeadTaskBadge info={leadTaskMap.get(item.id)!} t={t} formatDate={formatDate} />
+            ) : null}
             {(item as any).status ? (
               <Chip
                 compact
@@ -932,7 +1110,7 @@ export default function LeadsListScreen() {
         />
       </Pressable>
     );},
-    [theme, isRTL, flexDirection, textAlign, openLead, stageColor, t, user, handleTakeOwnership, getLeadStageName, seenLeadIds],
+    [theme, isRTL, flexDirection, textAlign, openLead, stageColor, t, user, handleTakeOwnership, getLeadStageName, seenLeadIds, leadTaskMap],
   );
 
   const renderPipelineCard = useCallback(
@@ -975,9 +1153,23 @@ export default function LeadsListScreen() {
             {formatCurrency(lead.value, lead.currency ?? '₪')}
           </Text>
         ) : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+          {leadTaskMap.get(lead.id) ? (
+            <LeadTaskBadge info={leadTaskMap.get(lead.id)!} t={t} formatDate={formatDate} />
+          ) : null}
+          {(lead as any).score ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1, backgroundColor: withAlpha(scoreColor((lead as any).score), 0.16), borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 }}>
+              <MaterialCommunityIcons name="fire" size={12} color={scoreColor((lead as any).score)} />
+              <Text style={{ fontSize: 10, fontWeight: '700', color: scoreColor((lead as any).score) }}>{Number((lead as any).score)}</Text>
+            </View>
+          ) : null}
+          {lead.priority ? (
+            <MaterialCommunityIcons name="flag" size={14} color={PRIORITY_COLORS[lead.priority] || theme.colors.onSurfaceVariant} />
+          ) : null}
+        </View>
       </Pressable>
     ),
-    [theme, flexDirection, openLead, stageColor, getLeadStageName],
+    [theme, flexDirection, openLead, stageColor, getLeadStageName, leadTaskMap, t],
   );
 
   const renderEmpty = useCallback(
@@ -1108,7 +1300,7 @@ export default function LeadsListScreen() {
             </Text>
           </Pressable>
           <Pressable
-            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setUnseenOnly(false); }}
+            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setUnseenOnly(false); setTaskQuickFilter(null); }}
             style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
           >
             <Text style={[styles.viewTabText, { color: activeViewId === '__mine' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
@@ -1116,7 +1308,7 @@ export default function LeadsListScreen() {
             </Text>
           </Pressable>
           <Pressable
-            onPress={() => { setActiveViewId('__new'); setUnseenOnly(true); setFilterMine(false); setSelectedStage(null); }}
+            onPress={() => { setActiveViewId('__new'); setUnseenOnly(true); setFilterMine(false); setSelectedStage(null); setTaskQuickFilter(null); }}
             style={[styles.viewTab, activeViewId === '__new' && { borderBottomColor: '#ef4444', borderBottomWidth: 2 }]}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -1132,6 +1324,33 @@ export default function LeadsListScreen() {
               )}
             </View>
           </Pressable>
+          {([
+            { type: 'today' as TaskQuickFilter, icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
+            { type: 'upcoming' as TaskQuickFilter, icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
+            { type: 'overdue' as TaskQuickFilter, icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
+            { type: 'withTasks' as TaskQuickFilter, icon: 'clipboard-clock-outline', label: t('leads.leadsWithTasks', 'לידים עם משימות'), color: '#2e6155' },
+          ]).map(({ type, icon, label, color }) => {
+            const isActive = taskQuickFilter === type;
+            const count = taskFilterSets[type].size;
+            return (
+              <Pressable
+                key={type}
+                onPress={() => applyTaskFilter(type)}
+                disabled={taskFilterLoading}
+                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, isActive && { borderBottomColor: color, borderBottomWidth: 2 }]}
+              >
+                <MaterialCommunityIcons name={icon as any} size={14} color={isActive ? color : theme.colors.onSurfaceVariant} />
+                <Text style={[styles.viewTabText, { color: isActive ? color : theme.colors.onSurfaceVariant, maxWidth: 160 }]} numberOfLines={1}>
+                  {label}
+                </Text>
+                {count > 0 && (
+                  <View style={{ backgroundColor: color, borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{count}</Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
           {savedViews.filter((v) => {
             const vis = v.Visibility || 'personal';
             if (vis === 'shared') return true;
@@ -1231,13 +1450,14 @@ export default function LeadsListScreen() {
             { key: 'title' as SortKey, label: t('leads.name', 'שם'), icon: 'sort-alphabetical-variant' },
             { key: 'value' as SortKey, label: t('leads.value', 'סכום'), icon: 'cash' },
             { key: 'priority' as SortKey, label: t('leads.priority', 'עדיפות'), icon: 'flag' },
+            { key: 'score' as SortKey, label: t('leads.score', 'דירוג'), icon: 'fire' },
             { key: 'stageName' as SortKey, label: t('leads.stage', 'שלב'), icon: 'view-column' },
           ] as const).map((opt) => (
             <Pressable
               key={opt.key}
               onPress={() => {
                 if (sortKey === opt.key) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
-                else { setSortKey(opt.key); setSortDir(opt.key === 'createdOn' ? 'desc' : 'asc'); }
+                else { setSortKey(opt.key); setSortDir(['createdOn', 'value', 'priority', 'score'].includes(opt.key) ? 'desc' : 'asc'); }
               }}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortKey === opt.key ? withAlpha(theme.colors.primary, 0.1) : 'transparent' }}
             >
@@ -1354,6 +1574,20 @@ export default function LeadsListScreen() {
                   {formatCurrency(item.value, item.currency ?? '₪')}
                 </Text>
               ) : null}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                {leadTaskMap.get(item.id) ? (
+                  <LeadTaskBadge info={leadTaskMap.get(item.id)!} t={t} formatDate={formatDate} />
+                ) : null}
+                {(item as any).score ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1, backgroundColor: withAlpha(scoreColor((item as any).score), 0.16), borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 }}>
+                    <MaterialCommunityIcons name="fire" size={12} color={scoreColor((item as any).score)} />
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: scoreColor((item as any).score) }}>{Number((item as any).score)}</Text>
+                  </View>
+                ) : null}
+                {item.priority ? (
+                  <MaterialCommunityIcons name="flag" size={14} color={PRIORITY_COLORS[item.priority] || theme.colors.onSurfaceVariant} />
+                ) : null}
+              </View>
             </Pressable>
           )}
         />

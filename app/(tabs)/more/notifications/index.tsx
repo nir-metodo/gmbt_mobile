@@ -285,6 +285,18 @@ export default function NotificationsSettingsScreen() {
               />
             </>
           )}
+          <Divider style={styles.divider} />
+          <SettingRow
+            icon="account-arrow-right-outline"
+            iconColor="#2A9D8F"
+            label={t('pushSettings.contactAssignedToMe', 'איש קשר שויך אליי')}
+            description={t('pushSettings.contactAssignedToMeDesc', 'קבל התראה כשמשייכים אליך איש קשר')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.contactAssignedToMe}
+            onToggle={(v) => handleToggle('contactAssignedToMe', v)}
+            disabled={saving === 'contactAssignedToMe'}
+          />
         </Surface></>
         )}
 
@@ -386,6 +398,30 @@ export default function NotificationsSettingsScreen() {
             value={settings.newOrderCreated}
             onToggle={(v) => handleToggle('newOrderCreated', v)}
             disabled={saving === 'newOrderCreated'}
+          />
+          <Divider style={styles.divider} />
+          <SettingRow
+            icon="file-document-arrow-right-outline"
+            iconColor="#0891b2"
+            label={t('pushSettings.orderAssignedToMe', 'הזמנה שויכה אליי')}
+            description={t('pushSettings.orderAssignedToMeDesc', 'קבל התראה כשמשייכים אליך הזמנה / הצעת מחיר')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.orderAssignedToMe}
+            onToggle={(v) => handleToggle('orderAssignedToMe', v)}
+            disabled={saving === 'orderAssignedToMe'}
+          />
+          <Divider style={styles.divider} />
+          <SettingRow
+            icon="account-filter-outline"
+            iconColor="#0891b2"
+            label={t('pushSettings.onlyMyOrders', 'רק הזמנות שלי')}
+            description={t('pushSettings.onlyMyOrdersDesc', 'קבל התראות רק על הזמנות שאני הבעלים שלהן')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.ordersOnlyMyOrders}
+            onToggle={(v) => handleToggle('ordersOnlyMyOrders', v)}
+            disabled={saving === 'ordersOnlyMyOrders'}
           />
         </Surface></>
         )}

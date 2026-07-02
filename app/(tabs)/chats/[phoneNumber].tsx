@@ -470,7 +470,10 @@ export default function ChatConversationScreen() {
   const contactName = chat?.contactName || phoneNumber || '';
 
   const [orgWabaNumbers, setOrgWabaNumbers] = useState<WabaNumberInfo[]>([]);
-  const assignedNums = user?.assignedWhatsAppNumbers || [];
+  // Memoize so the reference is stable across renders. `|| []` would otherwise produce a NEW empty
+  // array every render, which propagates through `wabaNumbers` → `renderItem` and forces the entire
+  // message list to re-render on every parent render (countdown tick, isSending, store updates…).
+  const assignedNums = useMemo(() => user?.assignedWhatsAppNumbers || [], [user?.assignedWhatsAppNumbers]);
 
   // Fetch org numbers from API
   useEffect(() => {
@@ -484,9 +487,13 @@ export default function ChatConversationScreen() {
       }).catch(() => {});
   }, [user?.organization]);
 
-  const allWabaNumbers: WabaNumberInfo[] = orgWabaNumbers.length > 0
-    ? orgWabaNumbers
-    : (user?.wabaNumbers || (user?.wabaNumber ? [{ PhoneNumberId: user.wabaNumber, DisplayNumber: user.wabaNumber }] : []));
+  // Memoized for referential stability (see assignedNums note) — feeds the `wabaNumbers` memo and,
+  // through it, the message list's `renderItem`.
+  const allWabaNumbers = useMemo<WabaNumberInfo[]>(() => (
+    orgWabaNumbers.length > 0
+      ? orgWabaNumbers
+      : (user?.wabaNumbers || (user?.wabaNumber ? [{ PhoneNumberId: user.wabaNumber, DisplayNumber: user.wabaNumber }] : []))
+  ), [orgWabaNumbers, user?.wabaNumbers, user?.wabaNumber]);
 
   // If user has assigned numbers, restrict wabaNumbers to only those they have access to
   const wabaNumbers = useMemo((): WabaNumberInfo[] => {

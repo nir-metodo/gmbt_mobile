@@ -94,6 +94,16 @@ export async function enableDeviceCallEvents(): Promise<boolean> {
   if (!CallEvents.hasPermissions()) {
     await CallEvents.requestPermissions();
   }
+  // Battery-optimization exemption is what keeps the foreground service (and therefore call
+  // detection) alive for hours while the app is closed — without it, aggressive OEMs kill the
+  // process and calls only reach the server after the app is re-opened. Ask once on enable.
+  try {
+    if (!CallEvents.isIgnoringBatteryOptimizations()) {
+      await CallEvents.requestIgnoreBatteryOptimizations();
+    }
+  } catch {
+    // non-fatal — detection still works, just less reliably on some OEMs
+  }
   await syncDeviceCallEventsConfig();
   const granted = CallEvents.hasPermissions();
   // Persist state to the DB so admins can see/verify which devices report calls.

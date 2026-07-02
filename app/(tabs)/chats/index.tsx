@@ -16,6 +16,7 @@ import {
   Alert,
   AppState,
   TextInput,
+  InteractionManager,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -188,9 +189,13 @@ export default function ChatsListScreen() {
     }).catch(() => {});
   }, [user?.organization, user?.uID, user?.userId]);
 
-  // Load contact groups and lead stages
+  // Load contact groups and lead stages.
+  // Building the contact→lead-stage map pulls EVERY lead in the org and is only used for the small
+  // stage badges on chat rows, so we defer it past the first interaction. This lets the chat list
+  // paint and scroll immediately instead of blocking the JS thread on a large leads payload.
   useEffect(() => {
     if (!user?.organization) return;
+    const task = InteractionManager.runAfterInteractions(() => {
     axiosInstance.post(ENDPOINTS.GET_ALL_KEYS, { organization: user.organization })
       .then((res) => {
         const raw = res.data;
@@ -229,11 +234,16 @@ export default function ChatsListScreen() {
             setContactLeadMap(map);
           }).catch(() => {});
       }).catch(() => {});
+    });
+    return () => task.cancel();
   }, [user?.organization]);
 
-  // Load case stages and contact→case map
+  // Load case stages and contact→case map.
+  // Deferred like the lead-stage map above: it fetches up to 500 cases just to render the small case
+  // badges, so it shouldn't compete with the first paint / scroll of the chat list.
   useEffect(() => {
     if (!user?.organization) return;
+    const task = InteractionManager.runAfterInteractions(() => {
     axiosInstance.post(ENDPOINTS.GET_CASE_SETTINGS, { organization: user.organization })
       .then((res) => {
         const raw = res.data;
@@ -265,6 +275,8 @@ export default function ChatsListScreen() {
             setContactCaseMap(map);
           }).catch(() => {});
       }).catch(() => {});
+    });
+    return () => task.cancel();
   }, [user?.organization]);
 
   // Fetch WhatsApp numbers for the organization

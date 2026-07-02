@@ -143,8 +143,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
+    const currentUser = get().user;
     try {
       WebSocketService.closeAll();
+      // Detach this device's push token from the current account BEFORE clearing auth, so the
+      // user stops receiving the previous account's notifications after switching accounts.
+      if (currentUser?.organization) {
+        await pushNotificationService
+          .unregisterPushToken(currentUser.organization, currentUser.uID || currentUser.userId)
+          .catch(() => {});
+      }
       await authApi.logout();
     } finally {
       setTokenCache(null);

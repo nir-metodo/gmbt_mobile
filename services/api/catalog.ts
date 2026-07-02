@@ -35,12 +35,56 @@ export interface CatalogFieldsConfig {
   requiredField?: string;
   /** Which base fields are included in list search (defaults to name + description + sku). */
   searchBaseFields?: Record<string, boolean>;
+  /** Persisted display order of columns/fields (tokens: base keys + `custom:<id>`), set in the web Catalog → Columns settings. */
+  columnOrder?: string[];
 }
 
 export interface CatalogData {
   catalogItems: CatalogItem[];
   catalogCustomColumns: CatalogCustomColumn[];
   catalogFieldsConfig?: CatalogFieldsConfig;
+}
+
+export interface PublicCatalogConfig {
+  enabled?: boolean;
+  slug?: string;
+  title?: string;
+  purpose?: 'browse' | 'order' | 'lead' | 'inquiry';
+  whatsappShare?: boolean;
+  whatsappNumber?: string;
+  allowQuantity?: boolean;
+  requireContact?: boolean;
+  columns?: Record<string, boolean>;
+}
+
+export interface CatalogSelectionItem {
+  id?: string;
+  name?: string;
+  sku?: string;
+  unitPrice?: number;
+  quantity?: number;
+  total?: number;
+  images?: string[];
+  description?: string;
+  category?: string;
+}
+
+export interface CatalogSelection {
+  id: string;
+  contactName?: string;
+  contactPhone?: string;
+  contactEmail?: string;
+  note?: string;
+  purpose?: string;
+  total?: number;
+  currency?: string;
+  slug?: string;
+  createdAt?: string;
+  items?: CatalogSelectionItem[];
+}
+
+function genSlug(): string {
+  return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
 }
 
 export const catalogApi = {
@@ -83,5 +127,49 @@ export const catalogApi = {
     const updated = allItems.filter((i) => i.id !== itemId);
     await this.save(organization, updated);
     return updated;
+  },
+
+  /** Reads the public-catalog share config from branding. */
+  async getPublicConfig(organization: string): Promise<PublicCatalogConfig> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_QUOTE_BRANDING, { organization });
+    const raw = response.data || {};
+    return (raw.publicCatalog && typeof raw.publicCatalog === 'object') ? raw.publicCatalog : {};
+  },
+
+  /**
+   * Enables (or updates) the shareable public catalog and returns the saved config. Preserves the
+   * full branding doc (saved with overwrite) and any existing publicCatalog fields; only fills in
+   * sensible defaults when sharing is turned on for the first time.
+   */
+  async enablePublicCatalog(organization: string): Promise<PublicCatalogConfig> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_QUOTE_BRANDING, { organization });
+    const existing = response.data || {};
+    const current: PublicCatalogConfig = (existing.publicCatalog && typeof existing.publicCatalog === 'object') ? existing.publicCatalog : {};
+    const cfg: PublicCatalogConfig = {
+      // Default to "lead" so selections are visible both in Leads and the selections viewer.
+      purpose: current.purpose || 'lead',
+      whatsappShare: current.whatsappShare !== false,
+      requireContact: current.requireContact !== false,
+      allowQuantity: current.allowQuantity || false,
+      columns: current.columns && Object.keys(current.columns).length ? current.columns : { image: true, description: true, unitPrice: true, category: true },
+      title: current.title || '',
+      whatsappNumber: current.whatsappNumber || '',
+      ...current,
+      enabled: true,
+      slug: current.slug || genSlug(),
+    };
+    await axiosInstance.post(ENDPOINTS.SAVE_QUOTE_BRANDING, {
+      organization,
+      brandingData: { ...existing, publicCatalog: cfg },
+    });
+    return cfg;
+  },
+
+  /** Lists customer selections submitted via the public catalog (newest first). */
+  async getSelections(organization: string): Promise<CatalogSelection[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CATALOG_SELECTIONS, { organization });
+    const raw = response.data || {};
+    const list = Array.isArray(raw.selections) ? raw.selections : (Array.isArray(raw) ? raw : []);
+    return list as CatalogSelection[];
   },
 };

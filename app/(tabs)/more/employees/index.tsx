@@ -26,6 +26,7 @@ import {
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
+import * as Location from 'expo-location';
 import { useTranslation } from 'react-i18next';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
@@ -220,18 +221,39 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
     }, [fetchStatus, fetchMyRecords])
   );
 
+  // Best-effort GPS coordinates for geofenced time reporting
+  const getCoords = async (): Promise<{ latitude?: number; longitude?: number; accuracy?: number }> => {
+    try {
+      const { status: perm } = await Location.requestForegroundPermissionsAsync();
+      if (perm !== 'granted') return {};
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      return { latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy ?? undefined };
+    } catch {
+      return {};
+    }
+  };
+
   const handleClockInOut = async () => {
     setClocking(true);
     try {
+      const coords = await getCoords();
       if (status?.isClockedIn) {
-        await axiosInstance.post(ENDPOINTS.CLOCK_OUT, { organizationName: org });
+        await axiosInstance.post(ENDPOINTS.CLOCK_OUT, { organizationName: org, ...coords });
       } else {
-        await axiosInstance.post(ENDPOINTS.CLOCK_IN, { organizationName: org });
+        await axiosInstance.post(ENDPOINTS.CLOCK_IN, { organizationName: org, ...coords });
       }
       await fetchStatus();
       await fetchMyRecords();
     } catch (e: any) {
-      Alert.alert(t('common.error'), e?.message || t('errors.generic'));
+      const data = e?.response?.data;
+      if (data?.code === 'OUTSIDE_RADIUS') {
+        const dist = data.distance > 0 ? ` (${Math.round(data.distance)} מ' מהמיקום המורשה)` : '';
+        Alert.alert('מחוץ לטווח', `לא ניתן לדווח שעות — אתה מחוץ לטווח המותר${dist}.`);
+      } else if (data?.code === 'LOCATION_REQUIRED') {
+        Alert.alert('נדרשת הרשאת מיקום', 'דיווח שעות דורש הרשאת מיקום. אנא אפשר מיקום במכשיר ונסה שוב.');
+      } else {
+        Alert.alert(t('common.error'), data?.error || e?.message || t('errors.generic'));
+      }
     } finally {
       setClocking(false);
     }

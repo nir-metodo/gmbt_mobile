@@ -200,8 +200,16 @@ export default function RootLayout() {
         case 'caseAssigned':
           router.push('/(tabs)/cases');
           break;
+        case 'contactAssigned':
+          if (data.contactPhone || data.phoneNumber) {
+            router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: (data.contactPhone || data.phoneNumber) as string } });
+          } else {
+            router.push('/(tabs)/chats');
+          }
+          break;
         case 'newOrder':
         case 'newQuote':
+        case 'orderAssigned':
           router.push('/(tabs)/more/quotes');
           break;
         case 'taskAssigned':
