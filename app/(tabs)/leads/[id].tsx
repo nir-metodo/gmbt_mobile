@@ -37,6 +37,8 @@ import { ENDPOINTS } from '../../../constants/api';
 import { usersApi } from '../../../services/api/users';
 import { tasksApi } from '../../../services/api/tasks';
 import { leadsApi } from '../../../services/api/leads';
+import type { LeadFieldConfig } from '../../../services/api/leads';
+import { chatsApi } from '../../../services/api/chats';
 import { quotesApi } from '../../../services/api/quotes';
 import { paymentsApi } from '../../../services/api/payments';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -59,7 +61,7 @@ import {
   type DynamicSection,
 } from '../../../components/DynamicFieldsSection';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
-import type { Lead, LeadStage, TimelineEvent, OrgUser } from '../../../types';
+import type { Lead, LeadStage, TimelineEvent, OrgUser, Template } from '../../../types';
 
 // Crash-proof date/time formatter. On Android (Hermes) `Date.toLocaleString(locale, { dateStyle, timeStyle })`
 // can throw a RangeError when full ICU/Intl isn't available, which in a release build (no error boundary)
@@ -139,6 +141,12 @@ const EMPTY_LEAD: Partial<Lead> = {
   companyName: '',
   jobTitle: '',
   nextFollowUp: '',
+  followUpEnabled: false,
+  followUpInterval: 2,
+  followUpUnit: 'days',
+  followUpTemplateId: '',
+  followUpTemplateName: '',
+  followUpRepeat: 3,
   priority: 'medium',
   ownerId: '',
   tags: [],
@@ -183,6 +191,9 @@ export default function LeadDetailScreen() {
   const [saving, setSaving] = useState(false);
   const [addTaskVisible, setAddTaskVisible] = useState(false);
   const [contactLookupVisible, setContactLookupVisible] = useState(false);
+  // B2C-friendly progressive disclosure: hide company/job-title behind a small "add" link so
+  // organizations that don't sell to businesses aren't forced to look at fields they never use.
+  const [showBusinessFields, setShowBusinessFields] = useState(false);
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
   const [orgUsersLoading, setOrgUsersLoading] = useState(false);
   const [ownerPickerExpanded, setOwnerPickerExpanded] = useState(false);
@@ -193,6 +204,13 @@ export default function LeadDetailScreen() {
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
   const [leadFormSections, setLeadFormSections] = useState<DynamicSection[]>([]);
   const [leadFormLayout, setLeadFormLayout] = useState<string[]>([]);
+  // Org-level visibility/defaults for built-in fields (company, job title, currency).
+  const [fieldConfig, setFieldConfig] = useState<LeadFieldConfig>({ showCompany: true, showJobTitle: true, showCurrency: true, defaultCurrency: 'ILS' });
+
+  // Auto follow-up template picker
+  const [waTemplates, setWaTemplates] = useState<Template[]>([]);
+  const [waTemplatesLoading, setWaTemplatesLoading] = useState(false);
+  const [followUpTemplateExpanded, setFollowUpTemplateExpanded] = useState(false);
 
   // Product catalog state
   const [catalogEnabled, setCatalogEnabled] = useState(false);
@@ -241,7 +259,21 @@ export default function LeadDetailScreen() {
     if (!organization) return;
     leadsApi.getPipelineSettings(organization)
       .then((res) => {
-        if (res.stages.length > 0) setPipelineStages(res.stages);
+        if (res.stages.length > 0) {
+          setPipelineStages(res.stages);
+          // For a brand-new lead, default the stage to the org's first pipeline stage (e.g.
+          // "ליד חדש") instead of the hard-coded English "New", so the form shows and saves
+          // the org's real initial stage.
+          if (isNew) {
+            const first = res.stages[0];
+            setForm((prev) => {
+              const current = (prev.stageName || prev.stage || '').trim();
+              const inPipeline = res.stages.some((s) => s.name === current || s.id === current);
+              if (inPipeline && current) return prev;
+              return { ...prev, stage: first.name, stageName: first.name, stageId: first.id };
+            });
+          }
+        }
         if (res.enableProductCatalog) {
           setCatalogEnabled(true);
           setSyncCatalogToValue(!!res.syncCatalogToValue);
@@ -257,8 +289,27 @@ export default function LeadDetailScreen() {
       .then((res) => {
         setLeadFormSections(res.sections || []);
         setLeadFormLayout(res.formLayout || []);
+        if (res.fieldConfig) {
+          setFieldConfig(res.fieldConfig);
+          // Seed the org default currency for brand-new leads (don't override an edited value).
+          if (isNew && res.fieldConfig.defaultCurrency) {
+            setForm((prev) => ({
+              ...prev,
+              currency: prev.currency && prev.currency !== 'ILS' ? prev.currency : res.fieldConfig.defaultCurrency,
+            }));
+          }
+        }
       })
       .catch(() => {});
+  }, [organization, isNew]);
+
+  useEffect(() => {
+    if (!organization) return;
+    setWaTemplatesLoading(true);
+    chatsApi.getTemplates(organization)
+      .then((tpls) => setWaTemplates(Array.isArray(tpls) ? tpls : []))
+      .catch(() => {})
+      .finally(() => setWaTemplatesLoading(false));
   }, [organization]);
 
   useEffect(() => {
@@ -287,6 +338,25 @@ export default function LeadDetailScreen() {
   const stageColor = useMemo(
     () => stageColorMap[lead?.stageName || lead?.stage || 'New'] ?? theme.colors.primary,
     [lead, stageColorMap, theme],
+  );
+
+  // Resolve a lead's stage to its display name using the org's pipeline. Orgs can rename the
+  // default stages (e.g. "New" → "ליד חדש"), and the stage-move picker already offers those
+  // custom names — but the banner used the English STAGE_I18N fallback, so a lead whose stored
+  // stage is the default key showed "New" instead of the org's name. Prefer the pipeline name,
+  // fall back to the localized default, then the first pipeline stage for empty/unknown stages.
+  const resolveStageName = useCallback(
+    (raw?: string): string => {
+      const val = (raw || '').trim();
+      if (pipelineStages.length > 0) {
+        const found = pipelineStages.find((s) => s.name === val || s.id === val);
+        if (found) return found.name;
+        if (!val) return pipelineStages[0]?.name || t(STAGE_I18N['New']);
+      }
+      if (val && STAGE_I18N[val]) return t(STAGE_I18N[val]);
+      return val || (pipelineStages[0]?.name ?? t(STAGE_I18N['New']));
+    },
+    [pipelineStages, t],
   );
 
   const isLostStage = useMemo(() => {
@@ -416,7 +486,7 @@ export default function LeadDetailScreen() {
           tax,
           notes: config.defaultNotes || '',
           terms: '',
-          status: 'draft',
+          status: 'draft' as const,
           salespersonId: (promptLead as any).ownerId || user?.uID || '',
           salespersonName: (promptLead as any).ownerName || user?.fullname || '',
           subtotal,
@@ -474,23 +544,46 @@ export default function LeadDetailScreen() {
   // Open a task (from the timeline) in the full task detail screen, where it can be edited/completed.
   const openTaskFromTimeline = useCallback((taskId: string) => {
     if (!taskId) return;
-    router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any);
+    router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: String(taskId) } } as any);
   }, [router]);
 
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [leadTasks, setLeadTasks] = useState<any[]>([]);
+  const [leadTasksLoading, setLeadTasksLoading] = useState(false);
+
+  // Load the tasks attached to this lead (relatedTo.entityId === lead.id), mirroring the web
+  // lead view's "משימות" section so users see their follow-ups without digging into the timeline.
+  const fetchLeadTasks = useCallback(async () => {
+    if (!organization || !lead?.id) return;
+    setLeadTasksLoading(true);
+    try {
+      const all = await tasksApi.getAll(organization, '', 'all');
+      const mine = (all || []).filter((tk: any) => {
+        const rel = tk.relatedTo || tk.RelatedTo;
+        const relType = (rel?.type || rel?.Type || '').toLowerCase();
+        const relId = rel?.entityId || rel?.EntityId;
+        return relType === 'lead' && relId === lead.id;
+      });
+      setLeadTasks(mine);
+    } catch {
+      setLeadTasks([]);
+    } finally {
+      setLeadTasksLoading(false);
+    }
+  }, [organization, lead?.id]);
 
   // Mark a task complete straight from the timeline, then refresh so the row reflects it.
   const completeTaskFromTimeline = useCallback(async (taskId: string) => {
     if (!taskId || !organization) return;
     try {
       await tasksApi.complete(organization, taskId, user?.uID || user?.userId || '', user?.fullname || user?.name || 'Gambot');
-      await fetchLeadTimeline();
+      await Promise.all([fetchLeadTimeline(), fetchLeadTasks()]);
     } catch {
       Alert.alert(t('common.error'));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization, user]);
+  }, [organization, user, fetchLeadTasks]);
 
   const fetchLeadTimeline = useCallback(async () => {
     if (!organization || !lead?.id) return;
@@ -542,8 +635,9 @@ export default function LeadDetailScreen() {
   useEffect(() => {
     if (lead && !isNew) {
       fetchLeadTimeline();
+      fetchLeadTasks();
     }
-  }, [lead, isNew, fetchLeadTimeline]);
+  }, [lead, isNew, fetchLeadTimeline, fetchLeadTasks]);
 
   const handleAddNote = useCallback(async () => {
     if (!organization || !lead || (!noteText.trim() && !noteAttachment)) return;
@@ -613,15 +707,36 @@ export default function LeadDetailScreen() {
     if (!organization) return;
     setSaving(true);
     try {
+      const payload: Partial<Lead> = { ...form };
+
+      // When auto follow-up is enabled, schedule the first send from the interval/unit
+      // (same logic as the web LeadForm) so ProcessLeadFollowUps can pick it up.
+      if (payload.followUpEnabled && payload.followUpInterval && !payload.nextFollowUp) {
+        const interval = parseInt(String(payload.followUpInterval), 10) || 2;
+        const unit = payload.followUpUnit || 'days';
+        const d = new Date();
+        if (unit === 'hours') d.setHours(d.getHours() + interval);
+        else if (unit === 'weeks') d.setDate(d.getDate() + interval * 7);
+        else d.setDate(d.getDate() + interval);
+        payload.nextFollowUp = d.toISOString();
+        payload.followUpSentCount = 0;
+        payload.followUpMaxRepeats = payload.followUpRepeat || 3;
+        payload.followUpMappingMode = payload.followUpMappingMode || 'auto';
+      }
+      // Disabling follow-up clears the schedule so it stops being processed.
+      if (!payload.followUpEnabled) {
+        payload.nextFollowUp = '';
+      }
+
       if (isNew) {
-        await createLead(organization, form);
+        await createLead(organization, payload);
         if (router.canGoBack()) {
           router.back();
         } else {
           router.replace('/(tabs)/leads');
         }
       } else {
-        await updateLead(organization, { ...form, id: lead?.id ?? '' });
+        await updateLead(organization, { ...payload, id: lead?.id ?? '' });
         setEditVisible(false);
       }
     } catch {
@@ -724,7 +839,7 @@ export default function LeadDetailScreen() {
             <View style={[styles.stageIndicator, { flexDirection }]}>
               <View style={[styles.stageDot, { backgroundColor: stageColor }]} />
               <Text variant="titleMedium" style={{ color: stageColor, fontWeight: '700', flex: 1 }}>
-                {t(STAGE_I18N[lead.stageName || lead.stage || 'New'] ?? lead.stageName ?? lead.stage ?? 'New')}
+                {resolveStageName(lead.stageName || lead.stage)}
               </Text>
               <MaterialCommunityIcons
                 name="chevron-down"
@@ -1052,6 +1167,21 @@ export default function LeadDetailScreen() {
           </View>
         ) : null}
 
+        {/* Tasks — dedicated section (mirrors the web lead view) */}
+        {!isNew ? (
+          <LeadTasksSection
+            theme={theme}
+            t={t}
+            isRTL={isRTL}
+            flexDirection={flexDirection}
+            tasks={leadTasks}
+            loading={leadTasksLoading}
+            onOpenTask={openTaskFromTimeline}
+            onCompleteTask={completeTaskFromTimeline}
+            onAddTask={openAddTask}
+          />
+        ) : null}
+
         {/* Timeline */}
         {!isNew ? (
           <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
@@ -1176,8 +1306,41 @@ export default function LeadDetailScreen() {
                   </View>
                   <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
                 </Pressable>
-                <FormField label={t('contacts.company')} value={form.companyName ?? ''} onChangeText={(v) => updateField('companyName', v)} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
-                <FormField label={t('leads.jobTitle', 'Job Title')} value={form.jobTitle ?? ''} onChangeText={(v) => updateField('jobTitle', v)} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
+                {(() => {
+                  // Org can hide company/job-title entirely (B2C). When at least one is enabled,
+                  // keep the progressive-disclosure "add" link so the form stays light by default.
+                  const companyOn = fieldConfig.showCompany !== false;
+                  const jobTitleOn = fieldConfig.showJobTitle !== false;
+                  if (!companyOn && !jobTitleOn) return null;
+                  const expanded = showBusinessFields || !!form.companyName || !!form.jobTitle;
+                  if (!expanded) {
+                    return (
+                      <Pressable
+                        onPress={() => setShowBusinessFields(true)}
+                        style={[styles.addOptionalRow, { flexDirection }]}
+                      >
+                        <MaterialCommunityIcons name="plus-circle-outline" size={18} color="#2e6155" />
+                        <Text style={{ color: '#2e6155', fontSize: 13, fontWeight: '600', marginHorizontal: 6 }}>
+                          {companyOn && jobTitleOn
+                            ? (lang === 'he' ? 'הוסף שם חברה ותפקיד' : 'Add company & job title')
+                            : companyOn
+                              ? (lang === 'he' ? 'הוסף שם חברה' : 'Add company')
+                              : (lang === 'he' ? 'הוסף תפקיד' : 'Add job title')}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                  return (
+                    <>
+                      {companyOn && (
+                        <FormField label={t('contacts.company')} value={form.companyName ?? ''} onChangeText={(v) => updateField('companyName', v)} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
+                      )}
+                      {jobTitleOn && (
+                        <FormField label={t('leads.jobTitle', 'Job Title')} value={form.jobTitle ?? ''} onChangeText={(v) => updateField('jobTitle', v)} theme={theme} textAlign={textAlign} writingDirection={writingDirection} />
+                      )}
+                    </>
+                  );
+                })()}
               </View>
 
               {/* ── Lead Details Section ── */}
@@ -1244,42 +1407,243 @@ export default function LeadDetailScreen() {
                 keyboardType="numeric"
               />
 
-              <Text
-                variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
-              >
-                {t('leads.currency', 'Currency')}
-              </Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={[styles.formStageRow, { flexDirection }]}
-              >
-                {CURRENCY_OPTIONS.map((cur) => {
-                  const isSelected = (form.currency || 'ILS') === cur;
-                  return (
-                    <Chip
-                      key={cur}
-                      selected={isSelected}
-                      onPress={() => setForm((prev) => ({ ...prev, currency: cur }))}
-                      compact
-                      style={[
-                        styles.formStageChip,
-                        isSelected
-                          ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
-                          : { backgroundColor: theme.colors.surfaceVariant },
-                      ]}
-                      textStyle={{
-                        fontSize: 12,
-                        color: isSelected ? theme.colors.primary : theme.colors.onSurfaceVariant,
-                        fontWeight: isSelected ? '600' : '400',
+              {/* Currency only matters once there's a deal value — keep it hidden otherwise so users
+                  who don't track money aren't bothered by it. Also fully hideable per-org. Defaults
+                  to the org's default currency (ILS) behind the scenes. */}
+              {fieldConfig.showCurrency !== false && (form.value ?? 0) > 0 && (
+                <>
+                  <Text
+                    variant="labelMedium"
+                    style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
+                  >
+                    {t('leads.currency', 'Currency')}
+                  </Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={[styles.formStageRow, { flexDirection }]}
+                  >
+                    {CURRENCY_OPTIONS.map((cur) => {
+                      const isSelected = (form.currency || 'ILS') === cur;
+                      return (
+                        <Chip
+                          key={cur}
+                          selected={isSelected}
+                          onPress={() => setForm((prev) => ({ ...prev, currency: cur }))}
+                          compact
+                          style={[
+                            styles.formStageChip,
+                            isSelected
+                              ? { backgroundColor: withAlpha(theme.colors.primary, 0.145), borderColor: theme.colors.primary, borderWidth: 1 }
+                              : { backgroundColor: theme.colors.surfaceVariant },
+                          ]}
+                          textStyle={{
+                            fontSize: 12,
+                            color: isSelected ? theme.colors.primary : theme.colors.onSurfaceVariant,
+                            fontWeight: isSelected ? '600' : '400',
+                          }}
+                        >
+                          {cur}
+                        </Chip>
+                      );
+                    })}
+                  </ScrollView>
+                </>
+              )}
+              </View>
+
+              {/* ── Auto Follow-up Section (pinned near top for quick access) ── */}
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="bell-ring-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>
+                    {lang === 'he' ? 'פולואפ אוטומטי' : 'Auto Follow-up'}
+                  </Text>
+                  {form.followUpEnabled ? (
+                    <View style={{ backgroundColor: '#dcfce7', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, marginStart: 8 }}>
+                      <Text style={{ fontSize: 10, color: '#166534', fontWeight: '700' }}>{lang === 'he' ? 'פעיל' : 'Active'}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={[{ flexDirection, alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }]}>
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, flex: 1, textAlign }}>
+                    {lang === 'he' ? 'שלח הודעת מעקב אוטומטית' : 'Send automatic follow-up message'}
+                  </Text>
+                  <Switch
+                    value={!!form.followUpEnabled}
+                    onValueChange={(v) => updateField('followUpEnabled', v)}
+                    color="#2e6155"
+                  />
+                </View>
+
+                {form.followUpEnabled ? (
+                  <View style={{ marginTop: 10 }}>
+                    {/* Interval + unit */}
+                    <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+                      {lang === 'he' ? 'שלח בעוד' : 'Send after'}
+                    </Text>
+                    <View style={[{ flexDirection, alignItems: 'center', gap: 8, marginBottom: 14 }]}>
+                      <TextInput
+                        value={String(form.followUpInterval ?? 2)}
+                        onChangeText={(v) => {
+                          const n = Math.max(1, Math.min(30, parseInt(v, 10) || 1));
+                          updateField('followUpInterval', n);
+                        }}
+                        keyboardType="numeric"
+                        style={{
+                          width: 64,
+                          borderWidth: 1,
+                          borderColor: theme.colors.outline,
+                          borderRadius: 8,
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          color: theme.colors.onSurface,
+                          textAlign: 'center',
+                          backgroundColor: theme.colors.surface,
+                        }}
+                      />
+                      {(['hours', 'days', 'weeks'] as const).map((u) => {
+                        const isSelected = (form.followUpUnit || 'days') === u;
+                        const label = u === 'hours' ? (lang === 'he' ? 'שעות' : 'Hours') : u === 'days' ? (lang === 'he' ? 'ימים' : 'Days') : (lang === 'he' ? 'שבועות' : 'Weeks');
+                        return (
+                          <Chip
+                            key={u}
+                            selected={isSelected}
+                            onPress={() => updateField('followUpUnit', u)}
+                            compact
+                            style={[
+                              styles.formStageChip,
+                              isSelected
+                                ? { backgroundColor: withAlpha('#2e6155', 0.145), borderColor: '#2e6155', borderWidth: 1 }
+                                : { backgroundColor: theme.colors.surfaceVariant },
+                            ]}
+                            textStyle={{ fontSize: 12, color: isSelected ? '#2e6155' : theme.colors.onSurfaceVariant, fontWeight: isSelected ? '700' : '400' }}
+                          >
+                            {label}
+                          </Chip>
+                        );
+                      })}
+                    </View>
+
+                    {/* Template picker (friendly names) */}
+                    <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+                      {lang === 'he' ? 'תבנית הודעה' : 'Message template'}
+                    </Text>
+                    <Pressable
+                      onPress={() => setFollowUpTemplateExpanded((v) => !v)}
+                      style={{
+                        borderWidth: 1,
+                        borderRadius: 8,
+                        borderColor: followUpTemplateExpanded ? '#2e6155' : theme.colors.outline,
+                        paddingHorizontal: 12,
+                        paddingVertical: 10,
+                        backgroundColor: theme.colors.surface,
+                        marginBottom: form.followUpTemplateId ? 6 : 14,
                       }}
                     >
-                      {cur}
-                    </Chip>
-                  );
-                })}
-              </ScrollView>
+                      <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+                        <MaterialCommunityIcons name="file-document-outline" size={16} color={theme.colors.onSurfaceVariant} />
+                        <Text variant="bodyMedium" style={{ flex: 1, color: form.followUpTemplateName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                          {waTemplatesLoading
+                            ? (t('common.loading') || 'טוען...')
+                            : (form.followUpTemplateName || (lang === 'he' ? 'בחר תבנית...' : 'Select template...'))}
+                        </Text>
+                        <MaterialCommunityIcons name={followUpTemplateExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+                      </View>
+                    </Pressable>
+                    {followUpTemplateExpanded ? (
+                      <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 8, marginBottom: 14, overflow: 'hidden', maxHeight: 260 }}>
+                        <ScrollView keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+                          {waTemplates.length === 0 ? (
+                            <View style={{ padding: 12 }}>
+                              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                                {lang === 'he' ? 'אין תבניות מאושרות' : 'No approved templates'}
+                              </Text>
+                            </View>
+                          ) : (
+                            waTemplates.map((tpl) => {
+                              const isSelected = form.followUpTemplateId === tpl.name;
+                              return (
+                                <Pressable
+                                  key={`${tpl.name}-${tpl.language}`}
+                                  style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: isSelected ? withAlpha('#2e6155', 0.1) : 'transparent' }]}
+                                  onPress={() => {
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      followUpTemplateId: tpl.name,
+                                      followUpTemplateName: tpl.friendlyName || tpl.name,
+                                    }));
+                                    setFollowUpTemplateExpanded(false);
+                                  }}
+                                >
+                                  <MaterialCommunityIcons name={isSelected ? 'check-circle' : 'circle-outline'} size={16} color={isSelected ? '#2e6155' : theme.colors.onSurfaceVariant} />
+                                  <View style={{ flex: 1 }}>
+                                    <Text variant="bodyMedium" style={{ color: isSelected ? '#2e6155' : theme.colors.onSurface, fontWeight: isSelected ? '700' : '400', textAlign }}>
+                                      {tpl.friendlyName || tpl.name}
+                                    </Text>
+                                    {tpl.friendlyName ? (
+                                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>{tpl.name}</Text>
+                                    ) : null}
+                                  </View>
+                                </Pressable>
+                              );
+                            })
+                          )}
+                        </ScrollView>
+                      </View>
+                    ) : null}
+
+                    {/* Repeats */}
+                    <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+                      {lang === 'he' ? 'חזרות (עד תגובת הלקוח)' : 'Repeats (until customer responds)'}
+                    </Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.formStageRow, { flexDirection }]}>
+                      {[1, 2, 3, 4, 5].map((n) => {
+                        const isSelected = (form.followUpRepeat || 3) === n;
+                        return (
+                          <Chip
+                            key={n}
+                            selected={isSelected}
+                            onPress={() => updateField('followUpRepeat', n)}
+                            compact
+                            style={[
+                              styles.formStageChip,
+                              isSelected
+                                ? { backgroundColor: withAlpha('#2e6155', 0.145), borderColor: '#2e6155', borderWidth: 1 }
+                                : { backgroundColor: theme.colors.surfaceVariant },
+                            ]}
+                            textStyle={{ fontSize: 12, color: isSelected ? '#2e6155' : theme.colors.onSurfaceVariant, fontWeight: isSelected ? '700' : '400' }}
+                          >
+                            {n}
+                          </Chip>
+                        );
+                      })}
+                    </ScrollView>
+
+                    {/* Summary */}
+                    {form.followUpTemplateId ? (
+                      <View style={[{ flexDirection, alignItems: 'center', gap: 6, marginTop: 12, padding: 10, borderRadius: 8, backgroundColor: withAlpha('#2e6155', 0.08) }]}>
+                        <MaterialCommunityIcons name="clock-outline" size={16} color="#2e6155" />
+                        <Text variant="bodySmall" style={{ color: '#2e6155', flex: 1, textAlign }}>
+                          {(() => {
+                            const interval = parseInt(String(form.followUpInterval ?? 2), 10) || 2;
+                            const unit = form.followUpUnit || 'days';
+                            const d = form.nextFollowUp ? new Date(form.nextFollowUp) : new Date();
+                            if (!form.nextFollowUp) {
+                              if (unit === 'hours') d.setHours(d.getHours() + interval);
+                              else if (unit === 'weeks') d.setDate(d.getDate() + interval * 7);
+                              else d.setDate(d.getDate() + interval);
+                            }
+                            const dateStr = formatDateTimeSafe(d, lang);
+                            return lang === 'he' ? `ההודעה הראשונה תישלח ב: ${dateStr}` : `First message will be sent: ${dateStr}`;
+                          })()}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
               </View>
 
               {/* ── Product Catalog Section ── */}
@@ -1815,7 +2179,7 @@ export default function LeadDetailScreen() {
       <AddTaskSheet
         visible={addTaskVisible}
         onDismiss={() => setAddTaskVisible(false)}
-        onCreated={() => { fetchLeadTimeline().catch(() => {}); }}
+        onCreated={() => { fetchLeadTimeline().catch(() => {}); fetchLeadTasks().catch(() => {}); }}
         organization={organization || ''}
         user={user}
         relatedPhone={lead?.contactPhone || lead?.phoneNumber || ''}
@@ -2372,6 +2736,187 @@ function getLeadTimelineGroup(entry: any): LeadTimelineFilterKey {
   return 'system';
 }
 
+// Parse a task due/reminder date that may be an ISO string, epoch number, Firestore timestamp
+// object, or a "Timestamp: <iso>" prefixed string. Returns null when unparseable.
+function parseTaskDate(val: any): Date | null {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (typeof val === 'number') { const d = new Date(val); return isNaN(d.getTime()) ? null : d; }
+  if (typeof val === 'object') {
+    const secs = val._seconds ?? val.seconds;
+    if (typeof secs === 'number') { const d = new Date(secs * 1000); return isNaN(d.getTime()) ? null : d; }
+    return null;
+  }
+  if (typeof val === 'string') {
+    const cleaned = val.startsWith('Timestamp: ') ? val.slice('Timestamp: '.length) : val;
+    const d = new Date(cleaned);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+// Dedicated "משימות" (tasks) card for the lead detail screen — mirrors the web lead view so open
+// follow-ups are visible at a glance (with a one-tap complete checkbox and quick add).
+function LeadTasksSection({
+  theme,
+  t,
+  isRTL,
+  flexDirection,
+  tasks,
+  loading,
+  onOpenTask,
+  onCompleteTask,
+  onAddTask,
+}: {
+  theme: any;
+  t: (key: any, defaultValue?: any) => string;
+  isRTL: boolean;
+  flexDirection: 'row' | 'row-reverse';
+  tasks: any[];
+  loading: boolean;
+  onOpenTask?: (taskId: string) => void;
+  onCompleteTask?: (taskId: string) => Promise<void> | void;
+  onAddTask?: () => void;
+}) {
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const now = new Date();
+
+  const isDone = (tk: any) => {
+    const s = (tk.status || tk.Status || '').toLowerCase();
+    return s === 'completed' || s === 'cancelled';
+  };
+
+  const sorted = [...(tasks || [])].sort((a, b) => {
+    const aDone = isDone(a) ? 1 : 0;
+    const bDone = isDone(b) ? 1 : 0;
+    if (aDone !== bDone) return aDone - bDone;
+    const aDue = parseTaskDate(a.dueDate || a.DueDate)?.getTime() ?? Infinity;
+    const bDue = parseTaskDate(b.dueDate || b.DueDate)?.getTime() ?? Infinity;
+    return aDue - bDue;
+  });
+
+  const openCount = sorted.filter((tk) => !isDone(tk)).length;
+
+  const handleComplete = async (taskId: string) => {
+    if (!taskId || completingId) return;
+    setCompletingId(taskId);
+    try {
+      await onCompleteTask?.(taskId);
+    } finally {
+      setCompletingId(null);
+    }
+  };
+
+  return (
+    <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+      <View style={{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <View style={{ flexDirection, alignItems: 'center', gap: 6 }}>
+          <MaterialCommunityIcons name="clipboard-check-outline" size={18} color={theme.colors.onSurface} />
+          <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+            {t('leads.tasks', 'משימות')}
+          </Text>
+          {openCount > 0 ? (
+            <View style={{ backgroundColor: withAlpha('#FF9800', 0.16), borderRadius: 10, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: 'center' }}>
+              <Text style={{ color: '#FF9800', fontSize: 11, fontWeight: '700' }}>{openCount}</Text>
+            </View>
+          ) : null}
+        </View>
+        <Pressable onPress={onAddTask} hitSlop={8} style={{ flexDirection, alignItems: 'center', gap: 2 }}>
+          <MaterialCommunityIcons name="plus" size={16} color={theme.colors.primary} />
+          <Text variant="labelSmall" style={{ color: theme.colors.primary, fontWeight: '600' }}>{t('common.add', 'הוסף')}</Text>
+        </Pressable>
+      </View>
+
+      {loading && sorted.length === 0 ? (
+        <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 12 }} />
+      ) : sorted.length === 0 ? (
+        <Pressable onPress={onAddTask} style={{ alignItems: 'center', paddingVertical: 16, gap: 6 }}>
+          <MaterialCommunityIcons name="clipboard-plus-outline" size={28} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('tasks.noTasks', 'אין משימות')}</Text>
+        </Pressable>
+      ) : (
+        sorted.map((tk, idx) => {
+          const taskId = tk.id || tk.taskId || tk.Id || tk.TaskId || '';
+          const done = isDone(tk);
+          const due = parseTaskDate(tk.dueDate || tk.DueDate);
+          const overdue = !done && !!due && due < now;
+          const assignee = tk.assignedToName || tk.AssignedToName || '';
+          const dueColor = overdue ? '#ef4444' : theme.colors.onSurfaceVariant;
+          return (
+            <View key={taskId || idx}>
+              {idx > 0 ? <Divider style={{ backgroundColor: theme.colors.outlineVariant }} /> : null}
+              <View style={{ flexDirection, alignItems: 'center', gap: 10, paddingVertical: 10 }}>
+                <Pressable
+                  onPress={() => !done && handleComplete(taskId)}
+                  disabled={done || completingId === taskId}
+                  hitSlop={8}
+                  style={{
+                    width: 24, height: 24, borderRadius: 12, borderWidth: 2,
+                    borderColor: done ? '#4CAF50' : theme.colors.outline,
+                    backgroundColor: done ? '#4CAF50' : 'transparent',
+                    alignItems: 'center', justifyContent: 'center',
+                  }}
+                >
+                  {completingId === taskId ? (
+                    <ActivityIndicator size={12} color={theme.colors.primary} />
+                  ) : done ? (
+                    <MaterialCommunityIcons name="check" size={16} color="#fff" />
+                  ) : null}
+                </Pressable>
+
+                <Pressable style={{ flex: 1 }} onPress={() => taskId && onOpenTask?.(taskId)}>
+                  <View style={{ flexDirection, alignItems: 'center', gap: 6 }}>
+                    <Text
+                      variant="bodyMedium"
+                      numberOfLines={2}
+                      style={{
+                        flex: 1,
+                        color: done ? theme.colors.onSurfaceVariant : theme.colors.onSurface,
+                        textDecorationLine: done ? 'line-through' : 'none',
+                        textAlign: isRTL ? 'right' : 'left',
+                        fontWeight: '500',
+                      }}
+                    >
+                      {tk.title || tk.Title || t('tasks.taskShort', 'משימה')}
+                    </Text>
+                    {(tk.priority || tk.Priority || '').toLowerCase() === 'high' ? (
+                      <MaterialCommunityIcons name="flag" size={13} color="#FF5722" />
+                    ) : null}
+                  </View>
+                  <View style={{ flexDirection, alignItems: 'center', gap: 10, marginTop: 2, flexWrap: 'wrap' }}>
+                    {due ? (
+                      <View style={{ flexDirection, alignItems: 'center', gap: 3 }}>
+                        <MaterialCommunityIcons name="clock-outline" size={12} color={dueColor} />
+                        <Text style={{ fontSize: 11, color: dueColor, fontWeight: overdue ? '700' : '400' }}>
+                          {formatDate(due.toISOString())}
+                          {overdue ? ` · ${t('tasks.overdue', 'באיחור')}` : ''}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {assignee ? (
+                      <View style={{ flexDirection, alignItems: 'center', gap: 3 }}>
+                        <MaterialCommunityIcons name="account-outline" size={12} color={theme.colors.onSurfaceVariant} />
+                        <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{assignee}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </Pressable>
+
+                <MaterialCommunityIcons
+                  name={isRTL ? 'chevron-left' : 'chevron-right'}
+                  size={18}
+                  color={theme.colors.onSurfaceVariant}
+                  style={{ opacity: 0.4 }}
+                />
+              </View>
+            </View>
+          );
+        })
+      )}
+    </Surface>
+  );
+}
+
 function TimelineSection({
   theme,
   t,
@@ -2912,6 +3457,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   formStageRow: { gap: 8, paddingBottom: 4 },
+  addOptionalRow: { alignItems: 'center', paddingVertical: 8, paddingHorizontal: 2, marginTop: 2 },
   formStageChip: { height: 32, borderRadius: 16 },
   formPill: { height: 32, borderRadius: 16 },
   stickyFooter: {

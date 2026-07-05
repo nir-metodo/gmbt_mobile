@@ -1,3 +1,5 @@
+import type { TFunction } from 'react-i18next';
+
 export type NormalizedConversationStatus = 'open' | 'in_process' | 'closed' | 'unknown';
 
 /** CRM conversation status (Open / In Process / Closed) — not message delivery status. */
@@ -34,7 +36,8 @@ export function isChatClosed(chat?: { lastConversationStatus?: string; status?: 
 
 export function conversationStatusLabel(
   status: NormalizedConversationStatus,
-  t: (key: string, fallback?: string) => string,
+  // Use i18next's TFunction directly so the `t` passed by callers is assignable as-is.
+  t: TFunction,
 ): string {
   if (status === 'open') return t('chats.open', 'פתוח');
   if (status === 'in_process') return t('chats.inProcess', 'בטיפול');

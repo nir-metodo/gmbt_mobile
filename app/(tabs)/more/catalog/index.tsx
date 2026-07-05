@@ -11,7 +11,7 @@ import {
   ScrollView,
   TextInput as RNTextInput,
   Share,
-  Linking,
+  Modal as RNModal,
 } from 'react-native';
 import {
   Text,
@@ -62,6 +62,25 @@ function formatCustomValue(v: any, isRTL: boolean): string {
   return String(v);
 }
 
+// Parse a value to a number, returning null when there's no parseable number so range filters can
+// skip non-numeric values. Mirrors the web CatalogManager `toNumeric`.
+function toNumeric(v: any): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^\d.-]/g, ''));
+  return isNaN(n) ? null : n;
+}
+
+// Canonical reorderable table-column tokens (mirrors the web CatalogManager). The order set in the
+// web Catalog → Columns settings is honored on the app cards + form via `resolveColumnOrder`.
+const TABLE_BASE_TOKENS = ['image', 'name', 'category', 'sku', 'unitPrice', 'stock'];
+
+function resolveColumnOrder(savedOrder: any, customCols: CatalogCustomColumn[]): string[] {
+  const customTokens = (customCols || []).map((c) => `custom:${c.id}`);
+  const natural = [...TABLE_BASE_TOKENS, ...customTokens, 'link'];
+  const saved = Array.isArray(savedOrder) ? savedOrder.filter((tok: string) => natural.includes(tok)) : [];
+  return [...saved, ...natural.filter((tok) => !saved.includes(tok))];
+}
+
 export default function CatalogScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -86,11 +105,22 @@ export default function CatalogScreen() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [saving, setSaving] = useState(false);
 
+  // Advanced toolbar filters (mirrors the web catalog): price range + per-column range/select/boolean.
+  const [filtersVisible, setFiltersVisible] = useState(false);
+  const [priceMin, setPriceMin] = useState('');
+  const [priceMax, setPriceMax] = useState('');
+  const [colFilters, setColFilters] = useState<Record<string, any>>({});
+  // Filter by whether the item has at least one image.
+  const [imageFilter, setImageFilter] = useState<'all' | 'with' | 'without'>('all');
+
   // Public catalog sharing + customer selections
   const [sharing, setSharing] = useState(false);
   const [selectionsVisible, setSelectionsVisible] = useState(false);
   const [selections, setSelections] = useState<CatalogSelection[]>([]);
   const [selectionsLoading, setSelectionsLoading] = useState(false);
+  // Search + sort for the catalog inquiries (selections) list.
+  const [selectionSearch, setSelectionSearch] = useState('');
+  const [selectionSort, setSelectionSort] = useState<'date' | 'price'>('date');
 
   // Form modal
   const [modalVisible, setModalVisible] = useState(false);
@@ -101,9 +131,24 @@ export default function CatalogScreen() {
   const [formSku, setFormSku] = useState('');
   const [formCategory, setFormCategory] = useState('');
   const [formLink, setFormLink] = useState('');
-  const [formImageUrl, setFormImageUrl] = useState('');
+  // Multiple images per item (mirrors the web catalog which stores an `images` array).
+  const [formImages, setFormImages] = useState<string[]>([]);
+  const [imageUrlInput, setImageUrlInput] = useState('');
   const [formCustomFields, setFormCustomFields] = useState<Record<string, any>>({});
   const [uploading, setUploading] = useState(false);
+
+  // Full-screen image viewer (lightbox) with left/right navigation.
+  const [viewerImages, setViewerImages] = useState<string[]>([]);
+  const [viewerIndex, setViewerIndex] = useState(0);
+  const [viewerVisible, setViewerVisible] = useState(false);
+
+  const openImageViewer = useCallback((imgs: string[], index = 0) => {
+    const list = (imgs || []).filter(Boolean);
+    if (!list.length) return;
+    setViewerImages(list);
+    setViewerIndex(Math.min(Math.max(index, 0), list.length - 1));
+    setViewerVisible(true);
+  }, []);
 
   // Honor the display order configured in the web Catalog → Columns settings.
   // `columnOrder` holds tokens like `custom:<id>`; we use it to order the custom
@@ -126,9 +171,73 @@ export default function CatalogScreen() {
       .map((x) => x.col);
   }, [customColumns, fieldsConfig.columnOrder]);
 
+  // Full ordered token list (base + custom + link) honoring the web-configured column order, used to
+  // lay out the catalog cards in the same order as the web table.
+  const orderedColumnTokens = useMemo(
+    () => resolveColumnOrder(fieldsConfig.columnOrder, customColumns),
+    [fieldsConfig.columnOrder, customColumns],
+  );
+
+  // Whether a base/custom token is shown in the list (respects web visibility toggles).
+  const isColumnTokenVisible = useCallback((tok: string): boolean => {
+    if (tok === 'name') return true;
+    if (tok.startsWith('custom:')) {
+      const col = customColumns.find((c) => `custom:${c.id}` === tok);
+      return col ? col.showInTable !== false : false;
+    }
+    const tc = fieldsConfig.tableColumns || {};
+    return tc[tok] !== false;
+  }, [customColumns, fieldsConfig.tableColumns]);
+
+  // Columns that expose a dedicated toolbar filter (range / select / boolean), from the web config.
+  const priceRangeEnabled = fieldsConfig.priceRangeFilter === true;
+  const filterCols = useMemo(
+    () => customColumns.filter((c) => c.filterType === 'range' || c.filterType === 'select' || c.filterType === 'boolean'),
+    [customColumns],
+  );
+
+  const selectOptionsForFilter = useCallback((col: CatalogCustomColumn): string[] => {
+    const opts = getColumnOptions(col);
+    if (opts.length) return opts;
+    return [...new Set(items.map((i) => String(i.customFields?.[col.key] ?? '').trim()).filter(Boolean))].sort();
+  }, [items]);
+
+  const hasActiveFilters = useMemo(() => {
+    if (imageFilter !== 'all') return true;
+    if (priceRangeEnabled && (priceMin !== '' || priceMax !== '')) return true;
+    return filterCols.some((c) => {
+      const v = colFilters[c.key];
+      if (!v) return false;
+      if (c.filterType === 'range') return v.min !== '' || v.max !== '';
+      return v !== '';
+    });
+  }, [imageFilter, priceRangeEnabled, priceMin, priceMax, filterCols, colFilters]);
+
+  const clearFilters = useCallback(() => {
+    setPriceMin('');
+    setPriceMax('');
+    setColFilters({});
+    setImageFilter('all');
+  }, []);
+
   const setCustomField = useCallback((key: string, value: any) => {
     setFormCustomFields((p) => ({ ...p, [key]: value }));
   }, []);
+
+  const uploadAsset = async (asset: ImagePicker.ImagePickerAsset): Promise<string> => {
+    const formData = new FormData();
+    formData.append('organization', user?.organization || '');
+    formData.append('file', {
+      uri: asset.uri,
+      name: asset.fileName || `photo_${Date.now()}.jpg`,
+      type: asset.mimeType || 'image/jpeg',
+    } as any);
+    const res = await axiosInstance.post(ENDPOINTS.UPLOAD_MEDIA_FILE, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    const files = res.data?.files || [];
+    return files[0]?.url || res.data?.Url || res.data?.url || res.data?.MediaUrl || '';
+  };
 
   const pickImage = async (source: 'camera' | 'library') => {
     try {
@@ -146,25 +255,20 @@ export default function CatalogScreen() {
           Alert.alert(t('common.error'), isRTL ? 'נדרשת הרשאת גלריה' : 'Gallery permission required');
           return;
         }
-        result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+        // Allow selecting several images at once — they all get added to the item.
+        result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8, allowsMultipleSelection: true });
       }
-      if (result.canceled || !result.assets?.[0]) return;
-      const asset = result.assets[0];
+      if (result.canceled || !result.assets?.length) return;
       setUploading(true);
-      const formData = new FormData();
-      formData.append('organization', user?.organization || '');
-      formData.append('file', {
-        uri: asset.uri,
-        name: asset.fileName || `photo_${Date.now()}.jpg`,
-        type: asset.mimeType || 'image/jpeg',
-      } as any);
-      const res = await axiosInstance.post(ENDPOINTS.UPLOAD_MEDIA_FILE, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      const files = res.data?.files || [];
-      const url = files[0]?.url || res.data?.Url || res.data?.url || res.data?.MediaUrl || '';
-      if (url) {
-        setFormImageUrl(url);
+      const uploaded: string[] = [];
+      for (const asset of result.assets) {
+        try {
+          const url = await uploadAsset(asset);
+          if (url) uploaded.push(url);
+        } catch { /* skip a single failed upload, keep the rest */ }
+      }
+      if (uploaded.length) {
+        setFormImages((prev) => [...prev, ...uploaded]);
       } else {
         Alert.alert(t('common.error'), isRTL ? 'שגיאה בהעלאה - לא התקבל קישור' : 'Upload failed - no URL received');
       }
@@ -173,6 +277,27 @@ export default function CatalogScreen() {
     } finally {
       setUploading(false);
     }
+  };
+
+  const addImageUrl = () => {
+    const url = imageUrlInput.trim();
+    if (!url) return;
+    setFormImages((prev) => (prev.includes(url) ? prev : [...prev, url]));
+    setImageUrlInput('');
+  };
+
+  const removeImageAt = (idx: number) => {
+    setFormImages((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const moveImage = (idx: number, dir: -1 | 1) => {
+    setFormImages((prev) => {
+      const arr = [...prev];
+      const j = idx + dir;
+      if (j < 0 || j >= arr.length) return prev;
+      [arr[idx], arr[j]] = [arr[j], arr[idx]];
+      return arr;
+    });
   };
 
   const fetchData = useCallback(async () => {
@@ -229,6 +354,43 @@ export default function CatalogScreen() {
     }
   }, [user?.organization, isRTL, t]);
 
+  // Share a single catalog item (name, price, key details, image + public catalog link).
+  const handleShareItem = useCallback(async (item: CatalogItem) => {
+    if (!user?.organization) return;
+    try {
+      const lines: string[] = [];
+      lines.push(`*${item.name || (isRTL ? 'פריט' : 'Item')}*`);
+      if (item.unitPrice > 0) lines.push(`${isRTL ? 'מחיר' : 'Price'}: ₪${item.unitPrice.toLocaleString()}`);
+      if (item.description) lines.push(item.description);
+      if (item.sku) lines.push(`${isRTL ? 'מק״ט' : 'SKU'}: ${item.sku}`);
+      if (item.category) lines.push(`${isRTL ? 'קטגוריה' : 'Category'}: ${item.category}`);
+      // Include any custom fields that have a value (in the configured column order).
+      const cf = item.customFields || {};
+      orderedCustomColumns.forEach((col) => {
+        const v = cf[col.key];
+        if (v !== undefined && v !== null && v !== '') lines.push(`${col.label}: ${formatCustomValue(v, isRTL)}`);
+      });
+      if (item.link) lines.push(item.link);
+      if (item.images?.[0]) lines.push(item.images[0]);
+
+      // Append the public catalog link (enabling public sharing on the fly if needed) so the
+      // recipient can browse the full catalog too.
+      try {
+        let cfg = await catalogApi.getPublicConfig(user.organization);
+        if (!cfg?.enabled || !cfg?.slug) cfg = await catalogApi.enablePublicCatalog(user.organization);
+        if (cfg?.slug) {
+          const url = `${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?t=${cfg.slug}`;
+          lines.push('');
+          lines.push(isRTL ? `לצפייה בקטלוג המלא:\n${url}` : `View the full catalog:\n${url}`);
+        }
+      } catch { /* sharing the item details without the link is still useful */ }
+
+      await Share.share({ message: lines.join('\n') });
+    } catch {
+      Alert.alert(t('common.error'), isRTL ? 'שגיאה בשיתוף הפריט' : 'Failed to share item');
+    }
+  }, [user?.organization, isRTL, t, orderedCustomColumns]);
+
   const loadSelections = useCallback(async () => {
     if (!user?.organization) return;
     setSelectionsLoading(true);
@@ -247,12 +409,18 @@ export default function CatalogScreen() {
     loadSelections();
   }, [loadSelections]);
 
-  // Opens the full read-only selection page (the same view the seller gets via the WhatsApp link).
+  // Opens the selection in a native in-app detail screen. Previously this opened an external web URL
+  // (`/catalog/{org}/r/{id}`) which 404s, so we now render the full selection inside the app. The
+  // selection is already fully loaded here, so it's passed through as a param for instant render.
   const openSelectionLink = useCallback((sel: CatalogSelection) => {
-    if (!user?.organization) return;
-    const url = `${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}/r/${sel.id}`;
-    Linking.openURL(url).catch(() => {});
-  }, [user?.organization]);
+    setSelectionsVisible(false);
+    router.push({
+      pathname: '/(tabs)/more/catalog/[selectionId]',
+      // Pass the custom column definitions too, so the detail page can label each item's custom
+      // fields exactly like the web selection view (otherwise it would only have raw keys).
+      params: { selectionId: sel.id, data: JSON.stringify(sel), cols: JSON.stringify(customColumns) },
+    });
+  }, [router, customColumns]);
 
   const fmtSelDate = useCallback((iso?: string) => {
     if (!iso) return '';
@@ -270,6 +438,25 @@ export default function CatalogScreen() {
     return ({ order: 'Order', lead: 'Lead', inquiry: 'Inquiry', browse: 'Browse' } as Record<string, string>)[p || ''] || p || '—';
   }, [isRTL]);
 
+  // Inquiries (selections) filtered by name/phone and sorted by date (default, newest first) or total.
+  const filteredSortedSelections = useMemo(() => {
+    const q = selectionSearch.trim().toLowerCase();
+    let list = selections;
+    if (q) {
+      list = list.filter((s) =>
+        (s.contactName || '').toLowerCase().includes(q) ||
+        (s.contactPhone || '').toLowerCase().includes(q),
+      );
+    }
+    const arr = [...list];
+    if (selectionSort === 'price') {
+      arr.sort((a, b) => (Number(b.total) || 0) - (Number(a.total) || 0));
+    } else {
+      arr.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+    }
+    return arr;
+  }, [selections, selectionSearch, selectionSort]);
+
   const categories = useMemo(() => {
     const cats = new Set<string>();
     items.forEach((item) => {
@@ -281,8 +468,47 @@ export default function CatalogScreen() {
   // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
   const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
+  // Advanced filters: image presence + price range + per-column range/select/boolean.
+  const passesAdvancedFilters = useCallback((i: CatalogItem): boolean => {
+    if (imageFilter !== 'all') {
+      const has = Array.isArray(i.images) && i.images.some(Boolean);
+      if (imageFilter === 'with' && !has) return false;
+      if (imageFilter === 'without' && has) return false;
+    }
+    if (priceRangeEnabled && (priceMin !== '' || priceMax !== '')) {
+      const p = toNumeric(i.unitPrice);
+      const min = toNumeric(priceMin);
+      const max = toNumeric(priceMax);
+      if (min !== null && (p === null || p < min)) return false;
+      if (max !== null && (p === null || p > max)) return false;
+    }
+    for (const col of filterCols) {
+      const v = colFilters[col.key];
+      if (!v) continue;
+      const raw = i.customFields?.[col.key];
+      if (col.filterType === 'range') {
+        if (v.min === '' && v.max === '') continue;
+        const val = toNumeric(raw);
+        const min = toNumeric(v.min);
+        const max = toNumeric(v.max);
+        if (min !== null && (val === null || val < min)) return false;
+        if (max !== null && (val === null || val > max)) return false;
+      } else if (col.filterType === 'select') {
+        if (v === '') continue;
+        if (String(raw ?? '').trim() !== v) return false;
+      } else if (col.filterType === 'boolean') {
+        if (v === '') continue;
+        const truthy = raw === true || /^(כן|yes|true|1)$/i.test(String(raw ?? '').trim());
+        if (v === 'yes' && !truthy) return false;
+        if (v === 'no' && truthy) return false;
+      }
+    }
+    return true;
+  }, [imageFilter, priceRangeEnabled, priceMin, priceMax, filterCols, colFilters]);
+
   const filteredItems = useMemo(() => {
     let result = items;
+    result = result.filter(passesAdvancedFilters);
     if (categoryFilter !== 'all') {
       result = result.filter((i) => i.category === categoryFilter);
     }
@@ -309,12 +535,12 @@ export default function CatalogScreen() {
       });
     }
     return result;
-  }, [items, categoryFilter, debouncedSearch, fieldsConfig, customColumns]);
+  }, [items, categoryFilter, debouncedSearch, fieldsConfig, customColumns, passesAdvancedFilters]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visibleItems, hasMore: itemsHasMore, loadMore: itemsLoadMore, loadAll: itemsLoadAll, count: itemsCount } = useWindowedList(filteredItems, {
     pageSize: 30,
-    resetKey: `${categoryFilter}|${debouncedSearch}`,
+    resetKey: `${categoryFilter}|${debouncedSearch}|${imageFilter}|${priceMin}|${priceMax}|${JSON.stringify(colFilters)}`,
   });
 
   const resetForm = useCallback(() => {
@@ -324,7 +550,8 @@ export default function CatalogScreen() {
     setFormSku('');
     setFormCategory('');
     setFormLink('');
-    setFormImageUrl('');
+    setFormImages([]);
+    setImageUrlInput('');
     setFormCustomFields({});
     setEditingItem(null);
   }, []);
@@ -342,7 +569,8 @@ export default function CatalogScreen() {
     setFormSku(item.sku || '');
     setFormCategory(item.category || '');
     setFormLink(item.link || '');
-    setFormImageUrl(item.images?.[0] || '');
+    setFormImages(Array.isArray(item.images) ? item.images.filter(Boolean) : []);
+    setImageUrlInput('');
     setFormCustomFields(item.customFields || {});
     setModalVisible(true);
   }, []);
@@ -372,9 +600,9 @@ export default function CatalogScreen() {
         sku: formSku.trim(),
         category: formCategory.trim(),
         link: formLink.trim(),
-        // Empty => persist an empty array (image was removed). Falling back to the old images
-        // here would silently re-save a deleted image, so the removal never "sticks".
-        images: formImageUrl.trim() ? [formImageUrl.trim()] : [],
+        // Persist the full images array (empty => image(s) removed). Falling back to the old images
+        // here would silently re-save deleted images, so the removal never "sticks".
+        images: formImages.map((u) => u.trim()).filter(Boolean),
         // Merge so any keys not surfaced as columns on this device are preserved.
         customFields: { ...(editingItem?.customFields || {}), ...formCustomFields },
       };
@@ -396,7 +624,7 @@ export default function CatalogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImageUrl, formCustomFields, editingItem, items, customColumns, user?.organization, resetForm, fieldsConfig, isRTL]);
+  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImages, formCustomFields, editingItem, items, customColumns, user?.organization, resetForm, fieldsConfig, isRTL]);
 
   const handleDelete = useCallback((item: CatalogItem) => {
     Alert.alert(
@@ -452,7 +680,15 @@ export default function CatalogScreen() {
       >
         <View style={[styles.cardRow, { flexDirection }]}>
           {hasImage ? (
-            <Image source={{ uri: item.images[0] }} style={styles.cardImage} contentFit="cover" />
+            <Pressable onPress={() => openImageViewer(item.images, 0)}>
+              <Image source={{ uri: item.images[0] }} style={styles.cardImage} contentFit="cover" />
+              {item.images.filter(Boolean).length > 1 && (
+                <View style={styles.imageCountBadge}>
+                  <MaterialCommunityIcons name="image-multiple" size={10} color="#fff" />
+                  <Text style={styles.imageCountText}>{item.images.filter(Boolean).length}</Text>
+                </View>
+              )}
+            </Pressable>
           ) : (
             <View style={[styles.cardImagePlaceholder, { backgroundColor: BRAND_COLOR + '15' }]}>
               <MaterialCommunityIcons name="package-variant" size={28} color={BRAND_COLOR} />
@@ -467,56 +703,68 @@ export default function CatalogScreen() {
                 {item.description}
               </Text>
             ) : null}
-            <View style={[styles.cardMeta, { flexDirection }]}>
-              {item.unitPrice > 0 && (
-                <Text variant="labelMedium" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-                  ₪{item.unitPrice.toLocaleString()}
-                </Text>
-              )}
-              {item.sku ? (
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginHorizontal: 8 }}>
-                  {item.sku}
-                </Text>
-              ) : null}
-              {item.category ? (
-                <View style={[styles.categoryBadge, { backgroundColor: BRAND_COLOR + '18' }]}>
-                  <Text variant="labelSmall" style={{ color: BRAND_COLOR, fontSize: 10 }}>
-                    {item.category}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-            {/* Custom column values (shows the columns added in the web Catalog settings,
-                in the display order configured there). */}
-            {orderedCustomColumns.length > 0 && (() => {
-              const filled = orderedCustomColumns
-                .filter((c) => c.key !== titleKey)
-                .map((c) => ({ label: c.label, val: cf[c.key] }))
-                .filter((x) => hasVal(x.val));
-              if (!filled.length) return null;
-              return (
-                <View style={[styles.cardMeta, { flexDirection, flexWrap: 'wrap' }]}>
-                  {filled.slice(0, 4).map((x, i) => (
-                    <View key={i} style={[styles.customBadge, { backgroundColor: theme.colors.onSurfaceVariant + '14' }]}>
-                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }}>
-                        {x.label}: {formatCustomValue(x.val, isRTL)}
-                      </Text>
+            {/* Meta chips rendered in the web-configured column order, honoring per-column
+                visibility (tableColumns / showInTable). This keeps the app catalog in sync with
+                the column ordering + visibility set on the web. */}
+            {(() => {
+              type Chip = { key: string; node: React.ReactNode };
+              const chips: Chip[] = [];
+              for (const tok of orderedColumnTokens) {
+                if (tok === 'image' || tok === 'name') continue;
+                if (!isColumnTokenVisible(tok)) continue;
+                if (tok === 'unitPrice') {
+                  if (item.unitPrice > 0) chips.push({ key: tok, node: (
+                    <Text variant="labelMedium" style={{ color: BRAND_COLOR, fontWeight: '700', marginEnd: 8 }}>₪{item.unitPrice.toLocaleString()}</Text>
+                  ) });
+                } else if (tok === 'sku') {
+                  if (item.sku) chips.push({ key: tok, node: (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginEnd: 8 }}>{item.sku}</Text>
+                  ) });
+                } else if (tok === 'category') {
+                  if (item.category) chips.push({ key: tok, node: (
+                    <View style={[styles.categoryBadge, { backgroundColor: BRAND_COLOR + '18', marginEnd: 4, marginTop: 2 }]}>
+                      <Text variant="labelSmall" style={{ color: BRAND_COLOR, fontSize: 10 }}>{item.category}</Text>
                     </View>
-                  ))}
+                  ) });
+                } else if (tok === 'link') {
+                  if (item.link) chips.push({ key: tok, node: (
+                    <MaterialCommunityIcons name="link-variant" size={13} color={theme.colors.onSurfaceVariant} style={{ marginEnd: 6 }} />
+                  ) });
+                } else if (tok.startsWith('custom:')) {
+                  const col = customColumns.find((c) => `custom:${c.id}` === tok);
+                  if (col && col.key !== titleKey && hasVal(cf[col.key])) chips.push({ key: tok, node: (
+                    <View style={[styles.customBadge, { backgroundColor: theme.colors.onSurfaceVariant + '14' }]}>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }}>{col.label}: {formatCustomValue(cf[col.key], isRTL)}</Text>
+                    </View>
+                  ) });
+                }
+              }
+              if (!chips.length) return null;
+              return (
+                <View style={[styles.cardMeta, { flexDirection, flexWrap: 'wrap', alignItems: 'center' }]}>
+                  {chips.slice(0, 6).map((c) => <React.Fragment key={c.key}>{c.node}</React.Fragment>)}
                 </View>
               );
             })()}
           </View>
-          <IconButton
-            icon="pencil-outline"
-            size={18}
-            iconColor={theme.colors.onSurfaceVariant}
-            onPress={() => openEditModal(item)}
-          />
+          <View>
+            <IconButton
+              icon="pencil-outline"
+              size={18}
+              iconColor={theme.colors.onSurfaceVariant}
+              onPress={() => openEditModal(item)}
+            />
+            <IconButton
+              icon="share-variant"
+              size={18}
+              iconColor={BRAND_COLOR}
+              onPress={() => handleShareItem(item)}
+            />
+          </View>
         </View>
       </Pressable>
     );
-  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, customColumns, orderedCustomColumns, isRTL, fieldsConfig]);
+  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, handleShareItem, openImageViewer, customColumns, orderedColumnTokens, isColumnTokenVisible, isRTL, fieldsConfig]);
 
   // Configurable mandatory field (defaults to name). On mobile only base fields are editable,
   // so if the required field is a custom column we don't block the save here.
@@ -559,6 +807,11 @@ export default function CatalogScreen() {
         />
         <Appbar.Action icon="inbox-arrow-down" color="#fff" onPress={openSelections} />
         <Appbar.Action icon={sharing ? 'loading' : 'share-variant'} color="#fff" disabled={sharing} onPress={handleShareCatalog} />
+        <Appbar.Action
+          icon={hasActiveFilters ? 'filter' : 'filter-outline'}
+          color="#fff"
+          onPress={() => setFiltersVisible((v) => !v)}
+        />
         <Appbar.Action icon="magnify" color="#fff" onPress={() => setSearchVisible(!searchVisible)} />
       </Appbar.Header>
 
@@ -572,6 +825,127 @@ export default function CatalogScreen() {
             style={styles.searchbar}
             inputStyle={{ textAlign: isRTL ? 'right' : 'left' }}
           />
+        </View>
+      )}
+
+      {/* Advanced filters panel — mirrors the web catalog toolbar (price range + per-column filters) */}
+      {filtersVisible && (
+        <View style={[styles.filtersPanel, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant }]}>
+          {/* Image presence filter */}
+          <View style={{ marginBottom: 10 }}>
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 4, textAlign }}>
+              {isRTL ? 'תמונה' : 'Image'}
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+              {([['all', isRTL ? 'הכל' : 'All'], ['with', isRTL ? 'עם תמונה' : 'With image'], ['without', isRTL ? 'ללא תמונה' : 'No image']] as const).map(([val, label]) => (
+                <Chip
+                  key={val}
+                  selected={imageFilter === val}
+                  onPress={() => setImageFilter(val)}
+                  style={imageFilter === val ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                  textStyle={imageFilter === val ? { color: BRAND_COLOR } : undefined}
+                >
+                  {label}
+                </Chip>
+              ))}
+            </View>
+          </View>
+
+          {priceRangeEnabled && (
+            <View style={{ marginBottom: 10 }}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 4, textAlign }}>
+                {isRTL ? 'טווח מחיר (₪)' : 'Price range (₪)'}
+              </Text>
+              <View style={{ flexDirection, gap: 8 }}>
+                <RNTextInput
+                  value={priceMin}
+                  onChangeText={setPriceMin}
+                  placeholder={isRTL ? 'מ-' : 'From'}
+                  placeholderTextColor={theme.colors.onSurfaceVariant}
+                  keyboardType="numeric"
+                  style={[styles.filterInput, { color: theme.colors.onSurface, borderColor: theme.colors.outlineVariant, textAlign }]}
+                />
+                <RNTextInput
+                  value={priceMax}
+                  onChangeText={setPriceMax}
+                  placeholder={isRTL ? 'עד' : 'To'}
+                  placeholderTextColor={theme.colors.onSurfaceVariant}
+                  keyboardType="numeric"
+                  style={[styles.filterInput, { color: theme.colors.onSurface, borderColor: theme.colors.outlineVariant, textAlign }]}
+                />
+              </View>
+            </View>
+          )}
+
+          {filterCols.map((col) => (
+            <View key={col.id} style={{ marginBottom: 10 }}>
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 4, textAlign }}>
+                {col.label}
+              </Text>
+              {col.filterType === 'range' ? (
+                <View style={{ flexDirection, gap: 8 }}>
+                  <RNTextInput
+                    value={colFilters[col.key]?.min ?? ''}
+                    onChangeText={(v) => setColFilters((p) => ({ ...p, [col.key]: { ...(p[col.key] || {}), min: v } }))}
+                    placeholder={isRTL ? 'מ-' : 'From'}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    keyboardType="numeric"
+                    style={[styles.filterInput, { color: theme.colors.onSurface, borderColor: theme.colors.outlineVariant, textAlign }]}
+                  />
+                  <RNTextInput
+                    value={colFilters[col.key]?.max ?? ''}
+                    onChangeText={(v) => setColFilters((p) => ({ ...p, [col.key]: { ...(p[col.key] || {}), max: v } }))}
+                    placeholder={isRTL ? 'עד' : 'To'}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    keyboardType="numeric"
+                    style={[styles.filterInput, { color: theme.colors.onSurface, borderColor: theme.colors.outlineVariant, textAlign }]}
+                  />
+                </View>
+              ) : col.filterType === 'boolean' ? (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {([['', isRTL ? 'הכל' : 'All'], ['yes', isRTL ? 'כן' : 'Yes'], ['no', isRTL ? 'לא' : 'No']] as const).map(([val, label]) => (
+                    <Chip
+                      key={val}
+                      selected={(colFilters[col.key] ?? '') === val}
+                      onPress={() => setColFilters((p) => ({ ...p, [col.key]: val }))}
+                      style={(colFilters[col.key] ?? '') === val ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                      textStyle={(colFilters[col.key] ?? '') === val ? { color: BRAND_COLOR } : undefined}
+                    >
+                      {label}
+                    </Chip>
+                  ))}
+                </View>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                  <Chip
+                    selected={!colFilters[col.key]}
+                    onPress={() => setColFilters((p) => ({ ...p, [col.key]: '' }))}
+                    style={!colFilters[col.key] ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                    textStyle={!colFilters[col.key] ? { color: BRAND_COLOR } : undefined}
+                  >
+                    {isRTL ? 'הכל' : 'All'}
+                  </Chip>
+                  {selectOptionsForFilter(col).map((opt) => (
+                    <Chip
+                      key={opt}
+                      selected={colFilters[col.key] === opt}
+                      onPress={() => setColFilters((p) => ({ ...p, [col.key]: p[col.key] === opt ? '' : opt }))}
+                      style={colFilters[col.key] === opt ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                      textStyle={colFilters[col.key] === opt ? { color: BRAND_COLOR } : undefined}
+                    >
+                      {opt}
+                    </Chip>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+          ))}
+
+          {hasActiveFilters && (
+            <Button mode="text" onPress={clearFilters} textColor={BRAND_COLOR} compact style={{ alignSelf: isRTL ? 'flex-start' : 'flex-end' }}>
+              {isRTL ? 'נקה מסננים' : 'Clear filters'}
+            </Button>
+          )}
         </View>
       )}
 
@@ -740,19 +1114,12 @@ export default function CatalogScreen() {
               />
               )}
 
-              <TextInput
-                label={isRTL ? 'קישור לתמונה' : 'Image URL'}
-                value={formImageUrl}
-                onChangeText={setFormImageUrl}
-                mode="outlined"
-                style={styles.input}
-                keyboardType="url"
-                autoCapitalize="none"
-                outlineColor={BRAND_COLOR + '40'}
-                activeOutlineColor={BRAND_COLOR}
-              />
+              {/* Images (multiple per item) — camera / gallery / URL. Tap a thumbnail to enlarge. */}
+              <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+                {isRTL ? `תמונות${formImages.length ? ` (${formImages.length})` : ''}` : `Images${formImages.length ? ` (${formImages.length})` : ''}`}
+              </Text>
 
-              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
                 <Button
                   mode="outlined"
                   icon="camera"
@@ -767,7 +1134,7 @@ export default function CatalogScreen() {
                 </Button>
                 <Button
                   mode="outlined"
-                  icon="image"
+                  icon="image-multiple"
                   onPress={() => pickImage('library')}
                   loading={uploading}
                   disabled={uploading}
@@ -779,18 +1146,58 @@ export default function CatalogScreen() {
                 </Button>
               </View>
 
-              {formImageUrl.trim() ? (
-                <View style={{ position: 'relative', marginBottom: 12 }}>
-                  <Image source={{ uri: formImageUrl.trim() }} style={styles.previewImage} contentFit="cover" />
-                  <IconButton
-                    icon="close-circle"
-                    size={22}
-                    iconColor="#ef4444"
-                    style={{ position: 'absolute', top: -4, right: -4, backgroundColor: 'white' }}
-                    onPress={() => setFormImageUrl('')}
-                  />
-                </View>
-              ) : null}
+              {/* URL fallback */}
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+                <TextInput
+                  label={isRTL ? 'הדבק קישור לתמונה' : 'Paste image URL'}
+                  value={imageUrlInput}
+                  onChangeText={setImageUrlInput}
+                  onSubmitEditing={addImageUrl}
+                  mode="outlined"
+                  style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                  keyboardType="url"
+                  autoCapitalize="none"
+                  outlineColor={BRAND_COLOR + '40'}
+                  activeOutlineColor={BRAND_COLOR}
+                />
+                <IconButton icon="plus-circle" size={26} iconColor={BRAND_COLOR} disabled={!imageUrlInput.trim()} onPress={addImageUrl} />
+              </View>
+
+              {formImages.length > 0 && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }} contentContainerStyle={{ gap: 8 }}>
+                  {formImages.map((img, idx) => (
+                    <View key={`${img}_${idx}`} style={styles.formThumbWrap}>
+                      <Pressable onPress={() => openImageViewer(formImages, idx)}>
+                        <Image source={{ uri: img }} style={styles.formThumb} contentFit="cover" />
+                      </Pressable>
+                      {idx === 0 && (
+                        <View style={styles.formThumbMainBadge}>
+                          <Text style={{ color: '#fff', fontSize: 9, fontWeight: '700' }}>{isRTL ? 'ראשית' : 'Main'}</Text>
+                        </View>
+                      )}
+                      <IconButton
+                        icon="close-circle"
+                        size={18}
+                        iconColor="#ef4444"
+                        style={styles.formThumbRemove}
+                        onPress={() => removeImageAt(idx)}
+                      />
+                      <View style={styles.formThumbMoveRow}>
+                        {idx > 0 && (
+                          <Pressable onPress={() => moveImage(idx, -1)} style={styles.formThumbMoveBtn} hitSlop={6}>
+                            <MaterialCommunityIcons name="chevron-left" size={16} color="#fff" />
+                          </Pressable>
+                        )}
+                        {idx < formImages.length - 1 && (
+                          <Pressable onPress={() => moveImage(idx, 1)} style={styles.formThumbMoveBtn} hitSlop={6}>
+                            <MaterialCommunityIcons name="chevron-right" size={16} color="#fff" />
+                          </Pressable>
+                        )}
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
 
               {/* Custom columns (defined in the web Catalog → Columns settings) — editable here too,
                   rendered in the same display order configured on the web. */}
@@ -848,6 +1255,18 @@ export default function CatalogScreen() {
                 </>
               )}
 
+              {editingItem && (
+                <Button
+                  mode="outlined"
+                  icon="share-variant"
+                  onPress={() => handleShareItem(editingItem)}
+                  style={[styles.actionBtn, { borderColor: BRAND_COLOR, marginBottom: 8 }]}
+                  textColor={BRAND_COLOR}
+                >
+                  {isRTL ? 'שתף פריט' : 'Share item'}
+                </Button>
+              )}
+
               <View style={[styles.modalActions, { flexDirection }]}>
                 <Button
                   mode="outlined"
@@ -885,6 +1304,33 @@ export default function CatalogScreen() {
             <IconButton icon="refresh" size={20} onPress={loadSelections} iconColor={theme.colors.onSurfaceVariant} />
           </View>
 
+          {/* Search by name/phone + sort (default: date, or by total) */}
+          {selections.length > 0 && (
+            <>
+              <RNTextInput
+                value={selectionSearch}
+                onChangeText={setSelectionSearch}
+                placeholder={isRTL ? 'חיפוש לפי שם או טלפון...' : 'Search by name or phone...'}
+                placeholderTextColor={theme.colors.onSurfaceVariant}
+                style={[styles.filterInput, { color: theme.colors.onSurface, borderColor: theme.colors.outlineVariant, textAlign, marginBottom: 8 }]}
+              />
+              <View style={{ flexDirection: 'row', gap: 6, marginBottom: 8 }}>
+                {([['date', isRTL ? 'תאריך' : 'Date'], ['price', isRTL ? 'סכום' : 'Total']] as const).map(([key, label]) => (
+                  <Chip
+                    key={key}
+                    selected={selectionSort === key}
+                    onPress={() => setSelectionSort(key)}
+                    style={selectionSort === key ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                    textStyle={selectionSort === key ? { color: BRAND_COLOR } : undefined}
+                    icon={selectionSort === key ? 'sort' : undefined}
+                  >
+                    {label}
+                  </Chip>
+                ))}
+              </View>
+            </>
+          )}
+
           {selectionsLoading ? (
             <View style={{ paddingVertical: 30 }}>
               <ActivityIndicator color={BRAND_COLOR} />
@@ -896,9 +1342,16 @@ export default function CatalogScreen() {
                 {isRTL ? 'אין עדיין פניות מהקטלוג' : 'No catalog inquiries yet'}
               </Text>
             </View>
+          ) : filteredSortedSelections.length === 0 ? (
+            <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+              <MaterialCommunityIcons name="magnify-close" size={48} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
+              <Text style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
+                {isRTL ? 'לא נמצאו פניות' : 'No matching inquiries'}
+              </Text>
+            </View>
           ) : (
-            <ScrollView style={{ maxHeight: 460 }} showsVerticalScrollIndicator={false}>
-              {selections.map((sel) => (
+            <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+              {filteredSortedSelections.map((sel) => (
                 <Pressable
                   key={sel.id}
                   onPress={() => openSelectionLink(sel)}
@@ -948,6 +1401,47 @@ export default function CatalogScreen() {
           </Button>
         </Modal>
       </Portal>
+
+      {/* Full-screen image viewer (lightbox) with left/right navigation */}
+      {viewerVisible && viewerImages.length > 0 && (
+        <RNModal visible animationType="fade" transparent onRequestClose={() => setViewerVisible(false)}>
+          <View style={styles.viewerOverlay}>
+            <View style={styles.viewerHeader}>
+              <IconButton icon="close" size={28} iconColor="#fff" onPress={() => setViewerVisible(false)} />
+              {viewerImages.length > 1 && (
+                <Text style={styles.viewerCounter}>{viewerIndex + 1} / {viewerImages.length}</Text>
+              )}
+              <View style={{ width: 48 }} />
+            </View>
+            <View style={styles.viewerContent}>
+              {viewerIndex > 0 && (
+                <Pressable style={[styles.viewerNavBtn, { left: 8 }]} onPress={() => setViewerIndex((i) => i - 1)}>
+                  <MaterialCommunityIcons name="chevron-left" size={40} color="#fff" />
+                </Pressable>
+              )}
+              {viewerIndex < viewerImages.length - 1 && (
+                <Pressable style={[styles.viewerNavBtn, { right: 8 }]} onPress={() => setViewerIndex((i) => i + 1)}>
+                  <MaterialCommunityIcons name="chevron-right" size={40} color="#fff" />
+                </Pressable>
+              )}
+              <Image source={{ uri: viewerImages[viewerIndex] }} style={styles.viewerImage} contentFit="contain" />
+            </View>
+            {viewerImages.length > 1 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.viewerThumbs} contentContainerStyle={{ gap: 6, paddingHorizontal: 12 }}>
+                {viewerImages.map((img, idx) => (
+                  <Pressable key={`${img}_${idx}`} onPress={() => setViewerIndex(idx)}>
+                    <Image
+                      source={{ uri: img }}
+                      style={[styles.viewerThumb, idx === viewerIndex && { borderColor: '#fff', borderWidth: 2 }]}
+                      contentFit="cover"
+                    />
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </RNModal>
+      )}
     </View>
   );
 }
@@ -958,6 +1452,8 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
   searchRow: { paddingHorizontal: 12, paddingVertical: 8 },
   searchbar: { borderRadius: 10, elevation: 0 },
+  filtersPanel: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  filterInput: { flex: 1, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, fontSize: 14 },
   chipsRow: { paddingHorizontal: 12, paddingVertical: 8, gap: 6 },
   chip: { marginEnd: 4 },
   statsBar: { paddingHorizontal: 16, paddingVertical: 6, alignItems: 'center', justifyContent: 'space-between' },
@@ -977,6 +1473,22 @@ const styles = StyleSheet.create({
   cardRow: { alignItems: 'center' },
   cardImage: { width: 56, height: 56, borderRadius: 8 },
   cardImagePlaceholder: { width: 56, height: 56, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  imageCountBadge: { position: 'absolute', bottom: 2, right: 2, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8, paddingHorizontal: 4, paddingVertical: 1, gap: 2 },
+  imageCountText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  formThumbWrap: { width: 96, height: 96, borderRadius: 10, overflow: 'hidden', position: 'relative', backgroundColor: 'rgba(0,0,0,0.05)' },
+  formThumb: { width: 96, height: 96, borderRadius: 10 },
+  formThumbMainBadge: { position: 'absolute', top: 4, left: 4, backgroundColor: BRAND_COLOR, borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 },
+  formThumbRemove: { position: 'absolute', top: -6, right: -6, backgroundColor: 'white', margin: 0 },
+  formThumbMoveRow: { position: 'absolute', bottom: 2, left: 2, right: 2, flexDirection: 'row', justifyContent: 'space-between' },
+  formThumbMoveBtn: { backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 10, width: 20, height: 20, alignItems: 'center', justifyContent: 'center' },
+  viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)' },
+  viewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 40, paddingHorizontal: 8 },
+  viewerCounter: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  viewerContent: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  viewerImage: { width: '100%', height: '100%' },
+  viewerNavBtn: { position: 'absolute', top: '45%', zIndex: 2, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 24, padding: 4 },
+  viewerThumbs: { flexGrow: 0, paddingVertical: 12 },
+  viewerThumb: { width: 56, height: 56, borderRadius: 8, opacity: 0.85 },
   cardContent: { flex: 1, marginHorizontal: 12 },
   cardMeta: { marginTop: 4, alignItems: 'center', flexWrap: 'wrap' },
   categoryBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
@@ -986,7 +1498,6 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 16 },
   input: { marginBottom: 12 },
   formRow: { gap: 0 },
-  previewImage: { width: '100%', height: 140, borderRadius: 10, marginBottom: 12 },
   modalActions: { marginTop: 8, gap: 10, justifyContent: 'flex-end' },
   actionBtn: { borderRadius: 8 },
   selCard: { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 10 },

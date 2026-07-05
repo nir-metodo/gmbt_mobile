@@ -1,8 +1,13 @@
 export const API_BASE_URL = 'https://gambot.azurewebsites.net';
 export const WS_BASE_URL = 'wss://gambot.azurewebsites.net/FirebaseWebsocketHandler.ashx';
 
-/** Web app URL - for features that open in browser (Campaigns, Templates, Botomations, etc.) */
-export const WEB_APP_BASE_URL = 'https://gambot.co.il';
+/**
+ * CRM web-app URL — used for features that open in the browser (Campaigns, Templates,
+ * Botomations, public catalog share links, etc.). This must point at the CRM SPA host
+ * (`app.gambot.co.il`), NOT the marketing site `gambot.co.il` — the marketing host returns
+ * 404 for SPA routes like `/catalog/:org`, which is why shared catalog links were broken.
+ */
+export const WEB_APP_BASE_URL = 'https://app.gambot.co.il';
 
 export const ENDPOINTS = {
   // Auth
@@ -146,7 +151,6 @@ export const ENDPOINTS = {
   UPDATE_TIMELINE_ENTRY: '/api/Webhooks/UpdateTimelineEntry',
   DELETE_TIMELINE_ENTRY: '/api/Webhooks/DeleteTimelineEntry',
   TOGGLE_TIMELINE_ENTRY_PIN: '/api/Webhooks/ToggleTimelineEntryPin',
-  GET_LEADS_BY_CONTACT: '/api/Webhooks/GetLeadsByContact',
   GET_CROSS_ENTITY_NOTES_SETTING: '/api/Webhooks/GetCrossEntityNotesSetting',
   GET_ALL_NOTES_FOR_ORGANIZATION: '/api/Webhooks/GetAllNotesForOrganization',
 
@@ -237,7 +241,10 @@ export const ENDPOINTS = {
 
   // Employees / Attendance
   GET_EMPLOYEES_DASHBOARD: '/api/Webhooks/GetEmployeesDashboard',
+  GET_EMPLOYEES: '/api/Webhooks/GetEmployees',
+  GET_MY_ATTENDANCE: '/api/Webhooks/GetMyAttendance',
   GET_ATTENDANCE_RECORDS: '/api/Webhooks/GetAttendanceRecords',
+  GET_ATTENDANCE_SETTINGS: '/api/Webhooks/GetAttendanceSettings',
   CLOCK_IN: '/api/Webhooks/ClockIn',
   CLOCK_OUT: '/api/Webhooks/ClockOut',
 

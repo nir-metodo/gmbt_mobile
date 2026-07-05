@@ -11,6 +11,7 @@ import {
   Modal as RNModal,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton, Snackbar } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../components/KanbanBoard';
@@ -127,6 +128,34 @@ function OptionChips({
   );
 }
 
+// Parse a task due/reminder date that may arrive as a plain ISO string, a Firestore
+// timestamp object ({ _seconds } / { seconds }), an epoch number, or a "Timestamp: <iso>"
+// prefixed string. Returning a real Date (or null) prevents the today/upcoming/overdue
+// buckets from silently dropping tasks whose date `new Date()` couldn't parse — the exact
+// reason those tabs looked empty while the lead still showed a task badge.
+function parseTaskDate(val: any): Date | null {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (typeof val === 'number') {
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof val === 'object') {
+    const secs = val._seconds ?? val.seconds;
+    if (typeof secs === 'number') {
+      const d = new Date(secs * 1000);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    return null;
+  }
+  if (typeof val === 'string') {
+    const cleaned = val.startsWith('Timestamp: ') ? val.slice('Timestamp: '.length) : val;
+    const d = new Date(cleaned);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
 // Compact clock badge shown on a lead card when it has open tasks. Mirrors the web Leads board:
 // red = has an overdue task, amber = due today, neutral = upcoming. Count appears when >1.
 function LeadTaskBadge({
@@ -174,7 +203,7 @@ export default function LeadsListScreen() {
 
   const user = useAuthStore((s) => s.user);
   const organization = user?.organization ?? '';
-  const userIsAdmin = user?.SecurityRole === 'admin' || user?.SecurityRole === 'Admin';
+  const userIsAdmin = String(user?.SecurityRole ?? '').toLowerCase() === 'admin';
 
   // Store – used only for create/update/delete to keep detail screen in sync
   const updateLead = useLeadStore((s) => s.updateLead);
@@ -190,6 +219,7 @@ export default function LeadsListScreen() {
   const [hasMore, setHasMore] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   // ── Filter state ────────────────────────────────────────────────────────────
@@ -221,10 +251,40 @@ export default function LeadsListScreen() {
   const latestLeadsRef = useRef<Lead[]>([]);
 
   // ── Sort state ──────────────────────────────────────────────────────────────
-  type SortKey = 'createdOn' | 'title' | 'value' | 'priority' | 'score' | 'stageName';
+  // Default sort is by "created on" (newest first), matching the web. The chosen sort is
+  // persisted (localStorage-style, via AsyncStorage) and restored on next open.
+  type SortKey = 'createdOn' | 'modifiedOn' | 'title' | 'value' | 'priority' | 'score' | 'stageName';
   type SortDir = 'asc' | 'desc';
   const [sortKey, setSortKey] = useState<SortKey>('createdOn');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const sortPrefLoadedRef = useRef(false);
+
+  // Restore the saved sort preference once on mount (default = created on, descending).
+  useEffect(() => {
+    (async () => {
+      try {
+        const [savedKey, savedDir] = await Promise.all([
+          AsyncStorage.getItem('leads_sort_key'),
+          AsyncStorage.getItem('leads_sort_dir'),
+        ]);
+        const validKeys: SortKey[] = ['createdOn', 'modifiedOn', 'title', 'value', 'priority', 'score', 'stageName'];
+        if (savedKey && validKeys.includes(savedKey as SortKey)) setSortKey(savedKey as SortKey);
+        if (savedDir === 'asc' || savedDir === 'desc') setSortDir(savedDir);
+      } catch {
+        /* keep defaults */
+      } finally {
+        sortPrefLoadedRef.current = true;
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist the sort preference whenever the user changes it (skip the initial restore).
+  useEffect(() => {
+    if (!sortPrefLoadedRef.current) return;
+    AsyncStorage.setItem('leads_sort_key', sortKey).catch(() => {});
+    AsyncStorage.setItem('leads_sort_dir', sortDir).catch(() => {});
+  }, [sortKey, sortDir]);
 
   // ── Seen/Unseen leads tracking ─────────────────────────────────────────────
   const [seenLeadIds, setSeenLeadIds] = useState<Set<string>>(new Set());
@@ -287,6 +347,9 @@ export default function LeadsListScreen() {
     if (lead.stageId && stageDisplayName[lead.stageId]) return stageDisplayName[lead.stageId];
     return raw || 'New';
   }, [stageDisplayName]);
+
+  // Debounced search value (declared here so buildFilters can depend on it).
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   // ── Build filter object for API ─────────────────────────────────────────────
   const buildFilters = useCallback(() => ({
@@ -355,8 +418,44 @@ export default function LeadsListScreen() {
     }
   }, [organization, buildFilters, filterMine, user]);
 
+  // ── Load EVERYTHING in one request ──────────────────────────────────────────
+  // The web has a "load all" action; mirror it here. A single large-pageSize request
+  // (the lead store already uses pageSize 5000) is reliable, unlike firing many
+  // paged requests in parallel (which the fetchingRef guard would drop). This is also
+  // what the Kanban board needs: it can only group/drag leads that are actually loaded.
+  const fetchAll = useCallback(async () => {
+    if (!organization || loadingAll) return;
+    setLoadingAll(true);
+    try {
+      const result = await leadsApi.getAll(organization, {
+        page: 1,
+        pageSize: 5000,
+        filters: buildFilters(),
+        dataVisibility: filterMine
+          ? 'own'
+          : getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own'
+            ? 'own'
+            : 'seeAll',
+        userId: (filterMine || getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own')
+          ? (user?.uID || user?.userId || '')
+          : '',
+      });
+      const all = result.data ?? [];
+      const total = result.total ?? all.length;
+      setTotalCount(total);
+      setLeads(all);
+      latestLeadsRef.current = all;
+      setHasMore(all.length < total);
+      setPage(Math.max(1, Math.ceil(all.length / PAGE_SIZE)));
+      setTimeout(() => useLeadStore.setState({ leads: all }), 0);
+    } catch {
+      /* keep existing data on error */
+    } finally {
+      setLoadingAll(false);
+    }
+  }, [organization, loadingAll, buildFilters, filterMine, user]);
+
   // ── Debounced search ────────────────────────────────────────────────────────
-  const [debouncedSearch, setDebouncedSearch] = useState('');
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);
@@ -365,7 +464,15 @@ export default function LeadsListScreen() {
   // ── Initial load & filter change → reset ───────────────────────────────────
   useEffect(() => {
     if (!organization) return;
-    fetchPage(1, true);
+    // A task quick-filter (today/upcoming/overdue/with-tasks) is a CLIENT-side filter over the
+    // loaded leads, so it needs the WHOLE dataset in memory. A plain fetchPage(1) reset here would
+    // shrink the pool back to the first page and make the filter look empty/broken — reload all
+    // leads instead while a task filter is active.
+    if (taskQuickFilter) {
+      fetchAll();
+    } else {
+      fetchPage(1, true);
+    }
     leadsApi.getPipelineSettings(organization)
       .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
       .catch(() => {});
@@ -446,8 +553,10 @@ export default function LeadsListScreen() {
         const relId = rel?.entityId || rel?.EntityId;
         if (relType !== 'lead' || !relId) return;
         const dueRaw = task.dueDate || task.DueDate || '';
-        const dueDate = dueRaw ? new Date(dueRaw) : null;
-        const hasValidDue = !!(dueDate && !isNaN(dueDate.getTime()));
+        // Fall back to the reminder date when a task has no explicit due date, so a scheduled
+        // follow-up still lands in the today/upcoming buckets instead of being invisible.
+        const dueDate = parseTaskDate(dueRaw) || parseTaskDate(task.reminderDate || task.ReminderDate);
+        const hasValidDue = !!dueDate;
         const isOverdue = hasValidDue ? dueDate! < now : false;
         const isToday = hasValidDue ? dueDate! >= todayStart && dueDate! <= todayEnd : false;
         const title = task.title || task.Title || '';
@@ -457,7 +566,7 @@ export default function LeadsListScreen() {
           if (isOverdue) existing.hasOverdue = true;
           if (isToday && !isOverdue) existing.hasToday = true;
         } else {
-          map.set(relId, { count: 1, hasOverdue: isOverdue, hasToday: isToday && !isOverdue, nextTitle: title, nextDueDate: dueRaw || null });
+          map.set(relId, { count: 1, hasOverdue: isOverdue, hasToday: isToday && !isOverdue, nextTitle: title, nextDueDate: dueDate ? dueDate.toISOString() : null });
         }
 
         // Every lead that still has an open task → the "all leads with tasks" bucket.
@@ -497,15 +606,15 @@ export default function LeadsListScreen() {
       // Always recompute the task→lead buckets from fresh task data on tap, so the filter
       // reflects the latest statuses/due dates (not a stale snapshot from screen mount).
       const tasksRefresh = fetchActiveTasksForCards();
-      // Load every remaining lead page (sequentially, to match the paginated append) so the
-      // client-side filter spans the whole dataset.
-      const allPages = Math.ceil(totalCount / PAGE_SIZE);
-      for (let p = page + 1; p <= allPages; p++) await fetchPage(p, false);
+      // Load the WHOLE lead dataset in one request so the client-side task filter can match
+      // every lead (a partial page load is why the tab could look empty). Mirrors the web,
+      // which raises pageSize to "all" when a task filter is active.
+      await fetchAll();
       await tasksRefresh;
     } finally {
       setTaskFilterLoading(false);
     }
-  }, [taskQuickFilter, totalCount, page, fetchPage, fetchActiveTasksForCards]);
+  }, [taskQuickFilter, fetchAll, fetchActiveTasksForCards]);
 
   useEffect(() => {
     fetchActiveTasksForCards();
@@ -538,10 +647,16 @@ export default function LeadsListScreen() {
         return;
       }
       if (organization) {
-        fetchPage(1, true);
+        // Keep the full dataset loaded when a task quick-filter is active so returning from a lead
+        // detail doesn't collapse the pool to page 1 and empty out the filtered list.
+        if (taskQuickFilter) {
+          fetchAll();
+        } else {
+          fetchPage(1, true);
+        }
         fetchActiveTasksForCards();
       }
-    }, [organization, fetchPage, fetchActiveTasksForCards])
+    }, [organization, fetchPage, fetchAll, fetchActiveTasksForCards, taskQuickFilter])
   );
 
   const loadSavedView = useCallback((view: SavedView) => {
@@ -694,6 +809,10 @@ export default function LeadsListScreen() {
       if (sortKey === 'createdOn') {
         aVal = parseTs(a.createdOn || a.CreatedOn || a.createdAt);
         bVal = parseTs(b.createdOn || b.CreatedOn || b.createdAt);
+      } else if (sortKey === 'modifiedOn') {
+        // Fall back to createdOn when a lead has no modifiedOn so it still orders sensibly.
+        aVal = parseTs(a.modifiedOn || a.ModifiedOn || a.updatedOn || a.UpdatedOn || a.updatedAt) || parseTs(a.createdOn || a.CreatedOn || a.createdAt);
+        bVal = parseTs(b.modifiedOn || b.ModifiedOn || b.updatedOn || b.UpdatedOn || b.updatedAt) || parseTs(b.createdOn || b.CreatedOn || b.createdAt);
       } else if (sortKey === 'title') {
         aVal = (a.title || '').toLowerCase();
         bVal = (b.title || '').toLowerCase();
@@ -722,6 +841,16 @@ export default function LeadsListScreen() {
     return result;
   }, [leads, selectedStage, getLeadStageName, unseenOnly, seenLeadIds, sortKey, sortDir, parseTs, taskQuickFilter, taskFilterSets]);
 
+  // Order each Kanban column newest-first (by last-modified, falling back to created), so a
+  // card just dragged into a column — whose timestamp we bump on move — appears at the top.
+  const sortByRecency = useCallback((arr: Lead[]) => {
+    const recency = (l: any) => Math.max(
+      parseTs(l.modifiedOn || l.ModifiedOn || l.updatedOn || l.UpdatedOn || l.updatedAt),
+      parseTs(l.createdOn || l.CreatedOn || l.createdAt),
+    );
+    return [...arr].sort((a, b) => recency(b) - recency(a));
+  }, [parseTs]);
+
   const kanbanColumns = useMemo<KanbanColumn<Lead>[]>(() => {
     // When the real pipeline is loaded, build columns keyed by the stable stage id and
     // match leads by stageId first (like the web), falling back to name/id stored on the
@@ -732,14 +861,14 @@ export default function LeadsListScreen() {
         id: s.id,
         title: STAGE_I18N[s.name] ? t(STAGE_I18N[s.name]) : s.name,
         color: s.color ?? stageColorMap[s.id] ?? theme.colors.primary,
-        items: pipelineLeads.filter(
+        items: sortByRecency(pipelineLeads.filter(
           (l) =>
             l.stageId === s.id ||
             l.stageName === s.name ||
             l.stage === s.name ||
             l.stageName === s.id ||
             l.stage === s.id,
-        ),
+        )),
       }));
     }
     // No pipeline settings loaded → fall back to the default keys grouped by display name.
@@ -747,13 +876,9 @@ export default function LeadsListScreen() {
       id: stage,
       title: t(STAGE_I18N[stage] ?? stage),
       color: stageColorMap[stage] ?? theme.colors.primary,
-      items: leadsByStage.get(stage) ?? [],
+      items: sortByRecency(leadsByStage.get(stage) ?? []),
     }));
-  }, [pipelineStages, pipelineLeads, stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary]);
-
-  const handleKanbanMove = useCallback((item: Lead, _fromColumnId: string, toColumnId: string) => {
-    handleStageChange(item, toColumnId);
-  }, [handleStageChange]);
+  }, [pipelineStages, pipelineLeads, stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary, sortByRecency]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
@@ -770,9 +895,10 @@ export default function LeadsListScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([fetchPage(1, true), fetchActiveTasksForCards()]);
+    // Preserve the full dataset when a task quick-filter is active (a page-1 reset would empty it).
+    await Promise.all([taskQuickFilter ? fetchAll() : fetchPage(1, true), fetchActiveTasksForCards()]);
     setRefreshing(false);
-  }, [fetchPage, fetchActiveTasksForCards]);
+  }, [fetchPage, fetchAll, fetchActiveTasksForCards, taskQuickFilter]);
 
   const openLead = useCallback(
     (lead: Lead) => {
@@ -805,9 +931,11 @@ export default function LeadsListScreen() {
         return;
       }
 
-      // Optimistic local update
+      // Optimistic local update. Bump the timestamp so the card floats to the TOP of the
+      // target column (columns are sorted by recency), matching the "just moved" expectation.
+      const movedAtIso = new Date().toISOString();
       setLeads((prev) =>
-        prev.map((l) => (l.id === lead.id ? { ...l, stageName: newStageName, stage: newStageName, stageId: newStageId } : l)),
+        prev.map((l) => (l.id === lead.id ? ({ ...l, stageName: newStageName, stage: newStageName, stageId: newStageId, modifiedOn: movedAtIso, updatedOn: movedAtIso } as Lead) : l)),
       );
 
       try {
@@ -816,7 +944,7 @@ export default function LeadsListScreen() {
           lead.id,
           newStageId,
           newStageName,
-          user?.fullname || user?.FullName || user?.name || '',
+          user?.fullname || user?.name || '',
         );
 
         // Won celebration
@@ -842,6 +970,10 @@ export default function LeadsListScreen() {
     },
     [organization, user, t, pipelineStages],
   );
+
+  const handleKanbanMove = useCallback((item: Lead, _fromColumnId: string, toColumnId: string) => {
+    handleStageChange(item, toColumnId);
+  }, [handleStageChange]);
 
   const [ownershipSnackbar, setOwnershipSnackbar] = useState('');
   const [wonCelebration, setWonCelebration] = useState<{ title: string; value?: number | string } | null>(null);
@@ -891,7 +1023,7 @@ export default function LeadsListScreen() {
           tax,
           notes: config.defaultNotes || '',
           terms: '',
-          status: 'draft',
+          status: 'draft' as const,
           salespersonId: (promptLead as any).ownerId || user?.uID || '',
           salespersonName: (promptLead as any).ownerName || user?.fullname || '',
           subtotal,
@@ -1291,14 +1423,25 @@ export default function LeadsListScreen() {
       {/* Saved Views Tabs */}
       <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.viewsScroll, { flexDirection }]}>
-          <Pressable
-            onPress={clearAllFilters}
-            style={[styles.viewTab, activeViewId === '__all' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-          >
-            <Text style={[styles.viewTabText, { color: activeViewId === '__all' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
-              {t('leads.viewAll', 'הכל')}
-            </Text>
-          </Pressable>
+          {(() => {
+            // "All" is only the active tab when no task quick-filter is applied, so while a
+            // task filter (today/upcoming/overdue/with-tasks) is active this tab is visibly
+            // un-selected — giving the user an obvious one-tap way back to every lead.
+            const allActive = activeViewId === '__all' && !taskQuickFilter;
+            return (
+              <Pressable
+                onPress={clearAllFilters}
+                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, allActive && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+              >
+                {taskQuickFilter && (
+                  <MaterialCommunityIcons name="close-circle" size={14} color={theme.colors.primary} />
+                )}
+                <Text style={[styles.viewTabText, { color: allActive ? theme.colors.primary : (taskQuickFilter ? theme.colors.primary : theme.colors.onSurfaceVariant) }]}>
+                  {t('leads.viewAll', 'הכל')}
+                </Text>
+              </Pressable>
+            );
+          })()}
           <Pressable
             onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setUnseenOnly(false); setTaskQuickFilter(null); }}
             style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
@@ -1446,7 +1589,8 @@ export default function LeadsListScreen() {
         <View style={{ flexDirection, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, alignItems: 'center' }}>
           <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('leads.sortBy', 'מיין לפי:')}</Text>
           {([
-            { key: 'createdOn' as SortKey, label: t('leads.date', 'תאריך'), icon: 'calendar' },
+            { key: 'createdOn' as SortKey, label: t('leads.sortCreated', 'נוצר ב'), icon: 'calendar-plus' },
+            { key: 'modifiedOn' as SortKey, label: t('leads.sortUpdated', 'עודכן ב'), icon: 'calendar-edit' },
             { key: 'title' as SortKey, label: t('leads.name', 'שם'), icon: 'sort-alphabetical-variant' },
             { key: 'value' as SortKey, label: t('leads.value', 'סכום'), icon: 'cash' },
             { key: 'priority' as SortKey, label: t('leads.priority', 'עדיפות'), icon: 'flag' },
@@ -1457,7 +1601,7 @@ export default function LeadsListScreen() {
               key={opt.key}
               onPress={() => {
                 if (sortKey === opt.key) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
-                else { setSortKey(opt.key); setSortDir(['createdOn', 'value', 'priority', 'score'].includes(opt.key) ? 'desc' : 'asc'); }
+                else { setSortKey(opt.key); setSortDir(['createdOn', 'modifiedOn', 'value', 'priority', 'score'].includes(opt.key) ? 'desc' : 'asc'); }
               }}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortKey === opt.key ? withAlpha(theme.colors.primary, 0.1) : 'transparent' }}
             >
@@ -1510,13 +1654,11 @@ export default function LeadsListScreen() {
                 </Text>
                 {hasMore && (
                   <View style={{ flexDirection: 'row', gap: 8 }}>
-                    <Pressable onPress={() => fetchPage(page + 1, false)} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer }}>
+                    <Pressable onPress={() => fetchPage(page + 1, false)} disabled={loadingAll} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer, opacity: loadingAll ? 0.5 : 1 }}>
                       <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadMore', 'טען עוד')}</Text>
                     </Pressable>
-                    <Pressable onPress={() => {
-                      const allPages = Math.ceil(totalCount / PAGE_SIZE);
-                      for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
-                    }} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surfaceVariant }}>
+                    <Pressable onPress={fetchAll} disabled={loadingAll} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surfaceVariant, opacity: loadingAll ? 0.7 : 1 }}>
+                      {loadingAll && <ActivityIndicator size={12} color={theme.colors.onSurfaceVariant} />}
                       <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>{t('common.loadAll', 'טען הכול')}</Text>
                     </Pressable>
                   </View>
@@ -1537,7 +1679,14 @@ export default function LeadsListScreen() {
           contentContainerStyle={styles.listContent}
         />
       ) : (
-        <KanbanBoard
+        <View style={{ flex: 1 }}>
+          {hasMore && (
+            <Pressable onPress={fetchAll} disabled={loadingAll} style={{ flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6, marginTop: 8, marginBottom: 4, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer, opacity: loadingAll ? 0.7 : 1 }}>
+              {loadingAll ? <ActivityIndicator size={12} color={theme.colors.onPrimaryContainer} /> : <MaterialCommunityIcons name="download" size={14} color={theme.colors.onPrimaryContainer} />}
+              <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadAll', 'טען הכול')} ({leads.length}/{totalCount})</Text>
+            </Pressable>
+          )}
+          <KanbanBoard
           columns={kanbanColumns}
           keyExtractor={(item) => item.id}
           onMoveItem={handleKanbanMove}
@@ -1590,7 +1739,8 @@ export default function LeadsListScreen() {
               </View>
             </Pressable>
           )}
-        />
+          />
+        </View>
       )}
 
       <FAB

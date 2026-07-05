@@ -76,6 +76,32 @@ export function formatDate(dateStr: string, formatStr = 'dd/MM/yyyy'): string {
   }
 }
 
+/**
+ * Smart due-date label for task rows (agenda-style, matching the web task cards):
+ *   - Today    → time only, e.g. "14:30"
+ *   - Tomorrow → "<tomorrowLabel> 09:00"
+ *   - Else     → "dd/MM HH:mm" (adds the year only when it differs from the current year)
+ * Overdue coloring is handled by the caller (this only builds the text).
+ */
+export function formatDueDate(dateStr: string, tomorrowLabel = 'מחר'): string {
+  try {
+    const date = typeof dateStr === 'string' ? parseISO(dateStr) : new Date(dateStr);
+    if (isNaN(date.getTime())) return '';
+    const now = new Date();
+    const time = format(date, 'HH:mm');
+    const sameDay = (a: Date, b: Date) =>
+      a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (sameDay(date, now)) return time;
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+    if (sameDay(date, tomorrow)) return `${tomorrowLabel} ${time}`;
+    const sameYear = date.getFullYear() === now.getFullYear();
+    return `${format(date, sameYear ? 'dd/MM' : 'dd/MM/yyyy')} ${time}`;
+  } catch {
+    return '';
+  }
+}
+
 export function formatDateTime(dateStr: string): string {
   try {
     const date = typeof dateStr === 'string' ? parseISO(dateStr) : new Date(dateStr);

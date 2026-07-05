@@ -323,7 +323,7 @@ export default function SettingsScreen() {
             description={t('settings.callRulesDesc')}
             isRTL={isRTL}
             themeColors={theme.colors}
-            onPress={() => router.push('/(tabs)/phone-calls' as any)}
+            onPress={() => router.push('/(tabs)/more/phone-calls' as any)}
             right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
           />
         </Surface></>

@@ -30,18 +30,18 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { useAuthStore } from '../../../../stores/authStore';
-import { useAppTheme } from '../../../../hooks/useAppTheme';
-import { useRTL } from '../../../../hooks/useRTL';
-import { tasksApi } from '../../../../services/api/tasks';
-import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
-import { usersApi } from '../../../../services/api/users';
-import { leadsApi } from '../../../../services/api/leads';
-import { getDataVisibility } from '../../../../constants/permissions';
-import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
-import { spacing, borderRadius } from '../../../../constants/theme';
-import ContactLookup from '../../../../components/ContactLookup';
-import type { Task, OrgUser } from '../../../../types';
+import { useAuthStore } from '../../../stores/authStore';
+import { useAppTheme } from '../../../hooks/useAppTheme';
+import { useRTL } from '../../../hooks/useRTL';
+import { tasksApi } from '../../../services/api/tasks';
+import { cacheEntity, getCachedEntity } from '../../../services/entityCache';
+import { usersApi } from '../../../services/api/users';
+import { leadsApi } from '../../../services/api/leads';
+import { getDataVisibility } from '../../../constants/permissions';
+import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../utils/formatters';
+import { spacing, borderRadius } from '../../../constants/theme';
+import ContactLookup from '../../../components/ContactLookup';
+import type { Task, OrgUser } from '../../../types';
 
 const BRAND_COLOR = '#2e6155';
 const PRIORITY_COLORS: Record<string, string> = {
@@ -244,7 +244,16 @@ export default function TaskDetailScreen() {
       try {
         const found = await tasksApi.getById(user.organization, id);
         if (found && found.id) {
-          setTask(found);
+          // Merge over what we already have (list cache) so a field the detail endpoint
+          // happens to omit/return empty (e.g. dueDate) never blanks a value we already showed.
+          setTask((prev) => {
+            if (!prev) return found;
+            const merged = { ...prev, ...found } as Task;
+            if (!found.dueDate && prev.dueDate) merged.dueDate = prev.dueDate;
+            if (!(found as any).reminderDate && (prev as any).reminderDate) (merged as any).reminderDate = (prev as any).reminderDate;
+            if (!found.assignedToName && prev.assignedToName) merged.assignedToName = prev.assignedToName;
+            return merged;
+          });
           cacheEntity('tasks', found);
           setLoading(false);
           return;
@@ -450,7 +459,7 @@ export default function TaskDetailScreen() {
               await tasksApi.delete(user.organization, task.id);
               Alert.alert(t('common.success', 'הצלחה'), t('tasks.deleteSuccess', 'נמחק בהצלחה'));
               if (router.canGoBack()) router.back();
-              else router.replace('/(tabs)/more/tasks');
+              else router.replace('/(tabs)/tasks');
             } catch (err: any) {
               Alert.alert(t('common.error'), err.message || t('errors.generic'));
               setDeleting(false);
@@ -489,6 +498,14 @@ export default function TaskDetailScreen() {
     handleStatusChange('completed');
   }, [handleStatusChange]);
 
+  // Close/exit the screen. When the task was opened with no navigation history (e.g. from a
+  // push notification, reminder, or deep link), router.back() is a no-op and the user gets
+  // stuck unable to leave — so fall back to replacing with the tasks list.
+  const handleClose = useCallback(() => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/tasks');
+  }, [router]);
+
   const navigateToRelated = useCallback(
     (entityType: string, entityId?: string, entityPhone?: string) => {
       if (!entityId && !entityPhone) return;
@@ -515,7 +532,7 @@ export default function TaskDetailScreen() {
     return (
       <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
         <View style={[styles.errorHeader, { paddingTop: insets.top + 8 }]}>
-          <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} iconColor="#FFFFFF" onPress={() => router.back()} />
+          <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} iconColor="#FFFFFF" onPress={handleClose} />
         </View>
         <MaterialCommunityIcons
           name="alert-circle-outline"
@@ -557,7 +574,7 @@ export default function TaskDetailScreen() {
             icon={isRTL ? 'arrow-right' : 'arrow-left'}
             iconColor="#FFFFFF"
             size={24}
-            onPress={() => router.back()}
+            onPress={handleClose}
           />
           <Text
             variant="titleMedium"
@@ -715,34 +732,38 @@ export default function TaskDetailScreen() {
             { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
           ]}
         >
-          {/* Due date */}
-          {task.dueDate ? (
-            <View style={styles.detailRow}>
-              <View style={[styles.detailIcon, { backgroundColor: overdue ? withAlpha('#F44336', 0.094) : withAlpha(theme.colors.primary, 0.094) }]}>
-                <MaterialCommunityIcons
-                  name="calendar-clock"
-                  size={20}
-                  color={overdue ? '#F44336' : theme.colors.primary}
-                />
-              </View>
-              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('tasks.dueDate')}
-                </Text>
-                <Text
-                  variant="bodyMedium"
-                  style={[
-                    { color: overdue ? '#F44336' : theme.colors.onSurface, fontWeight: '500' },
-                    overdue && { fontWeight: '700' },
-                  ]}
-                >
-                  {formatDate(task.dueDate)} • {formatRelativeTime(task.dueDate, lang)}
-                </Text>
-              </View>
+          {/* Due date — always shown (with a fallback) so the field is never a blank/dot. */}
+          <View style={styles.detailRow}>
+            <View style={[styles.detailIcon, { backgroundColor: task.dueDate && overdue ? withAlpha('#F44336', 0.094) : withAlpha(theme.colors.primary, 0.094) }]}>
+              <MaterialCommunityIcons
+                name="calendar-clock"
+                size={20}
+                color={task.dueDate && overdue ? '#F44336' : theme.colors.primary}
+              />
             </View>
-          ) : null}
+            <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                {t('tasks.dueDate')}
+              </Text>
+              <Text
+                variant="bodyMedium"
+                style={[
+                  { color: task.dueDate ? (overdue ? '#F44336' : theme.colors.onSurface) : theme.colors.onSurfaceVariant, fontWeight: '500' },
+                  task.dueDate && overdue && { fontWeight: '700' },
+                ]}
+              >
+                {(() => {
+                  if (!task.dueDate) return t('tasks.noDueDate', 'ללא תאריך יעד');
+                  // Join only the non-empty parts so we never render a dangling " • ".
+                  const parts = [formatDate(task.dueDate), formatRelativeTime(task.dueDate, lang)].filter(Boolean);
+                  // If neither formatter could parse it, fall back to the raw value rather than a blank.
+                  return parts.length ? parts.join(' • ') : String(task.dueDate);
+                })()}
+              </Text>
+            </View>
+          </View>
 
-          {task.dueDate && (task.assignedToName || relatedEntity) ? (
+          {(task.assignedToName || relatedEntity) ? (
             <Divider style={{ marginVertical: 10 }} />
           ) : null}
 

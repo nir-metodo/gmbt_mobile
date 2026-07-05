@@ -310,7 +310,7 @@ export default function ContactDetailScreen() {
   // Open a task (from the timeline) in the full task detail screen for editing / completing.
   const openTaskFromTimeline = useCallback((taskId: string) => {
     if (!taskId) return;
-    router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any);
+    router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: String(taskId) } } as any);
   }, [router]);
 
   // Mark a task complete straight from the timeline, then refresh.

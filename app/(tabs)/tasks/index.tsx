@@ -31,25 +31,27 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { useAuthStore } from '../../../../stores/authStore';
-import { useAppTheme } from '../../../../hooks/useAppTheme';
-import { useRTL } from '../../../../hooks/useRTL';
-import { useWindowedList } from '../../../../hooks/useWindowedList';
-import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
-import { tasksApi } from '../../../../services/api/tasks';
-import { cacheEntities } from '../../../../services/entityCache';
-import { readList as readDiskList, cacheList as cacheDiskList } from '../../../../services/db/genericCache';
-import { getDataVisibility } from '../../../../constants/permissions';
-import { formatDate, formatRelativeTime, getInitials } from '../../../../utils/formatters';
-import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
-import type { Task } from '../../../../types';
-import { useContactLookup } from '../../../../hooks/useContactLookup';
-import ContactLookupField from '../../../../components/ContactLookupField';
+import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuthStore } from '../../../stores/authStore';
+import { useAppTheme } from '../../../hooks/useAppTheme';
+import { useRTL } from '../../../hooks/useRTL';
+import { useWindowedList } from '../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../components/ListPaginationFooter';
+import { tasksApi } from '../../../services/api/tasks';
+import { cacheEntities } from '../../../services/entityCache';
+import { readList as readDiskList, cacheList as cacheDiskList } from '../../../services/db/genericCache';
+import { getDataVisibility } from '../../../constants/permissions';
+import { formatDate, formatDueDate, formatRelativeTime, getInitials } from '../../../utils/formatters';
+import { spacing, borderRadius, fontSize } from '../../../constants/theme';
+import type { Task } from '../../../types';
+import { useContactLookup } from '../../../hooks/useContactLookup';
+import ContactLookupField from '../../../components/ContactLookupField';
 
 const BRAND_COLOR = '#2e6155';
-const STATUS_FILTERS = ['all', 'open', 'in_progress', 'completed', 'cancelled'] as const;
-type StatusFilter = (typeof STATUS_FILTERS)[number];
+// Agenda-style views, matching the web tasks screen: פעיל / באיחור / היום / הושלמו / הכל.
+const TASK_VIEWS = ['active', 'overdue', 'today', 'completed', 'all'] as const;
+type TaskView = (typeof TASK_VIEWS)[number];
 
 const PRIORITY_COLORS: Record<string, string> = {
   low: '#4CAF50',
@@ -72,6 +74,22 @@ const TASK_TYPES = ['phone_call', 'follow_up', 'meeting', 'general', 'other'] as
 function isOverdue(task: Task): boolean {
   if (!task.dueDate || task.status === 'completed' || task.status === 'cancelled') return false;
   return new Date(task.dueDate) < new Date();
+}
+
+function isActiveTask(task: Task): boolean {
+  return task.status !== 'completed' && task.status !== 'cancelled';
+}
+
+function isDueToday(task: Task): boolean {
+  if (!task.dueDate) return false;
+  const d = new Date(task.dueDate);
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
 }
 
 function getRelatedName(task: Task): string {
@@ -99,10 +117,13 @@ export default function TasksMoreScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [viewFilter, setViewFilter] = useState<TaskView>('active');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
-  const [taskSortKey, setTaskSortKey] = useState<'priority' | 'createdOn' | 'dueDate' | 'reminderDate'>('priority');
-  const [taskSortDir, setTaskSortDir] = useState<'asc' | 'desc'>('desc');
+  // Default sort is by due date (earliest first) — the most useful agenda order. The user's
+  // preferred sort is persisted (localStorage-style) and restored on next open.
+  const [taskSortKey, setTaskSortKey] = useState<'priority' | 'createdOn' | 'dueDate' | 'reminderDate'>('dueDate');
+  const [taskSortDir, setTaskSortDir] = useState<'asc' | 'desc'>('asc');
+  const sortPrefLoadedRef = useRef(false);
   const [priorityMenuVisible, setPriorityMenuVisible] = useState(false);
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -126,10 +147,98 @@ export default function TasksMoreScreen() {
 
   const tasksDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'tasks');
 
+  // ⚠️ ANDROID: never render <DateTimePicker> inside a Paper <Portal>/<Modal> — the chained
+  // date→time flow throws "Fragment already added" and only the date step ever appears (so a
+  // task can't get a time). Open the pickers imperatively instead (date, then time). iOS keeps
+  // the inline spinners. Mirrors the shared AddTaskSheet used by leads/contacts.
+  const pickDateTimeAndroid = useCallback((current: Date, onPicked: (d: Date) => void) => {
+    const base = current && !isNaN(current.getTime()) ? new Date(current) : new Date();
+    try {
+      DateTimePickerAndroid.open({
+        value: base,
+        mode: 'date',
+        onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
+          if (e.type !== 'set' || !dateVal) return;
+          const merged = new Date(base);
+          merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
+          setTimeout(() => {
+            try {
+              DateTimePickerAndroid.open({
+                value: merged,
+                mode: 'time',
+                is24Hour: true,
+                onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
+                  if (e2.type !== 'set' || !timeVal) return;
+                  merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
+                  onPicked(merged);
+                },
+              });
+            } catch {
+              onPicked(merged);
+            }
+          }, 150);
+        },
+      });
+    } catch {
+      /* picker unavailable — fail silently rather than crash */
+    }
+  }, []);
+
+  const openDuePicker = useCallback(() => {
+    const base = formDueDate ? new Date(formDueDate) : new Date();
+    if (Platform.OS === 'android') {
+      pickDateTimeAndroid(base, (picked) => {
+        setDueDateObj(picked);
+        setFormDueDate(picked.toISOString());
+        if (reminderEnabled && !formDueDate) setReminderDateObj(picked);
+      });
+    } else {
+      setDueDateObj(!isNaN(base.getTime()) ? base : new Date());
+      setShowDueDatePicker(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formDueDate, reminderEnabled, pickDateTimeAndroid]);
+
+  const openReminderPicker = useCallback(() => {
+    const base = reminderDateObj && !isNaN(reminderDateObj.getTime()) ? reminderDateObj : new Date();
+    if (Platform.OS === 'android') {
+      pickDateTimeAndroid(base, (picked) => setReminderDateObj(picked));
+    } else {
+      setShowReminderDatePicker(true);
+    }
+  }, [reminderDateObj, pickDateTimeAndroid]);
+
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  // Restore the saved sort preference once on mount (default = due date, ascending).
+  useEffect(() => {
+    (async () => {
+      try {
+        const [savedKey, savedDir] = await Promise.all([
+          AsyncStorage.getItem('tasks_sort_key'),
+          AsyncStorage.getItem('tasks_sort_dir'),
+        ]);
+        if (savedKey === 'priority' || savedKey === 'createdOn' || savedKey === 'dueDate' || savedKey === 'reminderDate') {
+          setTaskSortKey(savedKey);
+        }
+        if (savedDir === 'asc' || savedDir === 'desc') setTaskSortDir(savedDir);
+      } catch {
+        /* keep defaults */
+      } finally {
+        sortPrefLoadedRef.current = true;
+      }
+    })();
+  }, []);
+
+  // Persist the sort preference whenever the user changes it (skip the initial restore).
+  useEffect(() => {
+    if (!sortPrefLoadedRef.current) return;
+    AsyncStorage.setItem('tasks_sort_key', taskSortKey).catch(() => {});
+    AsyncStorage.setItem('tasks_sort_dir', taskSortDir).catch(() => {});
+  }, [taskSortKey, taskSortDir]);
 
   const fetchTasks = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
@@ -190,8 +299,22 @@ export default function TasksMoreScreen() {
   const filteredTasks = useMemo(() => {
     let result = Array.isArray(tasks) ? tasks : [];
 
-    if (statusFilter !== 'all') {
-      result = result.filter((t) => t.status === statusFilter);
+    switch (viewFilter) {
+      case 'active':
+        result = result.filter(isActiveTask);
+        break;
+      case 'overdue':
+        result = result.filter(isOverdue);
+        break;
+      case 'today':
+        result = result.filter(isDueToday);
+        break;
+      case 'completed':
+        result = result.filter((t) => t.status === 'completed');
+        break;
+      case 'all':
+      default:
+        break;
     }
 
     if (priorityFilter !== 'all') {
@@ -242,12 +365,25 @@ export default function TasksMoreScreen() {
       if (aVal > bVal) return taskSortDir === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [tasks, statusFilter, priorityFilter, debouncedSearch, taskSortKey, taskSortDir]);
+  }, [tasks, viewFilter, priorityFilter, debouncedSearch, taskSortKey, taskSortDir]);
+
+  // Live counts per view, computed over the full task set (independent of the active
+  // view/priority/search) so the numbers stay stable — mirrors the web stat chips.
+  const viewCounts = useMemo(() => {
+    const list = Array.isArray(tasks) ? tasks : [];
+    return {
+      active: list.filter(isActiveTask).length,
+      overdue: list.filter(isOverdue).length,
+      today: list.filter(isDueToday).length,
+      completed: list.filter((t) => t.status === 'completed').length,
+      all: list.length,
+    } as Record<TaskView, number>;
+  }, [tasks]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visibleTasks, hasMore: tasksHasMore, loadMore: tasksLoadMore, loadAll: tasksLoadAll, count: tasksCount } = useWindowedList(filteredTasks, {
     pageSize: 30,
-    resetKey: `${statusFilter}|${priorityFilter}|${debouncedSearch}|${taskSortKey}|${taskSortDir}`,
+    resetKey: `${viewFilter}|${priorityFilter}|${debouncedSearch}|${taskSortKey}|${taskSortDir}`,
   });
 
   const resetForm = useCallback(() => {
@@ -311,7 +447,7 @@ export default function TasksMoreScreen() {
 
   const openTask = useCallback(
     (task: Task) => {
-      router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: task.id } });
+      router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: task.id } });
     },
     [router],
   );
@@ -413,26 +549,26 @@ export default function TasksMoreScreen() {
             ) : null}
 
             <View style={[styles.taskMeta, { flexDirection }]}>
-              {item.dueDate ? (
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="calendar-clock"
-                    size={14}
-                    color={overdue ? '#F44336' : theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelSmall"
-                    style={[
-                      styles.metaText,
-                      { color: overdue ? '#F44336' : theme.colors.onSurfaceVariant },
-                      overdue && { fontWeight: '700' },
-                    ]}
-                  >
-                    {formatDate(item.dueDate)}
-                    {overdue && ` • ${t('tasks.overdue')}`}
-                  </Text>
-                </View>
-              ) : null}
+              <View style={[styles.metaItem, { flexDirection }]}>
+                <MaterialCommunityIcons
+                  name="calendar-clock"
+                  size={14}
+                  color={item.dueDate ? (overdue ? '#F44336' : theme.colors.onSurfaceVariant) : theme.colors.onSurfaceVariant}
+                />
+                <Text
+                  variant="labelSmall"
+                  style={[
+                    styles.metaText,
+                    { color: item.dueDate ? (overdue ? '#F44336' : theme.colors.onSurfaceVariant) : theme.colors.onSurfaceVariant },
+                    overdue && { fontWeight: '700' },
+                    !item.dueDate && { opacity: 0.6 },
+                  ]}
+                >
+                  {item.dueDate
+                    ? `${formatDueDate(item.dueDate, t('tasks.tomorrow', 'מחר'))}${overdue ? ` • ${t('tasks.overdue')}` : ''}`
+                    : t('tasks.noDueDate', 'ללא תאריך יעד')}
+                </Text>
+              </View>
 
               {item.assignedToName ? (
                 <View style={[styles.metaItem, { flexDirection }]}>
@@ -542,27 +678,41 @@ export default function TasksMoreScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
         >
-          {STATUS_FILTERS.map((f) => (
-            <Chip
-              key={f}
-              selected={statusFilter === f}
-              onPress={() => setStatusFilter(f)}
-              showSelectedOverlay
-              compact
-              style={[
-                styles.filterChip,
-                statusFilter === f
-                  ? { backgroundColor: theme.colors.primaryContainer }
-                  : { backgroundColor: theme.colors.surfaceVariant },
-              ]}
-              textStyle={[
-                styles.filterChipText,
-                statusFilter === f && { color: theme.colors.primary, fontWeight: '600' },
-              ]}
-            >
-              {f === 'all' ? t('common.all') : t(`tasks.${f}`)}
-            </Chip>
-          ))}
+          {TASK_VIEWS.map((v) => {
+            const selected = viewFilter === v;
+            const count = viewCounts[v];
+            const overdueAccent = v === 'overdue' && count > 0;
+            const label =
+              v === 'all'
+                ? t('common.all')
+                : v === 'active'
+                  ? t('tasks.active', 'פעיל')
+                  : v === 'today'
+                    ? t('tasks.today', 'היום')
+                    : t(`tasks.${v}`);
+            return (
+              <Chip
+                key={v}
+                selected={selected}
+                onPress={() => setViewFilter(v)}
+                showSelectedOverlay
+                compact
+                style={[
+                  styles.filterChip,
+                  selected
+                    ? { backgroundColor: overdueAccent ? '#fde7e7' : theme.colors.primaryContainer }
+                    : { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+                textStyle={[
+                  styles.filterChipText,
+                  selected && { color: overdueAccent ? '#d32f2f' : theme.colors.primary, fontWeight: '600' },
+                  !selected && overdueAccent && { color: '#d32f2f' },
+                ]}
+              >
+                {`${label} (${count})`}
+              </Chip>
+            );
+          })}
 
           <Menu
             visible={priorityMenuVisible}
@@ -790,10 +940,7 @@ export default function TasksMoreScreen() {
                 ))}
               </View>
 
-              <Pressable onPress={() => {
-                setDueDateObj(formDueDate ? new Date(formDueDate) : new Date());
-                setShowDueDatePicker(true);
-              }}>
+              <Pressable onPress={openDuePicker}>
                 <View pointerEvents="none">
                 <TextInput
                   label={t('tasks.dueDate')}
@@ -804,10 +951,7 @@ export default function TasksMoreScreen() {
                   style={[styles.formInput, { textAlign }]}
                   outlineColor={theme.colors.outline}
                   activeOutlineColor={BRAND_COLOR}
-                  right={<TextInput.Icon icon="calendar" onPress={() => {
-                    setDueDateObj(formDueDate ? new Date(formDueDate) : new Date());
-                    setShowDueDatePicker(true);
-                  }} />}
+                  right={<TextInput.Icon icon="calendar" onPress={openDuePicker} />}
                 />
                 </View>
               </Pressable>
@@ -869,9 +1013,7 @@ export default function TasksMoreScreen() {
 
               {reminderEnabled && (
                 <>
-                  <Pressable onPress={() => {
-                    setShowReminderDatePicker(true);
-                  }}>
+                  <Pressable onPress={openReminderPicker}>
                     <View pointerEvents="none">
                     <TextInput
                       label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
@@ -881,7 +1023,7 @@ export default function TasksMoreScreen() {
                       style={[styles.formInput, { textAlign }]}
                       outlineColor={theme.colors.outline}
                       activeOutlineColor={BRAND_COLOR}
-                      right={<TextInput.Icon icon="bell-ring-outline" onPress={() => setShowReminderDatePicker(true)} />}
+                      right={<TextInput.Icon icon="bell-ring-outline" onPress={openReminderPicker} />}
                     />
                     </View>
                   </Pressable>

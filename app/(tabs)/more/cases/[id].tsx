@@ -21,6 +21,7 @@ import {
   Button,
   IconButton,
   Divider,
+  Switch,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -31,6 +32,7 @@ import { placeSmartCall } from '../../../../utils/phoneCall';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
+import { chatsApi } from '../../../../services/api/chats';
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { usersApi } from '../../../../services/api/users';
@@ -38,7 +40,7 @@ import { tasksApi } from '../../../../services/api/tasks';
 import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
 import { spacing, borderRadius } from '../../../../constants/theme';
 import ContactLookup from '../../../../components/ContactLookup';
-import type { OrgUser } from '../../../../types';
+import type { OrgUser, Template } from '../../../../types';
 import {
   DynamicFieldsSectionView,
   DynamicFieldsSectionForm,
@@ -134,6 +136,18 @@ export default function CaseDetailScreen() {
   const [formDueDate, setFormDueDate] = useState('');
   const [formTags, setFormTags] = useState('');
   const [formNotes, setFormNotes] = useState('');
+
+  // Auto follow-up
+  const [formFollowUpEnabled, setFormFollowUpEnabled] = useState(false);
+  const [formFollowUpInterval, setFormFollowUpInterval] = useState(2);
+  const [formFollowUpUnit, setFormFollowUpUnit] = useState<'hours' | 'days' | 'weeks'>('days');
+  const [formFollowUpTemplateId, setFormFollowUpTemplateId] = useState('');
+  const [formFollowUpTemplateName, setFormFollowUpTemplateName] = useState('');
+  const [formFollowUpRepeat, setFormFollowUpRepeat] = useState(3);
+  const [formNextFollowUp, setFormNextFollowUp] = useState('');
+  const [waTemplates, setWaTemplates] = useState<Template[]>([]);
+  const [waTemplatesLoading, setWaTemplatesLoading] = useState(false);
+  const [followUpTemplateExpanded, setFollowUpTemplateExpanded] = useState(false);
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [addTaskVisible, setAddTaskVisible] = useState(false);
   const [noteText, setNoteText] = useState('');
@@ -166,7 +180,7 @@ export default function CaseDetailScreen() {
 
   const openTaskFromTimeline = useCallback((taskId: string) => {
     if (!taskId) return;
-    router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any);
+    router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: String(taskId) } } as any);
   }, [router]);
 
   const completeTaskFromTimeline = useCallback(async (taskId: string) => {
@@ -217,6 +231,15 @@ export default function CaseDetailScreen() {
     fetchTimeline();
   }, [fetchCase, fetchTimeline]);
 
+  useEffect(() => {
+    if (!user?.organization) return;
+    setWaTemplatesLoading(true);
+    chatsApi.getTemplates(user.organization)
+      .then((tpls) => setWaTemplates(Array.isArray(tpls) ? tpls : []))
+      .catch(() => {})
+      .finally(() => setWaTemplatesLoading(false));
+  }, [user?.organization]);
+
   // Pre-fill form for "new" case from URL params (runs once on mount)
   useEffect(() => {
     if (isNew) {
@@ -251,6 +274,13 @@ export default function CaseDetailScreen() {
     setFormDueDate((caseData as any).dueDate || (caseData as any).due_date || '');
     setFormTags((caseData as any).tags || '');
     setFormNotes((caseData as any).notes || '');
+    setFormFollowUpEnabled(!!caseData.followUpEnabled);
+    setFormFollowUpInterval(caseData.followUpInterval || 2);
+    setFormFollowUpUnit((caseData.followUpUnit as any) || 'days');
+    setFormFollowUpTemplateId(caseData.followUpTemplateId || '');
+    setFormFollowUpTemplateName(caseData.followUpTemplateName || '');
+    setFormFollowUpRepeat(caseData.followUpRepeat || 3);
+    setFormNextFollowUp(caseData.nextFollowUp || '');
     const customFields = (caseData as any).customFields || {};
     const dynamicVals: Record<string, any> = {};
     Object.keys(caseData as any).forEach((k) => {
@@ -266,6 +296,36 @@ export default function CaseDetailScreen() {
       usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
     }
   }, [caseData, user?.organization, orgUsers.length]);
+
+  // Builds the auto follow-up fields for the case payload. When enabled we schedule
+  // the first send from interval/unit (mirrors the web CaseForm + leads) so the backend
+  // ProcessLeadFollowUps job (which also processes cases) can pick it up.
+  const buildFollowUpPayload = useCallback((): Partial<Case> => {
+    if (!formFollowUpEnabled) {
+      return { followUpEnabled: false, nextFollowUp: '' };
+    }
+    const interval = Math.max(1, formFollowUpInterval || 2);
+    let nextFollowUp = formNextFollowUp;
+    if (!nextFollowUp) {
+      const d = new Date();
+      if (formFollowUpUnit === 'hours') d.setHours(d.getHours() + interval);
+      else if (formFollowUpUnit === 'weeks') d.setDate(d.getDate() + interval * 7);
+      else d.setDate(d.getDate() + interval);
+      nextFollowUp = d.toISOString();
+    }
+    return {
+      followUpEnabled: true,
+      followUpInterval: interval,
+      followUpUnit: formFollowUpUnit,
+      followUpTemplateId: formFollowUpTemplateId,
+      followUpTemplateName: formFollowUpTemplateName,
+      followUpRepeat: formFollowUpRepeat,
+      followUpMaxRepeats: formFollowUpRepeat,
+      followUpMappingMode: 'auto',
+      followUpSentCount: 0,
+      nextFollowUp,
+    };
+  }, [formFollowUpEnabled, formFollowUpInterval, formFollowUpUnit, formFollowUpTemplateId, formFollowUpTemplateName, formFollowUpRepeat, formNextFollowUp]);
 
   const handleCreate = useCallback(async () => {
     if (!user?.organization) {
@@ -296,6 +356,7 @@ export default function CaseDetailScreen() {
         dueDate: formDueDate.trim() || undefined,
         tags: formTags.trim() || undefined,
         notes: formNotes.trim() || undefined,
+        ...buildFollowUpPayload(),
         customFields: formDynamicFields,
         ...formDynamicFields,
       }, user?.fullname, user?.userId || user?.uID || '');
@@ -309,7 +370,7 @@ export default function CaseDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [user, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formAssignedToId, formSource, formContactName, formContactPhone, formDueDate, formTags, formNotes, formDynamicFields, router, t]);
+  }, [user, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formAssignedToId, formSource, formContactName, formContactPhone, formDueDate, formTags, formNotes, formDynamicFields, buildFollowUpPayload, router, t]);
 
   const handleSave = useCallback(async () => {
     if (!user?.organization || !caseData || !formTitle.trim()) return;
@@ -330,6 +391,7 @@ export default function CaseDetailScreen() {
         dueDate: formDueDate.trim() || undefined,
         tags: formTags.trim() || undefined,
         notes: formNotes.trim() || undefined,
+        ...buildFollowUpPayload(),
         customFields: formDynamicFields,
         ...formDynamicFields,
       }, user?.fullname, user?.userId || user?.uID || '');
@@ -340,7 +402,7 @@ export default function CaseDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [user?.organization, caseData, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formSource, formContactName, formContactPhone, formContactId, formDueDate, formTags, formNotes, formDynamicFields, fetchCase, t]);
+  }, [user?.organization, caseData, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formSource, formContactName, formContactPhone, formContactId, formDueDate, formTags, formNotes, formDynamicFields, buildFollowUpPayload, fetchCase, t]);
 
   const handleDelete = useCallback(() => {
     Alert.alert(
@@ -409,6 +471,171 @@ export default function CaseDetailScreen() {
       }
     },
     [user?.organization, caseData, fetchCase, t],
+  );
+
+  const renderFollowUpSection = (cardStyle: any) => (
+    <View style={cardStyle}>
+      <View style={[styles.formSectionHeader, { flexDirection }]}>
+        <View style={styles.formSectionAccent} />
+        <MaterialCommunityIcons name="bell-ring-outline" size={18} color="#2e6155" />
+        <Text variant="titleSmall" style={styles.formSectionTitle}>
+          {lang === 'he' ? 'פולואפ אוטומטי' : 'Auto Follow-up'}
+        </Text>
+        {formFollowUpEnabled ? (
+          <View style={{ backgroundColor: '#dcfce7', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, marginStart: 8 }}>
+            <Text style={{ fontSize: 10, color: '#166534', fontWeight: '700' }}>{lang === 'he' ? 'פעיל' : 'Active'}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={[{ flexDirection, alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }]}>
+        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, flex: 1, textAlign }}>
+          {lang === 'he' ? 'שלח הודעת מעקב אוטומטית' : 'Send automatic follow-up message'}
+        </Text>
+        <Switch value={formFollowUpEnabled} onValueChange={setFormFollowUpEnabled} color="#2e6155" />
+      </View>
+
+      {formFollowUpEnabled ? (
+        <View style={{ marginTop: 10 }}>
+          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+            {lang === 'he' ? 'שלח בעוד' : 'Send after'}
+          </Text>
+          <View style={[{ flexDirection, alignItems: 'center', gap: 8, marginBottom: 14 }]}>
+            <TextInput
+              value={String(formFollowUpInterval)}
+              onChangeText={(v) => setFormFollowUpInterval(Math.max(1, Math.min(30, parseInt(v, 10) || 1)))}
+              keyboardType="numeric"
+              mode="outlined"
+              style={{ width: 72, textAlign: 'center' }}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor="#2e6155"
+            />
+            {(['hours', 'days', 'weeks'] as const).map((u) => {
+              const isSelected = formFollowUpUnit === u;
+              const label = u === 'hours' ? (lang === 'he' ? 'שעות' : 'Hours') : u === 'days' ? (lang === 'he' ? 'ימים' : 'Days') : (lang === 'he' ? 'שבועות' : 'Weeks');
+              return (
+                <Chip
+                  key={u}
+                  selected={isSelected}
+                  onPress={() => setFormFollowUpUnit(u)}
+                  compact
+                  style={[styles.formPill, isSelected ? { backgroundColor: withAlpha('#2e6155', 0.145), borderColor: '#2e6155', borderWidth: 1.5 } : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' }]}
+                  textStyle={{ fontSize: 12, color: isSelected ? '#2e6155' : theme.colors.onSurfaceVariant, fontWeight: isSelected ? '700' : '400' }}
+                >
+                  {label}
+                </Chip>
+              );
+            })}
+          </View>
+
+          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+            {lang === 'he' ? 'תבנית הודעה' : 'Message template'}
+          </Text>
+          <Pressable
+            onPress={() => setFollowUpTemplateExpanded((v) => !v)}
+            style={{
+              borderWidth: 1,
+              borderRadius: 8,
+              borderColor: followUpTemplateExpanded ? '#2e6155' : theme.colors.outline,
+              paddingHorizontal: 12,
+              paddingVertical: 12,
+              backgroundColor: theme.colors.surface,
+              marginBottom: 12,
+            }}
+          >
+            <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+              <MaterialCommunityIcons name="file-document-outline" size={16} color={theme.colors.onSurfaceVariant} />
+              <Text variant="bodyMedium" style={{ flex: 1, color: formFollowUpTemplateName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                {waTemplatesLoading
+                  ? (t('common.loading') || 'טוען...')
+                  : (formFollowUpTemplateName || (lang === 'he' ? 'בחר תבנית...' : 'Select template...'))}
+              </Text>
+              <MaterialCommunityIcons name={followUpTemplateExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+            </View>
+          </Pressable>
+          {followUpTemplateExpanded ? (
+            <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 8, marginBottom: 12, overflow: 'hidden', maxHeight: 260 }}>
+              <ScrollView keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+                {waTemplates.length === 0 ? (
+                  <View style={{ padding: 12 }}>
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                      {lang === 'he' ? 'אין תבניות מאושרות' : 'No approved templates'}
+                    </Text>
+                  </View>
+                ) : (
+                  waTemplates.map((tpl) => {
+                    const isSelected = formFollowUpTemplateId === tpl.name;
+                    return (
+                      <Pressable
+                        key={`${tpl.name}-${tpl.language}`}
+                        style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: isSelected ? withAlpha('#2e6155', 0.1) : 'transparent' }]}
+                        onPress={() => {
+                          setFormFollowUpTemplateId(tpl.name);
+                          setFormFollowUpTemplateName(tpl.friendlyName || tpl.name);
+                          setFollowUpTemplateExpanded(false);
+                        }}
+                      >
+                        <MaterialCommunityIcons name={isSelected ? 'check-circle' : 'circle-outline'} size={16} color={isSelected ? '#2e6155' : theme.colors.onSurfaceVariant} />
+                        <View style={{ flex: 1 }}>
+                          <Text variant="bodyMedium" style={{ color: isSelected ? '#2e6155' : theme.colors.onSurface, fontWeight: isSelected ? '700' : '400', textAlign }}>
+                            {tpl.friendlyName || tpl.name}
+                          </Text>
+                          {tpl.friendlyName ? (
+                            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>{tpl.name}</Text>
+                          ) : null}
+                        </View>
+                      </Pressable>
+                    );
+                  })
+                )}
+              </ScrollView>
+            </View>
+          ) : null}
+
+          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+            {lang === 'he' ? 'חזרות (עד תגובת הלקוח)' : 'Repeats (until customer responds)'}
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={[styles.chipRow, { flexDirection }]}>
+              {[1, 2, 3, 4, 5].map((n) => {
+                const isSelected = formFollowUpRepeat === n;
+                return (
+                  <Chip
+                    key={n}
+                    selected={isSelected}
+                    onPress={() => setFormFollowUpRepeat(n)}
+                    compact
+                    style={[styles.formPill, isSelected ? { backgroundColor: withAlpha('#2e6155', 0.145), borderColor: '#2e6155', borderWidth: 1.5 } : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' }]}
+                    textStyle={{ fontSize: 12, color: isSelected ? '#2e6155' : theme.colors.onSurfaceVariant, fontWeight: isSelected ? '700' : '400' }}
+                  >
+                    {n}
+                  </Chip>
+                );
+              })}
+            </View>
+          </ScrollView>
+
+          {formFollowUpTemplateId ? (
+            <View style={[{ flexDirection, alignItems: 'center', gap: 6, marginTop: 12, padding: 10, borderRadius: 8, backgroundColor: withAlpha('#2e6155', 0.08) }]}>
+              <MaterialCommunityIcons name="clock-outline" size={16} color="#2e6155" />
+              <Text variant="bodySmall" style={{ color: '#2e6155', flex: 1, textAlign }}>
+                {(() => {
+                  const interval = Math.max(1, formFollowUpInterval || 2);
+                  const d = formNextFollowUp ? new Date(formNextFollowUp) : new Date();
+                  if (!formNextFollowUp) {
+                    if (formFollowUpUnit === 'hours') d.setHours(d.getHours() + interval);
+                    else if (formFollowUpUnit === 'weeks') d.setDate(d.getDate() + interval * 7);
+                    else d.setDate(d.getDate() + interval);
+                  }
+                  const dateStr = formatDate(d.toISOString());
+                  return lang === 'he' ? `ההודעה הראשונה תישלח ב: ${dateStr}` : `First message will be sent: ${dateStr}`;
+                })()}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
   );
 
   if (loading) {
@@ -519,6 +746,9 @@ export default function CaseDetailScreen() {
                 </View>
               </ScrollView>
             </View>
+
+            {/* ── Auto Follow-up Section ── */}
+            {renderFollowUpSection([styles.formSectionCard, { backgroundColor: theme.colors.surface }])}
 
             {/* ── Custom Fields Section ── */}
             {caseFormSections.length > 0 && (
@@ -1321,6 +1551,9 @@ export default function CaseDetailScreen() {
                 })}
               </View>
               </View>
+
+              {/* ── Auto Follow-up Section (pinned near top for quick access, like the lead form) ── */}
+              {renderFollowUpSection([styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }])}
 
               {/* ── Source & Assignment Section ── */}
               <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>

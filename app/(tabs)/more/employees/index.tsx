@@ -22,6 +22,7 @@ import {
   SegmentedButtons,
   Portal,
   Modal,
+  Dialog,
   IconButton,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -105,6 +106,106 @@ function computeHours(rec: AttendanceRecord): number {
   return 0;
 }
 
+// Overtime settings snapshot (matches the web `employees` doc fields).
+interface OtSettings {
+  overtimeEnabled?: boolean;
+  overtimeDailyThreshold?: number | string;
+  overtimeRate1?: number | string;
+  overtimeRate?: number | string;
+  overtimeRate1Hours?: number | string;
+  overtimeRate2?: number | string;
+  weekendHolidayEnabled?: boolean;
+  weekendHolidayRate?: number | string;
+}
+
+interface TierResult {
+  regularHours: number;
+  ot1Hours: number;
+  ot2Hours: number;
+  weekendHours: number;
+  overtimeHours: number;
+  perRecord: Record<string, { regular: number; ot1: number; ot2: number; weekend: number; total: number; rest: boolean }>;
+  r1Pct: number;
+  r2Pct: number;
+  weekendPct: number;
+}
+
+// Stable per-record key shared between the tier calc and the daily breakdown render.
+function recKey(r: AttendanceRecord): string {
+  return r.id || parseTimestamp(r.clockIn)?.toISOString() || r.date || '';
+}
+
+function isRestDayRec(rec: AttendanceRecord): boolean {
+  if ((rec as any).isHoliday) return true;
+  const d = parseTimestamp(rec.clockIn) || (rec.date ? new Date(rec.date) : null);
+  return d ? d.getDay() === 6 : false; // Saturday is the Israeli rest day
+}
+
+/**
+ * Splits worked hours into tiers (100% / 125% / 150%) both overall and per shift.
+ * Overtime thresholds are DAILY: first `dailyThreshold` hours = regular, next `r1Hours`
+ * = tier-1 (125%), rest = tier-2 (150%); rest-day (Shabbat/holiday) hours count as 150%.
+ * Multiple shifts in a day are distributed by the running daily total so the split is
+ * accurate per shift too. Mirrors the web AttendanceReport logic.
+ */
+function computeTierBreakdown(records: AttendanceRecord[], emp?: OtSettings | null): TierResult {
+  const otEnabled      = emp?.overtimeEnabled !== false;
+  const dailyThreshold = parseFloat(String(emp?.overtimeDailyThreshold ?? '')) || 8;
+  const r1Mult         = (parseFloat(String(emp?.overtimeRate1 ?? emp?.overtimeRate ?? '')) || 125) / 100;
+  const r1Hours        = emp?.overtimeRate1Hours != null ? parseFloat(String(emp.overtimeRate1Hours)) : 2;
+  const r2Mult         = (parseFloat(String(emp?.overtimeRate2 ?? '')) || 150) / 100;
+  const weekendEnabled = emp?.weekendHolidayEnabled !== false;
+  const weekendMult    = weekendEnabled ? ((parseFloat(String(emp?.weekendHolidayRate ?? '')) || 150) / 100) : 1;
+
+  const days: Record<string, { recs: AttendanceRecord[]; rest: boolean }> = {};
+  records.forEach((r) => {
+    const d = parseTimestamp(r.clockIn) || (r.date ? new Date(r.date) : null);
+    const key = d ? d.toISOString().slice(0, 10) : (r.date || 'unknown');
+    if (!days[key]) days[key] = { recs: [], rest: false };
+    days[key].recs.push(r);
+    if (isRestDayRec(r)) days[key].rest = true;
+  });
+
+  let regularHours = 0, ot1Hours = 0, ot2Hours = 0, weekendHours = 0;
+  const perRecord: TierResult['perRecord'] = {};
+
+  Object.values(days).forEach(({ recs, rest }) => {
+    const sorted = [...recs].sort(
+      (a, b) => (parseTimestamp(a.clockIn)?.getTime() || 0) - (parseTimestamp(b.clockIn)?.getTime() || 0)
+    );
+    let cum = 0;
+    sorted.forEach((r) => {
+      const h = computeHours(r);
+      const start = cum, end = cum + h;
+      let reg = 0, o1 = 0, o2 = 0;
+      if (otEnabled && end > dailyThreshold) {
+        reg = Math.max(0, Math.min(end, dailyThreshold) - start);
+        o1  = Math.max(0, Math.min(end, dailyThreshold + r1Hours) - Math.max(start, dailyThreshold));
+        o2  = Math.max(0, end - Math.max(start, dailyThreshold + r1Hours));
+      } else {
+        reg = h;
+      }
+      cum = end;
+      if (rest) {
+        weekendHours += h;
+        perRecord[recKey(r)] = { regular: 0, ot1: 0, ot2: 0, weekend: h, total: h, rest: true };
+      } else {
+        regularHours += reg; ot1Hours += o1; ot2Hours += o2;
+        perRecord[recKey(r)] = { regular: reg, ot1: o1, ot2: o2, weekend: 0, total: h, rest: false };
+      }
+    });
+  });
+
+  return {
+    regularHours, ot1Hours, ot2Hours, weekendHours,
+    overtimeHours: ot1Hours + ot2Hours + weekendHours,
+    perRecord,
+    r1Pct: Math.round(r1Mult * 100),
+    r2Pct: Math.round(r2Mult * 100),
+    weekendPct: Math.round(weekendMult * 100),
+  };
+}
+
 function isAdmin(user: any) {
   const role = (user?.SecurityRole || user?.securityRole || '').toLowerCase();
   return ['admin', 'superadmin', 'owner', 'manager'].includes(role);
@@ -138,6 +239,17 @@ function useLiveTimer(clockInTime?: string) {
   return elapsed;
 }
 
+// Maps known backend (English) clock in/out errors to friendly Hebrew text.
+function mapClockError(raw?: string): string {
+  if (!raw) return '';
+  const map: Record<string, string> = {
+    'Already clocked in. Clock out first.': 'כבר בוצעה כניסה. יש לבצע יציאה לפני כניסה חדשה.',
+    'No active clock-in found.': 'לא נמצאה כניסה פעילה לדיווח יציאה.',
+    'Missing organizationName': 'שגיאה בזיהוי הארגון. נסה/י להתחבר מחדש.',
+  };
+  return map[raw.trim()] || raw;
+}
+
 // ── My Hours Tab ─────────────────────────────────────────────────────────────
 function MyHoursTab({ org, userId }: { org: string; userId: string }) {
   const { t } = useTranslation();
@@ -148,7 +260,31 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
   const [clocking, setClocking] = useState(false);
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
+  const [errorDialog, setErrorDialog] = useState<{
+    visible: boolean; icon: string; iconColor: string; title: string; message: string;
+  }>({ visible: false, icon: 'alert-circle-outline', iconColor: WARN_COLOR, title: '', message: '' });
   const liveElapsed = useLiveTimer(status?.isClockedIn ? status.clockInTime : undefined);
+
+  // Whether the org actually requires location for time reporting (geofence enabled + at least
+  // one configured location). When it doesn't, we must NOT ask for location permission at all —
+  // requesting it needlessly is both a bad UX and an app-store review flag. Defaults to false so
+  // we never prompt until we've confirmed the org opted in.
+  const [locationRequired, setLocationRequired] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_SETTINGS, { organizationName: org })
+      .then((res) => {
+        if (!active) return;
+        const d = res.data || {};
+        const enabled = d.geofenceEnabled === true;
+        const locs = Array.isArray(d.locations) ? d.locations : [];
+        const hasLegacyPoint = typeof d.latitude === 'number' && typeof d.longitude === 'number';
+        setLocationRequired(enabled && (locs.length > 0 || hasLegacyPoint));
+      })
+      .catch(() => { if (active) setLocationRequired(false); });
+    return () => { active = false; };
+  }, [org]);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -221,8 +357,11 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
     }, [fetchStatus, fetchMyRecords])
   );
 
-  // Best-effort GPS coordinates for geofenced time reporting
+  // Best-effort GPS coordinates for geofenced time reporting. Only request the location
+  // permission when the org actually configured a geofence — otherwise skip entirely so the
+  // app never asks for location it doesn't need.
   const getCoords = async (): Promise<{ latitude?: number; longitude?: number; accuracy?: number }> => {
+    if (!locationRequired) return {};
     try {
       const { status: perm } = await Location.requestForegroundPermissionsAsync();
       if (perm !== 'granted') return {};
@@ -247,12 +386,31 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
     } catch (e: any) {
       const data = e?.response?.data;
       if (data?.code === 'OUTSIDE_RADIUS') {
-        const dist = data.distance > 0 ? ` (${Math.round(data.distance)} מ' מהמיקום המורשה)` : '';
-        Alert.alert('מחוץ לטווח', `לא ניתן לדווח שעות — אתה מחוץ לטווח המותר${dist}.`);
+        const parts: string[] = ['לא ניתן לדווח שעות — נמצאת מחוץ לאזור המורשה לדיווח.'];
+        if (data.distance > 0) {
+          const distTxt = data.distance >= 1000
+            ? `${(data.distance / 1000).toFixed(1)} ק"מ`
+            : `${Math.round(data.distance)} מ'`;
+          const radiusTxt = data.radius > 0 ? ` (הטווח המותר: עד ${Math.round(data.radius)} מ')` : '';
+          parts.push(`המרחק מהמיקום המורשה הקרוב ביותר: ${distTxt}${radiusTxt}.`);
+        }
+        parts.push('התקרב/י לאחד ממקומות העבודה המוגדרים ונסה/י שוב.');
+        setErrorDialog({
+          visible: true, icon: 'map-marker-off-outline', iconColor: WARN_COLOR,
+          title: 'מחוץ לאזור המורשה', message: parts.join('\n\n'),
+        });
       } else if (data?.code === 'LOCATION_REQUIRED') {
-        Alert.alert('נדרשת הרשאת מיקום', 'דיווח שעות דורש הרשאת מיקום. אנא אפשר מיקום במכשיר ונסה שוב.');
+        setErrorDialog({
+          visible: true, icon: 'crosshairs-gps', iconColor: WARN_COLOR,
+          title: 'נדרשת הרשאת מיקום',
+          message: 'דיווח שעות דורש גישה למיקום המכשיר.\n\nאנא אפשר/י הרשאת מיקום בהגדרות המכשיר ונסה/י שוב.',
+        });
       } else {
-        Alert.alert(t('common.error'), data?.error || e?.message || t('errors.generic'));
+        const raw = typeof data === 'string' ? data : (data?.error || e?.message);
+        setErrorDialog({
+          visible: true, icon: 'alert-circle-outline', iconColor: WARN_COLOR,
+          title: t('common.error'), message: mapClockError(raw) || t('errors.generic'),
+        });
       }
     } finally {
       setClocking(false);
@@ -268,6 +426,7 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
   );
 
   return (
+    <>
     <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 48 }}>
       {/* Clock Card */}
       <Surface style={[s.clockCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
@@ -338,6 +497,37 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
         ))
       )}
     </ScrollView>
+
+    {/* Styled error dialog (geofence / clock errors) */}
+    <Portal>
+      <Dialog
+        visible={errorDialog.visible}
+        onDismiss={() => setErrorDialog(d => ({ ...d, visible: false }))}
+        style={{ borderRadius: 20 }}
+      >
+        <Dialog.Icon icon={errorDialog.icon} color={errorDialog.iconColor} size={40} />
+        <Dialog.Title style={{ textAlign: 'center' }}>{errorDialog.title}</Dialog.Title>
+        <Dialog.Content>
+          <Text
+            variant="bodyMedium"
+            style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, lineHeight: 22 }}
+          >
+            {errorDialog.message}
+          </Text>
+        </Dialog.Content>
+        <Dialog.Actions style={{ justifyContent: 'center' }}>
+          <Button
+            onPress={() => setErrorDialog(d => ({ ...d, visible: false }))}
+            mode="contained"
+            buttonColor={BRAND_COLOR}
+            textColor="#fff"
+          >
+            {t('common.ok', 'הבנתי')}
+          </Button>
+        </Dialog.Actions>
+      </Dialog>
+    </Portal>
+    </>
   );
 }
 
@@ -567,11 +757,32 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
   const [targetEmployee, setTargetEmployee] = useState<string | null>(null);
   const [employees, setEmployees] = useState<{ id: string; name: string }[]>([]);
   const [showEmployeePicker, setShowEmployeePicker] = useState(false);
+  // Overtime settings for the tier breakdown: own profile + (admin) a map of all employees.
+  const [mySettings, setMySettings] = useState<OtSettings | null>(null);
+  const [empSettingsMap, setEmpSettingsMap] = useState<Record<string, OtSettings>>({});
+
+  useEffect(() => {
+    axiosInstance.post(ENDPOINTS.GET_MY_ATTENDANCE, { organizationName: org, userId })
+      .then((res) => { if (res.data?.employee) setMySettings(res.data.employee); })
+      .catch(() => {});
+  }, [org, userId]);
 
   useEffect(() => {
     if (admin) {
       axiosInstance.post(ENDPOINTS.GET_EMPLOYEES_DASHBOARD, { organizationName: org })
         .then((res) => setEmployees(Array.isArray(res.data) ? res.data.map((e: any) => ({ id: e.id, name: e.name })) : []))
+        .catch(() => {});
+      // Full employee docs carry the overtime rules (dashboard only returns names).
+      axiosInstance.post(ENDPOINTS.GET_EMPLOYEES, { organizationName: org })
+        .then((res) => {
+          const map: Record<string, OtSettings> = {};
+          (Array.isArray(res.data) ? res.data : []).forEach((e: any) => {
+            if (e.id) map[e.id] = e;
+            if (e.uID) map[e.uID] = e;
+            if (e.userId) map[e.userId] = e;
+          });
+          setEmpSettingsMap(map);
+        })
         .catch(() => {});
     }
   }, [org, admin]);
@@ -636,6 +847,15 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
 
     return { totalHours, daysWorked, avgHoursPerDay, maxDay, minDay, earlyIn, lateOut };
   }, [records]);
+
+  // Resolve which OT settings apply to the report subject, then split hours into tiers.
+  const activeSettings: OtSettings | null = targetEmployee
+    ? (empSettingsMap[targetEmployee] || null)
+    : mySettings;
+  const tierData = useMemo(
+    () => computeTierBreakdown(records, activeSettings),
+    [records, activeSettings]
+  );
 
   const selectedName = targetEmployee
     ? employees.find((e) => e.id === targetEmployee)?.name || ''
@@ -846,11 +1066,69 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
             </View>
           </Surface>
 
+          {/* Hours calculation — tier breakdown (100% / 125% / 150%) + overtime.
+              Shown to both admin and employee: hours only, no salary. */}
+          <Surface style={[s.reportSummary, { backgroundColor: theme.colors.surface, marginTop: 16 }]} elevation={2}>
+            <View style={s.reportHeader}>
+              <MaterialCommunityIcons name="chart-timeline-variant" size={22} color={BRAND_COLOR} />
+              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
+                חישוב שעות
+              </Text>
+            </View>
+            {(() => {
+              const t100 = tierData.regularHours;
+              const t125 = tierData.ot1Hours;
+              const t150 = tierData.ot2Hours + tierData.weekendHours;
+              const grand = t100 + t125 + t150 || 1;
+              const rows = [
+                { label: '100%', hint: 'רגילות', hours: t100, color: '#ec4899' },
+                { label: `${tierData.r1Pct}%`, hint: 'תוספת', hours: t125, color: '#f59e0b' },
+                { label: `${Math.max(tierData.r2Pct, tierData.weekendPct)}%`, hint: 'תוספת / שבת-חג', hours: t150, color: '#8b5cf6' },
+              ];
+              return rows.map((row) => (
+                <View key={row.label} style={s.tierRow}>
+                  <View style={s.tierLabelWrap}>
+                    <View style={[s.tierDot, { backgroundColor: row.color }]} />
+                    <Text style={{ color: theme.colors.onSurface, fontWeight: '700', fontSize: 13, width: 42 }}>{row.label}</Text>
+                    <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 11 }} numberOfLines={1}>{row.hint}</Text>
+                  </View>
+                  <View style={[s.tierTrack, { backgroundColor: theme.colors.surfaceVariant }]}>
+                    <View style={[s.tierFill, { backgroundColor: row.color, width: `${Math.min(100, (row.hours / grand) * 100)}%` }]} />
+                  </View>
+                  <Text style={{ color: theme.colors.onSurface, fontWeight: '700', fontSize: 13, width: 54, textAlign: 'left' }}>
+                    {formatHours(row.hours)}
+                  </Text>
+                </View>
+              ));
+            })()}
+            <Divider style={{ marginVertical: 12 }} />
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <View style={[s.reportStat, { backgroundColor: BRAND_COLOR + '10', flex: 1 }]}>
+                <Text variant="headlineSmall" style={{ color: BRAND_COLOR, fontWeight: '800' }}>{formatHours(reportStats.totalHours)}</Text>
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>שעות נוכחות</Text>
+              </View>
+              <View style={[s.reportStat, { backgroundColor: '#8b5cf610', flex: 1 }]}>
+                <Text variant="headlineSmall" style={{ color: '#8b5cf6', fontWeight: '800' }}>{formatHours(tierData.overtimeHours)}</Text>
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>שעות נוספות</Text>
+              </View>
+            </View>
+          </Surface>
+
           {/* Daily Breakdown */}
           <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', marginTop: 20, marginBottom: 10, textAlign: isRTL ? 'right' : 'left' }}>
             פירוט יומי
           </Text>
-          {records.filter((r) => computeHours(r) > 0).map((rec, i) => (
+          {records.filter((r) => computeHours(r) > 0).map((rec, i) => {
+            const tb = tierData.perRecord[recKey(rec)];
+            const chips: { label: string; color: string; bg: string }[] = [];
+            if (tb) {
+              if (tb.regular > 0.001) chips.push({ label: `100% · ${formatHours(tb.regular)}`, color: '#be185d', bg: '#fce7f3' });
+              if (tb.ot1 > 0.001)     chips.push({ label: `${tierData.r1Pct}% · ${formatHours(tb.ot1)}`, color: '#b45309', bg: '#fef3c7' });
+              if (tb.ot2 > 0.001)     chips.push({ label: `${tierData.r2Pct}% · ${formatHours(tb.ot2)}`, color: '#6d28d9', bg: '#ede9fe' });
+              if (tb.weekend > 0.001) chips.push({ label: `${tierData.weekendPct}% · ${formatHours(tb.weekend)}`, color: '#6d28d9', bg: '#ede9fe' });
+            }
+            const showChips = chips.length > 1; // only when a shift spans more than one tier
+            return (
             <Surface key={rec.id || i} style={[s.recordCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
               <View style={[s.recordRow, { flexDirection: 'row' }]}>
                 <View style={{ flex: 1 }}>
@@ -867,8 +1145,18 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
                   </Text>
                 </Chip>
               </View>
+              {showChips && (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                  {chips.map((c, ci) => (
+                    <View key={ci} style={{ backgroundColor: c.bg, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 }}>
+                      <Text style={{ color: c.color, fontSize: 11, fontWeight: '700' }}>{c.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </Surface>
-          ))}
+          );
+          })}
 
           {records.filter((r) => computeHours(r) > 0).length === 0 && (
             <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 16 }}>
@@ -1010,4 +1298,19 @@ const s = StyleSheet.create({
     alignItems: 'center' as const,
     gap: 8,
   },
+  tierRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 10,
+    marginBottom: 10,
+  },
+  tierLabelWrap: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 6,
+    width: 130,
+  },
+  tierDot: { width: 10, height: 10, borderRadius: 5 },
+  tierTrack: { flex: 1, height: 9, borderRadius: 999, overflow: 'hidden' as const },
+  tierFill: { height: '100%' as any, borderRadius: 999 },
 });

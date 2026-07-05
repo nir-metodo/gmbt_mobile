@@ -20,6 +20,10 @@ export interface CatalogCustomColumn {
   type: string;
   showInQuote?: boolean;
   searchable?: boolean;
+  /** Whether the column is shown in the catalog list/cards (web Catalog → Columns). Defaults to true. */
+  showInTable?: boolean;
+  /** Dedicated toolbar filter for this column: '' | 'range' | 'select' | 'boolean' (set on web). */
+  filterType?: '' | 'range' | 'select' | 'boolean' | string;
   // Web stores select options as a comma-separated string; older/other data may be an array.
   options?: string[] | string;
 }
@@ -37,6 +41,10 @@ export interface CatalogFieldsConfig {
   searchBaseFields?: Record<string, boolean>;
   /** Persisted display order of columns/fields (tokens: base keys + `custom:<id>`), set in the web Catalog → Columns settings. */
   columnOrder?: string[];
+  /** Which base columns are shown in the catalog list/cards (web Catalog → Columns). */
+  tableColumns?: Record<string, boolean>;
+  /** Enables a "price from/to" range filter in the catalog toolbar (web Catalog → Columns). */
+  priceRangeFilter?: boolean;
 }
 
 export interface CatalogData {
@@ -67,6 +75,8 @@ export interface CatalogSelectionItem {
   images?: string[];
   description?: string;
   category?: string;
+  link?: string;
+  customFields?: Record<string, any>;
 }
 
 export interface CatalogSelection {

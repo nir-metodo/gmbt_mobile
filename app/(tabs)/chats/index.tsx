@@ -33,6 +33,7 @@ import {
   Button,
   IconButton,
   TextInput as PaperInput,
+  HelperText,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -59,11 +60,28 @@ import axiosInstance from '../../../services/api/axiosInstance';
 import { usersApi } from '../../../services/api/users';
 import { contactsApi } from '../../../services/api/contacts';
 import { chatsApi } from '../../../services/api/chats';
+import { cleanPhoneNumber, DEFAULT_COUNTRY } from '../../../utils/phoneNumber';
 import type { Chat, WabaNumberInfo } from '../../../types';
+
+// A typed query is treated as a phone number (rather than a name search) when it
+// contains only digits and phone punctuation (spaces, dashes, parens, an optional
+// leading "+") — and has at least 6 digits. Anything with letters is a name search.
+function looksLikePhoneQuery(raw: string): boolean {
+  const s = (raw || '').trim();
+  if (!s) return false;
+  if (!/^\+?[\d\s\-()]+$/.test(s)) return false;
+  return s.replace(/\D/g, '').length >= 6;
+}
+
+// A normalized WhatsApp number is digits only, full international (no "+"),
+// e.g. "972505278310". E.164 allows up to 15 digits.
+function isValidNormalizedPhone(digits: string): boolean {
+  return /^\d{10,15}$/.test(digits);
+}
 
 const BULK_STATUS_OPTIONS = ['Open', 'In Process', 'Closed'] as const;
 
-const FILTER_OPTIONS = ['all', 'unread', 'open', 'closed', 'myChats', 'internal'] as const;
+const FILTER_OPTIONS = ['all', 'unread', 'notReviewedByHuman', 'open', 'closed', 'myChats', 'internal'] as const;
 
 interface SavedView {
   id: string;
@@ -138,6 +156,19 @@ export default function ChatsListScreen() {
   const [leadStageMenuVisible, setLeadStageMenuVisible] = useState(false);
   const [newChatVisible, setNewChatVisible] = useState(false);
   const [newChatPhone, setNewChatPhone] = useState('');
+
+  // New-chat number handling: keep the input dual-purpose (search a contact by name
+  // OR type a number). When the text looks like a phone number, normalize it to the
+  // WhatsApp format (e.g. 972505278310) and validate before allowing "Start chat".
+  const newChatIsPhoneMode = useMemo(() => looksLikePhoneQuery(newChatPhone), [newChatPhone]);
+  const newChatNormalizedPhone = useMemo(
+    () => (newChatIsPhoneMode ? cleanPhoneNumber(newChatPhone, DEFAULT_COUNTRY.dial) : ''),
+    [newChatIsPhoneMode, newChatPhone]
+  );
+  const newChatPhoneValid = useMemo(
+    () => newChatIsPhoneMode && isValidNormalizedPhone(newChatNormalizedPhone),
+    [newChatIsPhoneMode, newChatNormalizedPhone]
+  );
 
   const [refreshing, setRefreshing] = useState(false);
   const [searchVisible, setSearchVisible] = useState(false);
@@ -535,6 +566,10 @@ export default function ChatsListScreen() {
 
     if (filter === 'unread') {
       result = result.filter((c) => c.unreadCount > 0 || c.isRead === false);
+    } else if (filter === 'notReviewedByHuman') {
+      // Mirrors web: only conversations explicitly flagged humanReviewed === false
+      // (undefined/true means a human has already reviewed it).
+      result = result.filter((c) => c.humanReviewed === false);
     } else if (filter === 'open') {
       result = result.filter((c) => isChatOpen(c));
     } else if (filter === 'closed') {
@@ -886,6 +921,7 @@ export default function ChatsListScreen() {
                   return (
                   <View style={[styles.badge, { backgroundColor: colors.bg }]}>
                     <Text style={[styles.badgeText, { color: colors.fg }]}>
+                      {/* CRM conversation status label */}
                       {conversationStatusLabel(convStatus, t)}
                     </Text>
                   </View>
@@ -1561,9 +1597,19 @@ export default function ChatsListScreen() {
             value={newChatPhone}
             onChangeText={setNewChatPhone}
             mode="outlined"
-            left={<PaperInput.Icon icon="magnify" />}
-            style={{ marginBottom: 8 }}
+            left={<PaperInput.Icon icon={newChatIsPhoneMode ? 'phone' : 'magnify'} />}
+            error={newChatIsPhoneMode && !newChatPhoneValid}
+            style={{ marginBottom: 0 }}
           />
+          {newChatIsPhoneMode ? (
+            <HelperText type={newChatPhoneValid ? 'info' : 'error'} visible>
+              {newChatPhoneValid
+                ? t('chats.willSendTo', { number: newChatNormalizedPhone, defaultValue: `יישלח אל: ${newChatNormalizedPhone}` })
+                : t('chats.invalidPhone', 'מספר לא תקין. הזן מספר מלא כולל קידומת מדינה, לדוגמה 972505278310')}
+            </HelperText>
+          ) : (
+            <View style={{ marginBottom: 8 }} />
+          )}
           {/* Contact suggestions from existing chats */}
           {newChatPhone.trim().length >= 2 && (
             <ScrollView style={{ maxHeight: 200, marginBottom: 12 }}>
@@ -1599,10 +1645,10 @@ export default function ChatsListScreen() {
             </Button>
             <Button
               mode="contained"
-              disabled={!newChatPhone.trim()}
+              disabled={!newChatPhoneValid}
               onPress={() => {
-                const phone = newChatPhone.trim().replace(/\D/g, '');
-                if (phone) {
+                const phone = cleanPhoneNumber(newChatPhone, DEFAULT_COUNTRY.dial);
+                if (isValidNormalizedPhone(phone)) {
                   setNewChatVisible(false);
                   setNewChatPhone('');
                   router.push(`/(tabs)/chats/${phone}`);

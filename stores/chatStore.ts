@@ -10,6 +10,11 @@ const CHATS_CACHE_KEY = 'gambot_chats_cache';
 const PAGE_SIZE = 50;
 // How many most-recent messages we keep on disk per chat for instant cold-open.
 const DB_CACHE_LIMIT = 100;
+// Hard cap on how many messages we REVEAL when (re)opening a chat, regardless of how
+// far the user had scrolled up in a previous session. The full history still lives in
+// `allMessages` (scroll-up reveals more), but rendering thousands of bubbles + rebuilding
+// listData synchronously on open is what makes heavy chats janky/unresponsive.
+const MAX_INITIAL_DISPLAYED = PAGE_SIZE * 2;
 let messagesRequestSeq = 0;
 
 // Read the last N messages of a chat straight from SQLite (oldest->newest), for an instant
@@ -257,6 +262,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isCTWA: !!(c.ctwaClid || c.adSourceId),
           lastFromNumberId: c.lastFromNumberId || c.wabaPhoneNumberId || '',
           wabaPhoneNumberId: c.wabaPhoneNumberId || c.lastFromNumberId || '',
+          humanReviewed: c.humanReviewed,
         }));
       chatList.sort((a, b) =>
         new Date(b.lastMessageTime || 0).getTime() - new Date(a.lastMessageTime || 0).getTime()
@@ -322,12 +328,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       cached.allMessages.forEach((m: any) => { if (m.messageId) messageIdSet.add(m.messageId); });
       currentServerLimit = cached.serverLimit;
       serverMayHaveMore = cached.serverMayHaveMore;
+      // Reopen always starts at the newest messages, so only reveal the last page-ish even if
+      // the user had previously scrolled up to the full history. Keeps the open fast on heavy chats.
+      const initialDisplayed = Math.min(cached.displayedCount || PAGE_SIZE, MAX_INITIAL_DISPLAYED);
       set({
         currentPhoneNumber: phoneNumber,
         allMessages: cached.allMessages,
-        currentMessages: cached.allMessages.slice(-cached.displayedCount),
-        displayedCount: cached.displayedCount,
-        hasMoreMessages: cached.hasMoreMessages,
+        currentMessages: cached.allMessages.slice(-initialDisplayed),
+        displayedCount: initialDisplayed,
+        hasMoreMessages: cached.hasMoreMessages || cached.allMessages.length > initialDisplayed,
         isLoadingMessages: false,
       });
     } else {

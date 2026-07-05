@@ -2,6 +2,37 @@ import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { Task } from '../../types';
 
+/**
+ * Normalize any backend date value to a plain ISO string.
+ * Task dates can arrive as an ISO string, a Firestore Timestamp object
+ * ({ _seconds }/{ seconds }), an epoch number, or a "Timestamp: <iso>" prefixed
+ * string. Returning a clean ISO string means every consumer (formatDueDate,
+ * sorting, the leads today/upcoming buckets) can just `new Date(...)` it — the
+ * previous raw pass-through is why lead-created tasks showed no due date and
+ * silently broke sorting.
+ */
+function toIsoDate(val: any): string {
+  if (!val) return '';
+  if (typeof val === 'number') {
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? '' : d.toISOString();
+  }
+  if (typeof val === 'object') {
+    const secs = val._seconds ?? val.seconds ?? val.Seconds;
+    if (typeof secs === 'number') {
+      const d = new Date(secs * 1000);
+      return isNaN(d.getTime()) ? '' : d.toISOString();
+    }
+    return '';
+  }
+  if (typeof val === 'string') {
+    const cleaned = val.startsWith('Timestamp: ') ? val.slice('Timestamp: '.length) : val;
+    const d = new Date(cleaned);
+    return isNaN(d.getTime()) ? '' : d.toISOString();
+  }
+  return '';
+}
+
 /** Normalize a raw task object that may use PascalCase or camelCase field names */
 function normalizeTask(raw: any): Task {
   return {
@@ -12,10 +43,10 @@ function normalizeTask(raw: any): Task {
     status:           (raw.status    || raw.Status     || 'open').toLowerCase(),
     priority:         (raw.priority  || raw.Priority   || 'medium').toLowerCase(),
     taskType:         raw.taskType   || raw.TaskType   || raw.type      || 'general',
-    dueDate:          raw.dueDate    || raw.DueDate    || raw.due_date  || '',
-    completedDate:    raw.completedDate  || raw.CompletedDate  || '',
-    createdOn:        raw.createdOn  || raw.CreatedOn  || raw.createdAt || raw.CreatedAt || '',
-    modifiedOn:       raw.modifiedOn || raw.ModifiedOn || '',
+    dueDate:          toIsoDate(raw.dueDate || raw.DueDate || raw.due_date),
+    completedDate:    toIsoDate(raw.completedDate || raw.CompletedDate),
+    createdOn:        toIsoDate(raw.createdOn || raw.CreatedOn || raw.createdAt || raw.CreatedAt),
+    modifiedOn:       toIsoDate(raw.modifiedOn || raw.ModifiedOn),
     createdById:      raw.createdById    || raw.CreatedById    || '',
     createdByName:    raw.createdByName  || raw.CreatedByName  || '',
     assignedToId:     raw.assignedToId   || raw.AssignedToId   || raw.assignedTo   || '',
@@ -28,7 +59,7 @@ function normalizeTask(raw: any): Task {
     relatedContactName: raw.relatedContactName || raw.RelatedContactName || raw.relatedEntityName || raw.RelatedEntityName || '',
     relatedContactPhone: raw.relatedContactPhone || raw.RelatedContactPhone || raw.relatedEntityPhone || raw.RelatedEntityPhone || '',
     reminderEnabled:  raw.reminderEnabled || raw.ReminderEnabled || false,
-    reminderDate:     raw.reminderDate || raw.ReminderDate || '',
+    reminderDate:     toIsoDate(raw.reminderDate || raw.ReminderDate || raw.reminderDateUTC || raw.ReminderDateUTC),
   } as Task;
 }
 

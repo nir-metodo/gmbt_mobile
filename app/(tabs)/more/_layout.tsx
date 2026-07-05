@@ -4,7 +4,6 @@ export default function MoreLayout() {
   return (
     <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
       <Stack.Screen name="index" />
-      <Stack.Screen name="tasks" />
       <Stack.Screen name="media" />
       <Stack.Screen name="phone-calls" />
       <Stack.Screen name="users" />

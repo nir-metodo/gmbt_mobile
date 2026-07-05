@@ -29,13 +29,14 @@ import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
 
 const BRAND = '#2e6155';
 
-type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'contacts' | 'whatsapp' | 'sla' | 'ctwa' | 'templates' | 'daily_conversations';
+type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'contacts' | 'whatsapp' | 'sla' | 'ctwa' | 'templates' | 'daily_conversations' | 'botomations';
 type DatePreset = 'all' | 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth' | 'lastMonth' | 'thisQuarter' | 'thisYear';
 type DataScope = 'my' | 'all';
 type SortOption = 'date_desc' | 'date_asc' | 'name' | 'status';
 
 const ALL_CATEGORIES: { key: ReportCategory; icon: string; color: string; label: string }[] = [
   { key: 'daily_conversations', icon: 'chart-line', color: '#0891b2', label: 'שיחות יומי' },
+  { key: 'botomations', icon: 'robot-outline', color: '#7c3aed', label: 'ביצועי בוטים' },
   { key: 'ctwa', icon: 'cursor-default-click', color: '#7c3aed', label: 'CTWA' },
   { key: 'templates', icon: 'file-document-check-outline', color: '#059669', label: 'תבניות WhatsApp' },
   { key: 'leads', icon: 'trending-up', color: '#f59e0b', label: 'לידים' },
@@ -155,6 +156,8 @@ function getItemTitle(item: any, category: ReportCategory): string {
       return item.name || item.templateName || item.Name || '—';
     case 'daily_conversations':
       return item.name || item.contactName || item.phone || item.date || item.Date || '—';
+    case 'botomations':
+      return item.botomationName || item.BotomationName || item.botomationId || '—';
   }
 }
 
@@ -201,6 +204,13 @@ function getItemSubtitle(item: any, category: ReportCategory): string {
       const phone = item.phone || item.phoneNumber || '';
       return [phone, `נכנסות: ${inbound}`, `יוצאות: ${outbound}`, `סה"כ: ${inbound + outbound}`].filter(Boolean).join(' · ');
     }
+    case 'botomations': {
+      const total = item.total || 0;
+      const completed = item.completed || 0;
+      const stopped = item.stopped || 0;
+      const rate = item.completionRate != null ? `${item.completionRate}%` : '';
+      return [`נפתחו: ${total}`, `השלימו: ${completed}`, `עזבו: ${stopped}`, rate ? `השלמה: ${rate}` : ''].filter(Boolean).join(' · ');
+    }
   }
 }
 
@@ -233,6 +243,7 @@ export default function ReportsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rawData, setRawData] = useState<any[]>([]);
+  const [botEngagement, setBotEngagement] = useState<any>(null);
   const [availableCategories, setAvailableCategories] = useState<ReportCategory[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
   const scrollRef = useRef<ScrollView>(null);
@@ -256,7 +267,7 @@ export default function ReportsScreen() {
       ];
 
       // Always include the new report types
-      available.push('daily_conversations', 'ctwa', 'templates');
+      available.push('daily_conversations', 'botomations', 'ctwa', 'templates');
 
       const results = await Promise.allSettled(
         checks.map(async (c) => {
@@ -290,7 +301,7 @@ export default function ReportsScreen() {
 
   const canSeeAll = useMemo(() => {
     if (user?.SecurityRole === 'Admin') return true;
-    if (['sla', 'ctwa', 'templates', 'daily_conversations'].includes(category)) return true;
+    if (['sla', 'ctwa', 'templates', 'daily_conversations', 'botomations'].includes(category)) return true;
     const vis = user?.DataVisibility;
     if (!vis) return true;
     const catKey = category === 'esignatures' ? 'esignature' : category === 'phonecalls' ? 'phoneCalls' : category;
@@ -320,6 +331,21 @@ export default function ReportsScreen() {
         // Use contactBreakdown as the list view (each contact) and dailySummary for charts
         const items = contactBreakdown.length > 0 ? contactBreakdown : dailySummary;
         setRawData(Array.isArray(items) ? items : []);
+        setLoading(false);
+        return;
+      }
+      if (cat === 'botomations') {
+        const effectivePreset = datePreset === 'all' ? 'thisMonth' : datePreset;
+        const { start, end } = getDateRange(effectivePreset as DatePreset);
+        const dateFrom = start ? start.toISOString().slice(0, 10) : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+        const dateTo = end ? end.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+        const res = await axiosInstance.post(ENDPOINTS.GET_DAILY_BOT_SUMMARY, {
+          organizationId: org, dateFrom: `${dateFrom}T00:00:00Z`, dateTo: `${dateTo}T23:59:59Z`,
+        });
+        const data = res.data;
+        const summary = data?.botSummary || data?.BotSummary || [];
+        setBotEngagement(data?.templateEngagement || data?.TemplateEngagement || null);
+        setRawData(Array.isArray(summary) ? summary : []);
         setLoading(false);
         return;
       }
@@ -424,7 +450,10 @@ export default function ReportsScreen() {
   const filteredData = useMemo(() => {
     let items = rawData;
 
-    if (datePreset !== 'all') {
+    // daily_conversations & botomations are already filtered server-side by date range
+    // and their aggregate rows carry no per-item date, so skip client-side date filtering.
+    const serverDateFiltered = category === 'daily_conversations' || category === 'botomations';
+    if (datePreset !== 'all' && !serverDateFiltered) {
       const { start, end } = getDateRange(datePreset);
       if (start && end) {
         items = items.filter((item) => {
@@ -565,6 +594,19 @@ export default function ReportsScreen() {
         });
         return { byDirection, byTopContacts: topContacts };
       }
+      case 'botomations': {
+        const byOutcome: Record<string, number> = { 'השלימו': 0, 'עזבו באמצע': 0, 'שגיאות': 0 };
+        items.forEach((i: any) => {
+          byOutcome['השלימו'] += (i.completed || 0);
+          byOutcome['עזבו באמצע'] += (i.stopped || 0);
+          byOutcome['שגיאות'] += (i.failed || 0);
+        });
+        const byBot: Record<string, number> = {};
+        [...items].sort((a: any, b: any) => (b.total || 0) - (a.total || 0)).slice(0, 10).forEach((i: any) => {
+          byBot[i.botomationName || i.botomationId || '—'] = i.total || 0;
+        });
+        return { byOutcome, byBot };
+      }
     }
   }, [filteredData, category]);
 
@@ -698,8 +740,28 @@ export default function ReportsScreen() {
           { label: 'אנשי קשר', value: items.length, color: '#7c3aed', icon: 'account-group' },
         ];
       }
+      case 'botomations': {
+        const totalRuns = items.reduce((s: number, i: any) => s + (i.total || 0), 0);
+        const totalCompleted = items.reduce((s: number, i: any) => s + (i.completed || 0), 0);
+        const totalStopped = items.reduce((s: number, i: any) => s + (i.stopped || 0), 0);
+        const rate = totalRuns > 0 ? Math.round((totalCompleted / totalRuns) * 100) : 0;
+        const metrics = [
+          { label: 'פניות שנפתחו', value: totalRuns, color: '#7c3aed', icon: 'robot-outline' },
+          { label: 'השלימו', value: totalCompleted, color: '#10b981', icon: 'check-circle-outline' },
+          { label: 'עזבו באמצע', value: totalStopped, color: '#f59e0b', icon: 'pause-circle-outline' },
+          { label: 'שיעור השלמה', value: `${rate}%`, color: '#6366f1', icon: 'chart-line' },
+        ];
+        if (botEngagement && (botEngagement.activatorContacts || 0) > 0) {
+          metrics.push(
+            { label: 'תבניות נשלחו', value: botEngagement.activatorContacts || 0, color: '#0891b2', icon: 'send-outline' },
+            { label: 'לחצו / התחילו', value: botEngagement.respondedContacts || 0, color: '#059669', icon: 'gesture-tap' },
+            { label: 'שיעור התחלה', value: `${botEngagement.engagementRate || 0}%`, color: '#2196F3', icon: 'percent-outline' },
+          );
+        }
+        return metrics;
+      }
     }
-  }, [filteredData, category, t]);
+  }, [filteredData, category, t, botEngagement]);
 
   const CATEGORIES = useMemo(() => ALL_CATEGORIES.filter((c) => availableCategories.includes(c.key)), [availableCategories]);
   const currentCat = ALL_CATEGORIES.find((c) => c.key === category) || ALL_CATEGORIES[0];
@@ -721,6 +783,7 @@ export default function ReportsScreen() {
         ctwa: ['Name', 'Phone', 'Platform', 'Ad ID', 'Headline', 'CTWA Clid'],
         templates: ['Template', 'Status', 'Category', 'Language'],
         daily_conversations: ['Name', 'Phone', 'Inbound', 'Outbound', 'Total'],
+        botomations: ['Bot', 'Opened', 'Completed', 'Dropped', 'Errors', 'Rate %', 'Contacts'],
       };
       const headers = headerMap[category];
 
@@ -821,6 +884,15 @@ export default function ReportsScreen() {
               String(item.total || (inb + outb)),
             ];
           }
+          case 'botomations': return [
+            getItemTitle(item, category),
+            String(item.total || 0),
+            String(item.completed || 0),
+            String(item.stopped || 0),
+            String(item.failed || 0),
+            String(item.completionRate != null ? item.completionRate : ''),
+            String(item.uniqueContacts || 0),
+          ];
         }
       });
 
@@ -1056,6 +1128,13 @@ export default function ReportsScreen() {
           <>
             {renderBarSection('נכנסות / יוצאות', s.byDirection, currentCat.color)}
             {renderBarSection('אנשי קשר מובילים', s.byTopContacts, '#7c3aed')}
+          </>
+        );
+      case 'botomations':
+        return (
+          <>
+            {renderBarSection('תוצאות הרצות', s.byOutcome, currentCat.color)}
+            {renderBarSection('פניות לפי בוט', s.byBot, '#7c3aed')}
           </>
         );
     }

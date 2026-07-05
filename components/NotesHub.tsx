@@ -212,7 +212,7 @@ export default function NotesHub({ visible, onClose }: Props) {
       router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: note.entityId } } as any);
     } else if (type === 'task' && note.entityId) {
       onClose();
-      router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: note.entityId } } as any);
+      router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: note.entityId } } as any);
     }
   };
 

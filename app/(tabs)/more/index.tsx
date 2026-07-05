@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { useAuthStore } from '../../../stores/authStore';
+import { useSettingsStore } from '../../../stores/settingsStore';
 import { hasPermission } from '../../../constants/permissions';
 
 const BRAND_COLOR = '#2e6155';
@@ -25,11 +26,12 @@ interface MenuItem {
   permission?: string;
   featureKey?: string; // org-level feature toggle key
   featureDefault?: boolean; // default if toggle not set
+  requiresTelephony?: boolean; // only show when org telephony is enabled
 }
 
 const MENU_ITEMS: MenuItem[] = [
   { key: 'dashboard', icon: 'chart-bar', labelKey: 'more.dashboard', route: '/(tabs)/more/dashboard', color: BRAND_COLOR, permission: 'dashboard' },
-  { key: 'tasks', icon: 'checkbox-marked-circle-outline', labelKey: 'more.tasks', route: '/(tabs)/more/tasks', color: '#FF9800', permission: 'tasks' },
+  { key: 'phoneCalls', icon: 'phone-outline', labelKey: 'more.phoneCalls', route: '/(tabs)/more/phone-calls', color: '#2563eb', permission: 'phoneCalls', requiresTelephony: true },
   { key: 'cases', icon: 'briefcase-outline', labelKey: 'more.cases', route: '/(tabs)/more/cases', color: '#FF6B35', permission: 'cases' },
   { key: 'media', icon: 'folder-image', labelKey: 'more.media', route: '/(tabs)/more/media', color: '#0ea5e9', permission: 'mediaManager' },
   { key: 'reports', icon: 'chart-box-outline', labelKey: 'more.reports', route: '/(tabs)/more/reports', color: '#6366f1', permission: 'reports' },
@@ -56,10 +58,12 @@ export default function MoreScreen() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const orgFeatureToggles = useAuthStore((s) => s.orgFeatureToggles);
+  const telephonyEnabled = useSettingsStore((s) => s.telephonyEnabled);
 
   const visibleItems = useMemo(() => {
     return MENU_ITEMS.filter((item) => {
       if (item.adminOnly && user?.SecurityRole?.toLowerCase() !== 'admin') return false;
+      if (item.requiresTelephony && !telephonyEnabled) return false;
       if (item.permission && !hasPermission(user?.Permissions, user?.SecurityRole, item.permission as any)) return false;
       if (item.featureKey) {
         const enabled = orgFeatureToggles[item.featureKey] ?? item.featureDefault ?? true;
@@ -67,7 +71,7 @@ export default function MoreScreen() {
       }
       return true;
     });
-  }, [user, orgFeatureToggles]);
+  }, [user, orgFeatureToggles, telephonyEnabled]);
 
   // Note: we intentionally do NOT auto-navigate into a single feature here. The "More"
   // grid must always be reachable so the user can open Settings / Push Notifications /

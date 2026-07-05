@@ -67,12 +67,11 @@ export default function TabsLayout() {
       permission: 'leads',
     },
     {
-      name: 'phone-calls',
-      titleKey: 'tabs.phoneCalls',
-      icon: 'phone-outline',
-      iconFocused: 'phone',
-      permission: 'phoneCalls',
-      requiresTelephony: true,
+      name: 'tasks',
+      titleKey: 'tabs.tasks',
+      icon: 'checkbox-marked-circle-outline',
+      iconFocused: 'checkbox-marked-circle',
+      permission: 'tasks',
     },
     {
       name: 'more',

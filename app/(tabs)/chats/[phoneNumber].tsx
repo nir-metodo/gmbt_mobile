@@ -205,6 +205,8 @@ function buildTimelineText(entry: any, isHe: boolean): string {
       return isHe ? `השיחה נסגרה ע"י ${by}` : `Conversation closed by ${by}`;
     case 'status change':
     case 'category change':
+    case 'lead stage change':
+    case 'case stage change':
       return `${note || ''}${by ? (isHe ? ` · ${by}` : ` · by ${by}`) : ''}`;
     case 'campaign message sent':
       return isHe ? `הודעת קמפיין נשלחה: ${note}` : `Campaign message sent: ${note}`;
@@ -422,6 +424,10 @@ export default function ChatConversationScreen() {
 
   // Timeline entries
   const [timelineEntries, setTimelineEntries] = useState<any[]>([]);
+  // Optimistic, client-side timeline entries so status/category/lead-stage/note changes made from
+  // the chat show in the conversation timeline INSTANTLY (before the server round-trip, and even for
+  // events the backend doesn't log to the chat timeline, e.g. lead-stage moves).
+  const [localTimeline, setLocalTimeline] = useState<any[]>([]);
   // Dedicated timeline sheet (full notes + activity view, like the web "ציר זמן" tab)
   const [showTimelineSheet, setShowTimelineSheet] = useState(false);
   const [timelineFilter, setTimelineFilter] = useState<'all' | 'notes'>('all');
@@ -714,25 +720,66 @@ export default function ChatConversationScreen() {
     return () => task.cancel();
   }, [user?.organization]);
 
+  // Prepend an optimistic timeline entry so a change made from the chat appears in the conversation
+  // timeline immediately. `kind` drives dedup against the server timeline once it refreshes.
+  const pushLocalTimeline = useCallback((kind: string, note: string, extra?: any) => {
+    const now = new Date().toISOString();
+    setLocalTimeline((prev) => [
+      ...prev,
+      {
+        id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        _local: true,
+        _kind: kind,
+        timelineType:
+          kind === 'status' ? 'status change'
+          : kind === 'category' ? 'category change'
+          : kind === 'leadstage' ? 'lead stage change'
+          : kind === 'casestage' ? 'case stage change'
+          : 'note',
+        note,
+        createdByName: user?.fullname || (user as any)?.FullName || (user as any)?.displayName || '',
+        createdOn: now,
+        timestamp: now,
+        ...extra,
+      },
+    ]);
+  }, [user?.fullname]);
+
+  // Refetch the canonical server timeline (used after a change so other users' entries + the
+  // server's own record of this change come through). Local optimistic entries are deduped at render.
+  const refreshTimeline = useCallback(() => {
+    if (!user?.organization || !phoneNumber) return;
+    chatsApi.getChatTimeline(user.organization, phoneNumber as string)
+      .then(setTimelineEntries)
+      .catch(() => {});
+  }, [user?.organization, phoneNumber]);
+
   const handleChangeStatus = useCallback(async (newStatus: string) => {
     if (!user?.organization || !phoneNumber) return;
     setShowStatusMenu(false);
     setChatStatus(newStatus);
     addOrUpdateChat({ phoneNumber: phoneNumber as string, lastConversationStatus: newStatus, status: newStatus } as any);
+    const label = conversationStatusLabel(getChatConversationStatus({ lastConversationStatus: newStatus }), t);
+    pushLocalTimeline('status', isRTL ? `סטטוס שונה ל: ${label}` : `Status changed to ${label}`);
     try {
       await chatsApi.updateConversationStatus(user.organization, phoneNumber as string, newStatus, user.uID || user.userId);
+      setTimeout(refreshTimeline, 1200);
     } catch { }
-  }, [user?.organization, phoneNumber, user?.uID, user?.userId, addOrUpdateChat]);
+  }, [user?.organization, phoneNumber, user?.uID, user?.userId, addOrUpdateChat, pushLocalTimeline, refreshTimeline, isRTL, t]);
 
   const handleChangeCategory = useCallback(async (newCategory: string) => {
     if (!user?.organization || !phoneNumber) return;
     setShowCategoryMenu(false);
     setChatCategory(newCategory);
     addOrUpdateChat({ phoneNumber: phoneNumber as string, lastConversationCategory: newCategory, category: newCategory } as any);
+    pushLocalTimeline('category', isRTL
+      ? `קטגוריה שונתה ל: ${newCategory || 'ללא קטגוריה'}`
+      : `Category changed to ${newCategory || 'None'}`);
     try {
       await chatsApi.updateConversationCategory(user.organization, phoneNumber as string, newCategory);
+      setTimeout(refreshTimeline, 1200);
     } catch { }
-  }, [user?.organization, phoneNumber, addOrUpdateChat]);
+  }, [user?.organization, phoneNumber, addOrUpdateChat, pushLocalTimeline, refreshTimeline, isRTL]);
 
   // ── Lead / Case (פנייה) records for this contact ──────────────────────
   const loadCrmRecords = useCallback(async () => {
@@ -788,26 +835,32 @@ export default function ChatConversationScreen() {
     if (!user?.organization || !activeLead) return;
     const stageId = stage.id || stage.Id;
     const stageName = stage.name || stage.Name || stage.stageName;
+    if (activeLead.stageId === stageId) return;
     setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName } : l)));
+    pushLocalTimeline('leadstage', isRTL ? `שלב הליד עודכן ל: ${stageName}` : `Lead stage → ${stageName}`);
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
         organization: user.organization, leadId: activeLead.id, stageId, stageName,
       });
+      setTimeout(refreshTimeline, 1200);
     } catch { }
-  }, [user?.organization, activeLead]);
+  }, [user?.organization, activeLead, pushLocalTimeline, refreshTimeline, isRTL]);
 
   const handleMoveCaseStage = useCallback(async (stage: any) => {
     setShowCaseStageMenu(false);
     if (!user?.organization || !activeCase) return;
     const stageId = stage.id || stage.Id;
     const stageName = stage.name || stage.Name || stage.stageName;
+    if (activeCase.stageId === stageId) return;
     setContactCases((prev) => prev.map((c) => (c.id === activeCase.id ? { ...c, stageId, stageName } : c)));
+    pushLocalTimeline('casestage', isRTL ? `שלב הפנייה עודכן ל: ${stageName}` : `Case stage → ${stageName}`);
     try {
       await axiosInstance.post(ENDPOINTS.UPDATE_CASE, {
         organization: user.organization, caseId: activeCase.id, stageId, stageName,
       });
+      setTimeout(refreshTimeline, 1200);
     } catch { }
-  }, [user?.organization, activeCase]);
+  }, [user?.organization, activeCase, pushLocalTimeline, refreshTimeline, isRTL]);
 
   const openLeadRecord = useCallback(() => {
     if (!activeLead?.id) return;
@@ -828,6 +881,7 @@ export default function ChatConversationScreen() {
     if (currentTags.includes(trimmedTag)) return;
     const newTags = [...currentTags, trimmedTag];
     addOrUpdateChat({ phoneNumber: phoneNumber as string, tags: newTags } as any);
+    pushLocalTimeline('note', isRTL ? `תיוג נוסף: ${trimmedTag}` : `Tag added: ${trimmedTag}`);
     setNewTagText('');
     setShowAddTagInline(false);
     try {
@@ -836,7 +890,7 @@ export default function ChatConversationScreen() {
     } catch (e) {
       console.warn('Failed to add tag:', e);
     }
-  }, [user?.organization, phoneNumber, chat?.tags, addOrUpdateChat, user?.uID, user?.userId, user?.fullname]);
+  }, [user?.organization, phoneNumber, chat?.tags, addOrUpdateChat, user?.uID, user?.userId, user?.fullname, pushLocalTimeline, isRTL]);
 
   // Load telephony settings for outbound calling (deferred — only needed when placing a call).
   useEffect(() => {
@@ -899,6 +953,7 @@ export default function ChatConversationScreen() {
   useEffect(() => {
     if (!user?.organization || !phoneNumber) return;
     setTimelineEntries([]);
+    setLocalTimeline([]);
     // Timeline shows in a sheet/interleaved entries — defer so it doesn't compete with the
     // initial message load on chat open.
     const task = InteractionManager.runAfterInteractions(() => {
@@ -925,17 +980,16 @@ export default function ChatConversationScreen() {
       if (saveRes && (saveRes.Success === false || saveRes.success === false)) {
         throw new Error(saveRes.Message || saveRes.message || 'save failed');
       }
+      pushLocalTimeline('note', noteText.trim());
       setNoteText('');
       setShowAddNoteModal(false);
-      chatsApi.getChatTimeline(user.organization, phoneNumber as string)
-        .then(setTimelineEntries)
-        .catch(() => {});
+      setTimeout(refreshTimeline, 1200);
     } catch (e) {
       Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'שמירת ההערה נכשלה' : 'Failed to save note');
     } finally {
       setSavingNote(false);
     }
-  }, [noteText, user, phoneNumber, isRTL]);
+  }, [noteText, user, phoneNumber, isRTL, pushLocalTimeline, refreshTimeline]);
 
   // Load available owners for assign
   const handleOpenAssignOwner = useCallback(async () => {
@@ -1685,8 +1739,14 @@ export default function ChatConversationScreen() {
 
   useEffect(() => {
     if (allMessages.length === 0) return;
+    // Only prefetch media for the most-recent slice (what the user actually sees first), and defer
+    // it until after interactions so opening a heavy chat doesn't scan the whole history on the JS
+    // thread and block the first paint / button taps. Older media still caches lazily when rendered.
+    const PREFETCH_WINDOW = 60;
+    const recent = allMessages.length > PREFETCH_WINDOW ? allMessages.slice(-PREFETCH_WINDOW) : allMessages;
+    const task = InteractionManager.runAfterInteractions(() => {
     const mediaItems: Array<{ url: string; type: MediaType }> = [];
-    for (const msg of allMessages) {
+    for (const msg of recent) {
       const url = (msg as any).gmbt_mediaUrl || msg.mediaUrl || (msg as any).MediaUrl || (msg as any).media_url;
       if (!url || prefetchedRef.current.has(url)) continue;
       prefetchedRef.current.add(url);
@@ -1712,6 +1772,8 @@ export default function ChatConversationScreen() {
     if (mediaItems.length > 0) {
       prefetchMediaList(mediaItems);
     }
+    });
+    return () => task.cancel();
   }, [allMessages]);
 
   // Collect all visual media messages for the gallery viewer
@@ -1741,6 +1803,34 @@ export default function ChatConversationScreen() {
       setGalleryVisible(true);
     }
   }, []);
+
+  // Server timeline + optimistic local entries. A local entry is dropped once the server timeline
+  // carries an equivalent one (same kind within a 2-minute window; notes/tags also match on text) so
+  // a change made from the chat shows instantly and doesn't duplicate after the server refresh.
+  const mergedTimeline = useMemo(() => {
+    if (localTimeline.length === 0) return timelineEntries;
+    const ts = (e: any) => parseTimestamp(e?.createdOn || e?.timestamp || e?.CreatedOn);
+    const serverKind = (e: any) => {
+      const tp = (e?.timelineType || e?.TimelineType || e?.type || '').toLowerCase();
+      if (tp.includes('status')) return 'status';
+      if (tp.includes('categor')) return 'category';
+      if (tp.includes('stage') && tp.includes('case')) return 'casestage';
+      if (tp.includes('stage')) return 'leadstage';
+      return 'note';
+    };
+    const noteText = (e: any) => (e?.note || e?.text || e?.description || e?.Note || e?.content || '').trim();
+    const extras = localTimeline.filter((local) => {
+      const lk = local._kind;
+      const lts = ts(local);
+      return !timelineEntries.some((srv) => {
+        if (serverKind(srv) !== lk) return false;
+        if (Math.abs(ts(srv) - lts) > 120000) return false;
+        if (lk === 'note') return noteText(srv) === noteText(local);
+        return true;
+      });
+    });
+    return extras.length ? [...timelineEntries, ...extras] : timelineEntries;
+  }, [timelineEntries, localTimeline]);
 
   // Build list data with date separators + timeline entries, oldest→newest (data[0] = top). The
   // view is pinned to the newest message by maintainVisibleContentPosition.startRenderingFromBottom.
@@ -1806,8 +1896,8 @@ export default function ChatConversationScreen() {
         )
       : 0;
     const visibleTimeline = msgs.length === 0
-      ? timelineEntries
-      : timelineEntries.filter((entry: any) =>
+      ? mergedTimeline
+      : mergedTimeline.filter((entry: any) =>
           parseTimestamp(entry.createdOn || entry.timestamp || entry.CreatedOn) >= oldestMsgTs,
         );
 
@@ -1883,7 +1973,7 @@ export default function ChatConversationScreen() {
     // rendered bottom-up by the inverted list.
     items.reverse();
     return items;
-  }, [currentMessages, timelineEntries, lang, messageMode, starredFilter, searchQuery, user, phoneNumber]);
+  }, [currentMessages, mergedTimeline, lang, messageMode, starredFilter, searchQuery, user, phoneNumber]);
 
   // Stable via ref (see handleMediaPress note) — a listData-dependent callback here would change
   // on every message change and re-render the whole list through renderItem.
@@ -1965,6 +2055,41 @@ export default function ChatConversationScreen() {
   }, []);
 
   // Send handler
+  // When a brand-new conversation is started by typing a raw phone number (chats → new chat),
+  // no contact record exists yet. On the first outbound WhatsApp message, create a contact named
+  // by the phone number so the conversation is properly saved/searchable — mirroring the intent
+  // of the "start chat by number" flow. Best-effort and idempotent (checked once per screen).
+  const ensuredContactRef = useRef(false);
+  const ensureContactExists = useCallback(async () => {
+    if (ensuredContactRef.current) return;
+    if (!user?.organization || !phoneNumber) return;
+    ensuredContactRef.current = true;
+    try {
+      const existing = await contactsApi.getById(user.organization, phoneNumber as string);
+      const hasContact = !!(existing && (existing.id || existing.phoneNumber));
+      const existingName = (existing?.name || (existing as any)?.fullName || (existing as any)?.contactName || '').trim();
+      if (!hasContact) {
+        await contactsApi.create(
+          user.organization,
+          { phoneNumber: phoneNumber as string, name: phoneNumber as string },
+          user.uID || user.userId,
+          user.fullname,
+        );
+      } else if (!existingName) {
+        // A record exists but has no name (e.g. auto-created) — label it with the phone number.
+        await contactsApi.update(
+          user.organization,
+          { id: existing!.id || (phoneNumber as string), phoneNumber: phoneNumber as string, name: phoneNumber as string },
+          user.uID || user.userId,
+          user.fullname,
+        );
+      }
+    } catch {
+      // Allow a retry on the next send if this failed.
+      ensuredContactRef.current = false;
+    }
+  }, [user, phoneNumber]);
+
   const handleSend = useCallback(
     async (text: string) => {
       if (!user?.organization || !phoneNumber) return;
@@ -1999,13 +2124,15 @@ export default function ChatConversationScreen() {
             user.email || user.Email || '',
             sendFromNumberId,
           );
+          // Ensure a contact exists for this number after the first real message (fire-and-forget).
+          ensureContactExists();
         }
         setReplyToMessage(null);
       } catch {
         Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
       }
     },
-    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber, sendFromNumberId, scrollToNewest],
+    [user, phoneNumber, isInternalNote, sendMessage, sendInternalMessage, replyToMessage, mentionedUsers, t, activeWabaNumber, sendFromNumberId, scrollToNewest, ensureContactExists],
   );
 
   const sendPickedMedia = useCallback(async (uri: string, fileName: string, mimeType: string, fileSize?: number) => {
@@ -2422,7 +2549,7 @@ export default function ChatConversationScreen() {
               </View>
               {isTaskEntry ? (
                 <TouchableOpacity
-                  onPress={() => router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any)}
+                  onPress={() => router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: String(taskId) } } as any)}
                   style={{ marginTop: 6, alignSelf: lang === 'he' ? 'flex-end' : 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#2e6155', paddingVertical: 5, paddingHorizontal: 10, borderRadius: 14 }}
                 >
                   <MaterialCommunityIcons name="clipboard-text-outline" size={13} color="#fff" />
@@ -2966,7 +3093,6 @@ export default function ChatConversationScreen() {
               {
                 backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1',
                 gap: 8,
-                opacity: isStatusLoading ? 0.5 : 1,
                 paddingBottom: Math.max(insets.bottom, 8) + 4,
               },
             ]}>
@@ -3002,10 +3128,10 @@ export default function ChatConversationScreen() {
                 </Text>
               </Pressable>
 
-              {/* 📄 Choose template (opens modal with Quick/Manual) */}
+              {/* 📄 Choose template (opens modal with Quick/Manual) — available immediately,
+                  independent of the conversation-status fetch, so the user can start composing fast. */}
               <Pressable
                 onPress={handleOpenConversation}
-                disabled={isStatusLoading}
                 style={({ pressed }) => ({
                   flex: 1,
                   flexDirection: 'row',
@@ -3015,7 +3141,6 @@ export default function ChatConversationScreen() {
                   backgroundColor: pressed ? '#1d4ed8' : '#2563eb',
                   paddingVertical: 11,
                   borderRadius: 10,
-                  opacity: isStatusLoading ? 0.6 : 1,
                 })}
               >
                 <MaterialCommunityIcons name="card-text-outline" size={18} color="#fff" />
@@ -3024,10 +3149,9 @@ export default function ChatConversationScreen() {
                 </Text>
               </Pressable>
 
-              {/* 🕐 Schedule message */}
+              {/* 🕐 Schedule message — available immediately, independent of conversation-status fetch. */}
               <Pressable
                 onPress={handleOpenSchedule}
-                disabled={isStatusLoading}
                 style={({ pressed }) => ({
                   flex: 1,
                   flexDirection: 'row',
@@ -3037,7 +3161,6 @@ export default function ChatConversationScreen() {
                   backgroundColor: pressed ? '#6d28d9' : '#7c3aed',
                   paddingVertical: 11,
                   borderRadius: 10,
-                  opacity: isStatusLoading ? 0.6 : 1,
                 })}
               >
                 <MaterialCommunityIcons name="clock-outline" size={18} color="#fff" />
@@ -3227,7 +3350,7 @@ export default function ChatConversationScreen() {
                             >
                               <MaterialCommunityIcons name="send" size={16} color="#fff" />
                               <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
-                                {isRTL ? 'שלח' : 'Send'}
+                                {isRTL ? 'התחל שיחה' : 'Start Chat'}
                               </Text>
                             </Pressable>
                           </View>
@@ -3380,7 +3503,7 @@ export default function ChatConversationScreen() {
                     disabled={isSendingTemplate}
                     style={{ marginTop: 8 }}
                   >
-                    {isSendingTemplate ? t('common.sending') : t('chats.send')}
+                    {isSendingTemplate ? t('common.sending') : (isRTL ? 'התחל שיחה' : 'Start Chat')}
                   </Button>
                 </ScrollView>
               )}
@@ -4206,7 +4329,7 @@ export default function ChatConversationScreen() {
                       const ty = (e?.timelineType || e?.TimelineType || e?.type || '').toLowerCase();
                       return ty === 'note' || ty === 'internal_mention' || (!ty && !!(e?.note || e?.text));
                     };
-                    const entries = [...timelineEntries]
+                    const entries = [...mergedTimeline]
                       .filter((e) => (timelineFilter === 'notes' ? isNoteEntry(e) : true))
                       .sort((a, b) => {
                         const ta = new Date(a.createdOn || a.timestamp || a.CreatedOn || 0).getTime();
@@ -4252,7 +4375,7 @@ export default function ChatConversationScreen() {
                             </View>
                             {isTask ? (
                               <Pressable
-                                onPress={() => { setShowTimelineSheet(false); router.push({ pathname: '/(tabs)/more/tasks/[id]', params: { id: String(taskId) } } as any); }}
+                                onPress={() => { setShowTimelineSheet(false); router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: String(taskId) } } as any); }}
                                 style={{ marginTop: 6, alignSelf: isRTL ? 'flex-end' : 'flex-start', flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 4, backgroundColor: '#2e6155', paddingVertical: 5, paddingHorizontal: 10, borderRadius: 14 }}
                               >
                                 <MaterialCommunityIcons name="clipboard-text-outline" size={13} color="#fff" />

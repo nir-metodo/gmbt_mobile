@@ -36,21 +36,21 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { phoneCallsApi } from '../../../services/api/phoneCalls';
-import { useAppTheme } from '../../../hooks/useAppTheme';
-import { useRTL } from '../../../hooks/useRTL';
-import { useDebouncedValue, useWindowedList } from '../../../hooks/useWindowedList';
-import { ListPaginationFooter } from '../../../components/ListPaginationFooter';
-import { useAuthStore } from '../../../stores/authStore';
-import { makeAppCall, makeGambotCall } from '../../../utils/phoneCall';
-import { getDataVisibility } from '../../../constants/permissions';
-import { PhoneCall, CallRule } from '../../../types';
+import { phoneCallsApi } from '../../../../services/api/phoneCalls';
+import { useAppTheme } from '../../../../hooks/useAppTheme';
+import { useRTL } from '../../../../hooks/useRTL';
+import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
+import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
+import { useAuthStore } from '../../../../stores/authStore';
+import { makeAppCall, makeGambotCall } from '../../../../utils/phoneCall';
+import { getDataVisibility } from '../../../../constants/permissions';
+import { PhoneCall, CallRule } from '../../../../types';
 import {
   formatDate,
   formatDuration,
   formatPhoneNumber,
   formatRelativeTime,
-} from '../../../utils/formatters';
+} from '../../../../utils/formatters';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -770,7 +770,7 @@ export default function PhoneCallsTabScreen() {
         break;
       case 'createFollowUp':
         router.push({
-          pathname: '/(tabs)/more/tasks',
+          pathname: '/(tabs)/tasks',
           params: {
             prefillTitle: `${t('phoneCalls.followUp')} - ${call.contactName || call.phoneNumber}`,
             prefillPhone: call.phoneNumber,

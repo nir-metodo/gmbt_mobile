@@ -2,6 +2,13 @@ import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { Lead, LeadStage } from '../../types';
 
+export interface LeadFieldConfig {
+  showCompany: boolean;
+  showJobTitle: boolean;
+  showCurrency: boolean;
+  defaultCurrency: string;
+}
+
 export interface LeadFilters {
   searchTerm?: string;
   stages?: string[];
@@ -157,17 +164,25 @@ export const leadsApi = {
     }
   },
 
-  async getLeadFormSettings(organization: string): Promise<{ sections: any[]; formLayout: string[] }> {
+  async getLeadFormSettings(organization: string): Promise<{ sections: any[]; formLayout: string[]; fieldConfig: LeadFieldConfig }> {
     const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_FORM_SETTINGS, { organization });
     const raw = response.data;
-    if (raw?.error) return { sections: [], formLayout: [] };
+    const defaultFieldConfig: LeadFieldConfig = { showCompany: true, showJobTitle: true, showCurrency: true, defaultCurrency: 'ILS' };
+    if (raw?.error) return { sections: [], formLayout: [], fieldConfig: defaultFieldConfig };
     let sections = raw?.sections;
     if (sections && !Array.isArray(sections)) sections = Object.values(sections);
     let formLayout = raw?.formLayout;
     if (formLayout && !Array.isArray(formLayout)) formLayout = Object.values(formLayout);
+    const cfg = (raw?.fieldConfig && typeof raw.fieldConfig === 'object') ? raw.fieldConfig : {};
     return {
       sections: Array.isArray(sections) ? sections : [],
       formLayout: Array.isArray(formLayout) ? formLayout : [],
+      fieldConfig: {
+        showCompany: cfg.showCompany !== false,
+        showJobTitle: cfg.showJobTitle !== false,
+        showCurrency: cfg.showCurrency !== false,
+        defaultCurrency: cfg.defaultCurrency || 'ILS',
+      },
     };
   },
 

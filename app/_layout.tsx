@@ -179,7 +179,7 @@ export default function RootLayout() {
       // Standard navigation on tap
       switch (data.type) {
         case 'incoming_call':
-          router.push('/(tabs)/phone-calls');
+          router.push('/(tabs)/more/phone-calls');
           break;
         case 'incomingMessage':
           if (data.contactPhone) {
@@ -214,7 +214,7 @@ export default function RootLayout() {
           break;
         case 'taskAssigned':
         case 'taskReminder':
-          router.push('/(tabs)/more/tasks');
+          router.push('/(tabs)/tasks');
           break;
         case 'calendarEventReminder':
           router.push('/(tabs)/more/calendar');

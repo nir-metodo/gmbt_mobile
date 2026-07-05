@@ -34,6 +34,8 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { casesApi } from '../../../../services/api/cases';
+import { tasksApi } from '../../../../services/api/tasks';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { cacheEntities } from '../../../../services/entityCache';
 import { ENDPOINTS } from '../../../../constants/api';
 import axiosInstance from '../../../../services/api/axiosInstance';
@@ -69,6 +71,32 @@ const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 function getStatusColor(status: string): string {
   const normalized = status.toLowerCase().replace(/\s+/g, '_');
   return STATUS_COLORS[normalized] || '#9E9E9E';
+}
+
+// Parse any backend date shape (ISO string, epoch number, Firestore {_seconds}/{seconds},
+// or a "Timestamp: <iso>" prefixed string) to millis for sorting. Returns 0 when absent.
+function parseTs(val: any): number {
+  if (!val) return 0;
+  if (typeof val === 'number') return val;
+  if (typeof val === 'object') {
+    const secs = val._seconds ?? val.seconds;
+    if (typeof secs === 'number') return secs * 1000;
+    return 0;
+  }
+  if (typeof val === 'string') {
+    const cleaned = val.startsWith('Timestamp: ') ? val.slice('Timestamp: '.length) : val;
+    const d = new Date(cleaned);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  }
+  return 0;
+}
+
+// Same as parseTs but returns a Date (or null) — used for task due/reminder dates.
+function parseTaskDate(val: any): Date | null {
+  const ms = parseTs(val);
+  if (!ms) return null;
+  const d = new Date(ms);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 interface SavedView {
@@ -125,6 +153,47 @@ export default function CasesListScreen() {
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
   const [statusPickerCase, setStatusPickerCase] = useState<Case | null>(null);
 
+  // ── Sort state (persisted; default = created on, newest first) ────────────────
+  type SortKey = 'createdOn' | 'modifiedOn' | 'subject' | 'priority' | 'status';
+  type SortDir = 'asc' | 'desc';
+  const [sortKey, setSortKey] = useState<SortKey>('createdOn');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const sortPrefLoadedRef = useRef(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [savedKey, savedDir] = await Promise.all([
+          AsyncStorage.getItem('cases_sort_key'),
+          AsyncStorage.getItem('cases_sort_dir'),
+        ]);
+        const valid: SortKey[] = ['createdOn', 'modifiedOn', 'subject', 'priority', 'status'];
+        if (savedKey && valid.includes(savedKey as SortKey)) setSortKey(savedKey as SortKey);
+        if (savedDir === 'asc' || savedDir === 'desc') setSortDir(savedDir);
+      } catch {
+        /* keep defaults */
+      } finally {
+        sortPrefLoadedRef.current = true;
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!sortPrefLoadedRef.current) return;
+    AsyncStorage.setItem('cases_sort_key', sortKey).catch(() => {});
+    AsyncStorage.setItem('cases_sort_dir', sortDir).catch(() => {});
+  }, [sortKey, sortDir]);
+
+  // ── Task quick-filters (today / upcoming / overdue / with-tasks), mirroring Leads ──
+  type TaskQuickFilter = 'today' | 'upcoming' | 'overdue' | 'withTasks';
+  const [taskQuickFilter, setTaskQuickFilter] = useState<TaskQuickFilter | null>(null);
+  const [taskFilterSets, setTaskFilterSets] = useState<{ today: Set<string>; upcoming: Set<string>; overdue: Set<string>; withTasks: Set<string> }>(
+    { today: new Set(), upcoming: new Set(), overdue: new Set(), withTasks: new Set() },
+  );
+  const [taskFilterLoading, setTaskFilterLoading] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
+
   const searchAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -173,8 +242,43 @@ export default function CasesListScreen() {
     }
   }, [user?.organization, buildFilters, t]);
 
+  // Load the WHOLE case dataset in one request so a client-side task filter spans everything
+  // (a partial page load is why a task tab could look empty). Mirrors the Leads board. Declared
+  // here (before the load/focus effects) so those effects can safely reference it.
+  const fetchAllCases = useCallback(async () => {
+    if (!user?.organization || loadingAll) return;
+    setLoadingAll(true);
+    const shouldFilterOwn = filterMine || casesDV === 'own';
+    try {
+      const result = await casesApi.getAll(user.organization, {
+        page: 1,
+        pageSize: 5000,
+        filters: buildFilters(),
+        dataVisibility: shouldFilterOwn ? 'mineOnly' : 'seeAll',
+        userId: shouldFilterOwn ? (user.userId || user.uID || '') : '',
+      });
+      const all = result.data ?? [];
+      const total = result.total ?? all.length;
+      cacheEntities('cases', all);
+      setTotalCount(total);
+      setCases(all);
+      setPage(Math.max(1, Math.ceil(all.length / PAGE_SIZE)));
+      setHasMore(all.length < total);
+    } catch {
+      /* keep existing data on error */
+    } finally {
+      setLoadingAll(false);
+    }
+  }, [user?.organization, user?.userId, user?.uID, loadingAll, filterMine, casesDV, buildFilters]);
+
   useEffect(() => {
-    fetchPage(1, true);
+    // A task quick-filter is a client-side filter over the loaded cases, so keep the WHOLE dataset
+    // loaded while it's active — a page-1 reset here would shrink the pool and empty the filter.
+    if (taskQuickFilter) {
+      fetchAllCases();
+    } else {
+      fetchPage(1, true);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.organization, debouncedSearch, statusFilter, filterCategory, filterAssignee, filterPriority, filterDateRange, filterMine]);
 
@@ -217,6 +321,7 @@ export default function CasesListScreen() {
     setFilterDateRange('');
     setFilterMine(false);
     setSearchQuery('');
+    setTaskQuickFilter(null);
   }, []);
 
   const saveCurrentView = useCallback(async () => {
@@ -279,8 +384,13 @@ export default function CasesListScreen() {
         didMountRef.current = true;
         return;
       }
-      if (user?.organization) fetchPage(1, true);
-    }, [user?.organization, fetchPage])
+      if (user?.organization) {
+        // Keep the full dataset when a task quick-filter is active so returning from a case detail
+        // doesn't collapse the pool to page 1 and empty out the filtered list.
+        if (taskQuickFilter) fetchAllCases();
+        else fetchPage(1, true);
+      }
+    }, [user?.organization, fetchPage, fetchAllCases, taskQuickFilter])
   );
 
   const onEndReached = useCallback(() => {
@@ -290,11 +400,72 @@ export default function CasesListScreen() {
 
   const fetchCases = useCallback(() => fetchPage(1, true), [fetchPage]);
 
+  // Pull all open tasks for the org and bucket them by the CASE they're attached to
+  // (relatedTo.type === 'case'), computing today/upcoming/overdue/with-tasks sets.
+  const fetchCaseTaskBuckets = useCallback(async () => {
+    if (!user?.organization) return;
+    try {
+      const allTasks = await tasksApi.getAll(user.organization, '', 'all');
+      const now = new Date();
+      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date(now); todayEnd.setHours(23, 59, 59, 999);
+      const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const todaySet = new Set<string>();
+      const upcomingSet = new Set<string>();
+      const overdueSet = new Set<string>();
+      const withTasksSet = new Set<string>();
+      (allTasks as any[]).forEach((task: any) => {
+        const statusVal = (task.status || task.Status || '').toLowerCase();
+        if (statusVal === 'completed' || statusVal === 'cancelled') return;
+        const rel = task.relatedTo || task.RelatedTo;
+        const relType = (rel?.type || rel?.Type || '').toLowerCase();
+        const relId = rel?.entityId || rel?.EntityId;
+        if (relType !== 'case' || !relId) return;
+        withTasksSet.add(relId);
+        const dueDate = parseTaskDate(task.dueDate || task.DueDate) || parseTaskDate(task.reminderDate || task.ReminderDate);
+        if (!dueDate) return;
+        const isOverdue = dueDate < now;
+        const isToday = dueDate >= todayStart && dueDate <= todayEnd;
+        if (isOverdue) overdueSet.add(relId);
+        if (dueDate >= now && dueDate <= in7Days) upcomingSet.add(relId);
+        if (isToday) todaySet.add(relId);
+      });
+      setTaskFilterSets({ today: todaySet, upcoming: upcomingSet, overdue: overdueSet, withTasks: withTasksSet });
+    } catch {
+      /* non-critical; leave previous buckets */
+    }
+  }, [user?.organization]);
+
+  useEffect(() => {
+    fetchCaseTaskBuckets();
+  }, [fetchCaseTaskBuckets]);
+
+  // Apply/toggle a task quick-filter. Recomputes buckets from fresh task data and loads
+  // every case page so the client-side filter matches the whole dataset (mirrors Leads).
+  const applyTaskFilter = useCallback(async (type: TaskQuickFilter) => {
+    if (taskQuickFilter === type) {
+      setTaskQuickFilter(null);
+      return;
+    }
+    setTaskQuickFilter(type);
+    setActiveViewId('__all');
+    setFilterMine(false);
+    setTaskFilterLoading(true);
+    try {
+      const refresh = fetchCaseTaskBuckets();
+      await fetchAllCases();
+      await refresh;
+    } finally {
+      setTaskFilterLoading(false);
+    }
+  }, [taskQuickFilter, fetchCaseTaskBuckets, fetchAllCases]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchPage(1, true);
+    // Preserve the full dataset when a task quick-filter is active (a page-1 reset would empty it).
+    await (taskQuickFilter ? fetchAllCases() : fetchPage(1, true));
     setRefreshing(false);
-  }, [fetchPage]);
+  }, [fetchPage, fetchAllCases, taskQuickFilter]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
@@ -309,7 +480,41 @@ export default function CasesListScreen() {
     }
   }, [searchVisible, searchAnim]);
 
-  const filteredCases = cases; // server-side filtered
+  // Server does the heavy filtering/pagination; here we apply the client-side task
+  // quick-filter (when active) and the chosen sort order.
+  const PRIORITY_RANK: Record<string, number> = { urgent: 4, high: 3, medium: 2, low: 1 };
+  const filteredCases = useMemo(() => {
+    let result = [...cases];
+    if (taskQuickFilter) {
+      const ids = taskFilterSets[taskQuickFilter];
+      result = result.filter((c) => ids.has(c.id));
+    }
+    result.sort((a: any, b: any) => {
+      let aVal: number | string = 0;
+      let bVal: number | string = 0;
+      if (sortKey === 'createdOn') {
+        aVal = parseTs(a.createdOn || a.CreatedOn || a.createdAt);
+        bVal = parseTs(b.createdOn || b.CreatedOn || b.createdAt);
+      } else if (sortKey === 'modifiedOn') {
+        aVal = parseTs(a.modifiedOn || a.ModifiedOn || a.updatedOn || a.UpdatedOn || a.updatedAt) || parseTs(a.createdOn || a.CreatedOn || a.createdAt);
+        bVal = parseTs(b.modifiedOn || b.ModifiedOn || b.updatedOn || b.UpdatedOn || b.updatedAt) || parseTs(b.createdOn || b.CreatedOn || b.createdAt);
+      } else if (sortKey === 'subject') {
+        aVal = (a.subject || a.title || '').toString().toLowerCase();
+        bVal = (b.subject || b.title || '').toString().toLowerCase();
+      } else if (sortKey === 'priority') {
+        aVal = PRIORITY_RANK[(a.priority || '').toLowerCase()] || 0;
+        bVal = PRIORITY_RANK[(b.priority || '').toLowerCase()] || 0;
+      } else if (sortKey === 'status') {
+        aVal = (a.stageName || a.status || '').toString().toLowerCase();
+        bVal = (b.stageName || b.status || '').toString().toLowerCase();
+      }
+      if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases, taskQuickFilter, taskFilterSets, sortKey, sortDir]);
 
 
   const openCase = useCallback(
@@ -620,22 +825,59 @@ export default function CasesListScreen() {
       {/* Saved Views Tabs */}
       <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.viewsScroll, { flexDirection }]}>
+          {(() => {
+            // "All" is only active when no task quick-filter is applied; while a task filter is
+            // active it shows an X so it's an obvious one-tap way back to every case.
+            const allActive = activeViewId === '__all' && !taskQuickFilter;
+            return (
+              <Pressable
+                onPress={clearAllFilters}
+                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, allActive && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+              >
+                {taskQuickFilter && (
+                  <MaterialCommunityIcons name="close-circle" size={14} color={theme.colors.primary} />
+                )}
+                <Text style={[styles.viewTabText, { color: allActive ? theme.colors.primary : (taskQuickFilter ? theme.colors.primary : theme.colors.onSurfaceVariant) }]}>
+                  {t('common.all')}
+                </Text>
+              </Pressable>
+            );
+          })()}
           <Pressable
-            onPress={clearAllFilters}
-            style={[styles.viewTab, activeViewId === '__all' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-          >
-            <Text style={[styles.viewTabText, { color: activeViewId === '__all' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
-              {t('common.all')}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); }}
+            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setTaskQuickFilter(null); }}
             style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
           >
             <Text style={[styles.viewTabText, { color: activeViewId === '__mine' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
               {t('leads.viewMine', 'שלי')}
             </Text>
           </Pressable>
+          {([
+            { type: 'today' as TaskQuickFilter, icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
+            { type: 'upcoming' as TaskQuickFilter, icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
+            { type: 'overdue' as TaskQuickFilter, icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
+            { type: 'withTasks' as TaskQuickFilter, icon: 'clipboard-clock-outline', label: t('cases.casesWithTasks', 'פניות עם משימות'), color: '#2e6155' },
+          ]).map(({ type, icon, label, color }) => {
+            const isActive = taskQuickFilter === type;
+            const count = taskFilterSets[type].size;
+            return (
+              <Pressable
+                key={type}
+                onPress={() => applyTaskFilter(type)}
+                disabled={taskFilterLoading}
+                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, isActive && { borderBottomColor: color, borderBottomWidth: 2 }]}
+              >
+                <MaterialCommunityIcons name={icon as any} size={14} color={isActive ? color : theme.colors.onSurfaceVariant} />
+                <Text style={[styles.viewTabText, { color: isActive ? color : theme.colors.onSurfaceVariant, maxWidth: 160 }]} numberOfLines={1}>
+                  {label}
+                </Text>
+                {count > 0 && (
+                  <View style={{ backgroundColor: color, borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{count}</Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
           {savedViews.filter((v) => {
             const vis = v.Visibility || 'personal';
             if (vis === 'shared') return true;
@@ -724,6 +966,39 @@ export default function CasesListScreen() {
           ))}
         </ScrollView>
       </View>
+
+      {/* Sort bar */}
+      {viewMode === 'list' && (
+        <View style={{ flexDirection, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6, flexDirection }}>
+            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('leads.sortBy', 'מיין לפי:')}</Text>
+            {([
+              { key: 'createdOn' as SortKey, label: t('leads.sortCreated', 'נוצר ב'), icon: 'calendar-plus' },
+              { key: 'modifiedOn' as SortKey, label: t('leads.sortUpdated', 'עודכן ב'), icon: 'calendar-edit' },
+              { key: 'subject' as SortKey, label: t('leads.name', 'שם'), icon: 'sort-alphabetical-variant' },
+              { key: 'priority' as SortKey, label: t('tasks.priority', 'עדיפות'), icon: 'flag' },
+              { key: 'status' as SortKey, label: t('cases.status', 'סטטוס'), icon: 'view-column' },
+            ] as const).map((opt) => (
+              <Pressable
+                key={opt.key}
+                onPress={() => {
+                  if (sortKey === opt.key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+                  else { setSortKey(opt.key); setSortDir(['createdOn', 'modifiedOn', 'priority'].includes(opt.key) ? 'desc' : 'asc'); }
+                }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortKey === opt.key ? withAlpha(theme.colors.primary, 0.1) : 'transparent' }}
+              >
+                <MaterialCommunityIcons name={opt.icon as any} size={14} color={sortKey === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                <Text style={{ fontSize: 11, color: sortKey === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant, fontWeight: sortKey === opt.key ? '600' : '400' }}>
+                  {opt.label}
+                </Text>
+                {sortKey === opt.key && (
+                  <MaterialCommunityIcons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={theme.colors.primary} />
+                )}
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Error banner */}
       {error ? (

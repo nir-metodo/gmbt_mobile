@@ -135,6 +135,8 @@ export interface Chat {
   isCTWA?: boolean;
   lastFromNumberId?: string;
   wabaPhoneNumberId?: string;
+  // false = a human agent has NOT reviewed the conversation yet (undefined/true = reviewed).
+  humanReviewed?: boolean;
 }
 
 export interface Lead {
@@ -163,6 +165,15 @@ export interface Lead {
   description?: string;
   expectedCloseDate?: string;
   nextFollowUp?: string;
+  followUpEnabled?: boolean;
+  followUpInterval?: number;
+  followUpUnit?: 'hours' | 'days' | 'weeks';
+  followUpTemplateId?: string;
+  followUpTemplateName?: string;
+  followUpRepeat?: number;
+  followUpMaxRepeats?: number;
+  followUpSentCount?: number;
+  followUpMappingMode?: 'auto' | 'manual';
   score?: number;
   lostReason?: string;
   tags?: string[];
@@ -271,6 +282,16 @@ export interface Case {
   notes?: string;
   tags?: string[];
   relatedContacts?: any[];
+  nextFollowUp?: string;
+  followUpEnabled?: boolean;
+  followUpInterval?: number;
+  followUpUnit?: 'hours' | 'days' | 'weeks';
+  followUpTemplateId?: string;
+  followUpTemplateName?: string;
+  followUpRepeat?: number;
+  followUpMaxRepeats?: number;
+  followUpSentCount?: number;
+  followUpMappingMode?: 'auto' | 'manual';
   organization?: string;
   createdBy?: string;
   createdOn?: string;
