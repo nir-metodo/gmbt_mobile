@@ -11,6 +11,8 @@ export interface CatalogItem {
   link: string;
   images: string[];
   customFields?: Record<string, any>;
+  /** When true, the item is shown in the public catalog while shareMode === 'marked'. */
+  isPublic?: boolean;
 }
 
 export interface CatalogCustomColumn {
@@ -63,6 +65,8 @@ export interface PublicCatalogConfig {
   allowQuantity?: boolean;
   requireContact?: boolean;
   columns?: Record<string, boolean>;
+  /** 'all' shares the whole catalog; 'marked' shares only items with isPublic. Defaults to 'all'. */
+  shareMode?: 'all' | 'marked';
 }
 
 export interface CatalogSelectionItem {
@@ -172,6 +176,20 @@ export const catalogApi = {
       organization,
       brandingData: { ...existing, publicCatalog: cfg },
     });
+    return cfg;
+  },
+
+  /**
+   * Saves the public-catalog share config (and optionally the current items, so item public-marks
+   * are committed together with a shareMode change). Re-fetches the full branding doc first so we
+   * never drop logo/colors/columns (backend persists branding with overwrite).
+   */
+  async savePublicConfig(organization: string, cfg: PublicCatalogConfig, items?: CatalogItem[]): Promise<PublicCatalogConfig> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_QUOTE_BRANDING, { organization });
+    const existing = response.data || {};
+    const brandingData: Record<string, any> = { ...existing, publicCatalog: cfg };
+    if (Array.isArray(items)) brandingData.catalogItems = items;
+    await axiosInstance.post(ENDPOINTS.SAVE_QUOTE_BRANDING, { organization, brandingData });
     return cfg;
   },
 

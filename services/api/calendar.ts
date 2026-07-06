@@ -25,6 +25,7 @@ export interface CalendarEvent {
   reminderEnabled: boolean;
   reminderMinutesBefore: number;
   pushReminderEnabled?: boolean;
+  shared?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,6 +37,7 @@ export interface CalendarInfo {
   color: string;
   connectionId: string;
   isShared: boolean;
+  sharedWithUserIds?: string[];
   isDefault?: boolean;
 }
 
@@ -82,6 +84,7 @@ function normalizeEvent(raw: any): CalendarEvent {
     reminderEnabled: raw.reminderEnabled ?? raw.ReminderEnabled ?? false,
     reminderMinutesBefore: raw.reminderMinutesBefore ?? raw.ReminderMinutesBefore ?? 15,
     pushReminderEnabled: raw.pushReminderEnabled ?? raw.PushReminderEnabled ?? false,
+    shared: (raw.shared ?? raw.Shared) !== false, // legacy events (no field) default to shared
     createdAt: raw.createdAt || raw.CreatedAt || '',
     updatedAt: raw.updatedAt || raw.UpdatedAt || '',
   };
@@ -135,6 +138,7 @@ export const calendarApi = {
       color: c.color || c.Color || '#10b981',
       connectionId: c.connectionId || c.ConnectionId || '',
       isShared: c.isShared || c.IsShared || false,
+      sharedWithUserIds: c.sharedWithUserIds || c.SharedWithUserIds || [],
       isDefault: c.isDefault || c.IsDefault || false,
     }));
   },

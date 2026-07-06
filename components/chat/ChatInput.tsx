@@ -14,10 +14,8 @@ import {
   Platform,
   Alert,
   Animated,
-  InputAccessoryView,
 } from 'react-native';
 
-const CHAT_INPUT_ACCESSORY_ID = 'gambotChatInputAccessory';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
@@ -91,9 +89,15 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingStartMs, setRecordingStartMs] = useState(0);
   const [showNumberPicker, setShowNumberPicker] = useState(false);
+  // Recorded-but-not-yet-sent voice clip (WhatsApp-style listen-before-send).
+  const [recordedUri, setRecordedUri] = useState<string | null>(null);
+  const [recordedDurationMs, setRecordedDurationMs] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackPosMs, setPlaybackPosMs] = useState(0);
 
   const inputRef = useRef<TextInput>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -196,7 +200,9 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
       if (!cancelled) {
         const uri = recordingRef.current.getURI();
         if (uri && durationMs > 500) {
-          onVoiceMessage?.(uri, durationMs);
+          // Don't auto-send — surface a preview so the user can listen, delete, or send.
+          setRecordedUri(uri);
+          setRecordedDurationMs(durationMs);
         }
       }
     } catch {
@@ -204,36 +210,79 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
       recordingRef.current = null;
       setRecordingSeconds(0);
     }
-  }, [recordingStartMs, onVoiceMessage]);
+  }, [recordingStartMs]);
+
+  const unloadSound = useCallback(async () => {
+    if (soundRef.current) {
+      try { await soundRef.current.unloadAsync(); } catch { /* ignore */ }
+      soundRef.current = null;
+    }
+    setIsPlaying(false);
+    setPlaybackPosMs(0);
+  }, []);
+
+  // Play / pause the recorded preview clip.
+  const togglePlayback = useCallback(async () => {
+    if (!recordedUri) return;
+    try {
+      if (soundRef.current) {
+        const status = await soundRef.current.getStatusAsync();
+        if (status.isLoaded) {
+          if (status.isPlaying) {
+            await soundRef.current.pauseAsync();
+            setIsPlaying(false);
+          } else {
+            // Replay from start if it already finished.
+            if ((status.positionMillis || 0) >= (status.durationMillis || recordedDurationMs) - 50) {
+              await soundRef.current.playFromPositionAsync(0);
+            } else {
+              await soundRef.current.playAsync();
+            }
+            setIsPlaying(true);
+          }
+          return;
+        }
+      }
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync({ uri: recordedUri }, { shouldPlay: true });
+      soundRef.current = sound;
+      setIsPlaying(true);
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return;
+        setPlaybackPosMs(status.positionMillis || 0);
+        if (status.didJustFinish) {
+          setIsPlaying(false);
+          setPlaybackPosMs(0);
+        }
+      });
+    } catch { /* ignore playback errors */ }
+  }, [recordedUri, recordedDurationMs]);
+
+  const discardRecorded = useCallback(async () => {
+    await unloadSound();
+    setRecordedUri(null);
+    setRecordedDurationMs(0);
+  }, [unloadSound]);
+
+  const sendRecorded = useCallback(async () => {
+    if (!recordedUri) return;
+    await unloadSound();
+    const uri = recordedUri;
+    const dur = recordedDurationMs;
+    setRecordedUri(null);
+    setRecordedDurationMs(0);
+    onVoiceMessage?.(uri, dur);
+  }, [recordedUri, recordedDurationMs, unloadSound, onVoiceMessage]);
+
+  useEffect(() => () => { if (soundRef.current) { soundRef.current.unloadAsync().catch(() => {}); } }, []);
+
+  const hasRecorded = !!recordedUri;
 
   const hasMultipleNumbers = wabaNumbers && wabaNumbers.length > 1;
   const activeNumInfo = wabaNumbers?.find((n) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
   const displayNumber = activeNumInfo?.Label || activeNumInfo?.label || activeNumInfo?.DisplayNumber || activeNumInfo?.displayNumber || (activeWabaNumber ? activeWabaNumber.slice(-4) : '');
 
   return (
-    <>
-    {Platform.OS === 'ios' && (
-      <InputAccessoryView nativeID={CHAT_INPUT_ACCESSORY_ID}>
-        <View style={[styles.accessoryBar, { backgroundColor: theme.dark ? '#1e293b' : '#f0ebe3', flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <View style={{ flex: 1 }} />
-          <Pressable
-            onPress={handleSend}
-            disabled={!hasText || isSending || disabled}
-            style={({ pressed }) => [
-              styles.accessorySendBtn,
-              {
-                backgroundColor: !hasText || isSending || disabled
-                  ? '#94a3b8'
-                  : (pressed ? '#1a7a5e' : '#2e6155'),
-              },
-            ]}
-          >
-            <MaterialCommunityIcons name="send" size={18} color="#fff" style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
-            <Text style={styles.accessorySendText}>{isRTL ? 'שלח' : 'Send'}</Text>
-          </Pressable>
-        </View>
-      </InputAccessoryView>
-    )}
     <View
       style={[
         styles.outerContainer,
@@ -320,7 +369,28 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         {/* Note toggle removed — timeline note accessible from header */}
 
         {/* Input container — WhatsApp style rounded */}
-        {!isRecording ? (
+        {isRecording ? (
+          <View style={{ flex: 1 }} />
+        ) : hasRecorded ? (
+          <View style={[styles.previewBar, { backgroundColor: theme.dark ? '#0f2a22' : '#eafaf1', flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Pressable
+              onPress={discardRecorded}
+              hitSlop={8}
+              style={[styles.cancelRecordBtn, { borderColor: theme.colors.outline }]}
+            >
+              <MaterialCommunityIcons name="trash-can-outline" size={18} color="#ef4444" />
+            </Pressable>
+            <Pressable onPress={togglePlayback} style={styles.playBtn}>
+              <MaterialCommunityIcons name={isPlaying ? 'pause' : 'play'} size={20} color="#fff" style={{ marginStart: isPlaying ? 0 : 1 }} />
+            </Pressable>
+            <Text style={[styles.recordingTimer, { color: theme.colors.onSurface }]}>
+              {formatRecordingTime(Math.round((isPlaying || playbackPosMs > 0 ? playbackPosMs : recordedDurationMs) / 1000))}
+            </Text>
+            <Text style={[styles.recordingHint, { color: theme.colors.onSurfaceVariant }]} numberOfLines={1}>
+              {t('chats.voicePreview', 'האזן, מחק או שלח')}
+            </Text>
+          </View>
+        ) : (
           <View
             style={[
               styles.inputContainer,
@@ -359,7 +429,6 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               editable={!disabled}
               blurOnSubmit={false}
               returnKeyType="default"
-              inputAccessoryViewID={Platform.OS === 'ios' ? CHAT_INPUT_ACCESSORY_ID : undefined}
               style={[
                 styles.input,
                 {
@@ -381,8 +450,6 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               </Pressable>
             )}
           </View>
-        ) : (
-          <View style={{ flex: 1 }} />
         )}
 
         {/* Send / Mic button — circular WhatsApp style */}
@@ -402,7 +469,18 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             onPress={() => stopRecording(false)}
             style={[styles.sendBtn, { backgroundColor: '#E53935', transform: [{ scale: 1.15 }] }]}
           >
-            <MaterialCommunityIcons name="send" size={22} color="#fff" />
+            <MaterialCommunityIcons name="stop" size={24} color="#fff" />
+          </Pressable>
+        ) : hasRecorded ? (
+          <Pressable
+            onPress={sendRecorded}
+            disabled={isSending || disabled}
+            style={({ pressed }) => [
+              styles.sendBtn,
+              { backgroundColor: pressed ? '#1a7a5e' : '#2e6155', opacity: isSending ? 0.6 : 1 },
+            ]}
+          >
+            <MaterialCommunityIcons name="send" size={20} color="#FFFFFF" style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />
           </Pressable>
         ) : (
           <Pressable
@@ -418,33 +496,12 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         )}
       </View>
     </View>
-    </>
   );
 });
 
 ChatInput.displayName = 'ChatInput';
 
 const styles = StyleSheet.create({
-  accessoryBar: {
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(0,0,0,0.1)',
-  },
-  accessorySendBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  accessorySendText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
   outerContainer: {
     paddingTop: 4,
   },
@@ -564,6 +621,22 @@ const styles = StyleSheet.create({
     height: 34,
     borderRadius: 17,
     borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewBar: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 24,
+    paddingHorizontal: 8,
+    minHeight: 44,
+  },
+  playBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#2e6155',
     alignItems: 'center',
     justifyContent: 'center',
   },

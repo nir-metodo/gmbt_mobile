@@ -36,7 +36,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
-import { catalogApi, CatalogItem, CatalogCustomColumn, CatalogFieldsConfig, CatalogSelection } from '../../../../services/api/catalog';
+import { catalogApi, CatalogItem, CatalogCustomColumn, CatalogFieldsConfig, CatalogSelection, PublicCatalogConfig } from '../../../../services/api/catalog';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { appCache } from '../../../../services/cache';
@@ -115,6 +115,11 @@ export default function CatalogScreen() {
 
   // Public catalog sharing + customer selections
   const [sharing, setSharing] = useState(false);
+  // Share-settings sheet (enable + shareMode all/marked + share link)
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [shareCfg, setShareCfg] = useState<PublicCatalogConfig>({});
+  const [shareCfgLoading, setShareCfgLoading] = useState(false);
+  const [shareSaving, setShareSaving] = useState(false);
   const [selectionsVisible, setSelectionsVisible] = useState(false);
   const [selections, setSelections] = useState<CatalogSelection[]>([]);
   const [selectionsLoading, setSelectionsLoading] = useState(false);
@@ -135,6 +140,7 @@ export default function CatalogScreen() {
   const [formImages, setFormImages] = useState<string[]>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [formCustomFields, setFormCustomFields] = useState<Record<string, any>>({});
+  const [formIsPublic, setFormIsPublic] = useState(false);
   const [uploading, setUploading] = useState(false);
 
   // Full-screen image viewer (lightbox) with left/right navigation.
@@ -391,6 +397,68 @@ export default function CatalogScreen() {
     }
   }, [user?.organization, isRTL, t, orderedCustomColumns]);
 
+  // How many items are marked for the public catalog (used by the share settings sheet).
+  const markedCount = useMemo(() => items.filter((i) => i.isPublic).length, [items]);
+
+  // Quick per-item toggle of public-catalog visibility (persists immediately).
+  const toggleItemPublic = useCallback(async (item: CatalogItem) => {
+    if (!user?.organization) return;
+    const next = items.map((i) => (i.id === item.id ? { ...i, isPublic: !i.isPublic } : i));
+    setItems(next);
+    appCache.set(CACHE_KEY, next);
+    try {
+      await catalogApi.save(user.organization, next, customColumns);
+    } catch {
+      // Roll back on failure so the UI reflects the persisted state.
+      setItems(items);
+      appCache.set(CACHE_KEY, items);
+      Alert.alert(t('common.error'), t('errors.generic'));
+    }
+  }, [items, customColumns, user?.organization, CACHE_KEY, t]);
+
+  // Open the share-settings sheet, loading the current public-catalog config.
+  const openShareSettings = useCallback(async () => {
+    if (!user?.organization) return;
+    setShareModalVisible(true);
+    setShareCfgLoading(true);
+    try {
+      const cfg = await catalogApi.getPublicConfig(user.organization);
+      setShareCfg(cfg || {});
+    } catch {
+      setShareCfg({});
+    } finally {
+      setShareCfgLoading(false);
+    }
+  }, [user?.organization]);
+
+  // Persist the share config (enabled + shareMode) together with the current item marks.
+  const saveShareSettings = useCallback(async () => {
+    if (!user?.organization) return;
+    setShareSaving(true);
+    try {
+      const cfg: PublicCatalogConfig = {
+        purpose: shareCfg.purpose || 'lead',
+        whatsappShare: shareCfg.whatsappShare !== false,
+        requireContact: shareCfg.requireContact !== false,
+        allowQuantity: shareCfg.allowQuantity || false,
+        columns: shareCfg.columns && Object.keys(shareCfg.columns).length ? shareCfg.columns : { image: true, description: true, unitPrice: true, category: true },
+        title: shareCfg.title || '',
+        whatsappNumber: shareCfg.whatsappNumber || '',
+        ...shareCfg,
+        enabled: shareCfg.enabled !== false,
+        slug: shareCfg.slug || (Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6)),
+        shareMode: shareCfg.shareMode || 'all',
+      };
+      await catalogApi.savePublicConfig(user.organization, cfg, items);
+      setShareCfg(cfg);
+      Alert.alert(isRTL ? 'נשמר' : 'Saved', isRTL ? 'הגדרות השיתוף נשמרו' : 'Share settings saved');
+    } catch {
+      Alert.alert(t('common.error'), t('errors.generic'));
+    } finally {
+      setShareSaving(false);
+    }
+  }, [user?.organization, shareCfg, items, isRTL, t]);
+
   const loadSelections = useCallback(async () => {
     if (!user?.organization) return;
     setSelectionsLoading(true);
@@ -553,6 +621,7 @@ export default function CatalogScreen() {
     setFormImages([]);
     setImageUrlInput('');
     setFormCustomFields({});
+    setFormIsPublic(false);
     setEditingItem(null);
   }, []);
 
@@ -572,6 +641,7 @@ export default function CatalogScreen() {
     setFormImages(Array.isArray(item.images) ? item.images.filter(Boolean) : []);
     setImageUrlInput('');
     setFormCustomFields(item.customFields || {});
+    setFormIsPublic(!!item.isPublic);
     setModalVisible(true);
   }, []);
 
@@ -605,6 +675,7 @@ export default function CatalogScreen() {
         images: formImages.map((u) => u.trim()).filter(Boolean),
         // Merge so any keys not surfaced as columns on this device are preserved.
         customFields: { ...(editingItem?.customFields || {}), ...formCustomFields },
+        isPublic: formIsPublic,
       };
 
       let newItems: CatalogItem[];
@@ -624,7 +695,7 @@ export default function CatalogScreen() {
     } finally {
       setSaving(false);
     }
-  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImages, formCustomFields, editingItem, items, customColumns, user?.organization, resetForm, fieldsConfig, isRTL]);
+  }, [formName, formDescription, formPrice, formSku, formCategory, formLink, formImages, formCustomFields, formIsPublic, editingItem, items, customColumns, user?.organization, resetForm, fieldsConfig, isRTL]);
 
   const handleDelete = useCallback((item: CatalogItem) => {
     Alert.alert(
@@ -749,6 +820,12 @@ export default function CatalogScreen() {
           </View>
           <View>
             <IconButton
+              icon={item.isPublic ? 'link-variant' : 'link-variant-off'}
+              size={18}
+              iconColor={item.isPublic ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+              onPress={() => toggleItemPublic(item)}
+            />
+            <IconButton
               icon="pencil-outline"
               size={18}
               iconColor={theme.colors.onSurfaceVariant}
@@ -762,9 +839,15 @@ export default function CatalogScreen() {
             />
           </View>
         </View>
+        {item.isPublic ? (
+          <View style={[styles.publicBadge, { [isRTL ? 'left' : 'right']: 8 }]}>
+            <MaterialCommunityIcons name="link-variant" size={10} color="#fff" />
+            <Text style={styles.publicBadgeText}>{isRTL ? 'בקטלוג הפומבי' : 'Public'}</Text>
+          </View>
+        ) : null}
       </Pressable>
     );
-  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, handleShareItem, openImageViewer, customColumns, orderedColumnTokens, isColumnTokenVisible, isRTL, fieldsConfig]);
+  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, handleShareItem, toggleItemPublic, openImageViewer, customColumns, orderedColumnTokens, isColumnTokenVisible, isRTL, fieldsConfig]);
 
   // Configurable mandatory field (defaults to name). On mobile only base fields are editable,
   // so if the required field is a custom column we don't block the save here.
@@ -806,7 +889,7 @@ export default function CatalogScreen() {
           color="#fff"
         />
         <Appbar.Action icon="inbox-arrow-down" color="#fff" onPress={openSelections} />
-        <Appbar.Action icon={sharing ? 'loading' : 'share-variant'} color="#fff" disabled={sharing} onPress={handleShareCatalog} />
+        <Appbar.Action icon={sharing ? 'loading' : 'share-variant'} color="#fff" disabled={sharing} onPress={openShareSettings} />
         <Appbar.Action
           icon={hasActiveFilters ? 'filter' : 'filter-outline'}
           color="#fff"
@@ -1255,6 +1338,19 @@ export default function CatalogScreen() {
                 </>
               )}
 
+              {/* Public catalog visibility (used when share mode = "marked items only") */}
+              <View style={[styles.publicToggleRow, { flexDirection, borderColor: theme.colors.outlineVariant }]}>
+                <View style={{ flex: 1 }}>
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, textAlign }}>
+                    {isRTL ? 'הצג בקטלוג הפומבי' : 'Show in public catalog'}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                    {isRTL ? 'במצב "רק פריטים מסומנים"' : 'When sharing marked items only'}
+                  </Text>
+                </View>
+                <Switch value={formIsPublic} onValueChange={setFormIsPublic} color={BRAND_COLOR} />
+              </View>
+
               {editingItem && (
                 <Button
                   mode="outlined"
@@ -1289,6 +1385,99 @@ export default function CatalogScreen() {
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
+        </Modal>
+
+        {/* Share settings — enable public catalog + choose all vs. marked items */}
+        <Modal
+          visible={shareModalVisible}
+          onDismiss={() => setShareModalVisible(false)}
+          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+        >
+          <View style={{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
+              {isRTL ? 'שיתוף קטלוג פומבי' : 'Share public catalog'}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => setShareModalVisible(false)} />
+          </View>
+
+          {shareCfgLoading ? (
+            <View style={{ paddingVertical: 24 }}><ActivityIndicator color={BRAND_COLOR} /></View>
+          ) : (
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <View style={[styles.publicToggleRow, { flexDirection, borderColor: theme.colors.outlineVariant }]}>
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, flex: 1, textAlign }}>
+                  {isRTL ? 'הפעל דף קטלוג פומבי' : 'Enable public catalog page'}
+                </Text>
+                <Switch
+                  value={shareCfg.enabled !== false}
+                  onValueChange={(v) => setShareCfg((p) => ({ ...p, enabled: v }))}
+                  color={BRAND_COLOR}
+                />
+              </View>
+
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginTop: 12, marginBottom: 6, textAlign }}>
+                {isRTL ? 'אילו מוצרים לשתף:' : 'Which items to share:'}
+              </Text>
+              <Pressable
+                style={[styles.shareModeRow, { flexDirection, borderColor: (shareCfg.shareMode || 'all') === 'all' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                onPress={() => setShareCfg((p) => ({ ...p, shareMode: 'all' }))}
+              >
+                <MaterialCommunityIcons
+                  name={(shareCfg.shareMode || 'all') === 'all' ? 'radiobox-marked' : 'radiobox-blank'}
+                  size={20}
+                  color={(shareCfg.shareMode || 'all') === 'all' ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+                />
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                  {isRTL ? `כל הקטלוג (${items.length} מוצרים)` : `All catalog (${items.length} items)`}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.shareModeRow, { flexDirection, borderColor: shareCfg.shareMode === 'marked' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                onPress={() => setShareCfg((p) => ({ ...p, shareMode: 'marked' }))}
+              >
+                <MaterialCommunityIcons
+                  name={shareCfg.shareMode === 'marked' ? 'radiobox-marked' : 'radiobox-blank'}
+                  size={20}
+                  color={shareCfg.shareMode === 'marked' ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+                />
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                  {isRTL ? `רק פריטים מסומנים (${markedCount} מסומנים)` : `Marked items only (${markedCount} marked)`}
+                </Text>
+              </Pressable>
+
+              {shareCfg.shareMode === 'marked' && (
+                <Text variant="bodySmall" style={{ color: markedCount === 0 ? theme.colors.error : theme.colors.onSurfaceVariant, marginTop: 6, textAlign }}>
+                  {markedCount === 0
+                    ? (isRTL ? '⚠️ לא סומנו מוצרים — סמן פריטים בעזרת אייקון הקישור בכרטיס, אחרת הדף יהיה ריק.' : '⚠️ No items marked — tap the link icon on a card to mark items, otherwise the page will be empty.')
+                    : (isRTL ? 'רק המוצרים שסימנת יופיעו בדף הפומבי.' : 'Only the items you marked will appear on the public page.')}
+                </Text>
+              )}
+
+              <View style={[styles.modalActions, { flexDirection, marginTop: 16 }]}>
+                <Button
+                  mode="outlined"
+                  icon="share-variant"
+                  onPress={handleShareCatalog}
+                  disabled={sharing}
+                  loading={sharing}
+                  style={[styles.actionBtn, { borderColor: BRAND_COLOR }]}
+                  textColor={BRAND_COLOR}
+                >
+                  {isRTL ? 'שתף קישור' : 'Share link'}
+                </Button>
+                <Button
+                  mode="contained"
+                  onPress={saveShareSettings}
+                  loading={shareSaving}
+                  disabled={shareSaving}
+                  style={[styles.actionBtn, { backgroundColor: BRAND_COLOR }]}
+                  textColor="#fff"
+                >
+                  {isRTL ? 'שמור' : 'Save'}
+                </Button>
+              </View>
+            </ScrollView>
+          )}
         </Modal>
 
         {/* Catalog selections (customer inquiries from the public catalog) */}
@@ -1500,6 +1689,10 @@ const styles = StyleSheet.create({
   formRow: { gap: 0 },
   modalActions: { marginTop: 8, gap: 10, justifyContent: 'flex-end' },
   actionBtn: { borderRadius: 8 },
+  publicBadge: { position: 'absolute', top: 6, flexDirection: 'row', alignItems: 'center', backgroundColor: BRAND_COLOR, borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, gap: 3 },
+  publicBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  publicToggleRow: { alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: 4, borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, marginBottom: 8 },
+  shareModeRow: { alignItems: 'center', borderWidth: 1.5, borderRadius: 10, padding: 12, marginBottom: 8 },
   selCard: { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 10 },
   purposeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
 });

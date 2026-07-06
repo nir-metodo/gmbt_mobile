@@ -71,6 +71,7 @@ export default function CalendarScreen() {
   const [formReminderEnabled, setFormReminderEnabled] = useState(true);
   const [formReminderMinutes, setFormReminderMinutes] = useState(15);
   const [showReminderMenu, setShowReminderMenu] = useState(false);
+  const [formShared, setFormShared] = useState(true);
 
   // Date pickers
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
@@ -150,6 +151,7 @@ export default function CalendarScreen() {
     setFormLinkedEntityId('');
     setFormReminderEnabled(true);
     setFormReminderMinutes(15);
+    setFormShared(true);
     setModalVisible(true);
   };
 
@@ -175,6 +177,7 @@ export default function CalendarScreen() {
     setFormLinkedEntityId(event.linkedEntityId || '');
     setFormReminderEnabled(event.reminderEnabled ?? true);
     setFormReminderMinutes(event.reminderMinutesBefore ?? 15);
+    setFormShared(event.shared !== false);
     setModalVisible(true);
   };
 
@@ -259,6 +262,7 @@ export default function CalendarScreen() {
         reminderEnabled: formReminderEnabled,
         reminderMinutesBefore: formReminderMinutes,
         pushReminderEnabled: formReminderEnabled,
+        shared: formShared,
       };
 
       if (editingEvent) {
@@ -640,6 +644,21 @@ export default function CalendarScreen() {
               outlineColor={theme.colors.outline}
               activeOutlineColor={BRAND_COLOR}
             />
+
+            {/* Shared with the calendar's team (only when the selected calendar is shared) */}
+            {(() => {
+              const selCal = calendars.find(c => c.id === formCalendarId);
+              const calShared = !!selCal && (selCal.isShared || (Array.isArray(selCal.sharedWithUserIds) && selCal.sharedWithUserIds.length > 0));
+              if (!calShared) return null;
+              return (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, paddingHorizontal: 4 }}>
+                  <Text style={{ color: theme.colors.onSurface, fontSize: 14, flex: 1 }}>
+                    {isRTL ? 'משותף עם צוות היומן' : 'Shared with calendar team'}
+                  </Text>
+                  <Switch value={formShared} onValueChange={setFormShared} color={BRAND_COLOR} />
+                </View>
+              );
+            })()}
 
             {/* Reminder */}
             <View style={styles.reminderSection}>
