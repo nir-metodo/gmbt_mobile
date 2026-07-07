@@ -24,8 +24,8 @@ export interface CatalogCustomColumn {
   searchable?: boolean;
   /** Whether the column is shown in the catalog list/cards (web Catalog → Columns). Defaults to true. */
   showInTable?: boolean;
-  /** Dedicated toolbar filter for this column: '' | 'range' | 'select' | 'boolean' (set on web). */
-  filterType?: '' | 'range' | 'select' | 'boolean' | string;
+  /** Dedicated toolbar filter for this column: '' | 'text' | 'range' | 'select' | 'boolean' | 'date' (set on web). */
+  filterType?: '' | 'text' | 'range' | 'select' | 'boolean' | 'date' | string;
   // Web stores select options as a comma-separated string; older/other data may be an array.
   options?: string[] | string;
 }
@@ -191,6 +191,31 @@ export const catalogApi = {
     if (Array.isArray(items)) brandingData.catalogItems = items;
     await axiosInstance.post(ENDPOINTS.SAVE_QUOTE_BRANDING, { organization, brandingData });
     return cfg;
+  },
+
+  /**
+   * Creates a per-contact personalized catalog share link. The customer opening the returned link
+   * (`/catalog/{org}?p={token}`) sees only the hand-picked items (or the whole catalog when itemIds
+   * is empty). Returns the public token.
+   */
+  async createShareLink(
+    organization: string,
+    opts: { itemIds: string[]; contactName?: string; contactPhone?: string; contactEmail?: string; title?: string; purpose?: string; createdBy?: string; createdById?: string }
+  ): Promise<{ token: string; id: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.CREATE_CATALOG_SHARE_LINK, {
+      organization,
+      itemIds: opts.itemIds || [],
+      contactName: opts.contactName || '',
+      contactPhone: (opts.contactPhone || '').replace(/\D/g, ''),
+      contactEmail: opts.contactEmail || '',
+      title: opts.title || '',
+      purpose: opts.purpose || 'browse',
+      createdBy: opts.createdBy || '',
+      createdById: opts.createdById || '',
+    });
+    const raw = response.data || {};
+    if (raw.ok === false || !raw.token) throw new Error(raw.error || 'Failed to create share link');
+    return { token: raw.token, id: raw.id };
   },
 
   /** Lists customer selections submitted via the public catalog (newest first). */

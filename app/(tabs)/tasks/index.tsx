@@ -9,6 +9,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import {
   Text,
@@ -31,7 +32,6 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -47,6 +47,7 @@ import { spacing, borderRadius, fontSize } from '../../../constants/theme';
 import type { Task } from '../../../types';
 import { useContactLookup } from '../../../hooks/useContactLookup';
 import ContactLookupField from '../../../components/ContactLookupField';
+import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
 
 const BRAND_COLOR = '#2e6155';
 // Agenda-style views, matching the web tasks screen: פעיל / באיחור / היום / הושלמו / הכל.
@@ -137,76 +138,21 @@ export default function TasksMoreScreen() {
   const [formRelatedEntityName, setFormRelatedEntityName] = useState('');
 
   const [showDueDatePicker, setShowDueDatePicker] = useState(false);
-  const [showDueTimePicker, setShowDueTimePicker] = useState(false);
   const [dueDateObj, setDueDateObj] = useState<Date>(new Date());
 
   const [reminderEnabled, setReminderEnabled] = useState(false);
   const [showReminderDatePicker, setShowReminderDatePicker] = useState(false);
-  const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
   const [reminderDateObj, setReminderDateObj] = useState<Date>(new Date());
 
   const tasksDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'tasks');
 
-  // ⚠️ ANDROID: never render <DateTimePicker> inside a Paper <Portal>/<Modal> — the chained
-  // date→time flow throws "Fragment already added" and only the date step ever appears (so a
-  // task can't get a time). Open the pickers imperatively instead (date, then time). iOS keeps
-  // the inline spinners. Mirrors the shared AddTaskSheet used by leads/contacts.
-  const pickDateTimeAndroid = useCallback((current: Date, onPicked: (d: Date) => void) => {
-    const base = current && !isNaN(current.getTime()) ? new Date(current) : new Date();
-    try {
-      DateTimePickerAndroid.open({
-        value: base,
-        mode: 'date',
-        onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
-          if (e.type !== 'set' || !dateVal) return;
-          const merged = new Date(base);
-          merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
-          setTimeout(() => {
-            try {
-              DateTimePickerAndroid.open({
-                value: merged,
-                mode: 'time',
-                is24Hour: true,
-                onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
-                  if (e2.type !== 'set' || !timeVal) return;
-                  merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
-                  onPicked(merged);
-                },
-              });
-            } catch {
-              onPicked(merged);
-            }
-          }, 150);
-        },
-      });
-    } catch {
-      /* picker unavailable — fail silently rather than crash */
-    }
-  }, []);
-
   const openDuePicker = useCallback(() => {
     const base = formDueDate ? new Date(formDueDate) : new Date();
-    if (Platform.OS === 'android') {
-      pickDateTimeAndroid(base, (picked) => {
-        setDueDateObj(picked);
-        setFormDueDate(picked.toISOString());
-        if (reminderEnabled && !formDueDate) setReminderDateObj(picked);
-      });
-    } else {
-      setDueDateObj(!isNaN(base.getTime()) ? base : new Date());
-      setShowDueDatePicker(true);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formDueDate, reminderEnabled, pickDateTimeAndroid]);
+    setDueDateObj(!isNaN(base.getTime()) ? base : new Date());
+    setShowDueDatePicker(true);
+  }, [formDueDate]);
 
-  const openReminderPicker = useCallback(() => {
-    const base = reminderDateObj && !isNaN(reminderDateObj.getTime()) ? reminderDateObj : new Date();
-    if (Platform.OS === 'android') {
-      pickDateTimeAndroid(base, (picked) => setReminderDateObj(picked));
-    } else {
-      setShowReminderDatePicker(true);
-    }
-  }, [reminderDateObj, pickDateTimeAndroid]);
+  const openReminderPicker = useCallback(() => setShowReminderDatePicker(true), []);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
@@ -467,6 +413,80 @@ export default function TasksMoreScreen() {
     }
   }, [user]);
 
+  // ── Bulk selection + common bulk actions ─────────────────────────
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkPriorityMenu, setBulkPriorityMenu] = useState(false);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const enterSelection = useCallback((id?: string) => {
+    setSelectionMode(true);
+    if (id) setSelectedIds((prev) => { const n = new Set(prev); n.add(id); return n; });
+  }, []);
+
+  const exitSelection = useCallback(() => { setSelectionMode(false); setSelectedIds(new Set()); }, []);
+
+  // "Select all displayed" toggles between selecting every task in the current view and clearing.
+  const allDisplayedSelected = filteredTasks.length > 0 && filteredTasks.every((tk) => selectedIds.has(tk.id));
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      if (filteredTasks.length > 0 && filteredTasks.every((tk) => prev.has(tk.id))) return new Set();
+      return new Set(filteredTasks.map((tk) => tk.id));
+    });
+  }, [filteredTasks]);
+
+  const selectedTasks = useMemo(() => tasks.filter((tk) => selectedIds.has(tk.id)), [tasks, selectedIds]);
+
+  // Run an operation over every selected task in parallel, then refresh + exit selection mode.
+  const runBulk = useCallback(async (fn: (task: Task) => Promise<any>) => {
+    if (selectedTasks.length === 0) return;
+    setBulkProcessing(true);
+    try {
+      await Promise.all(selectedTasks.map((tk) => fn(tk).catch(() => {})));
+      await fetchTasks();
+      exitSelection();
+    } finally {
+      setBulkProcessing(false);
+    }
+  }, [selectedTasks, fetchTasks, exitSelection]);
+
+  const bulkComplete = useCallback(() => {
+    const org = user?.organization || '';
+    const uid = user?.uID || user?.userId || '';
+    const uname = user?.fullname || '';
+    runBulk((tk) => (tk.status === 'completed'
+      ? Promise.resolve()
+      : tasksApi.complete(org, (tk as any).taskId || tk.id, uid, uname)));
+  }, [runBulk, user]);
+
+  const bulkSetPriority = useCallback((priority: string) => {
+    setBulkPriorityMenu(false);
+    const org = user?.organization || '';
+    const uid = user?.uID || user?.userId || '';
+    const uname = user?.fullname || '';
+    runBulk((tk) => tasksApi.update(org, { taskId: (tk as any).taskId || tk.id, priority } as any, uid, uname));
+  }, [runBulk, user]);
+
+  const bulkDelete = useCallback(() => {
+    const org = user?.organization || '';
+    Alert.alert(
+      t('tasks.deleteTask', 'מחיקת משימות'),
+      isRTL ? `למחוק ${selectedTasks.length} משימות?` : `Delete ${selectedTasks.length} tasks?`,
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('common.delete'), style: 'destructive', onPress: () => runBulk((tk) => tasksApi.delete(org, (tk as any).taskId || tk.id)) },
+      ],
+    );
+  }, [runBulk, user, selectedTasks.length, t, isRTL]);
+
   const renderTaskCard = useCallback(
     ({ item }: { item: Task }) => {
       const overdue = isOverdue(item);
@@ -474,23 +494,34 @@ export default function TasksMoreScreen() {
       const cancelled = item.status === 'cancelled';
       const priorityColor = PRIORITY_COLORS[item.priority] || PRIORITY_COLORS.medium;
       const statusColor = STATUS_COLORS[item.status] || STATUS_COLORS.pending;
+      const isChecked = selectedIds.has(item.id);
 
       return (
         <Pressable
-          onPress={() => openTask(item)}
+          onPress={() => (selectionMode ? toggleSelect(item.id) : openTask(item))}
+          onLongPress={() => enterSelection(item.id)}
           android_ripple={{ color: theme.colors.surfaceVariant }}
           style={({ pressed }) => [
             styles.taskCard,
             {
               backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom.cardBackground,
-              borderColor: overdue ? '#F4433640' : theme.colors.outlineVariant,
+              borderColor: selectionMode && isChecked ? BRAND_COLOR : (overdue ? '#F4433640' : theme.colors.outlineVariant),
             },
             overdue && styles.taskCardOverdue,
+            selectionMode && isChecked && { borderWidth: 1.5 },
           ]}
         >
           <View style={[styles.priorityBar, { backgroundColor: priorityColor }]} />
 
-          {!completed && !cancelled ? (
+          {selectionMode ? (
+            <Pressable onPress={() => toggleSelect(item.id)} hitSlop={8} style={styles.completeBtn}>
+              <MaterialCommunityIcons
+                name={isChecked ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'}
+                size={26}
+                color={isChecked ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+              />
+            </Pressable>
+          ) : !completed && !cancelled ? (
             <Pressable
               onPress={() => handleCompleteTask(item)}
               hitSlop={8}
@@ -609,7 +640,7 @@ export default function TasksMoreScreen() {
         </Pressable>
       );
     },
-    [theme, openTask, handleCompleteTask, flexDirection, textAlign, t],
+    [theme, openTask, handleCompleteTask, flexDirection, textAlign, t, selectionMode, selectedIds, toggleSelect, enterSelection],
   );
 
   const renderEmpty = useCallback(() => {
@@ -645,6 +676,11 @@ export default function TasksMoreScreen() {
       <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
         <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
         <Appbar.Content title={t('tasks.title')} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 18 }} />
+        <Appbar.Action
+          icon={selectionMode ? 'close' : 'checkbox-multiple-marked-outline'}
+          color="#FFF"
+          onPress={() => { if (selectionMode) exitSelection(); else setSelectionMode(true); }}
+        />
         <Appbar.Action
           icon={searchVisible ? 'close' : 'magnify'}
           color="#FFF"
@@ -827,18 +863,85 @@ export default function TasksMoreScreen() {
         contentContainerStyle={[
           styles.listContent,
           filteredTasks.length === 0 && styles.listContentEmpty,
+          selectionMode && { paddingBottom: 150 },
         ]}
         ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         showsVerticalScrollIndicator={false}
       />
 
-      <FAB
-        icon="plus"
-        onPress={() => { resetForm(); setCreateModalVisible(true); }}
-        style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
-        color="#FFFFFF"
-        label={t('tasks.addTask')}
-      />
+      {!selectionMode && (
+        <FAB
+          icon="plus"
+          onPress={() => { resetForm(); setCreateModalVisible(true); }}
+          style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
+          color="#FFFFFF"
+          label={t('tasks.addTask')}
+        />
+      )}
+
+      {/* Bulk action bar — select all displayed + common actions on the selection */}
+      {selectionMode && (
+        <View style={[styles.bulkBar, { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outlineVariant, paddingBottom: insets.bottom + 10 }]}>
+          <View style={[styles.bulkTopRow, { flexDirection }]}>
+            <Text style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+              {selectedIds.size} {isRTL ? 'נבחרו' : 'selected'}
+            </Text>
+            <Button mode="text" compact onPress={toggleSelectAll} textColor={BRAND_COLOR}>
+              {allDisplayedSelected ? (isRTL ? 'נקה הכל' : 'Clear all') : (isRTL ? 'בחר הכל' : 'Select all')}
+            </Button>
+            <Button mode="text" compact onPress={exitSelection} textColor={theme.colors.onSurfaceVariant}>
+              {t('common.cancel')}
+            </Button>
+          </View>
+          <View style={[styles.bulkActionsRow, { flexDirection }]}>
+            <Button
+              mode="contained"
+              icon="check-circle"
+              compact
+              disabled={selectedIds.size === 0 || bulkProcessing}
+              loading={bulkProcessing}
+              onPress={bulkComplete}
+              buttonColor={STATUS_COLORS.completed}
+              textColor="#fff"
+              style={styles.bulkBtn}
+            >
+              {isRTL ? 'סמן כהושלם' : 'Complete'}
+            </Button>
+            <Menu
+              visible={bulkPriorityMenu}
+              onDismiss={() => setBulkPriorityMenu(false)}
+              anchor={
+                <Button
+                  mode="outlined"
+                  icon="flag"
+                  compact
+                  disabled={selectedIds.size === 0 || bulkProcessing}
+                  onPress={() => setBulkPriorityMenu(true)}
+                  textColor={BRAND_COLOR}
+                  style={[styles.bulkBtn, { borderColor: BRAND_COLOR }]}
+                >
+                  {isRTL ? 'עדיפות' : 'Priority'}
+                </Button>
+              }
+            >
+              {PRIORITIES.map((p) => (
+                <Menu.Item key={p} title={t(`tasks.${p}`)} onPress={() => bulkSetPriority(p)} leadingIcon="flag" />
+              ))}
+            </Menu>
+            <Button
+              mode="outlined"
+              icon="delete-outline"
+              compact
+              disabled={selectedIds.size === 0 || bulkProcessing}
+              onPress={bulkDelete}
+              textColor={theme.colors.error}
+              style={[styles.bulkBtn, { borderColor: theme.colors.error }]}
+            >
+              {t('common.delete')}
+            </Button>
+          </View>
+        </View>
+      )}
 
       <Portal>
         <Modal
@@ -956,41 +1059,19 @@ export default function TasksMoreScreen() {
                 </View>
               </Pressable>
 
-              {showDueDatePicker && (
-                <DateTimePicker
-                  value={dueDateObj}
-                  mode="date"
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                  onChange={(_: DateTimePickerEvent, d?: Date) => {
-                    setShowDueDatePicker(false);
-                    if (d) {
-                      const merged = new Date(dueDateObj);
-                      merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                      setDueDateObj(merged);
-                      setShowDueTimePicker(true);
-                    }
-                  }}
-                />
-              )}
-              {showDueTimePicker && (
-                <DateTimePicker
-                  value={dueDateObj}
-                  mode="time"
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                  onChange={(_: DateTimePickerEvent, d?: Date) => {
-                    setShowDueTimePicker(false);
-                    if (d) {
-                      const merged = new Date(dueDateObj);
-                      merged.setHours(d.getHours(), d.getMinutes());
-                      setDueDateObj(merged);
-                      setFormDueDate(merged.toISOString());
-                      if (reminderEnabled && !formDueDate) {
-                        setReminderDateObj(merged);
-                      }
-                    }
-                  }}
-                />
-              )}
+              <GambotDateTimePicker
+                visible={showDueDatePicker}
+                value={formDueDate || dueDateObj}
+                title={t('tasks.dueDate')}
+                allowClear
+                onConfirm={(d) => {
+                  setDueDateObj(d);
+                  setFormDueDate(d.toISOString());
+                  if (reminderEnabled && !formDueDate) setReminderDateObj(d);
+                }}
+                onClear={() => setFormDueDate('')}
+                onDismiss={() => setShowDueDatePicker(false)}
+              />
 
               <View style={[styles.reminderRow, { flexDirection }]}>
                 <View style={[styles.reminderLabelRow, { flexDirection }]}>
@@ -1028,37 +1109,13 @@ export default function TasksMoreScreen() {
                     </View>
                   </Pressable>
 
-                  {showReminderDatePicker && (
-                    <DateTimePicker
-                      value={reminderDateObj}
-                      mode="date"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(_: DateTimePickerEvent, d?: Date) => {
-                        setShowReminderDatePicker(false);
-                        if (d) {
-                          const merged = new Date(reminderDateObj);
-                          merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                          setReminderDateObj(merged);
-                          setShowReminderTimePicker(true);
-                        }
-                      }}
-                    />
-                  )}
-                  {showReminderTimePicker && (
-                    <DateTimePicker
-                      value={reminderDateObj}
-                      mode="time"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(_: DateTimePickerEvent, d?: Date) => {
-                        setShowReminderTimePicker(false);
-                        if (d) {
-                          const merged = new Date(reminderDateObj);
-                          merged.setHours(d.getHours(), d.getMinutes());
-                          setReminderDateObj(merged);
-                        }
-                      }}
-                    />
-                  )}
+                  <GambotDateTimePicker
+                    visible={showReminderDatePicker}
+                    value={reminderDateObj}
+                    title={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
+                    onConfirm={(d) => setReminderDateObj(d)}
+                    onDismiss={() => setShowReminderDatePicker(false)}
+                  />
                 </>
               )}
 
@@ -1213,6 +1270,20 @@ const styles = StyleSheet.create({
     position: 'absolute',
     borderRadius: 16,
   },
+  bulkBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    elevation: 8,
+    gap: 6,
+  },
+  bulkTopRow: { alignItems: 'center' },
+  bulkActionsRow: { alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  bulkBtn: { borderRadius: borderRadius.md, flex: 1, minWidth: 100 },
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -2,6 +2,17 @@ import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { ESignatureDocument } from '../../types';
 
+export interface DocumentTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  // Optional flag some orgs set to mark a template as usable for digital signature.
+  // When absent we treat all templates as eligible (matches the web behavior).
+  useForSignature?: boolean;
+  signatureEnabled?: boolean;
+}
+
 export const esignatureApi = {
   async getDocuments(
     organizationName: string,
@@ -89,6 +100,44 @@ export const esignatureApi = {
       signatureData,
       signerName,
     });
+    return response.data;
+  },
+
+  // List document templates available in the org. If any template is explicitly flagged for
+  // signature use (useForSignature / signatureEnabled), we return only those; otherwise all
+  // templates are returned — mirroring the web e-signature editor which lists every template.
+  async getDocumentTemplates(organization: string): Promise<DocumentTemplate[]> {
+    const response = await axiosInstance.post(ENDPOINTS.DOC_TEMPLATES_GET_ALL, { organization });
+    const raw = response.data;
+    const items: any[] = raw?.Data ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+    const mapped: DocumentTemplate[] = (Array.isArray(items) ? items : []).map((t) => ({
+      id: t.id || t.Id || '',
+      name: t.name || t.Name || t.id || '',
+      description: t.description || t.Description || '',
+      category: t.category || t.Category || '',
+      useForSignature: t.useForSignature ?? t.UseForSignature,
+      signatureEnabled: t.signatureEnabled ?? t.SignatureEnabled,
+    })).filter((t) => t.id);
+    const flagged = mapped.filter((t) => t.useForSignature === true || t.signatureEnabled === true);
+    return flagged.length > 0 ? flagged : mapped;
+  },
+
+  // Create a signature request straight from a document template (no manual field placement —
+  // the backend auto-generates default signature/name/date fields). Matches the web
+  // "Send for e-signature" flow in DocumentTemplateGenerate.
+  async createFromTemplate(payload: {
+    organization: string;
+    templateId: string;
+    documentName?: string;
+    language?: string;
+    expiresInDays?: number;
+    contactPhone?: string;
+    signers?: any[];
+    userId?: string;
+    userName?: string;
+    requiresSequentialSigning?: boolean;
+  }): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.ESIGNATURE_CREATE_FROM_TEMPLATE, payload);
     return response.data;
   },
 };

@@ -40,7 +40,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
-import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
 import { useChatStore } from '../../../stores/chatStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -1378,48 +1378,6 @@ export default function ChatConversationScreen() {
     loadTemplates();
     setShowScheduleModal(true);
   }, [loadTemplates]);
-
-  // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inline inside a React Native <Modal> on
-  // Android — the native date/time dialog clashes with the modal host and the chained date→time
-  // flow throws "IllegalStateException: Fragment already added", closing the whole app. So on
-  // Android we open the pickers imperatively (date, then time); iOS keeps the inline datetime
-  // spinner. This mirrors the shared AddTaskSheet due-date picker exactly.
-  const pickScheduleDateTimeAndroid = useCallback((current: Date) => {
-    const now = new Date();
-    const base = current && !isNaN(current.getTime()) ? new Date(current) : now;
-    try {
-      DateTimePickerAndroid.open({
-        value: base,
-        mode: 'date',
-        minimumDate: now,
-        onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
-          if (e.type !== 'set' || !dateVal) return;
-          const merged = new Date(base);
-          merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
-          // Defer the time picker so it doesn't open while the date dialog's fragment is still
-          // attached ("Fragment already added" -> app crash on some Android versions).
-          setTimeout(() => {
-            try {
-              DateTimePickerAndroid.open({
-                value: merged,
-                mode: 'time',
-                is24Hour: true,
-                onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
-                  if (e2.type !== 'set' || !timeVal) return;
-                  merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
-                  setScheduledDateTime(merged);
-                },
-              });
-            } catch {
-              setScheduledDateTime(merged);
-            }
-          }, 150);
-        },
-      });
-    } catch {
-      // Picker unavailable — fail silently rather than crash.
-    }
-  }, []);
 
   // Pre-fill a scheduled template's variables from its saved auto-mapping (variableMappingJson),
   // exactly like the Quick template flow — the user can still edit any value manually.
@@ -3693,19 +3651,9 @@ export default function ChatConversationScreen() {
                 >
                   {t('chats.pickDateTime', 'תאריך ושעה')}
                 </Text>
-                {/* Single combined date+time field — matches the AddTaskSheet due-date picker:
-                    Android opens the native date→time dialogs imperatively (no in-Modal crash),
-                    iOS shows an inline datetime spinner. */}
+                {/* Single combined date+time field — unified GambotDateTimePicker (native wheel + Save). */}
                 <Pressable
-                  onPress={() => {
-                    const base = scheduledDateTime || new Date();
-                    if (Platform.OS === 'android') {
-                      pickScheduleDateTimeAndroid(base);
-                    } else {
-                      setShowScheduleTimePicker(false);
-                      setShowScheduleDatePicker((v) => !v);
-                    }
-                  }}
+                  onPress={() => setShowScheduleDatePicker(true)}
                   style={[styles.scheduleInput, { borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db', backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f9fafb', flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10 }]}
                 >
                   <MaterialCommunityIcons name="calendar-clock" size={18} color={theme.colors.onSurfaceVariant} />
@@ -3715,24 +3663,15 @@ export default function ChatConversationScreen() {
                       : t('tasks.selectDueDate', 'בחר תאריך ושעה')}
                   </Text>
                 </Pressable>
-                {Platform.OS === 'ios' && showScheduleDatePicker && (
-                  <View style={[styles.scheduleIosPickerWrap, { borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db' }]}>
-                    <DateTimePicker
-                      value={scheduledDateTime || new Date()}
-                      mode="datetime"
-                      display="spinner"
-                      minimumDate={new Date()}
-                      themeVariant={theme.dark ? 'dark' : 'light'}
-                      style={{ alignSelf: 'stretch' }}
-                      onChange={(_: DateTimePickerEvent, date?: Date) => {
-                        if (date) setScheduledDateTime(date);
-                      }}
-                    />
-                    <Button mode="contained-tonal" compact onPress={() => setShowScheduleDatePicker(false)} style={{ alignSelf: 'center', marginTop: 4 }}>
-                      {t('common.done', 'סיום')}
-                    </Button>
-                  </View>
-                )}
+                <GambotDateTimePicker
+                  visible={showScheduleDatePicker}
+                  mode="datetime"
+                  value={scheduledDateTime || new Date()}
+                  minimumDate={new Date()}
+                  title={t('chats.pickDateTime', 'תאריך ושעה')}
+                  onConfirm={(d) => setScheduledDateTime(d)}
+                  onDismiss={() => setShowScheduleDatePicker(false)}
+                />
                 {scheduleMessageType === 'text' && scheduleIsFarFuture && (
                   <Text style={{ color: theme.dark ? '#fdba74' : '#9a3412', fontSize: 12, marginTop: 8 }}>
                     {isRTL
@@ -4130,22 +4069,18 @@ export default function ChatConversationScreen() {
                     </Text>
                     <MaterialCommunityIcons name="calendar" size={18} color={theme.colors.onSurfaceVariant} />
                   </Pressable>
-                  {showDatePicker && (
-                    <DateTimePicker
-                      value={selectedDate || new Date()}
-                      mode="date"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      minimumDate={new Date()}
-                      onChange={(_, date) => {
-                        setShowDatePicker(Platform.OS === 'ios');
-                        if (date) {
-                          setSelectedDate(date);
-                          const iso = date.toISOString().split('T')[0];
-                          setCreateTaskDueDate(iso);
-                        }
-                      }}
-                    />
-                  )}
+                  <GambotDateTimePicker
+                    visible={showDatePicker}
+                    mode="date"
+                    value={selectedDate || new Date()}
+                    minimumDate={new Date()}
+                    title={t('tasks.selectDate', 'בחר תאריך')}
+                    onConfirm={(date) => {
+                      setSelectedDate(date);
+                      setCreateTaskDueDate(date.toISOString().split('T')[0]);
+                    }}
+                    onDismiss={() => setShowDatePicker(false)}
+                  />
                   <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                     {t('tasks.priority', 'עדיפות')}
                   </Text>

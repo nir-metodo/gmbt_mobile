@@ -4,8 +4,8 @@ import { Text, TextInput, FAB, Card, IconButton, Button, Chip, Menu, Portal, Mod
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Calendar from 'expo-calendar';
+import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { useAuthStore } from '../../../../stores/authStore';
 import { calendarApi, CalendarEvent, CalendarInfo, Connection } from '../../../../services/api/calendar';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
@@ -43,8 +43,23 @@ export default function CalendarScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // View mode: agenda-style list or a real month grid calendar.
+  const [viewMode, setViewMode] = useState<'month' | 'list'>('month');
+  // Month the grid is showing + the day the user tapped (drives the day-agenda below the grid).
+  const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
+  const [selectedDay, setSelectedDay] = useState<string>(() => toLocalDateStr(new Date()));
+
   // Filter
   const [dateFilter, setDateFilter] = useState<'upcoming' | 'today' | 'week' | 'all'>('upcoming');
+
+  // Calendar event visibility mirrors the web app: admins see every event in the org, while
+  // regular users only get their own events + events on shared calendars (enforced server-side
+  // by GetCalendarEvents when a userId is passed). Passing undefined = "see all".
+  const isAdmin = useMemo(() => {
+    const role = ((user as any)?.SecurityRole || (user as any)?.securityRole || '').toLowerCase();
+    const email = ((user as any)?.email || (user as any)?.Email || '').toLowerCase();
+    return role === 'admin' || role === 'system admin' || email === 'info@gambot.co.il';
+  }, [user]);
 
   // Modal state
   const [modalVisible, setModalVisible] = useState(false);
@@ -89,7 +104,7 @@ export default function CalendarScreen() {
     if (!org) return;
     try {
       const [evts, cals, conns] = await Promise.all([
-        calendarApi.getEvents(org, user?.userId),
+        calendarApi.getEvents(org, isAdmin ? undefined : (user?.userId || user?.uID || undefined)),
         calendarApi.getCalendars(org),
         calendarApi.getConnections(org),
       ]);
@@ -102,7 +117,7 @@ export default function CalendarScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [org, user?.userId]);
+  }, [org, user?.userId, user?.uID, isAdmin]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -130,6 +145,59 @@ export default function CalendarScreen() {
     return filtered;
   }, [events, dateFilter]);
 
+  // Group events by day (yyyy-MM-dd) for the month grid dots + the per-day agenda.
+  const eventsByDate = useMemo(() => {
+    const map: Record<string, CalendarEvent[]> = {};
+    for (const e of events) {
+      if (!e.startDate) continue;
+      (map[e.startDate] = map[e.startDate] || []).push(e);
+    }
+    Object.values(map).forEach((list) =>
+      list.sort((a, b) => (a.startTime || '00:00').localeCompare(b.startTime || '00:00')),
+    );
+    return map;
+  }, [events]);
+
+  // Events for the day the user tapped in the grid, chronological.
+  const selectedDayEvents = useMemo(() => eventsByDate[selectedDay] || [], [eventsByDate, selectedDay]);
+
+  // Build the 6x7 month grid (leading/trailing days from adjacent months are dimmed).
+  const monthGrid = useMemo(() => {
+    const year = monthCursor.getFullYear();
+    const month = monthCursor.getMonth();
+    const first = new Date(year, month, 1);
+    const startWeekday = first.getDay(); // 0 = Sunday (weeks start Sunday, like Hebrew calendars)
+    const gridStart = new Date(year, month, 1 - startWeekday);
+    const cells: { date: Date; dateStr: string; inMonth: boolean }[] = [];
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + i);
+      cells.push({ date: d, dateStr: toLocalDateStr(d), inMonth: d.getMonth() === month });
+    }
+    return cells;
+  }, [monthCursor]);
+
+  const monthLabel = useMemo(() => {
+    const locale = isRTL ? 'he-IL' : 'en-US';
+    return monthCursor.toLocaleDateString(locale, { month: 'long', year: 'numeric' });
+  }, [monthCursor, isRTL]);
+
+  const weekdayLabels = useMemo(() => {
+    const he = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
+    const en = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return isRTL ? he : en;
+  }, [isRTL]);
+
+  const goToPrevMonth = useCallback(() => setMonthCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1)), []);
+  const goToNextMonth = useCallback(() => setMonthCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1)), []);
+  const goToToday = useCallback(() => {
+    const now = new Date();
+    setMonthCursor(new Date(now.getFullYear(), now.getMonth(), 1));
+    setSelectedDay(toLocalDateStr(now));
+  }, []);
+
+  const todayStr = toLocalDateStr(new Date());
+
   const openCreateModal = () => {
     const now = new Date();
     setEditingEvent(null);
@@ -153,6 +221,15 @@ export default function CalendarScreen() {
     setFormReminderMinutes(15);
     setFormShared(true);
     setModalVisible(true);
+  };
+
+  // Open the create modal pre-filled with a specific day (tapped in the month grid).
+  const openCreateModalForDay = (dateStr: string) => {
+    const d = new Date(dateStr + 'T12:00:00');
+    const day = isNaN(d.getTime()) ? new Date() : d;
+    openCreateModal();
+    setFormStartDate(day);
+    setFormEndDate(day);
   };
 
   const openEditModal = (event: CalendarEvent) => {
@@ -305,6 +382,41 @@ export default function CalendarScreen() {
     );
   };
 
+  const renderEventCard = (event: CalendarEvent) => (
+    <Card key={event.id} style={[styles.eventCard, { backgroundColor: theme.custom.cardBackground }]} onPress={() => openEditModal(event)}>
+      <Card.Content>
+        <View style={styles.eventHeader}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.eventTitle, { color: theme.colors.onSurface }]}>{event.title}</Text>
+            <Text style={[styles.eventDate, { color: theme.colors.onSurfaceVariant }]}>
+              {formatDisplayDate(event.startDate)} {formatTime(event.startTime)}
+              {event.endTime ? ` - ${formatTime(event.endTime)}` : ''}
+            </Text>
+          </View>
+          <IconButton icon="delete-outline" size={20} iconColor="#ef4444" onPress={() => handleDelete(event)} />
+        </View>
+        {event.location ? (
+          <View style={styles.eventDetail}>
+            <MaterialCommunityIcons name="map-marker-outline" size={14} color={theme.colors.onSurfaceVariant} />
+            <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.location}</Text>
+          </View>
+        ) : null}
+        {event.linkedEntityName ? (
+          <View style={styles.eventDetail}>
+            <MaterialCommunityIcons name="link-variant" size={14} color={theme.colors.onSurfaceVariant} />
+            <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.linkedEntityName}</Text>
+          </View>
+        ) : null}
+        {event.attendeeEmail ? (
+          <View style={styles.eventDetail}>
+            <MaterialCommunityIcons name="account-outline" size={14} color={theme.colors.onSurfaceVariant} />
+            <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.attendeeEmail}</Text>
+          </View>
+        ) : null}
+      </Card.Content>
+    </Card>
+  );
+
   const getCalendarName = (calId: string) => calendars.find(c => c.id === calId)?.name || '';
   const getConnectionLabel = (connId: string) => {
     const c = connections.find(cn => cn.id === connId);
@@ -324,71 +436,128 @@ export default function CalendarScreen() {
       {/* Header */}
       <View style={[styles.header, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant }]}>
         <IconButton icon="arrow-right" onPress={() => router.back()} iconColor={theme.colors.onSurface} />
-        <Text style={[styles.headerTitle, { color: theme.colors.onSurface }]}>{isRTL ? 'יומן אירועים' : 'Calendar Events'}</Text>
+        <Text style={[styles.headerTitle, { color: theme.colors.onSurface }]}>{isRTL ? 'יומן' : 'Calendar'}</Text>
+        <IconButton
+          icon={viewMode === 'month' ? 'view-agenda-outline' : 'calendar-month-outline'}
+          onPress={() => setViewMode(m => (m === 'month' ? 'list' : 'month'))}
+          iconColor={theme.colors.onSurface}
+        />
         <IconButton icon="refresh" onPress={() => { setRefreshing(true); loadData(); }} iconColor={theme.colors.onSurface} />
       </View>
 
-      {/* Filters */}
-      <View style={[styles.filterRow, { backgroundColor: theme.colors.surface }]}>
-        {(['upcoming', 'today', 'week', 'all'] as const).map(f => (
-          <Chip
-            key={f}
-            selected={dateFilter === f}
-            onPress={() => setDateFilter(f)}
-            style={[{ backgroundColor: isDark ? theme.colors.surfaceVariant : '#f3f4f6' }, dateFilter === f && styles.filterChipActive]}
-            textStyle={[{ fontSize: 12, color: theme.colors.onSurfaceVariant }, dateFilter === f && styles.filterChipTextActive]}
-          >
-            {f === 'upcoming' ? (isRTL ? 'קרובים' : 'Upcoming') :
-             f === 'today' ? (isRTL ? 'היום' : 'Today') :
-             f === 'week' ? (isRTL ? 'השבוע' : 'This Week') :
-             (isRTL ? 'הכול' : 'All')}
-          </Chip>
-        ))}
-      </View>
-
-      {/* Events list */}
-      <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 80 }}>
-        {filteredEvents.length === 0 && (
-          <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="calendar-blank-outline" size={48} color={theme.colors.onSurfaceVariant} />
-            <Text style={[styles.emptyText, { color: theme.colors.onSurfaceVariant }]}>{isRTL ? 'אין אירועים' : 'No events'}</Text>
+      {viewMode === 'month' ? (
+        <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 90 }}>
+          {/* Month navigation */}
+          <View style={[styles.monthNav, { backgroundColor: theme.colors.surface }]}>
+            <IconButton icon={isRTL ? 'chevron-right' : 'chevron-left'} onPress={goToPrevMonth} iconColor={theme.colors.onSurface} size={26} />
+            <Pressable onPress={goToToday} style={{ flex: 1 }}>
+              <Text style={[styles.monthLabel, { color: theme.colors.onSurface }]}>{monthLabel}</Text>
+              <Text style={[styles.todayHint, { color: BRAND_COLOR }]}>{isRTL ? 'לחץ לחזרה להיום' : 'Tap for today'}</Text>
+            </Pressable>
+            <IconButton icon={isRTL ? 'chevron-left' : 'chevron-right'} onPress={goToNextMonth} iconColor={theme.colors.onSurface} size={26} />
           </View>
-        )}
-        {filteredEvents.map(event => (
-          <Card key={event.id} style={[styles.eventCard, { backgroundColor: theme.custom.cardBackground }]} onPress={() => openEditModal(event)}>
-            <Card.Content>
-              <View style={styles.eventHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.eventTitle, { color: theme.colors.onSurface }]}>{event.title}</Text>
-                  <Text style={[styles.eventDate, { color: theme.colors.onSurfaceVariant }]}>
-                    {formatDisplayDate(event.startDate)} {formatTime(event.startTime)}
-                    {event.endTime ? ` - ${formatTime(event.endTime)}` : ''}
-                  </Text>
-                </View>
-                <IconButton icon="delete-outline" size={20} iconColor="#ef4444" onPress={() => handleDelete(event)} />
+
+          {/* Weekday headers */}
+          <View style={[styles.weekRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            {weekdayLabels.map((w, i) => (
+              <View key={i} style={styles.weekdayCell}>
+                <Text style={[styles.weekdayText, { color: theme.colors.onSurfaceVariant }]}>{w}</Text>
               </View>
-              {event.location ? (
-                <View style={styles.eventDetail}>
-                  <MaterialCommunityIcons name="map-marker-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                  <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.location}</Text>
-                </View>
-              ) : null}
-              {event.linkedEntityName ? (
-                <View style={styles.eventDetail}>
-                  <MaterialCommunityIcons name="link-variant" size={14} color={theme.colors.onSurfaceVariant} />
-                  <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.linkedEntityName}</Text>
-                </View>
-              ) : null}
-              {event.attendeeEmail ? (
-                <View style={styles.eventDetail}>
-                  <MaterialCommunityIcons name="account-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                  <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.attendeeEmail}</Text>
-                </View>
-              ) : null}
-            </Card.Content>
-          </Card>
-        ))}
-      </ScrollView>
+            ))}
+          </View>
+
+          {/* Day grid */}
+          <View style={[styles.grid, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            {monthGrid.map((cell) => {
+              const dayEvents = eventsByDate[cell.dateStr] || [];
+              const isToday = cell.dateStr === todayStr;
+              const isSelected = cell.dateStr === selectedDay;
+              return (
+                <Pressable
+                  key={cell.dateStr}
+                  onPress={() => setSelectedDay(cell.dateStr)}
+                  style={[
+                    styles.dayCell,
+                    { borderColor: theme.colors.outlineVariant },
+                    isSelected && { backgroundColor: `${BRAND_COLOR}22`, borderColor: BRAND_COLOR },
+                  ]}
+                >
+                  <View style={[
+                    styles.dayNumWrap,
+                    isToday && { backgroundColor: BRAND_COLOR },
+                  ]}>
+                    <Text style={[
+                      styles.dayNum,
+                      { color: !cell.inMonth ? theme.colors.onSurfaceVariant : theme.colors.onSurface, opacity: cell.inMonth ? 1 : 0.35 },
+                      isToday && { color: '#fff', fontWeight: '700' },
+                    ]}>
+                      {cell.date.getDate()}
+                    </Text>
+                  </View>
+                  <View style={styles.dotsRow}>
+                    {dayEvents.slice(0, 3).map((e, idx) => (
+                      <View key={idx} style={[styles.dot, { backgroundColor: BRAND_COLOR }]} />
+                    ))}
+                    {dayEvents.length > 3 && (
+                      <Text style={[styles.moreDot, { color: theme.colors.onSurfaceVariant }]}>+{dayEvents.length - 3}</Text>
+                    )}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {/* Selected day agenda */}
+          <View style={styles.dayAgenda}>
+            <Text style={[styles.dayAgendaTitle, { color: theme.colors.onSurface, textAlign }]}>
+              {formatDisplayDate(selectedDay)}
+              {selectedDayEvents.length > 0 ? `  ·  ${selectedDayEvents.length}` : ''}
+            </Text>
+            {selectedDayEvents.length === 0 ? (
+              <View style={styles.emptyState}>
+                <MaterialCommunityIcons name="calendar-blank-outline" size={40} color={theme.colors.onSurfaceVariant} />
+                <Text style={[styles.emptyText, { color: theme.colors.onSurfaceVariant }]}>{isRTL ? 'אין אירועים ביום זה' : 'No events on this day'}</Text>
+                <Button mode="text" textColor={BRAND_COLOR} icon="plus" onPress={() => openCreateModalForDay(selectedDay)}>
+                  {isRTL ? 'הוסף אירוע' : 'Add event'}
+                </Button>
+              </View>
+            ) : (
+              selectedDayEvents.map(renderEventCard)
+            )}
+          </View>
+        </ScrollView>
+      ) : (
+        <>
+          {/* Filters */}
+          <View style={[styles.filterRow, { backgroundColor: theme.colors.surface }]}>
+            {(['upcoming', 'today', 'week', 'all'] as const).map(f => (
+              <Chip
+                key={f}
+                selected={dateFilter === f}
+                onPress={() => setDateFilter(f)}
+                style={[{ backgroundColor: isDark ? theme.colors.surfaceVariant : '#f3f4f6' }, dateFilter === f && styles.filterChipActive]}
+                textStyle={[{ fontSize: 12, color: theme.colors.onSurfaceVariant }, dateFilter === f && styles.filterChipTextActive]}
+              >
+                {f === 'upcoming' ? (isRTL ? 'קרובים' : 'Upcoming') :
+                 f === 'today' ? (isRTL ? 'היום' : 'Today') :
+                 f === 'week' ? (isRTL ? 'השבוע' : 'This Week') :
+                 (isRTL ? 'הכול' : 'All')}
+              </Chip>
+            ))}
+          </View>
+
+          {/* Events list */}
+          <ScrollView style={styles.list} contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 80 }}>
+            {filteredEvents.length === 0 && (
+              <View style={styles.emptyState}>
+                <MaterialCommunityIcons name="calendar-blank-outline" size={48} color={theme.colors.onSurfaceVariant} />
+                <Text style={[styles.emptyText, { color: theme.colors.onSurfaceVariant }]}>{isRTL ? 'אין אירועים' : 'No events'}</Text>
+              </View>
+            )}
+            {filteredEvents.map(renderEventCard)}
+          </ScrollView>
+        </>
+      )}
 
       {/* FAB */}
       <FAB icon="plus" style={styles.fab} onPress={openCreateModal} color="white" />
@@ -735,65 +904,43 @@ export default function CalendarScreen() {
             </View>
           </ScrollView>
 
-          {/* Date/Time Pickers */}
-          {showStartDatePicker && (
-            <DateTimePicker
-              value={formStartDate}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={(_, date) => {
-                setShowStartDatePicker(false);
-                if (date) {
-                  setFormStartDate(date);
-                  if (date > formEndDate) setFormEndDate(date);
-                }
-              }}
-            />
-          )}
-          {showStartTimePicker && (
-            <DateTimePicker
-              value={(() => { const [h, m] = formStartTime.split(':'); const d = new Date(); d.setHours(parseInt(h) || 9, parseInt(m) || 0); return d; })()}
-              mode="time"
-              is24Hour
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={(_, date) => {
-                setShowStartTimePicker(false);
-                if (date) {
-                  const h = date.getHours().toString().padStart(2, '0');
-                  const m = date.getMinutes().toString().padStart(2, '0');
-                  setFormStartTime(`${h}:${m}`);
-                }
-              }}
-            />
-          )}
-          {showEndDatePicker && (
-            <DateTimePicker
-              value={formEndDate}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              minimumDate={formStartDate}
-              onChange={(_, date) => {
-                setShowEndDatePicker(false);
-                if (date) setFormEndDate(date);
-              }}
-            />
-          )}
-          {showEndTimePicker && (
-            <DateTimePicker
-              value={(() => { const [h, m] = formEndTime.split(':'); const d = new Date(); d.setHours(parseInt(h) || 10, parseInt(m) || 0); return d; })()}
-              mode="time"
-              is24Hour
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={(_, date) => {
-                setShowEndTimePicker(false);
-                if (date) {
-                  const h = date.getHours().toString().padStart(2, '0');
-                  const m = date.getMinutes().toString().padStart(2, '0');
-                  setFormEndTime(`${h}:${m}`);
-                }
-              }}
-            />
-          )}
+          {/* Date/Time Pickers — unified GambotDateTimePicker (native wheel + explicit Save) */}
+          <GambotDateTimePicker
+            visible={showStartDatePicker}
+            mode="date"
+            value={formStartDate}
+            onConfirm={(date) => {
+              setFormStartDate(date);
+              if (date > formEndDate) setFormEndDate(date);
+            }}
+            onDismiss={() => setShowStartDatePicker(false)}
+          />
+          <GambotDateTimePicker
+            visible={showStartTimePicker}
+            mode="time"
+            value={(() => { const [h, m] = formStartTime.split(':'); const d = new Date(formStartDate); d.setHours(parseInt(h) || 9, parseInt(m) || 0, 0, 0); return d; })()}
+            onConfirm={(date) => {
+              setFormStartTime(`${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`);
+            }}
+            onDismiss={() => setShowStartTimePicker(false)}
+          />
+          <GambotDateTimePicker
+            visible={showEndDatePicker}
+            mode="date"
+            value={formEndDate}
+            minimumDate={formStartDate}
+            onConfirm={(date) => setFormEndDate(date)}
+            onDismiss={() => setShowEndDatePicker(false)}
+          />
+          <GambotDateTimePicker
+            visible={showEndTimePicker}
+            mode="time"
+            value={(() => { const [h, m] = formEndTime.split(':'); const d = new Date(formEndDate); d.setHours(parseInt(h) || 10, parseInt(m) || 0, 0, 0); return d; })()}
+            onConfirm={(date) => {
+              setFormEndTime(`${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`);
+            }}
+            onDismiss={() => setShowEndTimePicker(false)}
+          />
         </Modal>
       </Portal>
     </View>
@@ -819,7 +966,41 @@ const styles = StyleSheet.create({
   },
   filterChipActive: { backgroundColor: BRAND_COLOR },
   filterChipTextActive: { color: 'white' },
-  list: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
+  list: { flex: 1 },
+  monthNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  monthLabel: { fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  todayHint: { fontSize: 10, textAlign: 'center', marginTop: -2 },
+  weekRow: { paddingHorizontal: 6, paddingBottom: 4 },
+  weekdayCell: { flex: 1, alignItems: 'center' },
+  weekdayText: { fontSize: 12, fontWeight: '600' },
+  grid: { flexWrap: 'wrap', paddingHorizontal: 6 },
+  dayCell: {
+    width: `${100 / 7}%`,
+    aspectRatio: 1,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    paddingTop: 4,
+    justifyContent: 'flex-start',
+  },
+  dayNumWrap: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dayNum: { fontSize: 13 },
+  dotsRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 2, flexWrap: 'wrap', justifyContent: 'center' },
+  dot: { width: 5, height: 5, borderRadius: 3 },
+  moreDot: { fontSize: 9, fontWeight: '600' },
+  dayAgenda: { paddingHorizontal: 16, paddingTop: 14 },
+  dayAgendaTitle: { fontSize: 15, fontWeight: '700', marginBottom: 10 },
+  listInner: { paddingHorizontal: 16, paddingTop: 12 },
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
   emptyText: { fontSize: 15, marginTop: 12 },
   eventCard: { marginBottom: 10, borderRadius: 12, elevation: 1 },

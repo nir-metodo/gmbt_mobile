@@ -17,7 +17,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { Audio, Video, ResizeMode } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import GambotDateTimePicker from '../GambotDateTimePicker';
 import axiosInstance from '../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import { useAppTheme } from '../../hooks/useAppTheme';
@@ -318,15 +318,6 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
     }
   }, []);
 
-  const handleDateFromChange = (_event: DateTimePickerEvent, date?: Date) => {
-    setShowDateFromPicker(false);
-    if (date) setDateFrom(date);
-  };
-
-  const handleDateToChange = (_event: DateTimePickerEvent, date?: Date) => {
-    setShowDateToPicker(false);
-    if (date) setDateTo(date);
-  };
 
   const tabLabels: Record<TabType, string> = {
     all: 'הכל',
@@ -586,22 +577,25 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
           )}
         </View>
 
-        {showDateFromPicker && (
-          <DateTimePicker
-            value={dateFrom || new Date()}
-            mode="date"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            onChange={handleDateFromChange}
-          />
-        )}
-        {showDateToPicker && (
-          <DateTimePicker
-            value={dateTo || new Date()}
-            mode="date"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            onChange={handleDateToChange}
-          />
-        )}
+        <GambotDateTimePicker
+          visible={showDateFromPicker}
+          mode="date"
+          value={dateFrom || new Date()}
+          allowClear
+          onConfirm={(d) => setDateFrom(d)}
+          onClear={() => setDateFrom(null)}
+          onDismiss={() => setShowDateFromPicker(false)}
+        />
+        <GambotDateTimePicker
+          visible={showDateToPicker}
+          mode="date"
+          value={dateTo || new Date()}
+          minimumDate={dateFrom || undefined}
+          allowClear
+          onConfirm={(d) => setDateTo(d)}
+          onClear={() => setDateTo(null)}
+          onDismiss={() => setShowDateToPicker(false)}
+        />
 
         {/* Content */}
         <View style={styles.content}>

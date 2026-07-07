@@ -7,7 +7,6 @@ import {
   Pressable,
   ScrollView,
   Alert,
-  Platform,
   AppState,
 } from 'react-native';
 import {
@@ -29,7 +28,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as Location from 'expo-location';
 import { useTranslation } from 'react-i18next';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { useAuthStore } from '../../../../stores/authStore';
@@ -940,22 +939,21 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
         </View>
       </Surface>
 
-      {showFromPicker && (
-        <DateTimePicker
-          value={dateFrom}
-          mode="date"
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={(_: DateTimePickerEvent, d?: Date) => { setShowFromPicker(false); if (d) setDateFrom(d); }}
-        />
-      )}
-      {showToPicker && (
-        <DateTimePicker
-          value={dateTo}
-          mode="date"
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={(_: DateTimePickerEvent, d?: Date) => { setShowToPicker(false); if (d) setDateTo(d); }}
-        />
-      )}
+      <GambotDateTimePicker
+        visible={showFromPicker}
+        mode="date"
+        value={dateFrom}
+        onConfirm={(d) => setDateFrom(d)}
+        onDismiss={() => setShowFromPicker(false)}
+      />
+      <GambotDateTimePicker
+        visible={showToPicker}
+        mode="date"
+        value={dateTo}
+        minimumDate={dateFrom}
+        onConfirm={(d) => setDateTo(d)}
+        onDismiss={() => setShowToPicker(false)}
+      />
 
       {/* Employee Picker Modal */}
       <Portal>

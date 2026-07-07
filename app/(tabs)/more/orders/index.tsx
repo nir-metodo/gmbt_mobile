@@ -47,8 +47,7 @@ import { readList as readDiskList, cacheList as cacheDiskList } from '../../../.
 
 const BRAND_COLOR = '#2e6155';
 
-const STATUS_FILTERS = ['all', 'pending', 'confirmed', 'collected', 'shipped', 'delivered', 'cancelled'] as const;
-type StatusFilter = (typeof STATUS_FILTERS)[number];
+type StatusFilter = string;
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#FF9800',
@@ -290,6 +289,12 @@ export default function OrdersScreen() {
     return t(`orders.status_${statusId}`, { defaultValue: configured?.label || statusId });
   }, [statuses, t]);
 
+  // Filter chips derived from the org-configured statuses (unified with web settings).
+  const statusFilterOptions = useMemo(
+    () => ['all', ...[...statuses].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((s) => s.id)],
+    [statuses],
+  );
+
   const handleStatusChange = useCallback(async (order: Order, newStatus: string) => {
     if (!user?.organization || order.status === newStatus) return;
     const prevStatus = order.status;
@@ -508,7 +513,7 @@ export default function OrdersScreen() {
 
       <View style={[styles.filtersRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection }]}>
-          {STATUS_FILTERS.map((f) => (
+          {statusFilterOptions.map((f) => (
             <Chip
               key={f}
               selected={statusFilter === f}
@@ -523,7 +528,7 @@ export default function OrdersScreen() {
               ]}
               textStyle={[styles.filterChipText, statusFilter === f && { color: theme.colors.primary, fontWeight: '600' }]}
             >
-              {f === 'all' ? t('common.all') : t(`orders.status_${f}`, { defaultValue: f })}
+              {f === 'all' ? t('common.all') : getStatusLabel(f)}
             </Chip>
           ))}
         </ScrollView>

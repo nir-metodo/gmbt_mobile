@@ -118,6 +118,7 @@ export const ENDPOINTS = {
 
   // Public catalog (shareable page + customer selections)
   GET_CATALOG_SELECTIONS: '/api/Webhooks/GetCatalogSelections',
+  CREATE_CATALOG_SHARE_LINK: '/api/Webhooks/CreateCatalogShareLink',
 
   // E-Signature
   GET_ESIGNATURE_DOC: '/api/Webhooks/ESignature_GetDocumentByToken',
@@ -128,6 +129,10 @@ export const ENDPOINTS = {
   GET_ESIGNATURE_DOCS: '/api/Webhooks/ESignature_GetAllDocuments',
   DELETE_ESIGNATURE_DOC: '/api/Webhooks/ESignature_DeleteDocument',
   SEND_ESIGNATURE_REMINDER: '/api/Webhooks/ESignature_SendReminder',
+  ESIGNATURE_CREATE_FROM_TEMPLATE: '/api/Webhooks/ESignature_CreateFromTemplate',
+
+  // Document Templates (used as a source for e-signature requests)
+  DOC_TEMPLATES_GET_ALL: '/api/Webhooks/DocTemplates_GetAll',
 
   // Users
   GET_USERS: '/api/Webhooks/GetAllUsersByOrg',

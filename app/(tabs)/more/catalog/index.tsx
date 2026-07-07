@@ -12,6 +12,7 @@ import {
   TextInput as RNTextInput,
   Share,
   Modal as RNModal,
+  Linking,
 } from 'react-native';
 import {
   Text,
@@ -30,7 +31,9 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
+import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
@@ -112,6 +115,33 @@ export default function CatalogScreen() {
   const [colFilters, setColFilters] = useState<Record<string, any>>({});
   // Filter by whether the item has at least one image.
   const [imageFilter, setImageFilter] = useState<'all' | 'with' | 'without'>('all');
+  // Which date-range filter edge is currently being picked (opens GambotDateTimePicker).
+  const [datePickerFor, setDatePickerFor] = useState<{ key: string; edge: 'from' | 'to' } | null>(null);
+
+  // Multi-select mode → build a per-contact personalized share link from the chosen items.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [shareLinkVisible, setShareLinkVisible] = useState(false);
+  const [slName, setSlName] = useState('');
+  const [slPhone, setSlPhone] = useState('');
+  const [slScope, setSlScope] = useState<'selected' | 'all'>('selected');
+  const [slPurpose, setSlPurpose] = useState<string>('browse');
+  const [slCreating, setSlCreating] = useState(false);
+  const [slUrl, setSlUrl] = useState('');
+  const [slCopied, setSlCopied] = useState(false);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const exitSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
 
   // Public catalog sharing + customer selections
   const [sharing, setSharing] = useState(false);
@@ -198,7 +228,7 @@ export default function CatalogScreen() {
   // Columns that expose a dedicated toolbar filter (range / select / boolean), from the web config.
   const priceRangeEnabled = fieldsConfig.priceRangeFilter === true;
   const filterCols = useMemo(
-    () => customColumns.filter((c) => c.filterType === 'range' || c.filterType === 'select' || c.filterType === 'boolean'),
+    () => customColumns.filter((c) => ['range', 'select', 'boolean', 'text', 'date'].includes(c.filterType as string)),
     [customColumns],
   );
 
@@ -215,6 +245,7 @@ export default function CatalogScreen() {
       const v = colFilters[c.key];
       if (!v) return false;
       if (c.filterType === 'range') return v.min !== '' || v.max !== '';
+      if (c.filterType === 'date') return v.from !== '' || v.to !== '';
       return v !== '';
     });
   }, [imageFilter, priceRangeEnabled, priceMin, priceMax, filterCols, colFilters]);
@@ -459,6 +490,52 @@ export default function CatalogScreen() {
     }
   }, [user?.organization, shareCfg, items, isRTL, t]);
 
+  // Open the "personal customer link" sheet, seeding defaults from the current share config.
+  const openShareLink = useCallback(() => {
+    setSlName('');
+    setSlPhone('');
+    setSlScope('selected');
+    setSlPurpose(shareCfg.purpose || 'browse');
+    setSlUrl('');
+    setSlCopied(false);
+    setShareLinkVisible(true);
+  }, [shareCfg.purpose]);
+
+  // Create the personalized share link (item allowlist = the selected items, or whole catalog).
+  const createCustomerLink = useCallback(async () => {
+    if (!user?.organization) return;
+    setSlCreating(true);
+    try {
+      const ids = slScope === 'selected' ? Array.from(selectedIds) : [];
+      const { token } = await catalogApi.createShareLink(user.organization, {
+        itemIds: ids,
+        contactName: slName.trim(),
+        contactPhone: slPhone,
+        title: slName.trim() ? (isRTL ? `קטלוג עבור ${slName.trim()}` : `Catalog for ${slName.trim()}`) : '',
+        purpose: slPurpose,
+        createdBy: (user as any)?.fullname || (user as any)?.displayName || '',
+        createdById: (user as any)?.uID || (user as any)?.userId || '',
+      });
+      setSlUrl(`${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?p=${token}`);
+    } catch {
+      Alert.alert(t('common.error'), isRTL ? 'יצירת הקישור נכשלה' : 'Failed to create link');
+    } finally {
+      setSlCreating(false);
+    }
+  }, [user, slScope, selectedIds, slName, slPhone, slPurpose, isRTL, t]);
+
+  const copyCustomerLink = useCallback(async () => {
+    if (!slUrl) return;
+    try { await Clipboard.setStringAsync(slUrl); setSlCopied(true); setTimeout(() => setSlCopied(false), 2000); } catch { /* noop */ }
+  }, [slUrl]);
+
+  const sendCustomerLinkWhatsApp = useCallback(() => {
+    const phone = slPhone.replace(/\D/g, '');
+    const text = `${slName ? slName + ', ' : ''}${isRTL ? 'הכנתי עבורך קטלוג אישי 🛍️' : 'I prepared a personal catalog for you 🛍️'}\n${slUrl}`;
+    const wa = phone ? `whatsapp://send?phone=${phone}&text=${encodeURIComponent(text)}` : `https://wa.me/?text=${encodeURIComponent(text)}`;
+    Linking.openURL(wa).catch(() => { Share.share({ message: text }); });
+  }, [slPhone, slName, slUrl, isRTL]);
+
   const loadSelections = useCallback(async () => {
     if (!user?.organization) return;
     setSelectionsLoading(true);
@@ -569,6 +646,15 @@ export default function CatalogScreen() {
         const truthy = raw === true || /^(כן|yes|true|1)$/i.test(String(raw ?? '').trim());
         if (v === 'yes' && !truthy) return false;
         if (v === 'no' && truthy) return false;
+      } else if (col.filterType === 'text') {
+        if (String(v).trim() === '') continue;
+        if (!String(raw ?? '').toLowerCase().includes(String(v).toLowerCase())) return false;
+      } else if (col.filterType === 'date') {
+        if ((v.from ?? '') === '' && (v.to ?? '') === '') continue;
+        const val = String(raw ?? '').slice(0, 10);
+        if (!val) return false;
+        if (v.from && val < v.from) return false;
+        if (v.to && val > v.to) return false;
       }
     }
     return true;
@@ -743,13 +829,22 @@ export default function CatalogScreen() {
       }
     }
     if (!displayTitle) displayTitle = '—';
+    const isChecked = selectedIds.has(item.id);
     return (
       <Pressable
-        style={[styles.card, { backgroundColor: theme.colors.surface }]}
-        onPress={() => openEditModal(item)}
-        onLongPress={() => handleDelete(item)}
+        style={[styles.card, { backgroundColor: theme.colors.surface }, selectionMode && isChecked && { borderWidth: 1.5, borderColor: BRAND_COLOR }]}
+        onPress={() => (selectionMode ? toggleSelect(item.id) : openEditModal(item))}
+        onLongPress={() => (selectionMode ? undefined : handleDelete(item))}
       >
         <View style={[styles.cardRow, { flexDirection }]}>
+          {selectionMode && (
+            <MaterialCommunityIcons
+              name={isChecked ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'}
+              size={24}
+              color={isChecked ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+              style={{ marginEnd: 8 }}
+            />
+          )}
           {hasImage ? (
             <Pressable onPress={() => openImageViewer(item.images, 0)}>
               <Image source={{ uri: item.images[0] }} style={styles.cardImage} contentFit="cover" />
@@ -818,6 +913,7 @@ export default function CatalogScreen() {
               );
             })()}
           </View>
+          {!selectionMode && (
           <View>
             <IconButton
               icon={item.isPublic ? 'link-variant' : 'link-variant-off'}
@@ -838,6 +934,7 @@ export default function CatalogScreen() {
               onPress={() => handleShareItem(item)}
             />
           </View>
+          )}
         </View>
         {item.isPublic ? (
           <View style={[styles.publicBadge, { [isRTL ? 'left' : 'right']: 8 }]}>
@@ -847,7 +944,7 @@ export default function CatalogScreen() {
         ) : null}
       </Pressable>
     );
-  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, handleShareItem, toggleItemPublic, openImageViewer, customColumns, orderedColumnTokens, isColumnTokenVisible, isRTL, fieldsConfig]);
+  }, [theme, flexDirection, textAlign, openEditModal, handleDelete, handleShareItem, toggleItemPublic, openImageViewer, customColumns, orderedColumnTokens, isColumnTokenVisible, isRTL, fieldsConfig, selectionMode, selectedIds, toggleSelect]);
 
   // Configurable mandatory field (defaults to name). On mobile only base fields are editable,
   // so if the required field is a custom column we don't block the save here.
@@ -887,6 +984,11 @@ export default function CatalogScreen() {
           title={t('more.catalog')}
           titleStyle={styles.headerTitle}
           color="#fff"
+        />
+        <Appbar.Action
+          icon={selectionMode ? 'close' : 'checkbox-multiple-marked-outline'}
+          color="#fff"
+          onPress={() => { if (selectionMode) exitSelection(); else setSelectionMode(true); }}
         />
         <Appbar.Action icon="inbox-arrow-down" color="#fff" onPress={openSelections} />
         <Appbar.Action icon={sharing ? 'loading' : 'share-variant'} color="#fff" disabled={sharing} onPress={openShareSettings} />
@@ -998,6 +1100,33 @@ export default function CatalogScreen() {
                     </Chip>
                   ))}
                 </View>
+              ) : col.filterType === 'text' ? (
+                <RNTextInput
+                  value={colFilters[col.key] ?? ''}
+                  onChangeText={(v) => setColFilters((p) => ({ ...p, [col.key]: v }))}
+                  placeholder={isRTL ? 'חיפוש...' : 'Search...'}
+                  placeholderTextColor={theme.colors.onSurfaceVariant}
+                  style={[styles.filterInput, { color: theme.colors.onSurface, borderColor: theme.colors.outlineVariant, textAlign }]}
+                />
+              ) : col.filterType === 'date' ? (
+                <View style={{ flexDirection, gap: 8 }}>
+                  <Pressable
+                    onPress={() => setDatePickerFor({ key: col.key, edge: 'from' })}
+                    style={[styles.filterInput, { borderColor: theme.colors.outlineVariant, justifyContent: 'center' }]}
+                  >
+                    <Text style={{ color: colFilters[col.key]?.from ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                      {colFilters[col.key]?.from || (isRTL ? 'מ-' : 'From')}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setDatePickerFor({ key: col.key, edge: 'to' })}
+                    style={[styles.filterInput, { borderColor: theme.colors.outlineVariant, justifyContent: 'center' }]}
+                  >
+                    <Text style={{ color: colFilters[col.key]?.to ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                      {colFilters[col.key]?.to || (isRTL ? 'עד' : 'To')}
+                    </Text>
+                  </Pressable>
+                </View>
               ) : (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                   <Chip
@@ -1097,13 +1226,37 @@ export default function CatalogScreen() {
         }
       />
 
-      {/* FAB */}
-      <FAB
-        icon="plus"
-        style={[styles.fab, { backgroundColor: BRAND_COLOR }]}
-        color="#fff"
-        onPress={openAddModal}
-      />
+      {/* FAB (hidden while selecting items for a customer link) */}
+      {!selectionMode && (
+        <FAB
+          icon="plus"
+          style={[styles.fab, { backgroundColor: BRAND_COLOR }]}
+          color="#fff"
+          onPress={openAddModal}
+        />
+      )}
+
+      {/* Selection action bar — build a per-contact share link from the chosen items */}
+      {selectionMode && (
+        <View style={[styles.selectionBar, { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outlineVariant, paddingBottom: insets.bottom + 10, flexDirection }]}>
+          <Text style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+            {selectedIds.size} {isRTL ? 'נבחרו' : 'selected'}
+          </Text>
+          <Button mode="text" onPress={exitSelection} textColor={theme.colors.onSurfaceVariant}>
+            {isRTL ? 'בטל' : 'Cancel'}
+          </Button>
+          <Button
+            mode="contained"
+            icon="link-variant"
+            disabled={selectedIds.size === 0}
+            onPress={openShareLink}
+            buttonColor={BRAND_COLOR}
+            textColor="#fff"
+          >
+            {isRTL ? 'קישור ללקוח' : 'Customer link'}
+          </Button>
+        </View>
+      )}
 
       {/* Add/Edit Modal */}
       <Portal>
@@ -1480,6 +1633,116 @@ export default function CatalogScreen() {
           )}
         </Modal>
 
+        {/* Per-contact personalized share link (from the selected items) */}
+        <Modal
+          visible={shareLinkVisible}
+          onDismiss={() => setShareLinkVisible(false)}
+          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+        >
+          <View style={{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
+              {isRTL ? '🔗 קישור אישי ללקוח' : '🔗 Personal customer link'}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => setShareLinkVisible(false)} />
+          </View>
+
+          {!slUrl ? (
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, textAlign }}>
+                {isRTL ? 'צור קישור שמציג ללקוח הזה בדיוק את המוצרים שבחרת.' : 'Create a link that shows this customer exactly the items you picked.'}
+              </Text>
+
+              <Pressable
+                style={[styles.shareModeRow, { flexDirection, borderColor: slScope === 'selected' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                onPress={() => setSlScope('selected')}
+              >
+                <MaterialCommunityIcons name={slScope === 'selected' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'selected' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                  {isRTL ? `רק המוצרים שנבחרו (${selectedIds.size})` : `Only selected items (${selectedIds.size})`}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.shareModeRow, { flexDirection, borderColor: slScope === 'all' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                onPress={() => setSlScope('all')}
+              >
+                <MaterialCommunityIcons name={slScope === 'all' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'all' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                  {isRTL ? 'כל הקטלוג' : 'Whole catalog'}
+                </Text>
+              </Pressable>
+
+              <TextInput
+                label={isRTL ? 'שם הלקוח (לא חובה)' : 'Customer name (optional)'}
+                value={slName}
+                onChangeText={setSlName}
+                mode="outlined"
+                style={[styles.input, { marginTop: 8 }]}
+                outlineColor={BRAND_COLOR + '40'}
+                activeOutlineColor={BRAND_COLOR}
+              />
+              <TextInput
+                label={isRTL ? 'טלפון (לשליחה בוואטסאפ)' : 'Phone (for WhatsApp)'}
+                value={slPhone}
+                onChangeText={setSlPhone}
+                mode="outlined"
+                style={styles.input}
+                keyboardType="phone-pad"
+                outlineColor={BRAND_COLOR + '40'}
+                activeOutlineColor={BRAND_COLOR}
+              />
+
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
+                {isRTL ? 'מה הלקוח יכול לעשות' : 'What the customer can do'}
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {([['browse', isRTL ? 'צפייה' : 'Browse'], ['order', isRTL ? 'הזמנה' : 'Order'], ['lead', isRTL ? 'ליד' : 'Lead'], ['inquiry', isRTL ? 'התעניינות' : 'Inquiry']] as const).map(([val, label]) => (
+                  <Chip
+                    key={val}
+                    selected={slPurpose === val}
+                    onPress={() => setSlPurpose(val)}
+                    style={slPurpose === val ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                    textStyle={slPurpose === val ? { color: BRAND_COLOR } : undefined}
+                  >
+                    {label}
+                  </Chip>
+                ))}
+              </View>
+
+              <Button
+                mode="contained"
+                icon="link-variant"
+                onPress={createCustomerLink}
+                loading={slCreating}
+                disabled={slCreating || (slScope === 'selected' && selectedIds.size === 0)}
+                style={[styles.actionBtn, { backgroundColor: BRAND_COLOR, marginTop: 8 }]}
+                textColor="#fff"
+              >
+                {isRTL ? 'צור קישור' : 'Create link'}
+              </Button>
+            </ScrollView>
+          ) : (
+            <View>
+              <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '700', marginBottom: 10, textAlign }}>
+                {isRTL ? '✓ הקישור מוכן!' : '✓ Link ready!'}
+              </Text>
+              <Text selectable style={{ color: theme.colors.onSurface, backgroundColor: theme.colors.surfaceVariant, padding: 10, borderRadius: 8, marginBottom: 12, writingDirection: 'ltr' }}>
+                {slUrl}
+              </Text>
+              <View style={{ flexDirection, gap: 8 }}>
+                <Button mode="outlined" icon="content-copy" onPress={copyCustomerLink} style={[styles.actionBtn, { flex: 1, borderColor: BRAND_COLOR }]} textColor={BRAND_COLOR}>
+                  {slCopied ? (isRTL ? 'הועתק ✓' : 'Copied ✓') : (isRTL ? 'העתק' : 'Copy')}
+                </Button>
+                <Button mode="contained" icon="whatsapp" onPress={sendCustomerLinkWhatsApp} style={[styles.actionBtn, { flex: 1, backgroundColor: BRAND_COLOR }]} textColor="#fff">
+                  {isRTL ? 'שלח בוואטסאפ' : 'Send on WhatsApp'}
+                </Button>
+              </View>
+              <Button mode="text" onPress={() => { setShareLinkVisible(false); exitSelection(); }} textColor={theme.colors.onSurfaceVariant} style={{ marginTop: 8 }}>
+                {isRTL ? 'סיום' : 'Done'}
+              </Button>
+            </View>
+          )}
+        </Modal>
+
         {/* Catalog selections (customer inquiries from the public catalog) */}
         <Modal
           visible={selectionsVisible}
@@ -1631,6 +1894,26 @@ export default function CatalogScreen() {
           </View>
         </RNModal>
       )}
+
+      {/* Date-range filter picker (per-column 'date' filterType) */}
+      {datePickerFor && (
+        <GambotDateTimePicker
+          visible
+          mode="date"
+          value={colFilters[datePickerFor.key]?.[datePickerFor.edge] || null}
+          allowClear
+          onConfirm={(d) => {
+            const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            setColFilters((p) => ({ ...p, [datePickerFor.key]: { ...(p[datePickerFor.key] || {}), [datePickerFor.edge]: iso } }));
+            setDatePickerFor(null);
+          }}
+          onClear={() => {
+            setColFilters((p) => ({ ...p, [datePickerFor.key]: { ...(p[datePickerFor.key] || {}), [datePickerFor.edge]: '' } }));
+            setDatePickerFor(null);
+          }}
+          onDismiss={() => setDatePickerFor(null)}
+        />
+      )}
     </View>
   );
 }
@@ -1693,6 +1976,7 @@ const styles = StyleSheet.create({
   publicBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
   publicToggleRow: { alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: 4, borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, marginBottom: 8 },
   shareModeRow: { alignItems: 'center', borderWidth: 1.5, borderRadius: 10, padding: 12, marginBottom: 8 },
+  selectionBar: { position: 'absolute', left: 0, right: 0, bottom: 0, alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, elevation: 8 },
   selCard: { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 10 },
   purposeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
 });

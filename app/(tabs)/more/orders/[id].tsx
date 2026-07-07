@@ -29,7 +29,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
-import { ordersApi, Order } from '../../../../services/api/orders';
+import { ordersApi, Order, DEFAULT_ORDER_STATUSES, OrderStatusConfig } from '../../../../services/api/orders';
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { quotesApi } from '../../../../services/api/quotes';
@@ -48,8 +48,6 @@ import AddTaskSheet from '../../../../components/AddTaskSheet';
 import { appCache } from '../../../../services/cache';
 
 const BRAND_COLOR = '#2e6155';
-
-const ORDER_STATUSES = ['pending', 'confirmed', 'collected', 'shipped', 'delivered', 'cancelled'];
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#FF9800',
@@ -151,6 +149,22 @@ export default function OrderDetailScreen() {
   const [formNotes, setFormNotes] = useState('');
   const [dynamicData, setDynamicData] = useState<Record<string, any>>({});
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState(false); // edit-existing-order mode (reuses the create form)
+
+  // ── Org-configured statuses (unified with web settings) ───────────
+  const [orgStatuses, setOrgStatuses] = useState<OrderStatusConfig[]>(DEFAULT_ORDER_STATUSES);
+  const statusColorFor = useCallback(
+    (statusId?: string) => orgStatuses.find(s => s.id === statusId)?.color || STATUS_COLORS[statusId || ''] || '#9E9E9E',
+    [orgStatuses],
+  );
+  const statusLabelFor = useCallback(
+    (statusId?: string) => {
+      const translated = t(`orders.status_${statusId}`, { defaultValue: '' });
+      if (translated) return translated;
+      return orgStatuses.find(s => s.id === statusId)?.label || statusId || '';
+    },
+    [orgStatuses, t],
+  );
 
   // Contact search
   const [contactSearch, setContactSearch] = useState('');
@@ -199,6 +213,9 @@ export default function OrderDetailScreen() {
           setOrderFormSections(res.sections || []);
           setOrderFormLayout(res.formLayout || []);
         })
+        .catch(() => {});
+      ordersApi.getSettings(user.organization)
+        .then((res) => { if (Array.isArray(res.statuses) && res.statuses.length) setOrgStatuses(res.statuses); })
         .catch(() => {});
     }
   }, [user?.organization]);
@@ -328,7 +345,33 @@ export default function OrderDetailScreen() {
     }
   }, [user?.organization, id, noteText, user?.uID, user?.userId, user?.fullname, fetchOrder, t]);
 
-  // ── Create order ──────────────────────────────────────────────────
+  // ── Enter edit mode: prefill the create form from the loaded order ──
+  const enterEditMode = useCallback(() => {
+    if (!order) return;
+    setHeaderMenuVisible(false);
+    setFormCustomerName(order.customerName || '');
+    setFormCustomerPhone(order.customerPhone || '');
+    setFormCustomerEmail(order.customerEmail || '');
+    setFormShippingAddress(order.shippingAddress || '');
+    setFormOrderNumber(order.orderNumber || '');
+    setFormStatus(order.status || 'pending');
+    setFormPaymentMethod(order.paymentMethod || '');
+    setFormIsPaid(!!(order as any).isPaid);
+    setFormNotes(order.notes || '');
+    setFormItems((order.items || []).map((it: any) => ({
+      name: it.productName || it.name || '',
+      sku: it.sku || '',
+      quantity: Number(it.quantity) || 1,
+      price: Number(it.price) || 0,
+    })));
+    setFormDiscount(String((order as any).discount ?? 0));
+    setFormTax(String((order as any).tax ?? 0));
+    setDynamicData({ ...((order as any).customFields || {}) });
+    if ((order as any).contactId) setSelectedContact({ id: (order as any).contactId, fullName: order.customerName, phoneNumber: order.customerPhone } as any);
+    setEditing(true);
+  }, [order]);
+
+  // ── Create or update order ─────────────────────────────────────────
   const handleCreate = useCallback(async () => {
     if (!user?.organization) return;
     if (!formCustomerName.trim() && !formCustomerPhone.trim()) {
@@ -337,35 +380,41 @@ export default function OrderDetailScreen() {
     }
     setCreating(true);
     try {
-      const result = await ordersApi.create(
-        user.organization,
-        {
-          customerName: formCustomerName.trim(),
-          customerPhone: formCustomerPhone.trim(),
-          customerEmail: formCustomerEmail.trim(),
-          contactId: selectedContact?.id || selectedContact?.contactId || undefined,
-          shippingAddress: formShippingAddress.trim(),
-          status: formStatus,
-          paymentMethod: formPaymentMethod.trim(),
-          isPaid: formIsPaid,
-          orderNumber: formOrderNumber.trim(),
-          notes: formNotes.trim(),
-          items: formItems.map((it) => ({
-            productName: it.name,
-            sku: it.sku,
-            quantity: it.quantity,
-            price: it.price,
-          })) as any,
-          currency: 'ILS',
-          subtotal: totals.subtotal,
-          discount: parseFloat(formDiscount) || 0,
-          tax: parseFloat(formTax) || 0,
-          totalAmount: totals.total,
-          dynamicData,
-        } as any,
-        user.uID || user.userId,
-        user.fullname,
-      );
+      const payload = {
+        customerName: formCustomerName.trim(),
+        customerPhone: formCustomerPhone.trim(),
+        customerEmail: formCustomerEmail.trim(),
+        contactId: selectedContact?.id || selectedContact?.contactId || undefined,
+        shippingAddress: formShippingAddress.trim(),
+        status: formStatus,
+        paymentMethod: formPaymentMethod.trim(),
+        isPaid: formIsPaid,
+        orderNumber: formOrderNumber.trim(),
+        notes: formNotes.trim(),
+        items: formItems.map((it) => ({
+          productName: it.name,
+          sku: it.sku,
+          quantity: it.quantity,
+          price: it.price,
+        })) as any,
+        currency: 'ILS',
+        subtotal: totals.subtotal,
+        discount: parseFloat(formDiscount) || 0,
+        tax: parseFloat(formTax) || 0,
+        totalAmount: totals.total,
+        dynamicData,
+      } as any;
+
+      if (editing && id && !isNew) {
+        await ordersApi.update(user.organization, id, payload, user.uID || user.userId, user.fullname);
+        appCache.invalidate(`orders_${user.organization}`);
+        setEditing(false);
+        await fetchOrder();
+        Alert.alert(t('common.success', 'הצלחה'), t('orders.updateSuccess', 'ההזמנה עודכנה'));
+        return;
+      }
+
+      const result = await ordersApi.create(user.organization, payload, user.uID || user.userId, user.fullname);
       const newId = result?.order?.id || result?.id || result?.orderId;
       appCache.invalidate(`orders_${user.organization}`);
       Alert.alert('✓ הזמנה נוצרה', 'ההזמנה נוצרה בהצלחה', [
@@ -390,6 +439,7 @@ export default function OrderDetailScreen() {
     user, formCustomerName, formCustomerPhone, formCustomerEmail, formShippingAddress,
     formStatus, formPaymentMethod, formIsPaid, formOrderNumber, formNotes,
     formItems, formDiscount, formTax, totals, router, t, dynamicData, selectedContact,
+    editing, id, isNew, fetchOrder,
   ]);
 
   // ══ Loading / Error screens ═══════════════════════════════════════
@@ -415,13 +465,13 @@ export default function OrderDetailScreen() {
     );
   }
 
-  // ══ CREATE MODE ═══════════════════════════════════════════════════
-  if (isNew) {
+  // ══ CREATE / EDIT MODE ════════════════════════════════════════════
+  if (isNew || editing) {
     return (
       <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
         <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-          <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
-          <Appbar.Content title="הזמנה חדשה" titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }} />
+          <Appbar.BackAction onPress={() => { if (editing) setEditing(false); else router.back(); }} color="#FFF" />
+          <Appbar.Content title={editing ? t('orders.editOrder', 'עריכת הזמנה') : 'הזמנה חדשה'} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }} />
           <Appbar.Action
             icon="content-save-outline"
             color="#FFF"
@@ -535,20 +585,20 @@ export default function OrderDetailScreen() {
                     onPress={() => setCreateStatusMenuVisible(true)}
                     style={[styles.statusSelector, { borderColor: theme.colors.outline, backgroundColor: theme.colors.surface, flexDirection }]}
                   >
-                    <View style={[styles.statusDot, { backgroundColor: STATUS_COLORS[formStatus] || '#999' }]} />
+                    <View style={[styles.statusDot, { backgroundColor: statusColorFor(formStatus) }]} />
                     <Text style={{ color: theme.colors.onSurface, flex: 1, textAlign }}>
-                      {t(`orders.status_${formStatus}`, { defaultValue: formStatus })}
+                      {statusLabelFor(formStatus)}
                     </Text>
                     <MaterialCommunityIcons name="chevron-down" size={20} color={theme.colors.onSurfaceVariant} />
                   </Pressable>
                 }
               >
-                {ORDER_STATUSES.map((s) => (
+                {orgStatuses.map((s) => (
                   <Menu.Item
-                    key={s}
-                    title={t(`orders.status_${s}`, { defaultValue: s })}
-                    onPress={() => { setFormStatus(s); setCreateStatusMenuVisible(false); }}
-                    leadingIcon={formStatus === s ? 'check' : undefined}
+                    key={s.id}
+                    title={statusLabelFor(s.id)}
+                    onPress={() => { setFormStatus(s.id); setCreateStatusMenuVisible(false); }}
+                    leadingIcon={formStatus === s.id ? 'check' : undefined}
                   />
                 ))}
               </Menu>
@@ -749,7 +799,7 @@ export default function OrderDetailScreen() {
   }
 
   // ══ VIEW MODE ═════════════════════════════════════════════════════
-  const statusColor = order ? STATUS_COLORS[order.status] || '#9E9E9E' : '#9E9E9E';
+  const statusColor = order ? statusColorFor(order.status) : '#9E9E9E';
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
@@ -767,6 +817,11 @@ export default function OrderDetailScreen() {
               <Appbar.Action icon="dots-vertical" color="#FFF" onPress={() => setHeaderMenuVisible(true)} />
             }
           >
+            <Menu.Item
+              onPress={enterEditMode}
+              title={t('common.edit', 'עריכה')}
+              leadingIcon="pencil-outline"
+            />
             <Menu.Item
               onPress={() => { setHeaderMenuVisible(false); setAddTaskVisible(true); }}
               title={t('tasks.addTask', 'הוסף משימה')}
@@ -795,7 +850,7 @@ export default function OrderDetailScreen() {
                     style={[styles.statusChip, { backgroundColor: `${statusColor}15` }]}
                     textStyle={{ color: statusColor, fontWeight: '700' }}
                   >
-                    {t(`orders.status_${order.status}`, { defaultValue: order.status })}
+                    {statusLabelFor(order.status)}
                   </Chip>
                 </View>
 
@@ -816,12 +871,12 @@ export default function OrderDetailScreen() {
                     </Button>
                   }
                 >
-                  {ORDER_STATUSES.map((s) => (
+                  {orgStatuses.map((s) => (
                     <Menu.Item
-                      key={s}
-                      title={t(`orders.status_${s}`, { defaultValue: s })}
-                      onPress={() => handleUpdateStatus(s)}
-                      leadingIcon={order.status === s ? 'check' : undefined}
+                      key={s.id}
+                      title={statusLabelFor(s.id)}
+                      onPress={() => handleUpdateStatus(s.id)}
+                      leadingIcon={order.status === s.id ? 'check' : undefined}
                     />
                   ))}
                 </Menu>

@@ -136,6 +136,39 @@ export const ordersApi = {
     return response.data;
   },
 
+  async update(organization: string, orderId: string, order: Partial<Order> & { customerName?: string; discount?: number; isPaid?: boolean; orderNumber?: string; dynamicData?: Record<string, any> }, userId?: string, userName?: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_ORDER, {
+      organization,
+      orderId,
+      contactId: order.contactId ?? '',
+      customerName: order.customerName ?? '',
+      customerPhone: order.customerPhone ?? '',
+      customerEmail: order.customerEmail ?? '',
+      shippingAddress: order.shippingAddress ?? '',
+      status: order.status ?? 'pending',
+      notes: order.notes ?? '',
+      items: (order.items ?? []).map((it: any) => ({
+        ...it,
+        productName: it.productName || it.name || '',
+        quantity: parseInt(String(it.quantity)) || 1,
+        price: parseFloat(String(it.price)) || 0,
+        total: (parseFloat(String(it.price)) || 0) * (parseInt(String(it.quantity)) || 1),
+      })),
+      currency: order.currency ?? 'ILS',
+      subtotal: order.subtotal ?? 0,
+      discount: order.discount ?? 0,
+      tax: order.tax ?? 0,
+      totalAmount: order.totalAmount ?? 0,
+      paymentMethod: order.paymentMethod ?? '',
+      isPaid: order.isPaid ?? false,
+      orderNumber: order.orderNumber ?? '',
+      dynamicData: order.dynamicData ?? {},
+      userId: userId ?? '',
+      userName: userName ?? '',
+    });
+    return response.data;
+  },
+
   async updateStatus(organization: string, orderId: string, status: string, userId?: string, userName?: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.UPDATE_ORDER_STATUS, {
       organization,

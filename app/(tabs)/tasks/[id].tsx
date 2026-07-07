@@ -29,7 +29,6 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
@@ -41,6 +40,7 @@ import { getDataVisibility } from '../../../constants/permissions';
 import { formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../utils/formatters';
 import { spacing, borderRadius } from '../../../constants/theme';
 import ContactLookup from '../../../components/ContactLookup';
+import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
 import type { Task, OrgUser } from '../../../types';
 
 const BRAND_COLOR = '#2e6155';
@@ -171,63 +171,23 @@ export default function TaskDetailScreen() {
   const leadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [showDueDatePicker, setShowDueDatePicker] = useState(false);
-  const [showDueTimePicker, setShowDueTimePicker] = useState(false);
   const [dueDateObj, setDueDateObj] = useState<Date>(new Date());
 
   const [reminderEnabled, setReminderEnabled] = useState(false);
   const [showReminderDatePicker, setShowReminderDatePicker] = useState(false);
-  const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
   const [reminderDateObj, setReminderDateObj] = useState<Date>(new Date());
 
-  // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inside a React Native <Modal> on Android.
-  // The native dialog clashes with the modal host and the chained date→time flow throws
-  // "IllegalStateException: Fragment already added", closing the app. On Android open the pickers
-  // imperatively (date, then time); iOS keeps the inline spinner via the show* flags.
-  const pickDateTimeAndroid = (current: Date, onPicked: (d: Date) => void) => {
-    const base = current && !isNaN(current.getTime()) ? new Date(current) : new Date();
-    DateTimePickerAndroid.open({
-      value: base,
-      mode: 'date',
-      onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
-        if (e.type !== 'set' || !dateVal) return;
-        const merged = new Date(base);
-        merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
-        DateTimePickerAndroid.open({
-          value: merged,
-          mode: 'time',
-          is24Hour: true,
-          onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
-            if (e2.type !== 'set' || !timeVal) return;
-            merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
-            onPicked(merged);
-          },
-        });
-      },
-    });
-  };
+  // Inline due-date editing straight from the task view (no need to open the full edit modal).
+  const [inlineDueVisible, setInlineDueVisible] = useState(false);
+  const [inlineDueSaving, setInlineDueSaving] = useState(false);
 
   const openDuePicker = () => {
     const d = formDueDate ? new Date(formDueDate) : new Date();
-    const base = !isNaN(d.getTime()) ? d : new Date();
-    setDueDateObj(base);
-    if (Platform.OS === 'android') {
-      pickDateTimeAndroid(base, (picked) => {
-        setDueDateObj(picked);
-        setFormDueDate(picked.toISOString());
-        if (reminderEnabled && !formDueDate) setReminderDateObj(picked);
-      });
-    } else {
-      setShowDueDatePicker(true);
-    }
+    setDueDateObj(!isNaN(d.getTime()) ? d : new Date());
+    setShowDueDatePicker(true);
   };
 
-  const openReminderPicker = () => {
-    if (Platform.OS === 'android') {
-      pickDateTimeAndroid(reminderDateObj, (picked) => setReminderDateObj(picked));
-    } else {
-      setShowReminderDatePicker(true);
-    }
-  };
+  const openReminderPicker = () => setShowReminderDatePicker(true);
 
   const [activities, setActivities] = useState<any[]>([]);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
@@ -380,7 +340,9 @@ export default function TaskDetailScreen() {
         status: formStatus as Task['status'],
         priority: formPriority as any,
         taskType: formTaskType as Task['taskType'],
-        dueDate: formDueDate.trim() || undefined,
+        // Send the trimmed value (possibly empty) so clearing the due date actually clears it —
+        // `undefined` would be dropped from the payload and the backend would keep the old date.
+        dueDate: formDueDate.trim(),
         assignedToId: formAssignedToId || undefined,
         assignedTo: formAssignedToId || formAssignedTo.trim() || undefined,
         assignedToName: formAssignedTo.trim() || undefined,
@@ -497,6 +459,48 @@ export default function TaskDetailScreen() {
   const handleComplete = useCallback(() => {
     handleStatusChange('completed');
   }, [handleStatusChange]);
+
+  // Persist just the due date from the inline picker on the task view (no full edit needed).
+  const saveDueDateInline = useCallback(
+    async (iso: string | null) => {
+      if (!user?.organization || !task) return;
+      const taskId = task.taskId || task.id;
+      // Shift the reminder along with the due date so it keeps the same gap (same rule as the
+      // edit form and AddTaskSheet). Only when a reminder is actually set on the task.
+      let reminderPatch: { reminderDate?: string; reminderDateUTC?: string } = {};
+      const prevDue = task.dueDate ? new Date(task.dueDate) : null;
+      const newDue = iso ? new Date(iso) : null;
+      const remDateRaw = (task as any).reminderDate;
+      if ((task as any).reminderEnabled && remDateRaw && prevDue && newDue && !isNaN(prevDue.getTime()) && !isNaN(newDue.getTime())) {
+        const remDate = new Date(remDateRaw);
+        if (!isNaN(remDate.getTime())) {
+          const shifted = new Date(remDate.getTime() + (newDue.getTime() - prevDue.getTime()));
+          if (!isNaN(shifted.getTime())) {
+            const shiftedIso = shifted.toISOString();
+            reminderPatch = { reminderDate: shiftedIso, reminderDateUTC: shiftedIso };
+          }
+        }
+      }
+      // Optimistic update so the value shows immediately even before the refetch lands.
+      setTask((prev) => (prev ? ({ ...prev, dueDate: iso || '', ...(reminderPatch.reminderDate ? { reminderDate: reminderPatch.reminderDate } : {}) } as Task) : prev));
+      setInlineDueSaving(true);
+      try {
+        await tasksApi.update(
+          user.organization,
+          { id: task.id, taskId, dueDate: iso || '', ...reminderPatch } as any,
+          user.userId || user.uID || '',
+          user.fullname || '',
+        );
+        await fetchTask();
+      } catch (err: any) {
+        Alert.alert(t('common.error'), err.message || t('errors.generic'));
+        await fetchTask();
+      } finally {
+        setInlineDueSaving(false);
+      }
+    },
+    [user?.organization, user?.userId, user?.uID, user?.fullname, task, fetchTask, t],
+  );
 
   // Close/exit the screen. When the task was opened with no navigation history (e.g. from a
   // push notification, reminder, or deep link), router.back() is a no-op and the user gets
@@ -732,8 +736,15 @@ export default function TaskDetailScreen() {
             { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
           ]}
         >
-          {/* Due date — always shown (with a fallback) so the field is never a blank/dot. */}
-          <View style={styles.detailRow}>
+          {/* Due date — tap to edit inline, no need to open the full edit modal. */}
+          <Pressable
+            style={styles.detailRow}
+            onPress={() => {
+              const d = task.dueDate ? new Date(task.dueDate) : new Date();
+              setDueDateObj(!isNaN(d.getTime()) ? d : new Date());
+              setInlineDueVisible(true);
+            }}
+          >
             <View style={[styles.detailIcon, { backgroundColor: task.dueDate && overdue ? withAlpha('#F44336', 0.094) : withAlpha(theme.colors.primary, 0.094) }]}>
               <MaterialCommunityIcons
                 name="calendar-clock"
@@ -761,7 +772,12 @@ export default function TaskDetailScreen() {
                 })()}
               </Text>
             </View>
-          </View>
+            {inlineDueSaving ? (
+              <ActivityIndicator size={16} color={theme.colors.primary} />
+            ) : (
+              <MaterialCommunityIcons name="pencil" size={16} color={theme.colors.onSurfaceVariant} />
+            )}
+          </Pressable>
 
           {(task.assignedToName || relatedEntity) ? (
             <Divider style={{ marginVertical: 10 }} />
@@ -1197,42 +1213,6 @@ export default function TaskDetailScreen() {
                 </View>
               </Pressable>
 
-              {Platform.OS === 'ios' && showDueDatePicker && (
-                <DateTimePicker
-                  value={dueDateObj}
-                  mode="date"
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                  onChange={(_: DateTimePickerEvent, d?: Date) => {
-                    setShowDueDatePicker(false);
-                    if (d) {
-                      const merged = new Date(dueDateObj);
-                      merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                      setDueDateObj(merged);
-                      setShowDueTimePicker(true);
-                    }
-                  }}
-                />
-              )}
-              {Platform.OS === 'ios' && showDueTimePicker && (
-                <DateTimePicker
-                  value={dueDateObj}
-                  mode="time"
-                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                  onChange={(_: DateTimePickerEvent, d?: Date) => {
-                    setShowDueTimePicker(false);
-                    if (d) {
-                      const merged = new Date(dueDateObj);
-                      merged.setHours(d.getHours(), d.getMinutes());
-                      setDueDateObj(merged);
-                      setFormDueDate(merged.toISOString());
-                      if (reminderEnabled && !formDueDate) {
-                        setReminderDateObj(merged);
-                      }
-                    }
-                  }}
-                />
-              )}
-
               <View style={[styles.reminderRow, { flexDirection }]}>
                 <View style={[styles.reminderLabelRow, { flexDirection }]}>
                   <MaterialCommunityIcons name="bell-outline" size={20} color={BRAND_COLOR} />
@@ -1268,38 +1248,6 @@ export default function TaskDetailScreen() {
                     />
                     </View>
                   </Pressable>
-
-                  {Platform.OS === 'ios' && showReminderDatePicker && (
-                    <DateTimePicker
-                      value={reminderDateObj}
-                      mode="date"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(_: DateTimePickerEvent, d?: Date) => {
-                        setShowReminderDatePicker(false);
-                        if (d) {
-                          const merged = new Date(reminderDateObj);
-                          merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
-                          setReminderDateObj(merged);
-                          setShowReminderTimePicker(true);
-                        }
-                      }}
-                    />
-                  )}
-                  {Platform.OS === 'ios' && showReminderTimePicker && (
-                    <DateTimePicker
-                      value={reminderDateObj}
-                      mode="time"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(_: DateTimePickerEvent, d?: Date) => {
-                        setShowReminderTimePicker(false);
-                        if (d) {
-                          const merged = new Date(reminderDateObj);
-                          merged.setHours(d.getHours(), d.getMinutes());
-                          setReminderDateObj(merged);
-                        }
-                      }}
-                    />
-                  )}
                 </>
               )}
 
@@ -1465,6 +1413,51 @@ export default function TaskDetailScreen() {
           </KeyboardAvoidingView>
         </Modal>
       </Portal>
+
+      {/* Due date picker (edit modal) */}
+      <GambotDateTimePicker
+        visible={showDueDatePicker}
+        value={formDueDate || dueDateObj}
+        title={t('tasks.dueDate')}
+        allowClear
+        onConfirm={(d) => {
+          // Keep the reminder aligned with the due date: shift it by the same amount the due date
+          // moved so the chosen gap is preserved (matches AddTaskSheet). Editing the reminder alone
+          // never touches the due date.
+          const prevDue = formDueDate ? new Date(formDueDate) : dueDateObj;
+          const base = prevDue && !isNaN(prevDue.getTime()) ? prevDue : d;
+          const delta = d.getTime() - base.getTime();
+          setDueDateObj(d);
+          setFormDueDate(d.toISOString());
+          setReminderDateObj((prev) => {
+            const ref = prev && !isNaN(prev.getTime()) ? prev : new Date(d);
+            const shifted = new Date(ref.getTime() + delta);
+            return isNaN(shifted.getTime()) ? new Date(d) : shifted;
+          });
+        }}
+        onClear={() => setFormDueDate('')}
+        onDismiss={() => setShowDueDatePicker(false)}
+      />
+
+      {/* Reminder picker (edit modal) */}
+      <GambotDateTimePicker
+        visible={showReminderDatePicker}
+        value={reminderDateObj}
+        title={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
+        onConfirm={(d) => setReminderDateObj(d)}
+        onDismiss={() => setShowReminderDatePicker(false)}
+      />
+
+      {/* Inline due date picker (task view — no edit modal needed) */}
+      <GambotDateTimePicker
+        visible={inlineDueVisible}
+        value={task?.dueDate || dueDateObj}
+        title={t('tasks.dueDate')}
+        allowClear
+        onConfirm={(d) => saveDueDateInline(d.toISOString())}
+        onClear={() => saveDueDateInline(null)}
+        onDismiss={() => setInlineDueVisible(false)}
+      />
     </View>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -30,7 +30,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
-import { esignatureApi } from '../../../../services/api/esignature';
+import { esignatureApi, DocumentTemplate } from '../../../../services/api/esignature';
 import { borderRadius } from '../../../../constants/theme';
 import { withAlpha } from '../../../../utils/formatters';
 
@@ -68,6 +68,12 @@ export default function CreateESignatureScreen() {
   const [language, setLanguage] = useState<string>(user?.language === 'he' ? 'he' : 'en');
   const [expiresInDays, setExpiresInDays] = useState('30');
 
+  // Document source: upload a file OR pick an existing document template (parity with web).
+  const [documentSource, setDocumentSource] = useState<'upload' | 'template'>('upload');
+  const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+
   // Step 2 - Signers
   const [signers, setSigners] = useState<Signer[]>([
     { signerRole: 'signer1', signerName: '', signerEmail: '', signerPhone: '' },
@@ -76,6 +82,23 @@ export default function CreateESignatureScreen() {
 
   // Step 3 - Result
   const [createdDocument, setCreatedDocument] = useState<any>(null);
+
+  // Load signature-eligible document templates once (used only in the "template" source mode).
+  useEffect(() => {
+    if (!user?.organization) return;
+    let active = true;
+    setTemplatesLoading(true);
+    esignatureApi.getDocumentTemplates(user.organization)
+      .then((tpls) => { if (active) setTemplates(tpls); })
+      .catch(() => { if (active) setTemplates([]); })
+      .finally(() => { if (active) setTemplatesLoading(false); });
+    return () => { active = false; };
+  }, [user?.organization]);
+
+  const selectedTemplate = useMemo(
+    () => templates.find((tpl) => tpl.id === selectedTemplateId) || null,
+    [templates, selectedTemplateId],
+  );
 
   const handlePickFile = useCallback(async () => {
     try {
@@ -128,8 +151,9 @@ export default function CreateESignatureScreen() {
   }, []);
 
   const canProceedStep1 = useMemo(() => {
-    return documentName.trim().length > 0 && uploadedFile !== null;
-  }, [documentName, uploadedFile]);
+    if (documentName.trim().length === 0) return false;
+    return documentSource === 'template' ? selectedTemplateId.length > 0 : uploadedFile !== null;
+  }, [documentName, uploadedFile, documentSource, selectedTemplateId]);
 
   const canProceedStep2 = useMemo(() => {
     return signers.every((s) => s.signerName.trim().length > 0);
@@ -144,7 +168,9 @@ export default function CreateESignatureScreen() {
   }, [canProceedStep1, t]);
 
   const handleSubmit = useCallback(async () => {
-    if (!user?.organization || !uploadedFile) return;
+    if (!user?.organization) return;
+    if (documentSource === 'upload' && !uploadedFile) return;
+    if (documentSource === 'template' && !selectedTemplateId) return;
     if (!canProceedStep2) {
       Alert.alert(t('common.error'), t('esignature.fillSignerName'));
       return;
@@ -152,6 +178,26 @@ export default function CreateESignatureScreen() {
 
     setLoading(true);
     try {
+      // Template source: let the backend generate the PDF + default fields from the template.
+      if (documentSource === 'template') {
+        const result = await esignatureApi.createFromTemplate({
+          organization: user.organization,
+          templateId: selectedTemplateId,
+          documentName: documentName.trim() || selectedTemplate?.name,
+          language,
+          expiresInDays: parseInt(expiresInDays, 10) || 30,
+          contactPhone: signers[0]?.signerPhone?.trim() || undefined,
+          signers,
+          userId: user.uID || user.userId,
+          userName: user.fullname,
+          requiresSequentialSigning: sequentialSigning,
+        });
+        setCreatedDocument(result?.data || result);
+        setStep(3);
+        return;
+      }
+
+      if (!uploadedFile) return;
       const formData = new FormData();
       formData.append('file', {
         uri: uploadedFile.uri,
@@ -179,7 +225,7 @@ export default function CreateESignatureScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user, uploadedFile, documentName, expiresInDays, sequentialSigning, signers, language, contactName, canProceedStep2, t]);
+  }, [user, uploadedFile, documentName, expiresInDays, sequentialSigning, signers, language, contactName, canProceedStep2, t, documentSource, selectedTemplateId, selectedTemplate]);
 
   const orgName = user?.organization || '';
 
@@ -292,41 +338,114 @@ export default function CreateESignatureScreen() {
         right={<TextInput.Icon icon="account" />}
       />
 
-      {/* File upload */}
-      <Pressable
-        onPress={handlePickFile}
-        style={[styles.uploadArea, {
-          borderColor: uploadedFile ? '#4CAF50' : theme.colors.outline,
-          backgroundColor: uploadedFile ? '#4CAF5008' : theme.colors.surfaceVariant + '30',
-        }]}
-      >
-        {uploadedFile ? (
-          <View style={[styles.uploadedRow, { flexDirection }]}>
-            <MaterialCommunityIcons name="file-check" size={24} color="#4CAF50" />
-            <View style={{ flex: 1 }}>
-              <Text variant="bodyMedium" numberOfLines={1} style={{ color: theme.colors.onSurface, fontWeight: '500', textAlign }}>
-                {uploadedFile.name}
-              </Text>
-              {uploadedFile.size ? (
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                  {(uploadedFile.size / 1024).toFixed(0)} KB
+      {/* Document source: upload a file OR choose an existing document template */}
+      <View style={styles.formGroup}>
+        <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 8, textAlign }}>
+          {t('esignature.documentSource', isRTL ? 'מקור המסמך' : 'Document source')}
+        </Text>
+        <SegmentedButtons
+          value={documentSource}
+          onValueChange={(v) => {
+            setDocumentSource(v as 'upload' | 'template');
+            if (v === 'template') setUploadedFile(null);
+            else setSelectedTemplateId('');
+          }}
+          buttons={[
+            { value: 'upload', label: isRTL ? 'העלאת קובץ' : 'Upload file', icon: 'upload' },
+            { value: 'template', label: isRTL ? 'מתבנית' : 'From template', icon: 'file-document-outline' },
+          ]}
+          style={styles.segmented}
+        />
+      </View>
+
+      {documentSource === 'upload' ? (
+        /* File upload */
+        <Pressable
+          onPress={handlePickFile}
+          style={[styles.uploadArea, {
+            borderColor: uploadedFile ? '#4CAF50' : theme.colors.outline,
+            backgroundColor: uploadedFile ? '#4CAF5008' : theme.colors.surfaceVariant + '30',
+          }]}
+        >
+          {uploadedFile ? (
+            <View style={[styles.uploadedRow, { flexDirection }]}>
+              <MaterialCommunityIcons name="file-check" size={24} color="#4CAF50" />
+              <View style={{ flex: 1 }}>
+                <Text variant="bodyMedium" numberOfLines={1} style={{ color: theme.colors.onSurface, fontWeight: '500', textAlign }}>
+                  {uploadedFile.name}
                 </Text>
-              ) : null}
+                {uploadedFile.size ? (
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                    {(uploadedFile.size / 1024).toFixed(0)} KB
+                  </Text>
+                ) : null}
+              </View>
+              <IconButton icon="close" size={18} onPress={() => setUploadedFile(null)} />
             </View>
-            <IconButton icon="close" size={18} onPress={() => setUploadedFile(null)} />
-          </View>
-        ) : (
-          <View style={styles.uploadPlaceholder}>
-            <MaterialCommunityIcons name="cloud-upload" size={36} color={theme.colors.onSurfaceVariant} />
-            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, fontWeight: '500' }}>
-              {t('esignature.uploadFile')}
-            </Text>
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              PDF, PNG, JPG
-            </Text>
-          </View>
-        )}
-      </Pressable>
+          ) : (
+            <View style={styles.uploadPlaceholder}>
+              <MaterialCommunityIcons name="cloud-upload" size={36} color={theme.colors.onSurfaceVariant} />
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, fontWeight: '500' }}>
+                {t('esignature.uploadFile')}
+              </Text>
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                PDF, PNG, JPG
+              </Text>
+            </View>
+          )}
+        </Pressable>
+      ) : (
+        /* Template picker */
+        <View style={[styles.templatePicker, { borderColor: theme.colors.outline, backgroundColor: theme.colors.surfaceVariant + '20' }]}>
+          {templatesLoading ? (
+            <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+              <ActivityIndicator color={theme.colors.primary} />
+            </View>
+          ) : templates.length === 0 ? (
+            <View style={{ paddingVertical: 16, alignItems: 'center', gap: 6 }}>
+              <MaterialCommunityIcons name="file-remove-outline" size={32} color={theme.colors.onSurfaceVariant} />
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+                {isRTL ? 'לא נמצאו תבניות מסמכים' : 'No document templates found'}
+              </Text>
+            </View>
+          ) : (
+            templates.map((tpl) => {
+              const isSelected = tpl.id === selectedTemplateId;
+              return (
+                <Pressable
+                  key={tpl.id}
+                  onPress={() => {
+                    setSelectedTemplateId(tpl.id);
+                    if (!documentName.trim()) setDocumentName(tpl.name);
+                  }}
+                  style={[
+                    styles.templateRow,
+                    { flexDirection, borderColor: isSelected ? theme.colors.primary : theme.colors.outlineVariant },
+                    isSelected && { backgroundColor: theme.colors.primary + '14' },
+                  ]}
+                >
+                  <MaterialCommunityIcons
+                    name={isSelected ? 'radiobox-marked' : 'radiobox-blank'}
+                    size={20}
+                    color={isSelected ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text variant="bodyMedium" numberOfLines={1} style={{ color: theme.colors.onSurface, fontWeight: '500', textAlign }}>
+                      {tpl.name}
+                    </Text>
+                    {tpl.description ? (
+                      <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                        {tpl.description}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <MaterialCommunityIcons name="file-document-outline" size={18} color={theme.colors.onSurfaceVariant} />
+                </Pressable>
+              );
+            })
+          )}
+        </View>
+      )}
 
       {/* Language selector */}
       <View style={styles.formGroup}>
@@ -733,6 +852,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     width: '100%',
+  },
+  templatePicker: {
+    borderWidth: 1,
+    borderRadius: borderRadius.lg,
+    padding: 8,
+    gap: 8,
+  },
+  templateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
   },
   nextButton: {
     borderRadius: borderRadius.md,

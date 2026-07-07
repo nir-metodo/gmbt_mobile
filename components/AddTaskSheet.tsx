@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Modal, Pressable, ScrollView, Platform, Alert } from 'react-native';
+import { View, StyleSheet, Modal, Pressable, ScrollView, Alert } from 'react-native';
 import { Text, TextInput, Chip, Button, Switch } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../hooks/useAppTheme';
 import { useRTL } from '../hooks/useRTL';
 import { tasksApi } from '../services/api/tasks';
 import { usersApi } from '../services/api/users';
+import GambotDateTimePicker from './GambotDateTimePicker';
 import type { OrgUser } from '../types';
 
 // Crash-proof date/time formatter. On Android (Hermes) `Date.toLocaleString(locale, { dateStyle, timeStyle })`
@@ -151,45 +151,6 @@ export default function AddTaskSheet({
       const shifted = new Date(ref.getTime() + delta);
       return isNaN(shifted.getTime()) ? new Date(picked) : shifted;
     });
-  };
-
-  // ⚠️ ANDROID CRASH FIX: NEVER render <DateTimePicker> inside a React Native <Modal> on Android.
-  // The native date/time dialog clashes with the modal host and the chained date→time flow throws
-  // "IllegalStateException: Fragment already added", which closes the whole app. On Android we open
-  // the pickers imperatively (date, then time); iOS keeps the inline spinner via the show* flags.
-  const pickDateTimeAndroid = (current: Date, onPicked: (d: Date) => void) => {
-    const base = current && !isNaN(current.getTime()) ? new Date(current) : new Date();
-    try {
-      DateTimePickerAndroid.open({
-        value: base,
-        mode: 'date',
-        onChange: (e: DateTimePickerEvent, dateVal?: Date) => {
-          if (e.type !== 'set' || !dateVal) return;
-          const merged = new Date(base);
-          merged.setFullYear(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
-          // Defer the time picker so it doesn't open while the date dialog's fragment is still attached
-          // ("Fragment already added" -> app crash on some Android versions).
-          setTimeout(() => {
-            try {
-              DateTimePickerAndroid.open({
-                value: merged,
-                mode: 'time',
-                is24Hour: true,
-                onChange: (e2: DateTimePickerEvent, timeVal?: Date) => {
-                  if (e2.type !== 'set' || !timeVal) return;
-                  merged.setHours(timeVal.getHours(), timeVal.getMinutes(), 0, 0);
-                  onPicked(merged);
-                },
-              });
-            } catch {
-              onPicked(merged);
-            }
-          }, 150);
-        },
-      });
-    } catch {
-      // Picker unavailable — fail silently rather than crash.
-    }
   };
 
   const handleCreate = async () => {
@@ -335,14 +296,8 @@ export default function AddTaskSheet({
 
             <Pressable
               onPress={() => {
-                const d = dueIso ? new Date(dueIso) : new Date();
-                const base = !isNaN(d.getTime()) ? d : new Date();
-                if (Platform.OS === 'android') {
-                  pickDateTimeAndroid(base, (picked) => applyDueChange(picked, base));
-                } else {
-                  setShowReminderPicker(false);
-                  setShowDuePicker((v) => !v);
-                }
+                setShowReminderPicker(false);
+                setShowDuePicker(true);
               }}
             >
               <View pointerEvents="none">
@@ -352,31 +307,13 @@ export default function AddTaskSheet({
                   mode="outlined"
                   editable={false}
                   placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
-                  style={{ marginBottom: Platform.OS === 'ios' && showDuePicker ? 0 : 14, textAlign }}
+                  style={{ marginBottom: 14, textAlign }}
                   outlineColor={theme.colors.outline}
                   activeOutlineColor={theme.colors.primary}
                   right={<TextInput.Icon icon="calendar" />}
                 />
               </View>
             </Pressable>
-
-            {Platform.OS === 'ios' && showDuePicker && (
-              <View style={[styles.iosPickerWrap, { borderColor: theme.colors.outline }]}>
-                <DateTimePicker
-                  value={dueObj}
-                  mode="datetime"
-                  display="spinner"
-                  themeVariant={theme.dark ? 'dark' : 'light'}
-                  style={{ alignSelf: 'stretch' }}
-                  onChange={(_: DateTimePickerEvent, d?: Date) => {
-                    if (d) applyDueChange(d, dueObj);
-                  }}
-                />
-                <Button mode="contained-tonal" compact onPress={() => setShowDuePicker(false)} style={{ alignSelf: 'center', marginTop: 4 }}>
-                  {t('common.done', 'סיום')}
-                </Button>
-              </View>
-            )}
 
             <View style={[styles.reminderRow, { flexDirection }]}>
               <View style={[{ alignItems: 'center', gap: 8, flexDirection }]}>
@@ -397,47 +334,23 @@ export default function AddTaskSheet({
             </View>
 
             {reminderEnabled && (
-              <>
-                <Pressable onPress={() => {
-                  const base = reminderObj && !isNaN(reminderObj.getTime()) ? reminderObj : new Date();
-                  if (Platform.OS === 'android') {
-                    pickDateTimeAndroid(base, (picked) => setReminderObj(picked));
-                  } else {
-                    setShowDuePicker(false);
-                    setShowReminderPicker((v) => !v);
-                  }
-                }}>
-                  <View pointerEvents="none">
-                    <TextInput
-                      label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
-                      value={formatDateTimeSafe(reminderObj, lang)}
-                      mode="outlined"
-                      editable={false}
-                      style={{ marginBottom: Platform.OS === 'ios' && showReminderPicker ? 0 : 14, textAlign }}
-                      outlineColor={theme.colors.outline}
-                      activeOutlineColor={theme.colors.primary}
-                      right={<TextInput.Icon icon="bell-ring-outline" />}
-                    />
-                  </View>
-                </Pressable>
-                {Platform.OS === 'ios' && showReminderPicker && (
-                  <View style={[styles.iosPickerWrap, { borderColor: theme.colors.outline }]}>
-                    <DateTimePicker
-                      value={reminderObj}
-                      mode="datetime"
-                      display="spinner"
-                      themeVariant={theme.dark ? 'dark' : 'light'}
-                      style={{ alignSelf: 'stretch' }}
-                      onChange={(_: DateTimePickerEvent, d?: Date) => {
-                        if (d) setReminderObj(d);
-                      }}
-                    />
-                    <Button mode="contained-tonal" compact onPress={() => setShowReminderPicker(false)} style={{ alignSelf: 'center', marginTop: 4 }}>
-                      {t('common.done', 'סיום')}
-                    </Button>
-                  </View>
-                )}
-              </>
+              <Pressable onPress={() => {
+                setShowDuePicker(false);
+                setShowReminderPicker(true);
+              }}>
+                <View pointerEvents="none">
+                  <TextInput
+                    label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
+                    value={formatDateTimeSafe(reminderObj, lang)}
+                    mode="outlined"
+                    editable={false}
+                    style={{ marginBottom: 14, textAlign }}
+                    outlineColor={theme.colors.outline}
+                    activeOutlineColor={theme.colors.primary}
+                    right={<TextInput.Icon icon="bell-ring-outline" />}
+                  />
+                </View>
+              </Pressable>
             )}
 
             {/* Additional details — collapsed by default (mirrors the web TaskForm). */}
@@ -554,6 +467,21 @@ export default function AddTaskSheet({
           </View>
         </Pressable>
       </Pressable>
+
+      <GambotDateTimePicker
+        visible={showDuePicker}
+        value={dueIso || dueObj}
+        title={t('tasks.dueDate', 'תאריך יעד')}
+        onConfirm={(d) => applyDueChange(d, dueObj)}
+        onDismiss={() => setShowDuePicker(false)}
+      />
+      <GambotDateTimePicker
+        visible={showReminderPicker}
+        value={reminderObj}
+        title={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
+        onConfirm={(d) => setReminderObj(d)}
+        onDismiss={() => setShowReminderPicker(false)}
+      />
     </Modal>
   );
 }
@@ -567,6 +495,5 @@ const styles = StyleSheet.create({
   actions: { gap: 12, marginTop: 12 },
   userList: { borderWidth: 1, borderRadius: 10, marginBottom: 14, overflow: 'hidden' },
   userRow: { alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 14 },
-  iosPickerWrap: { borderWidth: 1, borderRadius: 12, padding: 8, marginBottom: 14, alignItems: 'stretch' },
   detailsToggle: { alignItems: 'center', gap: 6, paddingVertical: 10, marginBottom: 2 },
 });
