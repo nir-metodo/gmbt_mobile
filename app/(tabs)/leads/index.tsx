@@ -628,7 +628,7 @@ export default function LeadsListScreen() {
       let changed = false;
       const next = prev.map((local) => {
         const updated = storeLeads.find((s) => s.id === local.id);
-        if (updated && (updated.stageName !== local.stageName || updated.stage !== local.stage || updated.ownerName !== (local as any).ownerName)) {
+        if (updated && (updated.stageName !== local.stageName || updated.stage !== local.stage || updated.ownerName !== (local as any).ownerName || (updated as any).modifiedOn !== (local as any).modifiedOn)) {
           changed = true;
           return { ...local, ...updated };
         }

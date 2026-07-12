@@ -21,7 +21,7 @@ import { settingsApi } from '../../../../services/api/settings';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { useAuthStore } from '../../../../stores/authStore';
-import { hasPermission } from '../../../../constants/permissions';
+import { hasPermission, DEFAULT_SCREEN_OPTIONS } from '../../../../constants/permissions';
 import { useSettingsStore } from '../../../../stores/settingsStore';
 import { getInitials } from '../../../../utils/formatters';
 import { getCacheSize, clearCache, formatCacheSize } from '../../../../services/mediaCache';
@@ -89,6 +89,7 @@ export default function SettingsScreen() {
   const [logoutDialogVisible, setLogoutDialogVisible] = useState(false);
   const [languageDialogVisible, setLanguageDialogVisible] = useState(false);
   const [themeDialogVisible, setThemeDialogVisible] = useState(false);
+  const [defaultScreenDialogVisible, setDefaultScreenDialogVisible] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [cacheSize, setCacheSize] = useState<string>('...');
   const [clearingCache, setClearingCache] = useState(false);
@@ -135,6 +136,24 @@ export default function SettingsScreen() {
     }
     setLanguageDialogVisible(false);
   }, [settings, user]);
+
+  // Only offer default-screen options the user is actually allowed to open.
+  const availableDefaultScreens = DEFAULT_SCREEN_OPTIONS.filter(
+    (o) => o.permission === null || hasPermission(user?.Permissions, user?.SecurityRole, o.permission as any)
+  );
+  const currentDefaultScreen = settings.defaultScreen || '';
+  const currentDefaultScreenLabel = currentDefaultScreen
+    ? t(availableDefaultScreens.find((o) => o.route === currentDefaultScreen)?.labelKey || 'settings.defaultScreenAuto', isRTL ? 'אוטומטי' : 'Automatic')
+    : t('settings.defaultScreenAuto', isRTL ? 'אוטומטי (מסך ראשון מורשה)' : 'Automatic (first allowed screen)');
+
+  const handleDefaultScreenChange = useCallback(async (route: string) => {
+    try {
+      await settings.setDefaultScreen(route);
+    } catch {
+      // already applied locally
+    }
+    setDefaultScreenDialogVisible(false);
+  }, [settings]);
 
   const handleThemeChange = useCallback(async (mode: string) => {
     try {
@@ -227,6 +246,17 @@ export default function SettingsScreen() {
             isRTL={isRTL}
             themeColors={theme.colors}
             onPress={() => setThemeDialogVisible(true)}
+            right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="cellphone-arrow-down"
+            iconColor="#0284c7"
+            label={t('settings.defaultScreen', isRTL ? 'מסך פתיחה' : 'Default screen')}
+            description={currentDefaultScreenLabel}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            onPress={() => setDefaultScreenDialogVisible(true)}
             right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
           />
         </Surface>
@@ -501,6 +531,35 @@ export default function SettingsScreen() {
               ))}
             </RadioButton.Group>
           </Dialog.Content>
+        </Dialog>
+      </Portal>
+
+      {/* ── Default Screen Dialog ── */}
+      <Portal>
+        <Dialog visible={defaultScreenDialogVisible} onDismiss={() => setDefaultScreenDialogVisible(false)} style={{ borderRadius: 20, maxHeight: '80%' }}>
+          <Dialog.Title>{t('settings.defaultScreen', isRTL ? 'מסך פתיחה' : 'Default screen')}</Dialog.Title>
+          <Dialog.ScrollArea>
+            <ScrollView>
+              <RadioButton.Group value={currentDefaultScreen} onValueChange={handleDefaultScreenChange}>
+                <Pressable onPress={() => handleDefaultScreenChange('')} style={[s.themeRow, { flexDirection: 'row' }]}>
+                  <MaterialCommunityIcons name="autorenew" size={22} color={theme.colors.onSurface} />
+                  <Text variant="bodyLarge" style={{ flex: 1, color: theme.colors.onSurface, marginHorizontal: 12, textAlign: isRTL ? 'right' : 'left' }}>
+                    {t('settings.defaultScreenAuto', isRTL ? 'אוטומטי (מסך ראשון מורשה)' : 'Automatic (first allowed screen)')}
+                  </Text>
+                  <RadioButton value="" color={BRAND_COLOR} />
+                </Pressable>
+                {availableDefaultScreens.map((opt) => (
+                  <Pressable key={opt.route} onPress={() => handleDefaultScreenChange(opt.route)} style={[s.themeRow, { flexDirection: 'row' }]}>
+                    <MaterialCommunityIcons name={opt.icon as any} size={22} color={theme.colors.onSurface} />
+                    <Text variant="bodyLarge" style={{ flex: 1, color: theme.colors.onSurface, marginHorizontal: 12, textAlign: isRTL ? 'right' : 'left' }}>
+                      {t(opt.labelKey)}
+                    </Text>
+                    <RadioButton value={opt.route} color={BRAND_COLOR} />
+                  </Pressable>
+                ))}
+              </RadioButton.Group>
+            </ScrollView>
+          </Dialog.ScrollArea>
         </Dialog>
       </Portal>
 

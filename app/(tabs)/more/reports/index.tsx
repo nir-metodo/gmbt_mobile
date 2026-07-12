@@ -1199,6 +1199,7 @@ export default function ReportsScreen() {
       <Appbar.Header style={{ backgroundColor: BRAND }}>
         <Appbar.BackAction onPress={() => router.back()} color="#fff" />
         <Appbar.Content title={t('reports.title')} titleStyle={styles.headerTitle} />
+        <Appbar.Action icon="calendar-clock" onPress={() => router.push('/(tabs)/more/reports/scheduled')} color="#fff" />
         <Appbar.Action icon="export-variant" onPress={handleExport} color="#fff" disabled={sortedData.length === 0} />
       </Appbar.Header>
 

@@ -490,6 +490,22 @@ export default function NotificationsSettingsScreen() {
         </Surface></>
         )}
 
+        {/* Scheduled reports (daily / weekly / monthly) */}
+        <SectionHeader title={isRTL ? 'דוחות מתוזמנים' : 'Scheduled reports'} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon="file-chart-outline"
+            iconColor="#2563eb"
+            label={isRTL ? 'דוח תקופתי מוכן' : 'Report ready'}
+            description={isRTL ? 'קבל התראה כשדוח יומי / שבועי / חודשי נשלח, וצפה בו באפליקציה' : 'Get notified when a daily / weekly / monthly report is sent, and view it in the app'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.scheduledReport}
+            onToggle={(v) => handleToggle('scheduledReport', v)}
+            disabled={saving === 'scheduledReport'}
+          />
+        </Surface>
+
         {/* Calls — only if telephony is enabled */}
         {hasTelephony && (
           <>

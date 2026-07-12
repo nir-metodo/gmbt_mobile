@@ -24,6 +24,7 @@ export interface PushNotificationSettings {
   calendarEventReminder: boolean;
   gambotAiTransfer: boolean;
   incomingCall: boolean;
+  scheduledReport: boolean;
 }
 
 export const DEFAULT_PUSH_SETTINGS: PushNotificationSettings = {
@@ -44,6 +45,7 @@ export const DEFAULT_PUSH_SETTINGS: PushNotificationSettings = {
   calendarEventReminder: true,
   gambotAiTransfer: true,
   incomingCall: true,
+  scheduledReport: true,
 };
 
 // Dedicated key that tracks the push token we last *successfully registered with the backend*

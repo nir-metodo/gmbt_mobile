@@ -22,6 +22,9 @@ export interface CalendarEvent {
   linkedEntityType: string;
   linkedEntityId: string;
   linkedEntityName: string;
+  linkedEntities?: Array<{ type: string; id: string; name: string }>;
+  recurrence?: string; // 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'
+  recurrenceUntil?: string; // yyyy-MM-dd
   reminderEnabled: boolean;
   reminderMinutesBefore: number;
   pushReminderEnabled?: boolean;
@@ -81,6 +84,9 @@ function normalizeEvent(raw: any): CalendarEvent {
     linkedEntityType: raw.linkedEntityType || raw.LinkedEntityType || '',
     linkedEntityId: raw.linkedEntityId || raw.LinkedEntityId || '',
     linkedEntityName: raw.linkedEntityName || raw.LinkedEntityName || '',
+    linkedEntities: raw.linkedEntities || raw.LinkedEntities || [],
+    recurrence: raw.recurrence || raw.Recurrence || 'none',
+    recurrenceUntil: (raw.recurrenceUntil || raw.RecurrenceUntil || '').split('T')[0],
     reminderEnabled: raw.reminderEnabled ?? raw.ReminderEnabled ?? false,
     reminderMinutesBefore: raw.reminderMinutesBefore ?? raw.ReminderMinutesBefore ?? 15,
     pushReminderEnabled: raw.pushReminderEnabled ?? raw.PushReminderEnabled ?? false,

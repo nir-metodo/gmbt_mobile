@@ -59,6 +59,7 @@ interface ChatState {
   activeWabaNumber: string | null;
 
   loadChats: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
+  refreshRecentChats: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
   setChats: (chats: Chat[]) => void;
   addOrUpdateChat: (chat: Chat) => void;
   setSearchQuery: (query: string) => void;
@@ -263,6 +264,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           lastFromNumberId: c.lastFromNumberId || c.wabaPhoneNumberId || '',
           wabaPhoneNumberId: c.wabaPhoneNumberId || c.lastFromNumberId || '',
           humanReviewed: c.humanReviewed,
+          usersWithUnreadInternalMessages: c.usersWithUnreadInternalMessages || [],
         }));
       chatList.sort((a, b) =>
         new Date(b.lastMessageTime || 0).getTime() - new Date(a.lastMessageTime || 0).getTime()
@@ -272,6 +274,58 @@ export const useChatStore = create<ChatState>((set, get) => ({
       AsyncStorage.setItem(`${CHATS_CACHE_KEY}_${organization}`, JSON.stringify(chatList.slice(0, 100))).catch(() => {});
     } catch {
       set({ isLoadingChats: false });
+    }
+  },
+
+  // Cheap incremental refresh used by the polling fallback + app-foreground handler.
+  // Instead of re-reading the ENTIRE contacts collection (pageSize 9999) every 60s — which was
+  // the single biggest Firestore read amplifier in the whole product — we fetch only the most
+  // recently active contacts and merge them into the existing list. Messages missed by the
+  // WebSocket are by definition recent, so a small top-N-by-lastMessage window covers them.
+  // The full list from the initial loadChats() stays intact (upsert never removes rows).
+  refreshRecentChats: async (organization, userId?, dataVisibility?) => {
+    try {
+      const contacts = await contactsApi.getAll(organization, {
+        userId,
+        dataVisibility,
+        pageSize: 150,
+      });
+      const { addOrUpdateChat } = get();
+      (contacts || [])
+        .filter((c: any) => c.phoneNumber || c.PhoneNumber)
+        .forEach((c: any) => {
+          addOrUpdateChat({
+            id: c.id || c.Id || c.phoneNumber || c.PhoneNumber,
+            phoneNumber: c.phoneNumber || c.PhoneNumber || '',
+            contactName: c.name || c.Name || c.phoneNumber || c.PhoneNumber || '',
+            lastMessage: c.lastMessage || c.LastMessage || '',
+            lastMessageTime: c.lastMessageTime || c.LastMessageTime || c.time || c.modifiedOn || '',
+            unreadCount: c.isRead === false ? 1 : 0,
+            isRead: c.isRead,
+            profilePicture: c.photoURL || c.ProfilePicture || null,
+            isOnline: false,
+            category: c.lastConversationCategory || c.category || '',
+            status: c.lastConversationStatus || c.conversationStatus || 'Open',
+            lastConversationStatus: c.lastConversationStatus || c.conversationStatus || 'Open',
+            lastConversationCategory: c.lastConversationCategory || '',
+            lastMessageDirection: c.lastMessageDirection || '',
+            ownerId: c.ownerId || '',
+            ownerName: c.ownerName || '',
+            keys: c.keys,
+            tags: Array.isArray(c.keys) ? c.keys : [],
+            leadStageName: c.leadStageName || c.leadStage?.stageName || '',
+            leadStageColor: c.leadStageColor || c.leadStage?.stageColor || c.leadStage?.color || '',
+            caseStageName: c.caseStageName || c.caseStage?.stageName || '',
+            caseStageColor: c.caseStageColor || c.caseStage?.stageColor || c.caseStage?.color || '',
+            isCTWA: !!(c.ctwaClid || c.adSourceId),
+            lastFromNumberId: c.lastFromNumberId || c.wabaPhoneNumberId || '',
+            wabaPhoneNumberId: c.wabaPhoneNumberId || c.lastFromNumberId || '',
+            humanReviewed: c.humanReviewed,
+            usersWithUnreadInternalMessages: c.usersWithUnreadInternalMessages || [],
+          } as Chat);
+        });
+    } catch {
+      // Non-fatal: WebSocket remains the primary realtime path.
     }
   },
 
@@ -727,7 +781,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
     set((state) => {
       const chats = state.chats.map((c) =>
-        matches(c.phoneNumber) ? { ...c, unreadCount: 0, isRead: true } : c
+        matches(c.phoneNumber)
+          ? {
+              ...c,
+              unreadCount: 0,
+              isRead: true,
+              // Opening a chat loads its messages via GetMessagesByPhoneNumber, which clears this
+              // user from usersWithUnreadInternalMessages server-side. Strip it locally too so the
+              // internal-mention badge disappears immediately.
+              usersWithUnreadInternalMessages: userId
+                ? (c.usersWithUnreadInternalMessages || []).filter((u) => u !== userId)
+                : c.usersWithUnreadInternalMessages,
+            }
+          : c
       );
       return { chats, unreadCount: chats.filter((c) => c.isRead === false).length };
     });

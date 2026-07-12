@@ -442,6 +442,9 @@ export default function ChatConversationScreen() {
 
   // Contact Info sheet (category, status, lead stage, tags, timeline)
   const [showContactInfoSheet, setShowContactInfoSheet] = useState(false);
+  // Which tab the Contact Info sheet opens on ('internal' = internal-message composer, used from
+  // the closed-window banner where the inline @-mention composer isn't available).
+  const [contactInfoInitialTab, setContactInfoInitialTab] = useState<'details' | 'internal'>('details');
 
   // Attachment sheet
   const [showAttachSheet, setShowAttachSheet] = useState(false);
@@ -836,7 +839,8 @@ export default function ChatConversationScreen() {
     const stageId = stage.id || stage.Id;
     const stageName = stage.name || stage.Name || stage.stageName;
     if (activeLead.stageId === stageId) return;
-    setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName } : l)));
+    const movedAtIso = new Date().toISOString();
+    setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName, modifiedOn: movedAtIso, updatedOn: movedAtIso } : l)));
     pushLocalTimeline('leadstage', isRTL ? `שלב הליד עודכן ל: ${stageName}` : `Lead stage → ${stageName}`);
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
@@ -2698,6 +2702,7 @@ export default function ChatConversationScreen() {
                   leadingIcon="information-outline"
                   onPress={() => {
                     setMenuVisible(false);
+                    setContactInfoInitialTab('details');
                     setShowContactInfoSheet(true);
                   }}
                   title={t('chats.contactInfo', 'פרטי שיחה')}
@@ -3046,6 +3051,31 @@ export default function ChatConversationScreen() {
                 </ScrollView>
               </View>
             )}
+            {/* 💬 Internal message — always available, even when the WhatsApp window is CLOSED.
+                The inline @-mention composer lives in ChatInput (open-window only), so when closed we
+                route to the contact's internal-messages composer (works regardless of window state). */}
+            <Pressable
+              onPress={() => { setContactInfoInitialTab('internal'); setShowContactInfoSheet(true); }}
+              style={({ pressed }) => ({
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                marginHorizontal: 12,
+                marginTop: 8,
+                paddingVertical: 9,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: '#7c3aed',
+                backgroundColor: pressed ? (theme.dark ? '#2e1065' : '#f5f3ff') : 'transparent',
+              })}
+            >
+              <MaterialCommunityIcons name="message-badge-outline" size={17} color="#7c3aed" />
+              <Text style={{ color: '#7c3aed', fontSize: 13, fontWeight: '700' }}>
+                {isRTL ? '💬 הודעה פנימית לצוות' : '💬 Internal message'}
+              </Text>
+            </Pressable>
+
             <View style={[
               styles.closedInlineBanner,
               {
@@ -4540,6 +4570,7 @@ export default function ChatConversationScreen() {
         phoneNumber={phoneNumber as string}
         userId={user?.uID || user?.userId || ''}
         contactData={chat}
+        initialTab={contactInfoInitialTab}
         onUpdate={() => {
           if (user?.organization && phoneNumber) {
             loadMessages(user.organization, phoneNumber as string);

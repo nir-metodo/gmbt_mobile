@@ -54,6 +54,15 @@ export const notificationService = {
         vibrationPattern: [0, 500, 250, 500],
         sound: 'default',
       });
+
+      // High-importance channel for Gambot AI customer handoffs — prominent, persistent heads-up alert
+      await Notifications.setNotificationChannelAsync('aiHandoff', {
+        name: 'Gambot AI Handoff',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 400, 200, 400],
+        lightColor: '#8b5cf6',
+        sound: 'default',
+      });
     }
 
     await Notifications.setNotificationCategoryAsync('taskReminder', [

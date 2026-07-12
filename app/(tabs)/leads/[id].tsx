@@ -407,14 +407,17 @@ export default function LeadDetailScreen() {
       const stageObj = pipelineStages.find((s) => s.name === newStage);
       const newStageId = stageObj?.id || '';
 
-      // Optimistic update in store (updates list + detail via leadFromStore)
+      // Optimistic update in store (updates list + detail via leadFromStore).
+      // Bump modifiedOn/updatedOn too — the backend stamps it (MoveLeadStageAsync), so without it
+      // the leads list "עודכן ב" sort wouldn't move the lead until a full refetch.
+      const movedAtIso = new Date().toISOString();
       useLeadStore.setState((state) => ({
         leads: state.leads.map((l) =>
-          l.id === lead.id ? { ...l, stageName: newStage, stage: newStage, stageId: newStageId } : l
+          l.id === lead.id ? { ...l, stageName: newStage, stage: newStage, stageId: newStageId, modifiedOn: movedAtIso, updatedOn: movedAtIso } : l
         ),
       }));
       // Also update local form
-      setForm((prev) => ({ ...prev, stageName: newStage, stage: newStage, stageId: newStageId }));
+      setForm((prev) => ({ ...prev, stageName: newStage, stage: newStage, stageId: newStageId, modifiedOn: movedAtIso }));
 
       try {
         await leadsApi.moveStage(organization, lead.id, newStageId, newStage, user?.fullname || '');

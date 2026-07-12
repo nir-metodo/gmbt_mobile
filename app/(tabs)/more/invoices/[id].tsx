@@ -42,12 +42,51 @@ import {
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { quotesApi } from '../../../../services/api/quotes';
+import { catalogApi, type CatalogCustomColumn, type CatalogFieldsConfig } from '../../../../services/api/catalog';
+import { Image } from 'expo-image';
 import type { Contact } from '../../../../types';
 import { borderRadius } from '../../../../constants/theme';
 import { formatDate } from '../../../../utils/formatters';
 import * as Clipboard from 'expo-clipboard';
 
 const BRAND_COLOR = '#2e6155';
+
+// ── Catalog picker helpers (mirror the Catalog screen so the "from catalog" picker shows the same
+// title + columns configured in the web Catalog → Columns settings) ─────────────────────────────
+const CATALOG_BASE_TOKENS = ['image', 'name', 'category', 'sku', 'unitPrice', 'stock'];
+
+function catFormatValue(v: any, isRTL: boolean): string {
+  if (typeof v === 'boolean') return v ? (isRTL ? 'כן' : 'Yes') : (isRTL ? 'לא' : 'No');
+  return String(v);
+}
+function catHasVal(v: any): boolean {
+  return v !== undefined && v !== null && v !== '';
+}
+function catResolveColumnOrder(savedOrder: any, customCols: CatalogCustomColumn[]): string[] {
+  const customTokens = (customCols || []).map((c) => `custom:${c.id}`);
+  const natural = [...CATALOG_BASE_TOKENS, ...customTokens, 'link'];
+  const saved = Array.isArray(savedOrder) ? savedOrder.filter((tok: string) => natural.includes(tok)) : [];
+  return [...saved, ...natural.filter((tok) => !saved.includes(tok))];
+}
+function catBuildTitle(item: any, columns: CatalogCustomColumn[], cfg: CatalogFieldsConfig, isRTL: boolean): { title: string; titleKey: string | null } {
+  const cf = item.customFields || {};
+  let titleKey: string | null = null;
+  let title = item.name || item.sku || item.category || '';
+  if (!title) {
+    const reqKey = cfg?.requiredField;
+    if (reqKey && catHasVal(cf[reqKey])) {
+      titleKey = reqKey;
+      title = catFormatValue(cf[reqKey], isRTL);
+    } else {
+      const firstFilled = (columns || []).find((c) => catHasVal(cf[c.key]));
+      if (firstFilled) {
+        titleKey = firstFilled.key;
+        title = catFormatValue(cf[firstFilled.key], isRTL);
+      }
+    }
+  }
+  return { title: title || '—', titleKey };
+}
 
 const PAYMENT_METHODS = [
   { key: 'bank_transfer', label: 'העברה בנקאית' },
@@ -126,7 +165,16 @@ export default function InvoiceDetailScreen() {
   const [catalogVisible, setCatalogVisible] = useState(false);
   const [catalogItems, setCatalogItems] = useState<any[]>([]);
   const [catalogSearch, setCatalogSearch] = useState('');
+  const [debouncedCatalogSearch, setDebouncedCatalogSearch] = useState('');
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogColumns, setCatalogColumns] = useState<CatalogCustomColumn[]>([]);
+  const [catalogFieldsConfig, setCatalogFieldsConfig] = useState<CatalogFieldsConfig>({});
+
+  // Debounce the catalog search so filtering a large catalog stays snappy.
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedCatalogSearch(catalogSearch), 200);
+    return () => clearTimeout(h);
+  }, [catalogSearch]);
 
   const totals = useMemo(
     () => calcTotals(formItems, parseFloat(formDiscount) || 0, parseFloat(formVatRate) || 0),
@@ -212,41 +260,89 @@ export default function InvoiceDetailScreen() {
     setContactPickerVisible(false);
   }, []);
 
-  // ── Catalog picker (from invoice branding) ────────────────────────
+  // ── Catalog picker ────────────────────────────────────────────────
+  // Load the FULL catalog (items + custom columns + field config from the web Catalog → Columns
+  // settings) so the picker renders the same title + columns as the catalog screen. Previously only
+  // name/description were used, so catalogs whose data lives in custom fields showed blank rows.
   const openCatalogPicker = useCallback(async () => {
     setCatalogVisible(true);
     if (catalogItems.length === 0) {
       setCatalogLoading(true);
       try {
-        const branding = await invoicesApi.getBranding(user?.organization || '');
-        let items = Array.isArray(branding?.catalogItems) ? branding.catalogItems : [];
-        if (items.length === 0) {
-          const quoteBranding = await quotesApi.getBranding(user?.organization || '');
-          items = Array.isArray(quoteBranding?.catalogItems) ? quoteBranding.catalogItems : [];
-        }
-        setCatalogItems(items);
+        const data = await catalogApi.getAll(user?.organization || '');
+        setCatalogItems(Array.isArray(data.catalogItems) ? data.catalogItems : []);
+        setCatalogColumns(Array.isArray(data.catalogCustomColumns) ? data.catalogCustomColumns : []);
+        setCatalogFieldsConfig(data.catalogFieldsConfig || {});
       } catch { setCatalogItems([]); }
       finally { setCatalogLoading(false); }
     }
   }, [user?.organization, catalogItems.length]);
 
+  const catalogColumnTokens = useMemo(
+    () => catResolveColumnOrder(catalogFieldsConfig.columnOrder, catalogColumns),
+    [catalogFieldsConfig.columnOrder, catalogColumns],
+  );
+  const isCatalogTokenVisible = useCallback((tok: string): boolean => {
+    if (tok === 'name') return true;
+    if (tok.startsWith('custom:')) {
+      const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
+      return col ? col.showInTable !== false : false;
+    }
+    const tc = catalogFieldsConfig.tableColumns || {};
+    return tc[tok] !== false;
+  }, [catalogColumns, catalogFieldsConfig.tableColumns]);
+
   const filteredCatalog = useMemo(() => {
-    if (!catalogSearch.trim()) return catalogItems.slice(0, 3);
-    const q = catalogSearch.toLowerCase();
-    return catalogItems.filter(
-      (p) => (p.name || p.description || '').toLowerCase().includes(q),
-    );
-  }, [catalogItems, catalogSearch]);
+    const q = debouncedCatalogSearch.trim().toLowerCase();
+    if (!q) return catalogItems;
+    const sb = catalogFieldsConfig.searchBaseFields || { name: true, description: true, sku: true };
+    const searchableCols = catalogColumns.filter((c) => c.searchable);
+    return catalogItems.filter((i) => {
+      const baseHit =
+        (sb.name !== false && (i.name || '').toLowerCase().includes(q)) ||
+        (sb.description && (i.description || '').toLowerCase().includes(q)) ||
+        (sb.sku && (i.sku || '').toLowerCase().includes(q)) ||
+        (sb.category && (i.category || '').toLowerCase().includes(q)) ||
+        (sb.unitPrice && String(i.unitPrice ?? '').toLowerCase().includes(q));
+      if (baseHit) return true;
+      const cf = i.customFields;
+      if (cf) {
+        const cols = searchableCols.length > 0 ? searchableCols.map((c) => c.key) : Object.keys(cf);
+        for (const key of cols) {
+          const val = cf[key];
+          if (val != null && String(val).toLowerCase().includes(q)) return true;
+        }
+      }
+      return false;
+    });
+  }, [catalogItems, debouncedCatalogSearch, catalogFieldsConfig, catalogColumns]);
 
   const addFromCatalog = useCallback((item: any) => {
+    const { title, titleKey } = catBuildTitle(item, catalogColumns, catalogFieldsConfig, isRTL);
+    let description = item.description || '';
+    if (!description) {
+      const cf = item.customFields || {};
+      const parts: string[] = [];
+      for (const tok of catalogColumnTokens) {
+        if (!tok.startsWith('custom:') || !isCatalogTokenVisible(tok)) continue;
+        const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
+        if (col && col.key !== titleKey && catHasVal(cf[col.key])) {
+          parts.push(`${col.label}: ${catFormatValue(cf[col.key], isRTL)}`);
+        }
+        if (parts.length >= 4) break;
+      }
+      description = parts.join(' · ');
+    }
+    // Invoice line items store their label in `description`, so combine the title with the summary.
+    const label = title === '—' ? (description || '') : (description ? `${title} — ${description}` : title);
     setFormItems((prev) => [...prev, {
-      description: item.name || item.description || '',
+      description: label,
       quantity: 1,
       unitPrice: parseFloat(item.unitPrice) || parseFloat(item.price) || 0,
     }]);
     setCatalogVisible(false);
     setCatalogSearch('');
-  }, []);
+  }, [catalogColumns, catalogFieldsConfig, catalogColumnTokens, isCatalogTokenVisible, isRTL]);
 
   // ── Items management ──────────────────────────────────────────────
   const addItem = () => setFormItems((prev) => [...prev, emptyItem()]);
@@ -688,44 +784,78 @@ export default function InvoiceDetailScreen() {
             {catalogLoading ? (
               <ActivityIndicator size="large" color={BRAND_COLOR} style={{ marginVertical: 32 }} />
             ) : (
-              <>
-                {!catalogSearch.trim() && catalogItems.length > 3 && (
-                  <Text style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant, fontSize: 11, marginBottom: 6 }}>
-                    מציג 3 ראשונים — חפש כדי לראות את כולם ({catalogItems.length})
-                  </Text>
-                )}
-                <FlatList
-                  data={filteredCatalog}
-                  keyExtractor={(_item, i) => String(i)}
-                  style={{ maxHeight: 360 }}
-                  keyboardShouldPersistTaps="handled"
-                  renderItem={({ item }) => (
+              <FlatList
+                data={filteredCatalog}
+                keyExtractor={(item, i) => String(item?.id ?? i)}
+                style={{ maxHeight: 460 }}
+                keyboardShouldPersistTaps="handled"
+                initialNumToRender={12}
+                maxToRenderPerBatch={16}
+                windowSize={7}
+                removeClippedSubviews
+                renderItem={({ item }) => {
+                  const cf = item.customFields || {};
+                  const { title, titleKey } = catBuildTitle(item, catalogColumns, catalogFieldsConfig, isRTL);
+                  const hasImage = Array.isArray(item.images) && item.images.filter(Boolean).length > 0;
+                  const chips: { key: string; label: string }[] = [];
+                  for (const tok of catalogColumnTokens) {
+                    if (tok === 'image' || tok === 'name' || tok === 'unitPrice') continue;
+                    if (!isCatalogTokenVisible(tok)) continue;
+                    if (tok === 'sku') {
+                      if (item.sku) chips.push({ key: tok, label: String(item.sku) });
+                    } else if (tok === 'category') {
+                      if (item.category) chips.push({ key: tok, label: String(item.category) });
+                    } else if (tok.startsWith('custom:')) {
+                      const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
+                      if (col && col.key !== titleKey && catHasVal(cf[col.key])) {
+                        chips.push({ key: tok, label: `${col.label}: ${catFormatValue(cf[col.key], isRTL)}` });
+                      }
+                    }
+                  }
+                  const price = Number(item.unitPrice || item.price || 0);
+                  return (
                     <TouchableOpacity
-                      style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
+                      style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant, alignItems: 'flex-start' }]}
                       onPress={() => addFromCatalog(item)}
                     >
-                      <View style={{ flex: 1 }}>
-                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
-                          {item.name || item.description || ''}
+                      {hasImage ? (
+                        <Image source={{ uri: item.images.filter(Boolean)[0] }} style={styles.catalogThumb} contentFit="cover" />
+                      ) : (
+                        <View style={[styles.catalogThumb, styles.catalogThumbPlaceholder, { backgroundColor: BRAND_COLOR + '15' }]}>
+                          <MaterialCommunityIcons name="package-variant" size={20} color={BRAND_COLOR} />
+                        </View>
+                      )}
+                      <View style={{ flex: 1, marginHorizontal: 10 }}>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }} numberOfLines={1}>
+                          {title}
                         </Text>
-                        {item.description && item.name ? (
-                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                        {item.description ? (
+                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 1 }} numberOfLines={1}>
                             {item.description}
                           </Text>
                         ) : null}
+                        {chips.length > 0 && (
+                          <View style={[styles.catalogChips, { flexDirection, flexWrap: 'wrap' }]}>
+                            {chips.slice(0, 6).map((c) => (
+                              <View key={c.key} style={[styles.catalogChip, { backgroundColor: theme.colors.onSurfaceVariant + '14' }]}>
+                                <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }} numberOfLines={1}>{c.label}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
                       </View>
-                      <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-                        {(item.unitPrice || item.price) != null ? `₪${Number(item.unitPrice || item.price || 0).toFixed(2)}` : ''}
+                      <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '700', marginTop: 2 }}>
+                        {price > 0 ? `₪${price.toLocaleString()}` : ''}
                       </Text>
                     </TouchableOpacity>
-                  )}
-                  ListEmptyComponent={
-                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
-                      לא נמצאו פריטים בקטלוג
-                    </Text>
-                  }
-                />
-              </>
+                  );
+                }}
+                ListEmptyComponent={
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
+                    לא נמצאו פריטים בקטלוג
+                  </Text>
+                }
+              />
             )}
           </Modal>
         </Portal>
@@ -1001,6 +1131,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     gap: 8,
+    borderBottomWidth: 1,
+  },
+  catalogThumb: {
+    width: 46,
+    height: 46,
+    borderRadius: 8,
+  },
+  catalogThumbPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  catalogChips: {
+    marginTop: 4,
+    gap: 4,
+    alignItems: 'center',
+  },
+  catalogChip: {
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginEnd: 4,
+    marginTop: 2,
+    maxWidth: 200,
   },
   selectedContact: {
     flexDirection: 'row',

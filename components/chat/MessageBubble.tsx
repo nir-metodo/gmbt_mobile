@@ -257,49 +257,60 @@ function MessageBubbleInner({
     const rawConfig = (message as any).templateConfig;
     const tpl = rawConfig?.template || rawConfig;
     const components = tpl?.components || rawConfig?.components || [];
-    if (components.length > 0) return;
 
     let cancelled = false;
     const org = organization || (message as any).organization || (message as any).Organization || '';
     if (!org) return;
 
+    // A URL we can display right now (never a raw Meta "4::" header_handle).
+    const isHttp = (u: any) => typeof u === 'string' && /^https?:\/\//i.test(u);
+    const knownUrl =
+      (isHttp(rawConfig?.header?.mediaUrl) && rawConfig.header.mediaUrl) ||
+      (isHttp((message as any).gmbt_mediaUrl) && (message as any).gmbt_mediaUrl) ||
+      (isHttp(message.mediaUrl) && message.mediaUrl) ||
+      (isHttp((message as any).MediaUrl) && (message as any).MediaUrl) ||
+      '';
+
+    const headerFromConfig = Array.isArray(components) ? components.find((c: any) => c.type === 'HEADER') : null;
+    const headerFmtConfig = (headerFromConfig?.format || '').toUpperCase();
+    const headerIsMediaConfig = headerFmtConfig === 'IMAGE' || headerFmtConfig === 'VIDEO' || headerFmtConfig === 'DOCUMENT';
+
     (async () => {
       try {
         const { chatsApi } = await import('../../services/api/chats');
         const cacheKey = `${org}_${templateId}`;
-        const cached = templateFetchCache.get(cacheKey);
-        if (cached) {
-          if (!cancelled) {
-            setFetchedTemplateData(cached);
-            const header = cached.components?.find((c: any) => c.type === 'HEADER');
-            if (header?.format === 'IMAGE' || header?.format === 'VIDEO' || header?.format === 'DOCUMENT') {
-              const mediaCacheKey = `${cacheKey}_media`;
-              const cachedMedia = templateFetchCache.get(mediaCacheKey);
-              if (cachedMedia) {
-                setFetchedMediaUrl(cachedMedia);
-              } else {
-                const url = await chatsApi.getMediaByTemplateId(org, templateId);
-                if (url && !cancelled) {
-                  templateFetchCache.set(mediaCacheKey, url);
-                  setFetchedMediaUrl(url);
-                }
-              }
-            }
-          }
-          return;
-        }
-        const template = await chatsApi.getTemplateById(org, templateId);
-        if (!template || cancelled) return;
-        templateFetchCache.set(cacheKey, template);
-        setFetchedTemplateData(template);
-        const header = template.components?.find((c: any) => c.type === 'HEADER');
-        if (header?.format === 'IMAGE' || header?.format === 'VIDEO' || header?.format === 'DOCUMENT') {
+
+        // Resolve the header media to a real https URL via the API. Needed even when the message
+        // already carries templateConfig.components (web-optimistic sends) — those components only
+        // contain a Meta header_handle ("4::..."), which is NOT displayable. Mirrors the web app.
+        const resolveMedia = async () => {
+          if (knownUrl) { if (!cancelled) setFetchedMediaUrl(knownUrl); return; }
+          const mediaCacheKey = `${cacheKey}_media`;
+          const cachedMedia = templateFetchCache.get(mediaCacheKey);
+          if (cachedMedia) { if (!cancelled) setFetchedMediaUrl(cachedMedia); return; }
           const url = await chatsApi.getMediaByTemplateId(org, templateId);
           if (url && !cancelled) {
-            templateFetchCache.set(`${cacheKey}_media`, url);
+            templateFetchCache.set(mediaCacheKey, url);
             setFetchedMediaUrl(url);
           }
+        };
+
+        // Case 1: message already has component definitions — only the header media needs resolving.
+        if (Array.isArray(components) && components.length > 0) {
+          if (headerIsMediaConfig) await resolveMedia();
+          return;
         }
+
+        // Case 2: no components on the message → fetch the full template definition (for
+        // body/footer/buttons), then resolve header media if the header is a media type.
+        const cached = templateFetchCache.get(cacheKey);
+        const template = cached || await chatsApi.getTemplateById(org, templateId);
+        if (!template || cancelled) return;
+        if (!cached) templateFetchCache.set(cacheKey, template);
+        setFetchedTemplateData(template);
+        const header = template.components?.find((c: any) => c.type === 'HEADER');
+        const hf = (header?.format || '').toUpperCase();
+        if (hf === 'IMAGE' || hf === 'VIDEO' || hf === 'DOCUMENT') await resolveMedia();
       } catch {}
     })();
     return () => { cancelled = true; };
@@ -639,7 +650,18 @@ function MessageBubbleInner({
     const bodyText = message.text || message.body || bodyComp?.text || rawConfig?.body?.text || tpl?.body || fetchedTemplateData?.body || '';
     if (!rawConfig && !message.templateName && !bodyText && !fetchedTemplateData) return null;
 
-    const headerMedia = headerComp?.example?.header_handle?.[0] || rawConfig?.header?.mediaUrl || fetchedMediaUrl || mediaUrl;
+    // ⚠️ A template HEADER's example.header_handle is usually a Meta resumable-upload handle
+    // ("4::...") — NOT a displayable URL. Using it directly is exactly why media was missing on
+    // mobile. Prefer real https URLs (resolved via GetMediaByTemplateId → fetchedMediaUrl, the
+    // config's header.mediaUrl, or the message's own mediaUrl). Only fall back to header_handle
+    // if it happens to already be an http(s) URL. This mirrors the web app + backend Waba.cs.
+    const isHttpUrl = (u: any) => typeof u === 'string' && /^https?:\/\//i.test(u);
+    const rawHandle = headerComp?.example?.header_handle?.[0];
+    const headerMedia =
+      (isHttpUrl(rawConfig?.header?.mediaUrl) ? rawConfig.header.mediaUrl : '') ||
+      (fetchedMediaUrl || '') ||
+      (isHttpUrl(mediaUrl) ? mediaUrl : '') ||
+      (isHttpUrl(rawHandle) ? rawHandle : '');
     const headerType = (headerComp?.format || headerComp?.type || rawConfig?.header?.type || rawConfig?.header?.format || '').toUpperCase();
     const footerText = footerComp?.text || rawConfig?.footer?.text || rawConfig?.footer || '';
     const buttons = buttonsComp?.buttons || rawConfig?.buttons || [];

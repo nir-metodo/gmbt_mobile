@@ -137,6 +137,9 @@ export interface Chat {
   wabaPhoneNumberId?: string;
   // false = a human agent has NOT reviewed the conversation yet (undefined/true = reviewed).
   humanReviewed?: boolean;
+  // User IDs who have an UNREAD internal message (@-mention) on this contact. Used to show a
+  // distinct "internal mention" indicator on the chat row + drive the "internal" list filter.
+  usersWithUnreadInternalMessages?: string[];
 }
 
 export interface Lead {

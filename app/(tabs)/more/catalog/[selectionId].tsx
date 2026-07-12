@@ -22,6 +22,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { catalogApi, CatalogSelection, CatalogSelectionItem, CatalogCustomColumn } from '../../../../services/api/catalog';
+import { cleanPhoneNumber } from '../../../../utils/phoneNumber';
 
 const BRAND_COLOR = '#059669';
 
@@ -147,7 +148,9 @@ export default function CatalogSelectionDetailScreen() {
   }, [selection?.contactPhone]);
 
   const whatsappContact = useCallback(() => {
-    const p = cleanPhone(selection?.contactPhone).replace(/^\+/, '');
+    // Normalize to a full international number (e.g. a customer-entered "050…" → "972…").
+    // Without this, wa.me gets a local-format number and shows "the link couldn't be opened".
+    const p = cleanPhoneNumber(selection?.contactPhone || '');
     if (p) Linking.openURL(`https://wa.me/${p}`).catch(() => {});
   }, [selection?.contactPhone]);
 

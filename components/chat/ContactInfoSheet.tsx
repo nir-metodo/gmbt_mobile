@@ -24,11 +24,14 @@ interface Props {
   userId?: string;
   contactData?: any;
   onUpdate?: () => void;
+  // Which tab to open on. Lets callers deep-link straight to the internal-messages composer
+  // (e.g. the closed-window banner, where the main @-mention composer isn't available).
+  initialTab?: 'details' | 'internal';
 }
 
 const STATUS_OPTIONS = ['Open', 'Closed', 'Pending', 'In Progress', 'Resolved'];
 
-export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber, userId, contactData, onUpdate }: Props) {
+export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber, userId, contactData, onUpdate, initialTab }: Props) {
   const { t } = useTranslation();
   const theme = useAppTheme();
   const { isRTL } = useRTL();
@@ -107,6 +110,7 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
 
   useEffect(() => {
     if (visible) {
+      setInfoTab(initialTab || 'details');
       loadData();
       if (contactData) {
         setSelectedCategory(contactData.lastConversationCategory || contactData.category || '');
@@ -115,7 +119,7 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
         setTags(Array.isArray(contactTags) ? contactTags : []);
       }
     }
-  }, [visible, loadData, contactData]);
+  }, [visible, loadData, contactData, initialTab]);
 
   const handleCategoryChange = async (value: string) => {
     setCategoryMenuVisible(false);
@@ -178,7 +182,9 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
 
   const handleMoveLeadStage = async (leadId: string, newStageId: string, newStageName: string) => {
     setStageMenuVisible(null);
-    setContactLeads(prev => prev.map(l => l.id === leadId ? { ...l, stageId: newStageId, stageName: newStageName } : l));
+    // Bump modifiedOn to match the backend stamp, keeping "updated" ordering consistent.
+    const movedAtIso = new Date().toISOString();
+    setContactLeads(prev => prev.map(l => l.id === leadId ? { ...l, stageId: newStageId, stageName: newStageName, modifiedOn: movedAtIso, updatedOn: movedAtIso } : l));
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
         organization, leadId, stageId: newStageId, stageName: newStageName,

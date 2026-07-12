@@ -35,6 +35,7 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'cases', icon: 'briefcase-outline', labelKey: 'more.cases', route: '/(tabs)/more/cases', color: '#FF6B35', permission: 'cases' },
   { key: 'media', icon: 'folder-image', labelKey: 'more.media', route: '/(tabs)/more/media', color: '#0ea5e9', permission: 'mediaManager' },
   { key: 'reports', icon: 'chart-box-outline', labelKey: 'more.reports', route: '/(tabs)/more/reports', color: '#6366f1', permission: 'reports' },
+  { key: 'scheduledReports', icon: 'file-chart-outline', labelKey: 'more.scheduledReports', route: '/(tabs)/more/reports/scheduled', color: '#2563eb', permission: 'reports' },
   { key: 'quotes', icon: 'file-document-outline', labelKey: 'more.quotes', route: '/(tabs)/more/quotes', color: '#7B2D8E', permission: 'quotes', featureKey: 'enableQuotes', featureDefault: true },
   { key: 'invoices', icon: 'file-invoice-dollar', labelKey: 'more.invoices', route: '/(tabs)/more/invoices', color: '#2e6155', permission: 'invoices', featureKey: 'enableInvoices', featureDefault: true },
   { key: 'esignature', icon: 'draw-pen', labelKey: 'more.eSignature', route: '/(tabs)/more/esignature', color: '#00A86B', permission: 'esignature', featureKey: 'enableEsignature', featureDefault: true },

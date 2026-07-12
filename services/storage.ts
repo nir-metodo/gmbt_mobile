@@ -16,6 +16,7 @@ const STORAGE_KEYS = {
   DEVICE_TOKEN: 'device_token',
   CUSTOM_TABLES: 'custom_tables',
   REPORT_DEVICE_CALL_EVENTS: 'report_device_call_events',
+  DEFAULT_SCREEN: 'default_screen',
 };
 
 export const secureStorage = {
@@ -91,6 +92,15 @@ export const appStorage = {
   },
   async getReportDeviceCallEvents(): Promise<boolean> {
     return (await AsyncStorage.getItem(STORAGE_KEYS.REPORT_DEVICE_CALL_EVENTS)) === '1';
+  },
+
+  // The user's preferred landing screen when opening the app. Empty string = "auto" (first
+  // permitted screen). Stored as a route string like "/(tabs)/more/catalog".
+  async setDefaultScreen(route: string) {
+    await AsyncStorage.setItem(STORAGE_KEYS.DEFAULT_SCREEN, route || '');
+  },
+  async getDefaultScreen(): Promise<string> {
+    return (await AsyncStorage.getItem(STORAGE_KEYS.DEFAULT_SCREEN)) || '';
   },
 
   async clearAll() {

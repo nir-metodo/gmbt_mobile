@@ -27,11 +27,16 @@ interface SettingsState {
   calendarReminderNotification: boolean;
   botActionNotification: boolean;
   caseAssignedNotification: boolean;
+  // Preferred landing screen route (empty = auto / first permitted screen).
+  defaultScreen: string;
+  // True once locally-persisted settings (incl. defaultScreen) have been loaded.
+  settingsInitialized: boolean;
   isLoading: boolean;
 
   initialize: () => Promise<void>;
   setTheme: (theme: 'light' | 'dark' | 'system') => Promise<void>;
   setLanguage: (lang: 'en' | 'he') => Promise<void>;
+  setDefaultScreen: (route: string) => Promise<void>;
   loadTelephonySettings: (organization: string) => Promise<void>;
   setCallRecording: (enabled: boolean) => void;
   setCallTranscription: (enabled: boolean) => void;
@@ -66,18 +71,26 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   calendarReminderNotification: true,
   botActionNotification: true,
   caseAssignedNotification: true,
+  defaultScreen: '',
+  settingsInitialized: false,
   isLoading: false,
 
   initialize: async () => {
-    const theme = await appStorage.getTheme();
-    const language = await appStorage.getLanguage();
-    const reportDeviceCallEventsEnabled = await appStorage.getReportDeviceCallEvents();
-    i18n.changeLanguage(language);
-    const shouldBeRTL = language === 'he';
-    if (I18nManager.isRTL !== shouldBeRTL) {
-      I18nManager.forceRTL(shouldBeRTL);
+    try {
+      const theme = await appStorage.getTheme();
+      const language = await appStorage.getLanguage();
+      const reportDeviceCallEventsEnabled = await appStorage.getReportDeviceCallEvents();
+      const defaultScreen = await appStorage.getDefaultScreen();
+      i18n.changeLanguage(language);
+      const shouldBeRTL = language === 'he';
+      if (I18nManager.isRTL !== shouldBeRTL) {
+        I18nManager.forceRTL(shouldBeRTL);
+      }
+      set({ theme, language, reportDeviceCallEventsEnabled, defaultScreen });
+    } finally {
+      // Never block app launch on a settings read failure.
+      set({ settingsInitialized: true });
     }
-    set({ theme, language, reportDeviceCallEventsEnabled });
   },
 
   setTheme: async (theme) => {
@@ -94,6 +107,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       try { await Updates.reloadAsync(); } catch { /* dev mode - manual restart needed */ }
     }
     set({ language: lang });
+  },
+
+  setDefaultScreen: async (route) => {
+    await appStorage.setDefaultScreen(route);
+    set({ defaultScreen: route });
   },
 
   loadTelephonySettings: async (organization) => {

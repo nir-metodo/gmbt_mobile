@@ -23,7 +23,8 @@ import {
 import { useTranslation } from 'react-i18next';
 import { router } from 'expo-router';
 import { useAuthStore } from '../../stores/authStore';
-import { getLandingRoute } from '../../constants/permissions';
+import { getEffectiveLandingRoute } from '../../constants/permissions';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { secureStorage } from '../../services/storage';
 import { useRTL } from '../../hooks/useRTL';
 import { borderRadius, spacing, fontSize } from '../../constants/theme';
@@ -143,7 +144,8 @@ export default function LoginScreen() {
         await secureStorage.clearSavedCredentials();
       }
       const loggedInUser = useAuthStore.getState().user;
-      router.replace(getLandingRoute(loggedInUser?.Permissions, loggedInUser?.SecurityRole) as any);
+      const preferred = useSettingsStore.getState().defaultScreen;
+      router.replace(getEffectiveLandingRoute(loggedInUser?.Permissions, loggedInUser?.SecurityRole, preferred) as any);
     } catch {
       // error displayed via store state
     }

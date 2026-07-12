@@ -13,6 +13,7 @@ import {
   Share,
   Modal as RNModal,
   Linking,
+  Keyboard,
 } from 'react-native';
 import {
   Text,
@@ -45,6 +46,8 @@ import { ListPaginationFooter } from '../../../../components/ListPaginationFoote
 import { appCache } from '../../../../services/cache';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { ENDPOINTS, WEB_APP_BASE_URL } from '../../../../constants/api';
+import PhoneNumberInput from '../../../../components/PhoneNumberInput';
+import { cleanPhoneNumber } from '../../../../utils/phoneNumber';
 
 const BRAND_COLOR = '#059669';
 
@@ -447,6 +450,42 @@ export default function CatalogScreen() {
     }
   }, [items, customColumns, user?.organization, CACHE_KEY, t]);
 
+  // Bulk add/remove the selected items to/from the DEFAULT public catalog (mirrors the web
+  // "הסר מהקטלוג" / "החזר לקטלוג" bulk actions). This is the public catalog everyone sees —
+  // NOT a personal customer link. Persists immediately.
+  const bulkSetPublic = useCallback(async (isPublic: boolean) => {
+    if (!user?.organization || selectedIds.size === 0) return;
+    const prev = items;
+    const next = items.map((i) => (selectedIds.has(i.id) ? { ...i, isPublic } : i));
+    setItems(next);
+    appCache.set(CACHE_KEY, next);
+    try {
+      await catalogApi.save(user.organization, next, customColumns);
+      exitSelection();
+      Alert.alert(
+        isRTL ? 'בוצע' : 'Done',
+        isPublic
+          ? (isRTL ? 'הפריטים הוחזרו לקטלוג הפומבי' : 'Items returned to the public catalog')
+          : (isRTL ? 'הפריטים הוסרו מהקטלוג הפומבי' : 'Items removed from the public catalog'),
+      );
+    } catch {
+      setItems(prev);
+      appCache.set(CACHE_KEY, prev);
+      Alert.alert(t('common.error'), t('errors.generic'));
+    }
+  }, [items, customColumns, user?.organization, selectedIds, CACHE_KEY, isRTL, t, exitSelection]);
+
+  // Public-catalog state of the current selection → drives which bulk buttons make sense.
+  const selectionPublicStats = useMemo(() => {
+    let inCatalog = 0;
+    let removed = 0;
+    items.forEach((i) => {
+      if (!selectedIds.has(i.id)) return;
+      if (i.isPublic) inCatalog += 1; else removed += 1;
+    });
+    return { inCatalog, removed };
+  }, [items, selectedIds]);
+
   // Open the share-settings sheet, loading the current public-catalog config.
   const openShareSettings = useCallback(async () => {
     if (!user?.organization) return;
@@ -530,7 +569,9 @@ export default function CatalogScreen() {
   }, [slUrl]);
 
   const sendCustomerLinkWhatsApp = useCallback(() => {
-    const phone = slPhone.replace(/\D/g, '');
+    // Normalize to a full international number (e.g. "0501234567" → "972501234567"), otherwise
+    // WhatsApp rejects the local-format number and the link "can't be opened".
+    const phone = cleanPhoneNumber(slPhone);
     const text = `${slName ? slName + ', ' : ''}${isRTL ? 'הכנתי עבורך קטלוג אישי 🛍️' : 'I prepared a personal catalog for you 🛍️'}\n${slUrl}`;
     const wa = phone ? `whatsapp://send?phone=${phone}&text=${encodeURIComponent(text)}` : `https://wa.me/?text=${encodeURIComponent(text)}`;
     Linking.openURL(wa).catch(() => { Share.share({ message: text }); });
@@ -1236,25 +1277,57 @@ export default function CatalogScreen() {
         />
       )}
 
-      {/* Selection action bar — build a per-contact share link from the chosen items */}
+      {/* Selection action bar — build a per-contact share link from the chosen items, or bulk
+          add/remove them to/from the DEFAULT public catalog (like the web catalog). */}
       {selectionMode && (
-        <View style={[styles.selectionBar, { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outlineVariant, paddingBottom: insets.bottom + 10, flexDirection }]}>
-          <Text style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
-            {selectedIds.size} {isRTL ? 'נבחרו' : 'selected'}
-          </Text>
-          <Button mode="text" onPress={exitSelection} textColor={theme.colors.onSurfaceVariant}>
-            {isRTL ? 'בטל' : 'Cancel'}
-          </Button>
-          <Button
-            mode="contained"
-            icon="link-variant"
-            disabled={selectedIds.size === 0}
-            onPress={openShareLink}
-            buttonColor={BRAND_COLOR}
-            textColor="#fff"
-          >
-            {isRTL ? 'קישור ללקוח' : 'Customer link'}
-          </Button>
+        <View style={[styles.selectionBar, { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outlineVariant, paddingBottom: insets.bottom + 10 }]}>
+          <View style={{ flexDirection, alignItems: 'center', width: '100%' }}>
+            <Text style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+              {selectedIds.size} {isRTL ? 'נבחרו' : 'selected'}
+            </Text>
+            <Button mode="text" onPress={exitSelection} textColor={theme.colors.onSurfaceVariant} compact>
+              {isRTL ? 'בטל' : 'Cancel'}
+            </Button>
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, width: '100%', justifyContent: 'center' }}>
+            {/* Remove from the public catalog — shown when any selected item is currently public. */}
+            {selectionPublicStats.inCatalog > 0 && (
+              <Button
+                mode="outlined"
+                icon="link-variant-off"
+                onPress={() => bulkSetPublic(false)}
+                textColor={theme.colors.error}
+                style={{ borderColor: theme.colors.error }}
+                compact
+              >
+                {isRTL ? 'הסר מהקטלוג' : 'Remove from catalog'}
+              </Button>
+            )}
+            {/* Return to the public catalog — shown when any selected item was removed. */}
+            {selectionPublicStats.removed > 0 && (
+              <Button
+                mode="outlined"
+                icon="link-variant"
+                onPress={() => bulkSetPublic(true)}
+                textColor={BRAND_COLOR}
+                style={{ borderColor: BRAND_COLOR }}
+                compact
+              >
+                {isRTL ? 'החזר לקטלוג' : 'Return to catalog'}
+              </Button>
+            )}
+            <Button
+              mode="contained"
+              icon="account-arrow-right"
+              disabled={selectedIds.size === 0}
+              onPress={openShareLink}
+              buttonColor={BRAND_COLOR}
+              textColor="#fff"
+              compact
+            >
+              {isRTL ? 'קישור ללקוח' : 'Customer link'}
+            </Button>
+          </View>
         </View>
       )}
 
@@ -1637,7 +1710,7 @@ export default function CatalogScreen() {
         <Modal
           visible={shareLinkVisible}
           onDismiss={() => setShareLinkVisible(false)}
-          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+          contentContainerStyle={[styles.modal, styles.modalTall, { backgroundColor: theme.colors.surface }]}
         >
           <View style={{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
@@ -1647,79 +1720,83 @@ export default function CatalogScreen() {
           </View>
 
           {!slUrl ? (
-            <ScrollView keyboardShouldPersistTaps="handled">
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, textAlign }}>
-                {isRTL ? 'צור קישור שמציג ללקוח הזה בדיוק את המוצרים שבחרת.' : 'Create a link that shows this customer exactly the items you picked.'}
-              </Text>
-
-              <Pressable
-                style={[styles.shareModeRow, { flexDirection, borderColor: slScope === 'selected' ? BRAND_COLOR : theme.colors.outlineVariant }]}
-                onPress={() => setSlScope('selected')}
-              >
-                <MaterialCommunityIcons name={slScope === 'selected' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'selected' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
-                  {isRTL ? `רק המוצרים שנבחרו (${selectedIds.size})` : `Only selected items (${selectedIds.size})`}
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 4 }}>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 10, textAlign }}>
+                  {isRTL ? 'צור קישור שמציג ללקוח הזה בדיוק את המוצרים שבחרת.' : 'Create a link that shows this customer exactly the items you picked.'}
                 </Text>
-              </Pressable>
-              <Pressable
-                style={[styles.shareModeRow, { flexDirection, borderColor: slScope === 'all' ? BRAND_COLOR : theme.colors.outlineVariant }]}
-                onPress={() => setSlScope('all')}
-              >
-                <MaterialCommunityIcons name={slScope === 'all' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'all' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
-                  {isRTL ? 'כל הקטלוג' : 'Whole catalog'}
+
+                <Pressable
+                  style={[styles.shareModeRowCompact, { flexDirection, borderColor: slScope === 'selected' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                  onPress={() => setSlScope('selected')}
+                >
+                  <MaterialCommunityIcons name={slScope === 'selected' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'selected' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                    {isRTL ? `רק המוצרים שנבחרו (${selectedIds.size})` : `Only selected items (${selectedIds.size})`}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.shareModeRowCompact, { flexDirection, borderColor: slScope === 'all' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                  onPress={() => setSlScope('all')}
+                >
+                  <MaterialCommunityIcons name={slScope === 'all' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'all' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                    {isRTL ? 'כל הקטלוג' : 'Whole catalog'}
+                  </Text>
+                </Pressable>
+
+                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, marginBottom: 6, textAlign }}>
+                  {isRTL ? 'מה הלקוח יכול לעשות' : 'What the customer can do'}
                 </Text>
-              </Pressable>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                  {([['browse', isRTL ? 'צפייה' : 'Browse'], ['order', isRTL ? 'הזמנה' : 'Order'], ['lead', isRTL ? 'ליד' : 'Lead'], ['inquiry', isRTL ? 'התעניינות' : 'Inquiry']] as const).map(([val, label]) => (
+                    <Chip
+                      key={val}
+                      selected={slPurpose === val}
+                      onPress={() => setSlPurpose(val)}
+                      style={slPurpose === val ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
+                      textStyle={slPurpose === val ? { color: BRAND_COLOR } : undefined}
+                    >
+                      {label}
+                    </Chip>
+                  ))}
+                </View>
 
-              <TextInput
-                label={isRTL ? 'שם הלקוח (לא חובה)' : 'Customer name (optional)'}
-                value={slName}
-                onChangeText={setSlName}
-                mode="outlined"
-                style={[styles.input, { marginTop: 8 }]}
-                outlineColor={BRAND_COLOR + '40'}
-                activeOutlineColor={BRAND_COLOR}
-              />
-              <TextInput
-                label={isRTL ? 'טלפון (לשליחה בוואטסאפ)' : 'Phone (for WhatsApp)'}
-                value={slPhone}
-                onChangeText={setSlPhone}
-                mode="outlined"
-                style={styles.input}
-                keyboardType="phone-pad"
-                outlineColor={BRAND_COLOR + '40'}
-                activeOutlineColor={BRAND_COLOR}
-              />
+                <TextInput
+                  label={isRTL ? 'שם הלקוח (לא חובה)' : 'Customer name (optional)'}
+                  value={slName}
+                  onChangeText={setSlName}
+                  mode="outlined"
+                  dense
+                  style={styles.input}
+                  outlineColor={BRAND_COLOR + '40'}
+                  activeOutlineColor={BRAND_COLOR}
+                />
 
-              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>
-                {isRTL ? 'מה הלקוח יכול לעשות' : 'What the customer can do'}
-              </Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                {([['browse', isRTL ? 'צפייה' : 'Browse'], ['order', isRTL ? 'הזמנה' : 'Order'], ['lead', isRTL ? 'ליד' : 'Lead'], ['inquiry', isRTL ? 'התעניינות' : 'Inquiry']] as const).map(([val, label]) => (
-                  <Chip
-                    key={val}
-                    selected={slPurpose === val}
-                    onPress={() => setSlPurpose(val)}
-                    style={slPurpose === val ? { backgroundColor: BRAND_COLOR + '20' } : undefined}
-                    textStyle={slPurpose === val ? { color: BRAND_COLOR } : undefined}
-                  >
-                    {label}
-                  </Chip>
-                ))}
-              </View>
+                {/* Country-code phone input (default Israel) so the number is stored in the correct
+                    international format (e.g. 972…) and the WhatsApp send always works. */}
+                <PhoneNumberInput
+                  label={isRTL ? 'טלפון (לשליחה בוואטסאפ)' : 'Phone (for WhatsApp)'}
+                  value={slPhone}
+                  onChangeNumber={setSlPhone}
+                  theme={theme}
+                  placeholder={isRTL ? '050-0000000' : '50-0000000'}
+                  onBlurNormalized={() => Keyboard.dismiss()}
+                />
 
-              <Button
-                mode="contained"
-                icon="link-variant"
-                onPress={createCustomerLink}
-                loading={slCreating}
-                disabled={slCreating || (slScope === 'selected' && selectedIds.size === 0)}
-                style={[styles.actionBtn, { backgroundColor: BRAND_COLOR, marginTop: 8 }]}
-                textColor="#fff"
-              >
-                {isRTL ? 'צור קישור' : 'Create link'}
-              </Button>
-            </ScrollView>
+                <Button
+                  mode="contained"
+                  icon="link-variant"
+                  onPress={() => { Keyboard.dismiss(); createCustomerLink(); }}
+                  loading={slCreating}
+                  disabled={slCreating || (slScope === 'selected' && selectedIds.size === 0)}
+                  style={[styles.actionBtn, { backgroundColor: BRAND_COLOR, marginTop: 16 }]}
+                  textColor="#fff"
+                >
+                  {isRTL ? 'צור קישור' : 'Create link'}
+                </Button>
+              </ScrollView>
+            </KeyboardAvoidingView>
           ) : (
             <View>
               <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '700', marginBottom: 10, textAlign }}>
@@ -1967,6 +2044,9 @@ const styles = StyleSheet.create({
   customBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginEnd: 4, marginTop: 2 },
   fab: { position: 'absolute', bottom: 24, right: 16, borderRadius: 16 },
   modal: { marginHorizontal: 16, borderRadius: 16, padding: 20, maxHeight: '85%' },
+  // Taller variant for the personal-link sheet so the whole form (incl. "Create link") fits
+  // without scrolling on most devices.
+  modalTall: { maxHeight: '92%', padding: 18 },
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 16 },
   input: { marginBottom: 12 },
   formRow: { gap: 0 },
@@ -1976,6 +2056,7 @@ const styles = StyleSheet.create({
   publicBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
   publicToggleRow: { alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: 4, borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, marginBottom: 8 },
   shareModeRow: { alignItems: 'center', borderWidth: 1.5, borderRadius: 10, padding: 12, marginBottom: 8 },
+  shareModeRowCompact: { alignItems: 'center', borderWidth: 1.5, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, marginBottom: 6 },
   selectionBar: { position: 'absolute', left: 0, right: 0, bottom: 0, alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, elevation: 8 },
   selCard: { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 10 },
   purposeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },

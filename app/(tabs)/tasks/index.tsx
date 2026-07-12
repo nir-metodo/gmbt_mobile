@@ -1065,9 +1065,21 @@ export default function TasksMoreScreen() {
                 title={t('tasks.dueDate')}
                 allowClear
                 onConfirm={(d) => {
+                  // Keep the reminder in lockstep with the due date by shifting it by the same delta.
+                  // Since both default to the same "now", they stay equal until the user edits the
+                  // reminder on its own — matching AddTaskSheet / the task edit screen.
+                  const prevDue = formDueDate ? new Date(formDueDate) : dueDateObj;
+                  const base = prevDue && !isNaN(prevDue.getTime()) ? prevDue : d;
+                  const delta = d.getTime() - base.getTime();
                   setDueDateObj(d);
                   setFormDueDate(d.toISOString());
-                  if (reminderEnabled && !formDueDate) setReminderDateObj(d);
+                  if (reminderEnabled) {
+                    setReminderDateObj((prev) => {
+                      const ref = prev && !isNaN(prev.getTime()) ? prev : new Date(d);
+                      const shifted = new Date(ref.getTime() + delta);
+                      return isNaN(shifted.getTime()) ? new Date(d) : shifted;
+                    });
+                  }
                 }}
                 onClear={() => setFormDueDate('')}
                 onDismiss={() => setShowDueDatePicker(false)}

@@ -36,7 +36,7 @@ import {
   HelperText,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../../stores/chatStore';
@@ -81,7 +81,10 @@ function isValidNormalizedPhone(digits: string): boolean {
 
 const BULK_STATUS_OPTIONS = ['Open', 'In Process', 'Closed'] as const;
 
-const FILTER_OPTIONS = ['all', 'unread', 'notReviewedByHuman', 'open', 'closed', 'myChats', 'internal'] as const;
+// Order matters — chips render left-to-right (RTL-aware) in this order, and the Category dropdown
+// follows immediately after. 'notReviewedByHuman' is placed LAST so it sits right next to Category
+// (more accessible); 'internal' takes its former slot.
+const FILTER_OPTIONS = ['all', 'unread', 'internal', 'open', 'closed', 'myChats', 'notReviewedByHuman'] as const;
 
 interface SavedView {
   id: string;
@@ -124,6 +127,7 @@ export default function ChatsListScreen() {
   const ownerFilter = useChatStore((s) => s.ownerFilter);
   const setOwnerFilter = useChatStore((s) => s.setOwnerFilter);
   const loadChats = useChatStore((s) => s.loadChats);
+  const refreshRecentChats = useChatStore((s) => s.refreshRecentChats);
   const setChats = useChatStore((s) => s.setChats);
   const addOrUpdateChat = useChatStore((s) => s.addOrUpdateChat);
   const markAsUnread = useChatStore((s) => s.markAsUnread);
@@ -174,6 +178,14 @@ export default function ChatsListScreen() {
   const [searchVisible, setSearchVisible] = useState(false);
   const searchAnim = useRef(new Animated.Value(0)).current;
   const wsRef = useRef<WebSocketService | null>(null);
+  const listRef = useRef<FlashList<any> | null>(null);
+
+  // The chat list is sorted newest-first, so "the top" is always the freshest conversations.
+  // Snap back to the top whenever the screen regains focus or the app returns from background,
+  // so the user never has to scroll up to find new chats after leaving and coming back.
+  const scrollChatsToTop = useCallback((animated = false) => {
+    try { listRef.current?.scrollToOffset({ offset: 0, animated }); } catch { /* list not ready */ }
+  }, []);
 
   // Saved Views
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
@@ -428,29 +440,42 @@ export default function ChatsListScreen() {
     }
   }, [user?.organization, chatsDV, currentUserId]);
 
-  // Polling fallback: refresh chat list every 60s to catch messages missed by WebSocket
+  // Polling fallback: catch messages missed by WebSocket. This used to re-read the ENTIRE
+  // contacts collection (pageSize 9999) every 60s regardless of whether the app was even in the
+  // foreground — the single biggest Firestore read amplifier in the product. Now we (1) only poll
+  // while the app is actually active, (2) poll less often, and (3) do a cheap incremental refresh
+  // of just the most-recent conversations instead of the whole collection.
   useEffect(() => {
     if (!user?.organization) return;
     const interval = setInterval(() => {
-      loadChats(
-        user.organization,
-        currentUserId,
-        chatsDV || 'all',
-      );
-    }, 60000);
+      if (AppState.currentState !== 'active') return;
+      refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
+    }, 120000);
     return () => clearInterval(interval);
-  }, [user?.organization, loadChats, chatsDV, currentUserId]);
+  }, [user?.organization, refreshRecentChats, chatsDV, currentUserId]);
 
-  // Refresh chat list when app returns from background
+  // Refresh chat list when app returns from background. A lightweight incremental refresh is enough
+  // here (the full list is already cached from the initial load) and avoids a full-collection read
+  // on every single foreground event.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active' && user?.organization) {
         WebSocketService.reconnectAll();
-        loadChats(user.organization, currentUserId, chatsDV || 'all');
+        refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
+        // Returning to the app should land the user on the newest chats, not the stale offset
+        // they left the list at.
+        InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
       }
     });
     return () => subscription.remove();
-  }, [user?.organization, loadChats, chatsDV, currentUserId]);
+  }, [user?.organization, refreshRecentChats, chatsDV, currentUserId, scrollChatsToTop]);
+
+  // Also snap to the top whenever the chats tab regains focus (e.g. switching back from another tab).
+  useFocusEffect(
+    useCallback(() => {
+      InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
+    }, [scrollChatsToTop])
+  );
 
   useEffect(() => {
     if (!user?.organization) return;
@@ -789,6 +814,9 @@ export default function ChatsListScreen() {
   const renderChatItem = useCallback(
     ({ item }: { item: Chat }) => {
       const hasUnread = item.unreadCount > 0;
+      // Unread INTERNAL message (@-mention) directed at me — shown as a distinct purple badge,
+      // separate from the regular red WhatsApp unread badge/bold.
+      const hasUnreadInternal = !!currentUserId && (item.usersWithUnreadInternalMessages || []).includes(currentUserId);
       const phoneNorm = (item.phoneNumber || '').replace(/\D/g, '');
       const leadInfo = contactLeadMap[phoneNorm];
       const displayLeadStage = item.leadStageName || leadInfo?.stageName || '';
@@ -877,6 +905,11 @@ export default function ChatsListScreen() {
                 >
                   {item.contactName || item.phoneNumber}
                 </Text>
+                {hasUnreadInternal && (
+                  <View style={styles.internalMentionBadge}>
+                    <Text style={styles.internalMentionBadgeText}>💬 @</Text>
+                  </View>
+                )}
                 {availableNumbers.length > 1 && chatNumberBadges.length > 0 ? (
                   <View style={{ flexDirection: 'row', gap: 3, alignItems: 'center' }}>
                     {chatNumberBadges.map((num) => {
@@ -1019,7 +1052,7 @@ export default function ChatsListScreen() {
         </Swipeable>
       );
     },
-    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, swipeableRefs],
+    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, swipeableRefs, currentUserId],
   );
 
   const renderEmpty = useCallback(
@@ -1508,6 +1541,7 @@ export default function ChatsListScreen() {
 
       {/* Chat list */}
       <FlashList
+        ref={listRef}
         data={displayedChats}
         renderItem={renderChatItem}
         keyExtractor={chatKeyExtractor}
@@ -1993,6 +2027,19 @@ const styles = StyleSheet.create({
   unreadText: {
     color: '#FFFFFF',
     fontSize: 12,
+    fontWeight: '700',
+  },
+  internalMentionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#7c3aed',
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  internalMentionBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
     fontWeight: '700',
   },
   emptyContainer: {

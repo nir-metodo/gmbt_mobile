@@ -179,6 +179,9 @@ export const ENDPOINTS = {
   GET_DAILY_CONVERSATION_REPORT: '/api/Webhooks/GetDailyConversationReport',
   GET_DAILY_BOT_SUMMARY: '/api/Webhooks/GetDailyBotSummary',
   GET_TEMPLATE_ANALYTICS: '/api/Webhooks/GetTemplateAnalytics',
+  // Scheduled (periodic) reports — the daily/weekly/monthly reports sent by email
+  GET_SCHEDULED_REPORTS: '/api/Webhooks/GetScheduledReports',
+  GET_SCHEDULED_REPORT_BY_ID: '/api/Webhooks/GetScheduledReportById',
 
   // Phone Calls
   GET_PHONE_CALLS: '/api/Webhooks/GetAllPhoneCallsPagination',

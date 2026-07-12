@@ -111,13 +111,20 @@ export default function ContactsListScreen() {
   }, [organization, loadContacts, contactsDV, currentUserId]);
 
   const didMountRef = useRef(false);
+  const lastFocusSyncRef = useRef(0);
   useFocusEffect(
     useCallback(() => {
       if (!didMountRef.current) {
         didMountRef.current = true;
+        lastFocusSyncRef.current = Date.now();
         return;
       }
-      if (organization) {
+      // Re-syncing the whole contacts collection on EVERY tab focus was a major read amplifier.
+      // The list is already backed by the on-device SQLite cache + realtime WS updates, so only
+      // do a fresh server pull if it's been a while since the last one.
+      const STALE_MS = 5 * 60 * 1000;
+      if (organization && Date.now() - lastFocusSyncRef.current > STALE_MS) {
+        lastFocusSyncRef.current = Date.now();
         loadContacts(
           organization,
           contactsDV === 'own' ? currentUserId : '',

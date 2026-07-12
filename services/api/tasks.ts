@@ -28,7 +28,27 @@ function toIsoDate(val: any): string {
   if (typeof val === 'string') {
     const cleaned = val.startsWith('Timestamp: ') ? val.slice('Timestamp: '.length) : val;
     const d = new Date(cleaned);
-    return isNaN(d.getTime()) ? '' : d.toISOString();
+    if (!isNaN(d.getTime())) return d.toISOString();
+    // Fallback for legacy rows: the backend used to persist dueDate via a locale-formatted
+    // ToString() (e.g. "7/8/2026 2:00:00 PM" or "07/08/2026 14:00:00"), which Hermes' Date
+    // parser rejects (returns Invalid Date) → the list showed "no due date". Parse the common
+    // M/D/YYYY[,] h:mm[:ss] [AM/PM] shape manually so those tasks still render until re-saved.
+    const m = cleaned.match(
+      /^(\d{1,2})\/(\d{1,2})\/(\d{4})[,\sT]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i,
+    );
+    if (m) {
+      let [, mo, day, yr, hr, min, sec, ampm] = m;
+      let h = parseInt(hr, 10);
+      if (ampm) {
+        const up = ampm.toUpperCase();
+        if (up === 'PM' && h < 12) h += 12;
+        if (up === 'AM' && h === 12) h = 0;
+      }
+      // These legacy strings are UTC instants (server wrote UTC via ToString), so build in UTC.
+      const parsed = new Date(Date.UTC(+yr, +mo - 1, +day, h, +min, sec ? +sec : 0));
+      if (!isNaN(parsed.getTime())) return parsed.toISOString();
+    }
+    return '';
   }
   return '';
 }

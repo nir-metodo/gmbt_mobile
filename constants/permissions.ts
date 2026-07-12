@@ -95,6 +95,46 @@ export const getLandingRoute = (
   return '/(tabs)/more';
 };
 
+/**
+ * Screens the user can choose as their app "default screen" (Settings → default screen).
+ * `permission: null` means always available. Order roughly follows the app's navigation.
+ */
+export interface DefaultScreenOption {
+  route: string;
+  labelKey: string;
+  icon: string;
+  permission: PermissionFeature | null;
+}
+
+export const DEFAULT_SCREEN_OPTIONS: DefaultScreenOption[] = [
+  { route: '/(tabs)/chats', labelKey: 'tabs.chats', icon: 'chat-outline', permission: 'chats' },
+  { route: '/(tabs)/contacts', labelKey: 'tabs.contacts', icon: 'account-group-outline', permission: 'contacts' },
+  { route: '/(tabs)/leads', labelKey: 'tabs.leads', icon: 'trending-up', permission: 'leads' },
+  { route: '/(tabs)/tasks', labelKey: 'tabs.tasks', icon: 'checkbox-marked-circle-outline', permission: 'tasks' },
+  { route: '/(tabs)/more/catalog', labelKey: 'more.catalog', icon: 'tag-multiple-outline', permission: 'catalog' },
+  { route: '/(tabs)/more/employees', labelKey: 'more.employees', icon: 'badge-account-horizontal-outline', permission: 'employees' },
+  { route: '/(tabs)/more/calendar', labelKey: 'more.calendar', icon: 'calendar-month-outline', permission: null },
+  { route: '/(tabs)/more', labelKey: 'tabs.more', icon: 'dots-grid', permission: null },
+];
+
+/**
+ * The route the app should open to. If the user picked a preferred default screen (and still has
+ * permission for it) that wins; otherwise fall back to the first permitted tab (getLandingRoute).
+ */
+export const getEffectiveLandingRoute = (
+  userPermissions: Record<string, boolean> | null | undefined,
+  securityRole: string | undefined,
+  preferredRoute?: string | null
+): string => {
+  if (preferredRoute) {
+    const opt = DEFAULT_SCREEN_OPTIONS.find((o) => o.route === preferredRoute);
+    if (opt && (opt.permission === null || hasPermission(userPermissions, securityRole, opt.permission))) {
+      return preferredRoute;
+    }
+  }
+  return getLandingRoute(userPermissions, securityRole);
+};
+
 /** Data visibility values for phoneCalls: 'myPhoneCalls' (own) | 'allPhoneCalls' (all) */
 export const PHONE_CALLS_VISIBILITY = {
   myPhoneCalls: 'own' as const,

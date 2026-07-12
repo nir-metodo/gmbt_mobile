@@ -26,6 +26,7 @@ import {
   Searchbar,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -34,6 +35,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { quotesApi } from '../../../../services/api/quotes';
+import { catalogApi, type CatalogCustomColumn, type CatalogFieldsConfig } from '../../../../services/api/catalog';
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { chatsApi } from '../../../../services/api/chats';
 import { contactsApi } from '../../../../services/api/contacts';
@@ -73,6 +75,50 @@ const CURRENCIES = [
 
 function getStatusColor(status: string): string {
   return STATUS_COLORS[status] || '#9E9E9E';
+}
+
+// ── Catalog picker helpers (mirror the Catalog screen so the "from catalog" picker shows the same
+// title + columns configured in the web Catalog → Columns settings) ─────────────────────────────
+const CATALOG_BASE_TOKENS = ['image', 'name', 'category', 'sku', 'unitPrice', 'stock'];
+
+function catFormatValue(v: any, isRTL: boolean): string {
+  if (typeof v === 'boolean') return v ? (isRTL ? 'כן' : 'Yes') : (isRTL ? 'לא' : 'No');
+  return String(v);
+}
+
+function catHasVal(v: any): boolean {
+  return v !== undefined && v !== null && v !== '';
+}
+
+// Full ordered token list (base + custom + link) honoring the web-configured column order.
+function catResolveColumnOrder(savedOrder: any, customCols: CatalogCustomColumn[]): string[] {
+  const customTokens = (customCols || []).map((c) => `custom:${c.id}`);
+  const natural = [...CATALOG_BASE_TOKENS, ...customTokens, 'link'];
+  const saved = Array.isArray(savedOrder) ? savedOrder.filter((tok: string) => natural.includes(tok)) : [];
+  return [...saved, ...natural.filter((tok) => !saved.includes(tok))];
+}
+
+// The item's display title — prefer base fields, then the configured required (possibly custom)
+// field, then the first filled custom column, so a catalog whose data lives only in custom fields
+// (e.g. a car catalog) never renders a blank row.
+function catBuildTitle(item: any, columns: CatalogCustomColumn[], cfg: CatalogFieldsConfig, isRTL: boolean): { title: string; titleKey: string | null } {
+  const cf = item.customFields || {};
+  let titleKey: string | null = null;
+  let title = item.name || item.sku || item.category || '';
+  if (!title) {
+    const reqKey = cfg?.requiredField;
+    if (reqKey && catHasVal(cf[reqKey])) {
+      titleKey = reqKey;
+      title = catFormatValue(cf[reqKey], isRTL);
+    } else {
+      const firstFilled = (columns || []).find((c) => catHasVal(cf[c.key]));
+      if (firstFilled) {
+        titleKey = firstFilled.key;
+        title = catFormatValue(cf[firstFilled.key], isRTL);
+      }
+    }
+  }
+  return { title: title || '—', titleKey };
 }
 
 function getCurrencySymbol(currency: string): string {
@@ -157,7 +203,16 @@ export default function QuoteDetailScreen() {
   const [inventoryVisible, setInventoryVisible] = useState(false);
   const [inventoryItems, setInventoryItems] = useState<any[]>([]);
   const [inventorySearch, setInventorySearch] = useState('');
+  const [debouncedInventorySearch, setDebouncedInventorySearch] = useState('');
   const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [catalogColumns, setCatalogColumns] = useState<CatalogCustomColumn[]>([]);
+  const [catalogFieldsConfig, setCatalogFieldsConfig] = useState<CatalogFieldsConfig>({});
+
+  // Debounce the catalog search so filtering a large catalog (hundreds of items) stays snappy.
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedInventorySearch(inventorySearch), 200);
+    return () => clearTimeout(h);
+  }, [inventorySearch]);
 
   const fetchQuote = useCallback(async () => {
     if (!user?.organization || !id) return;
@@ -374,26 +429,73 @@ export default function QuoteDetailScreen() {
     loadOrgUsers();
   }, [loadOrgUsers]);
 
-  // ── Catalog picker (from quote branding) ─────────────────────────
+  // ── Catalog picker ───────────────────────────────────────────────
+  // Load the FULL catalog (items + the custom columns and field config set in the web
+  // Catalog → Columns settings) so the picker renders the same title + columns as the catalog
+  // screen. Using branding.catalogItems alone left car-style catalogs (data only in custom fields)
+  // showing blank rows.
   const openInventoryPicker = useCallback(async () => {
     setInventoryVisible(true);
     if (inventoryItems.length === 0) {
       setInventoryLoading(true);
       try {
-        const branding = await quotesApi.getBranding(user?.organization || '');
-        setInventoryItems(Array.isArray(branding?.catalogItems) ? branding.catalogItems : []);
+        const data = await catalogApi.getAll(user?.organization || '');
+        setInventoryItems(Array.isArray(data.catalogItems) ? data.catalogItems : []);
+        setCatalogColumns(Array.isArray(data.catalogCustomColumns) ? data.catalogCustomColumns : []);
+        setCatalogFieldsConfig(data.catalogFieldsConfig || {});
       } catch { setInventoryItems([]); }
       finally { setInventoryLoading(false); }
     }
   }, [user?.organization, inventoryItems.length]);
 
+  // Column tokens in the web-configured order, and a visibility check honoring the web toggles.
+  const catalogColumnTokens = useMemo(
+    () => catResolveColumnOrder(catalogFieldsConfig.columnOrder, catalogColumns),
+    [catalogFieldsConfig.columnOrder, catalogColumns],
+  );
+  const isCatalogTokenVisible = useCallback((tok: string): boolean => {
+    if (tok === 'name') return true;
+    if (tok.startsWith('custom:')) {
+      const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
+      return col ? col.showInTable !== false : false;
+    }
+    const tc = catalogFieldsConfig.tableColumns || {};
+    return tc[tok] !== false;
+  }, [catalogColumns, catalogFieldsConfig.tableColumns]);
+
   const filteredInventory = useMemo(() => {
-    if (!inventorySearch.trim()) return inventoryItems;
-    const q = inventorySearch.toLowerCase();
-    return inventoryItems.filter(
-      (p) => (p.name || p.description || '').toLowerCase().includes(q),
-    );
-  }, [inventoryItems, inventorySearch]);
+    const q = debouncedInventorySearch.trim().toLowerCase();
+    if (!q) return inventoryItems;
+    // Search base fields (per config) plus any custom columns marked searchable — matching the
+    // catalog screen — so a user can find an item by any meaningful column, not just its name.
+    const sb = catalogFieldsConfig.searchBaseFields || { name: true, description: true, sku: true };
+    const searchableCols = catalogColumns.filter((c) => c.searchable);
+    return inventoryItems.filter((i) => {
+      const baseHit =
+        (sb.name !== false && (i.name || '').toLowerCase().includes(q)) ||
+        (sb.description && (i.description || '').toLowerCase().includes(q)) ||
+        (sb.sku && (i.sku || '').toLowerCase().includes(q)) ||
+        (sb.category && (i.category || '').toLowerCase().includes(q)) ||
+        (sb.unitPrice && String(i.unitPrice ?? '').toLowerCase().includes(q));
+      if (baseHit) return true;
+      const cf = i.customFields;
+      if (cf) {
+        if (searchableCols.length > 0) {
+          for (const col of searchableCols) {
+            const val = cf[col.key];
+            if (val != null && String(val).toLowerCase().includes(q)) return true;
+          }
+        } else {
+          // No column is explicitly flagged searchable → still let the user match any custom value.
+          for (const key of Object.keys(cf)) {
+            const val = cf[key];
+            if (val != null && String(val).toLowerCase().includes(q)) return true;
+          }
+        }
+      }
+      return false;
+    });
+  }, [inventoryItems, debouncedInventorySearch, catalogFieldsConfig, catalogColumns]);
 
   const filteredUsers = useMemo(() => {
     if (!userSearch.trim()) return orgUsers;
@@ -403,10 +505,27 @@ export default function QuoteDetailScreen() {
 
   const addFromInventory = useCallback((item: any) => {
     const price = parseFloat(item.unitPrice) || parseFloat(item.price) || 0;
+    const { title, titleKey } = catBuildTitle(item, catalogColumns, catalogFieldsConfig, isRTL);
+    // Build a compact description from the visible custom columns so the quote line keeps the
+    // catalog context (e.g. year / mileage / ownership) even when the item has no plain description.
+    let description = item.description || '';
+    if (!description) {
+      const cf = item.customFields || {};
+      const parts: string[] = [];
+      for (const tok of catalogColumnTokens) {
+        if (!tok.startsWith('custom:') || !isCatalogTokenVisible(tok)) continue;
+        const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
+        if (col && col.key !== titleKey && catHasVal(cf[col.key])) {
+          parts.push(`${col.label}: ${catFormatValue(cf[col.key], isRTL)}`);
+        }
+        if (parts.length >= 4) break;
+      }
+      description = parts.join(' · ');
+    }
     const newItem: QuoteItem = {
       id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-      name: item.name || item.description || '',
-      description: item.description && item.name ? item.description : '',
+      name: title === '—' ? '' : title,
+      description,
       quantity: 1,
       unitPrice: price,
       discount: 0,
@@ -415,7 +534,7 @@ export default function QuoteDetailScreen() {
     setFormItems((prev) => [...prev, newItem]);
     setInventoryVisible(false);
     setInventorySearch('');
-  }, []);
+  }, [catalogColumns, catalogFieldsConfig, catalogColumnTokens, isCatalogTokenVisible, isRTL]);
 
   const handleSave = useCallback(async () => {
     if (!user?.organization || !formTitle.trim()) return;
@@ -1341,28 +1460,71 @@ export default function QuoteDetailScreen() {
             ) : (
               <FlatList
                 data={filteredInventory}
-                keyExtractor={(_item, i) => String(i)}
-                style={{ maxHeight: 360 }}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
-                    onPress={() => addFromInventory(item)}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
-                        {item.name || item.description || ''}
-                      </Text>
-                      {item.description && item.name ? (
-                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                          {item.description}
+                keyExtractor={(item, i) => String(item?.id ?? i)}
+                style={{ maxHeight: 460 }}
+                keyboardShouldPersistTaps="handled"
+                initialNumToRender={12}
+                maxToRenderPerBatch={16}
+                windowSize={7}
+                removeClippedSubviews
+                renderItem={({ item }) => {
+                  const cf = item.customFields || {};
+                  const { title, titleKey } = catBuildTitle(item, catalogColumns, catalogFieldsConfig, isRTL);
+                  const hasImage = Array.isArray(item.images) && item.images.filter(Boolean).length > 0;
+                  // Meta chips for every visible column (base + custom) in the web-configured order.
+                  const chips: { key: string; label: string }[] = [];
+                  for (const tok of catalogColumnTokens) {
+                    if (tok === 'image' || tok === 'name' || tok === 'unitPrice') continue;
+                    if (!isCatalogTokenVisible(tok)) continue;
+                    if (tok === 'sku') {
+                      if (item.sku) chips.push({ key: tok, label: String(item.sku) });
+                    } else if (tok === 'category') {
+                      if (item.category) chips.push({ key: tok, label: String(item.category) });
+                    } else if (tok.startsWith('custom:')) {
+                      const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
+                      if (col && col.key !== titleKey && catHasVal(cf[col.key])) {
+                        chips.push({ key: tok, label: `${col.label}: ${catFormatValue(cf[col.key], isRTL)}` });
+                      }
+                    }
+                  }
+                  const price = Number(item.unitPrice || item.price || 0);
+                  return (
+                    <TouchableOpacity
+                      style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant, alignItems: 'flex-start' }]}
+                      onPress={() => addFromInventory(item)}
+                    >
+                      {hasImage ? (
+                        <Image source={{ uri: item.images.filter(Boolean)[0] }} style={styles.inventoryThumb} contentFit="cover" />
+                      ) : (
+                        <View style={[styles.inventoryThumb, styles.inventoryThumbPlaceholder, { backgroundColor: theme.colors.primary + '15' }]}>
+                          <MaterialCommunityIcons name="package-variant" size={20} color={theme.colors.primary} />
+                        </View>
+                      )}
+                      <View style={{ flex: 1, marginHorizontal: 10 }}>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }} numberOfLines={1}>
+                          {title}
                         </Text>
-                      ) : null}
-                    </View>
-                    <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '700' }}>
-                      {(item.unitPrice || item.price) != null ? `₪${Number(item.unitPrice || item.price || 0).toFixed(2)}` : ''}
-                    </Text>
-                  </TouchableOpacity>
-                )}
+                        {item.description ? (
+                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 1 }} numberOfLines={1}>
+                            {item.description}
+                          </Text>
+                        ) : null}
+                        {chips.length > 0 && (
+                          <View style={[styles.inventoryChips, { flexDirection, flexWrap: 'wrap' }]}>
+                            {chips.slice(0, 6).map((c) => (
+                              <View key={c.key} style={[styles.inventoryChip, { backgroundColor: theme.colors.onSurfaceVariant + '14' }]}>
+                                <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }} numberOfLines={1}>{c.label}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                      <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '700', marginTop: 2 }}>
+                        {price > 0 ? `₪${price.toLocaleString()}` : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
                 ListEmptyComponent={
                   <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
                     {t('common.noResults')}
@@ -2456,5 +2618,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     borderBottomWidth: 1,
+  },
+  inventoryThumb: {
+    width: 46,
+    height: 46,
+    borderRadius: 8,
+  },
+  inventoryThumbPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inventoryChips: {
+    marginTop: 4,
+    gap: 4,
+    alignItems: 'center',
+  },
+  inventoryChip: {
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginEnd: 4,
+    marginTop: 2,
+    maxWidth: 200,
   },
 });

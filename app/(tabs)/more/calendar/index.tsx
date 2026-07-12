@@ -8,12 +8,85 @@ import * as Calendar from 'expo-calendar';
 import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { useAuthStore } from '../../../../stores/authStore';
 import { calendarApi, CalendarEvent, CalendarInfo, Connection } from '../../../../services/api/calendar';
+import { usersApi } from '../../../../services/api/users';
+import type { OrgUser } from '../../../../types';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 
 const BRAND_COLOR = '#2e6155';
 
+// Per-event colors (mirrors the web calendar). 'auto' inherits the calendar's own color.
+const COLOR_OPTIONS: { id: string; dot: string }[] = [
+  { id: 'green', dot: '#10b981' },
+  { id: 'blue', dot: '#3b82f6' },
+  { id: 'purple', dot: '#8b5cf6' },
+  { id: 'red', dot: '#ef4444' },
+  { id: 'yellow', dot: '#f59e0b' },
+  { id: 'pink', dot: '#ec4899' },
+  { id: 'teal', dot: '#14b8a6' },
+  { id: 'orange', dot: '#f97316' },
+];
+
+const RECURRENCE_KEYS = ['none', 'daily', 'weekly', 'monthly', 'yearly'] as const;
+type RecurrenceKey = (typeof RECURRENCE_KEYS)[number];
+const recurrenceLabel = (key: string, he: boolean) =>
+  (({
+    none: he ? 'ללא חזרה' : 'Does not repeat',
+    daily: he ? 'מדי יום' : 'Daily',
+    weekly: he ? 'מדי שבוע' : 'Weekly',
+    monthly: he ? 'מדי חודש' : 'Monthly',
+    yearly: he ? 'מדי שנה' : 'Yearly',
+  } as Record<string, string>)[key] || key);
+
 function toLocalDateStr(date: Date): string {
   return date.toISOString().split('T')[0];
+}
+
+// Parse a 'yyyy-MM-dd' (or ISO) string into a local Date at midnight.
+function parseLocalDate(str?: string | null): Date | null {
+  if (!str) return null;
+  const parts = String(str).split('T')[0].split('-').map(Number);
+  if (parts.length < 3 || !parts[0]) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+// Expand recurring events into concrete occurrences within [rangeStart, rangeEnd].
+// Non-recurring events pass through unchanged. Occurrences carry _recurringInstance/_originalId
+// so edits are routed back to the underlying series.
+function expandEvents(events: CalendarEvent[], rangeStart: Date, rangeEnd: Date): CalendarEvent[] {
+  const out: CalendarEvent[] = [];
+  const MAX = 400;
+  for (const ev of events) {
+    const rec = ev.recurrence || 'none';
+    const startStr = (ev.startDate || '').split('T')[0];
+    const start = parseLocalDate(startStr);
+    if (rec === 'none' || !rec || !start) { out.push(ev); continue; }
+
+    const endStr = (ev.endDate || startStr).split('T')[0];
+    const end = parseLocalDate(endStr) || start;
+    const durationDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000));
+    const until = parseLocalDate((ev.recurrenceUntil || '').split('T')[0]);
+
+    const occ = new Date(start);
+    let count = 0;
+    while (occ <= rangeEnd && count < MAX) {
+      if (until && occ > until) break;
+      const occEnd = new Date(occ); occEnd.setDate(occEnd.getDate() + durationDays);
+      if (occEnd >= rangeStart) {
+        if (toLocalDateStr(occ) === startStr) {
+          out.push(ev);
+        } else {
+          out.push({ ...ev, startDate: toLocalDateStr(occ), endDate: toLocalDateStr(occEnd), _recurringInstance: true, _originalId: ev.id } as any);
+        }
+      }
+      if (rec === 'daily') occ.setDate(occ.getDate() + 1);
+      else if (rec === 'weekly') occ.setDate(occ.getDate() + 7);
+      else if (rec === 'monthly') occ.setMonth(occ.getMonth() + 1);
+      else if (rec === 'yearly') occ.setFullYear(occ.getFullYear() + 1);
+      else break;
+      count++;
+    }
+  }
+  return out;
 }
 
 function formatTime(time: string): string {
@@ -40,6 +113,7 @@ export default function CalendarScreen() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calendars, setCalendars] = useState<CalendarInfo[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -87,6 +161,13 @@ export default function CalendarScreen() {
   const [formReminderMinutes, setFormReminderMinutes] = useState(15);
   const [showReminderMenu, setShowReminderMenu] = useState(false);
   const [formShared, setFormShared] = useState(true);
+  const [formColor, setFormColor] = useState('auto');
+  const [formRecurrence, setFormRecurrence] = useState<string>('none');
+  const [formRecurrenceUntil, setFormRecurrenceUntil] = useState<Date | null>(null);
+  const [showRecurrenceMenu, setShowRecurrenceMenu] = useState(false);
+  const [showRecurrenceUntilPicker, setShowRecurrenceUntilPicker] = useState(false);
+  const [formLinkedUsers, setFormLinkedUsers] = useState<{ id: string; name: string }[]>([]);
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   // Date pickers
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
@@ -103,14 +184,16 @@ export default function CalendarScreen() {
   const loadData = useCallback(async () => {
     if (!org) return;
     try {
-      const [evts, cals, conns] = await Promise.all([
+      const [evts, cals, conns, usrs] = await Promise.all([
         calendarApi.getEvents(org, isAdmin ? undefined : (user?.userId || user?.uID || undefined)),
         calendarApi.getCalendars(org),
         calendarApi.getConnections(org),
+        usersApi.getAll(org).catch(() => [] as OrgUser[]),
       ]);
       setEvents(evts);
       setCalendars(cals);
       setConnections(conns);
+      setOrgUsers(usrs);
     } catch (e) {
       console.error('Calendar load error:', e);
     } finally {
@@ -121,6 +204,26 @@ export default function CalendarScreen() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Recurring events are materialized into occurrences within the range relevant to the current view:
+  // the visible month grid for the month view, or a wide window (−1..+6 months) for the list.
+  const expandedEvents = useMemo(() => {
+    let rangeStart: Date;
+    let rangeEnd: Date;
+    if (viewMode === 'month') {
+      const year = monthCursor.getFullYear();
+      const month = monthCursor.getMonth();
+      const startWeekday = new Date(year, month, 1).getDay();
+      rangeStart = new Date(year, month, 1 - startWeekday);
+      rangeEnd = new Date(rangeStart);
+      rangeEnd.setDate(rangeEnd.getDate() + 41);
+    } else {
+      const now = new Date();
+      rangeStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      rangeEnd = new Date(now.getFullYear(), now.getMonth() + 6, 0);
+    }
+    return expandEvents(events, rangeStart, rangeEnd);
+  }, [events, viewMode, monthCursor]);
+
   const filteredEvents = useMemo(() => {
     const today = toLocalDateStr(new Date());
     const todayDate = new Date();
@@ -128,7 +231,7 @@ export default function CalendarScreen() {
     weekEnd.setDate(weekEnd.getDate() + 7);
     const weekEndStr = toLocalDateStr(weekEnd);
 
-    let filtered = [...events];
+    let filtered = [...expandedEvents];
     if (dateFilter === 'today') {
       filtered = filtered.filter(e => e.startDate === today);
     } else if (dateFilter === 'upcoming') {
@@ -143,12 +246,12 @@ export default function CalendarScreen() {
       return (a.startTime || '00:00').localeCompare(b.startTime || '00:00');
     });
     return filtered;
-  }, [events, dateFilter]);
+  }, [expandedEvents, dateFilter]);
 
   // Group events by day (yyyy-MM-dd) for the month grid dots + the per-day agenda.
   const eventsByDate = useMemo(() => {
     const map: Record<string, CalendarEvent[]> = {};
-    for (const e of events) {
+    for (const e of expandedEvents) {
       if (!e.startDate) continue;
       (map[e.startDate] = map[e.startDate] || []).push(e);
     }
@@ -156,7 +259,7 @@ export default function CalendarScreen() {
       list.sort((a, b) => (a.startTime || '00:00').localeCompare(b.startTime || '00:00')),
     );
     return map;
-  }, [events]);
+  }, [expandedEvents]);
 
   // Events for the day the user tapped in the grid, chronological.
   const selectedDayEvents = useMemo(() => eventsByDate[selectedDay] || [], [eventsByDate, selectedDay]);
@@ -198,6 +301,19 @@ export default function CalendarScreen() {
 
   const todayStr = toLocalDateStr(new Date());
 
+  // Resolve the display color for an event: an explicit per-event color wins; 'auto'/empty inherits
+  // the calendar's color; falls back to the brand color.
+  const getEventColor = useCallback((event: CalendarEvent): string => {
+    const c = event.color || '';
+    if (c && c !== 'auto') {
+      const opt = COLOR_OPTIONS.find(o => o.id === c);
+      if (opt) return opt.dot;
+      if (c.startsWith('#')) return c;
+    }
+    const cal = calendars.find(cl => cl.id === (event.calendarId || ''));
+    return cal?.color || BRAND_COLOR;
+  }, [calendars]);
+
   const openCreateModal = () => {
     const now = new Date();
     setEditingEvent(null);
@@ -220,6 +336,10 @@ export default function CalendarScreen() {
     setFormReminderEnabled(true);
     setFormReminderMinutes(15);
     setFormShared(true);
+    setFormColor('auto');
+    setFormRecurrence('none');
+    setFormRecurrenceUntil(null);
+    setFormLinkedUsers([]);
     setModalVisible(true);
   };
 
@@ -233,6 +353,11 @@ export default function CalendarScreen() {
   };
 
   const openEditModal = (event: CalendarEvent) => {
+    // A recurring occurrence is a virtual copy with a shifted date — edit the underlying series.
+    if ((event as any)._recurringInstance) {
+      const orig = events.find(ev => ev.id === (event as any)._originalId);
+      if (orig) event = orig;
+    }
     setEditingEvent(event);
     setFormTitle(event.title);
     setFormDescription(event.description);
@@ -255,6 +380,14 @@ export default function CalendarScreen() {
     setFormReminderEnabled(event.reminderEnabled ?? true);
     setFormReminderMinutes(event.reminderMinutesBefore ?? 15);
     setFormShared(event.shared !== false);
+    setFormColor(event.color || 'auto');
+    setFormRecurrence(event.recurrence || 'none');
+    setFormRecurrenceUntil(parseLocalDate(event.recurrenceUntil));
+    setFormLinkedUsers(
+      (event.linkedEntities || [])
+        .filter(l => l.type === 'user')
+        .map(l => ({ id: l.id, name: l.name })),
+    );
     setModalVisible(true);
   };
 
@@ -320,6 +453,19 @@ export default function CalendarScreen() {
     }
     setSaving(true);
     try {
+      // Build the multi-entity link list: linked users + a free-text related-to (if any).
+      const linkedEntities: { type: string; id: string; name: string }[] = [
+        ...formLinkedUsers.map(u => ({ type: 'user', id: u.id, name: u.name })),
+      ];
+      if (formLinkedEntityName.trim()) {
+        linkedEntities.push({
+          type: formLinkedEntityType || 'contact',
+          id: formLinkedEntityId || '',
+          name: formLinkedEntityName.trim(),
+        });
+      }
+      const firstLink = linkedEntities[0];
+
       const payload: any = {
         title: formTitle.trim(),
         description: formDescription.trim(),
@@ -331,11 +477,15 @@ export default function CalendarScreen() {
         allDay: formAllDay,
         calendarId: formCalendarId,
         connectionId: formConnectionId,
+        color: formColor,
+        recurrence: formRecurrence,
+        recurrenceUntil: formRecurrenceUntil ? toLocalDateStr(formRecurrenceUntil) : '',
         attendees: formAttendees,
         attendeeEmail: formAttendees[0] || '',
-        linkedEntityType: formLinkedEntityType,
-        linkedEntityId: formLinkedEntityId,
-        linkedEntityName: formLinkedEntityName,
+        linkedEntities,
+        linkedEntityType: firstLink?.type || formLinkedEntityType,
+        linkedEntityId: firstLink?.id || formLinkedEntityId,
+        linkedEntityName: firstLink?.name || formLinkedEntityName,
         reminderEnabled: formReminderEnabled,
         reminderMinutesBefore: formReminderMinutes,
         pushReminderEnabled: formReminderEnabled,
@@ -382,12 +532,18 @@ export default function CalendarScreen() {
     );
   };
 
-  const renderEventCard = (event: CalendarEvent) => (
-    <Card key={event.id} style={[styles.eventCard, { backgroundColor: theme.custom.cardBackground }]} onPress={() => openEditModal(event)}>
+  const renderEventCard = (event: CalendarEvent) => {
+    const isRecurring = !!event.recurrence && event.recurrence !== 'none';
+    const linkedUserNames = (event.linkedEntities || []).filter(l => l.type === 'user').map(l => l.name);
+    return (
+    <Card key={`${event.id}-${event.startDate}`} style={[styles.eventCard, { backgroundColor: theme.custom.cardBackground, borderStartWidth: 4, borderStartColor: getEventColor(event) }]} onPress={() => openEditModal(event)}>
       <Card.Content>
         <View style={styles.eventHeader}>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.eventTitle, { color: theme.colors.onSurface }]}>{event.title}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              {isRecurring && <MaterialCommunityIcons name="repeat-variant" size={16} color={getEventColor(event)} />}
+              <Text style={[styles.eventTitle, { color: theme.colors.onSurface, flexShrink: 1 }]}>{event.title}</Text>
+            </View>
             <Text style={[styles.eventDate, { color: theme.colors.onSurfaceVariant }]}>
               {formatDisplayDate(event.startDate)} {formatTime(event.startTime)}
               {event.endTime ? ` - ${formatTime(event.endTime)}` : ''}
@@ -401,7 +557,13 @@ export default function CalendarScreen() {
             <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.location}</Text>
           </View>
         ) : null}
-        {event.linkedEntityName ? (
+        {linkedUserNames.length > 0 ? (
+          <View style={styles.eventDetail}>
+            <MaterialCommunityIcons name="account-check-outline" size={14} color={theme.colors.onSurfaceVariant} />
+            <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{linkedUserNames.join(', ')}</Text>
+          </View>
+        ) : null}
+        {event.linkedEntityName && !linkedUserNames.includes(event.linkedEntityName) ? (
           <View style={styles.eventDetail}>
             <MaterialCommunityIcons name="link-variant" size={14} color={theme.colors.onSurfaceVariant} />
             <Text style={[styles.eventDetailText, { color: theme.colors.onSurfaceVariant }]}>{event.linkedEntityName}</Text>
@@ -415,7 +577,8 @@ export default function CalendarScreen() {
         ) : null}
       </Card.Content>
     </Card>
-  );
+    );
+  };
 
   const getCalendarName = (calId: string) => calendars.find(c => c.id === calId)?.name || '';
   const getConnectionLabel = (connId: string) => {
@@ -496,7 +659,7 @@ export default function CalendarScreen() {
                   </View>
                   <View style={styles.dotsRow}>
                     {dayEvents.slice(0, 3).map((e, idx) => (
-                      <View key={idx} style={[styles.dot, { backgroundColor: BRAND_COLOR }]} />
+                      <View key={idx} style={[styles.dot, { backgroundColor: getEventColor(e) }]} />
                     ))}
                     {dayEvents.length > 3 && (
                       <Text style={[styles.moreDot, { color: theme.colors.onSurfaceVariant }]}>+{dayEvents.length - 3}</Text>
@@ -726,6 +889,72 @@ export default function CalendarScreen() {
               <Text style={[styles.allDayText, { color: theme.colors.onSurface }]}>{isRTL ? 'יום שלם' : 'All Day'}</Text>
             </Pressable>
 
+            {/* Event color */}
+            <Text style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 8, textAlign }}>
+              {isRTL ? 'צבע האירוע' : 'Event color'}
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14, paddingHorizontal: 2 }}>
+              <Pressable
+                onPress={() => setFormColor('auto')}
+                style={[styles.colorSwatch, { backgroundColor: (calendars.find(c => c.id === formCalendarId)?.color) || BRAND_COLOR }, formColor === 'auto' && styles.colorSwatchSelected]}
+              >
+                <Text style={styles.colorSwatchAuto}>A</Text>
+              </Pressable>
+              {COLOR_OPTIONS.map(c => (
+                <Pressable
+                  key={c.id}
+                  onPress={() => setFormColor(c.id)}
+                  style={[styles.colorSwatch, { backgroundColor: c.dot }, formColor === c.id && styles.colorSwatchSelected]}
+                >
+                  {formColor === c.id && <MaterialCommunityIcons name="check" size={16} color="#fff" />}
+                </Pressable>
+              ))}
+            </View>
+
+            {/* Recurrence */}
+            <Menu
+              visible={showRecurrenceMenu}
+              onDismiss={() => setShowRecurrenceMenu(false)}
+              anchor={
+                <Pressable onPress={() => setShowRecurrenceMenu(true)}>
+                  <View pointerEvents="none">
+                    <TextInput
+                      label={isRTL ? 'חזרה' : 'Repeat'}
+                      value={recurrenceLabel(formRecurrence, isRTL)}
+                      mode="outlined"
+                      editable={false}
+                      style={[styles.formInput, { textAlign }]}
+                      outlineColor={theme.colors.outline}
+                      activeOutlineColor={BRAND_COLOR}
+                      left={<TextInput.Icon icon="repeat-variant" />}
+                      right={<TextInput.Icon icon="chevron-down" />}
+                    />
+                  </View>
+                </Pressable>
+              }
+            >
+              {RECURRENCE_KEYS.map(k => (
+                <Menu.Item key={k} title={recurrenceLabel(k, isRTL)} onPress={() => { setFormRecurrence(k); setShowRecurrenceMenu(false); }} />
+              ))}
+            </Menu>
+
+            {formRecurrence !== 'none' && (
+              <Pressable onPress={() => setShowRecurrenceUntilPicker(true)}>
+                <View pointerEvents="none">
+                  <TextInput
+                    label={isRTL ? 'חזרה עד (אופציונלי)' : 'Repeat until (optional)'}
+                    value={formRecurrenceUntil ? formatDisplayDate(toLocalDateStr(formRecurrenceUntil)) : (isRTL ? 'ללא הגבלה' : 'No end')}
+                    mode="outlined"
+                    editable={false}
+                    style={[styles.formInput, { textAlign }]}
+                    outlineColor={theme.colors.outline}
+                    activeOutlineColor={BRAND_COLOR}
+                    right={<TextInput.Icon icon="calendar" />}
+                  />
+                </View>
+              </Pressable>
+            )}
+
             {/* Location */}
             <TextInput
               label={isRTL ? 'מיקום' : 'Location'}
@@ -789,9 +1018,72 @@ export default function CalendarScreen() {
               </View>
             )}
 
-            {/* Linked Entity */}
+            {/* Linked users (assignees) */}
+            {orgUsers.length > 0 && (
+              <View style={{ marginBottom: 12 }}>
+                <Text style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 6, textAlign }}>
+                  {isRTL ? 'שיוך משתמשים' : 'Linked users'}
+                </Text>
+                <Menu
+                  visible={showUserMenu}
+                  onDismiss={() => setShowUserMenu(false)}
+                  anchor={
+                    <Pressable onPress={() => setShowUserMenu(true)}>
+                      <View pointerEvents="none">
+                        <TextInput
+                          label={isRTL ? 'הוסף משתמש' : 'Add user'}
+                          value=""
+                          placeholder={isRTL ? 'בחר משתמש...' : 'Pick a user...'}
+                          mode="outlined"
+                          editable={false}
+                          style={[styles.formInput, { textAlign, marginBottom: 0 }]}
+                          outlineColor={theme.colors.outline}
+                          activeOutlineColor={BRAND_COLOR}
+                          left={<TextInput.Icon icon="account-plus-outline" />}
+                          right={<TextInput.Icon icon="chevron-down" />}
+                        />
+                      </View>
+                    </Pressable>
+                  }
+                >
+                  {orgUsers
+                    .filter(u => !formLinkedUsers.some(sel => sel.id === (u.uID || u.userId || u.id)))
+                    .map(u => {
+                      const uid = u.uID || u.userId || u.id || '';
+                      const uname = u.userName || u.fullname || u.name || u.email || uid;
+                      return (
+                        <Menu.Item
+                          key={uid}
+                          title={uname}
+                          onPress={() => {
+                            setFormLinkedUsers(prev => [...prev, { id: uid, name: uname }]);
+                            setShowUserMenu(false);
+                          }}
+                        />
+                      );
+                    })}
+                </Menu>
+                {formLinkedUsers.length > 0 && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                    {formLinkedUsers.map(u => (
+                      <Chip
+                        key={u.id}
+                        icon="account"
+                        onClose={() => setFormLinkedUsers(prev => prev.filter(x => x.id !== u.id))}
+                        style={{ backgroundColor: theme.colors.surfaceVariant }}
+                        textStyle={{ fontSize: 12, color: theme.colors.onSurface }}
+                      >
+                        {u.name}
+                      </Chip>
+                    ))}
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Linked Entity (free text) */}
             <TextInput
-              label={isRTL ? 'שייך ל' : 'Related To'}
+              label={isRTL ? 'שייך ל (טקסט חופשי)' : 'Related To (free text)'}
               value={formLinkedEntityName}
               onChangeText={setFormLinkedEntityName}
               mode="outlined"
@@ -941,6 +1233,16 @@ export default function CalendarScreen() {
             }}
             onDismiss={() => setShowEndTimePicker(false)}
           />
+          <GambotDateTimePicker
+            visible={showRecurrenceUntilPicker}
+            mode="date"
+            value={formRecurrenceUntil || formEndDate}
+            minimumDate={formStartDate}
+            allowClear
+            onConfirm={(date) => setFormRecurrenceUntil(date)}
+            onClear={() => setFormRecurrenceUntil(null)}
+            onDismiss={() => setShowRecurrenceUntilPicker(false)}
+          />
         </Modal>
       </Portal>
     </View>
@@ -1020,6 +1322,9 @@ const styles = StyleSheet.create({
   formInput: { marginBottom: 12 },
   allDayRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, paddingHorizontal: 4 },
   allDayText: { fontSize: 14 },
+  colorSwatch: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
+  colorSwatchSelected: { borderColor: '#1a1a2e' },
+  colorSwatchAuto: { color: '#fff', fontWeight: '800', fontSize: 13 },
   reminderSection: { marginBottom: 12 },
   reminderChip: { alignSelf: 'flex-start', marginLeft: 32, backgroundColor: '#0f766e20' },
   modalActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 16, flexWrap: 'wrap' },

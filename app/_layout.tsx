@@ -13,7 +13,7 @@ import { useAppTheme } from '../hooks/useAppTheme';
 import { secureStorage } from '../services/storage';
 import axiosInstance from '../services/api/axiosInstance';
 import { ENDPOINTS } from '../constants/api';
-import { getLandingRoute } from '../constants/permissions';
+import { getEffectiveLandingRoute, hasPermission } from '../constants/permissions';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import * as Notifications from 'expo-notifications';
 import { notificationService } from '../services/notifications';
@@ -98,7 +98,8 @@ export default function RootLayout() {
     if (!user && !inAuthGroup) {
       router.replace('/(auth)/login');
     } else if (user && inAuthGroup) {
-      router.replace(getLandingRoute(user.Permissions, user.SecurityRole) as any);
+      const preferred = useSettingsStore.getState().defaultScreen;
+      router.replace(getEffectiveLandingRoute(user.Permissions, user.SecurityRole, preferred) as any);
     }
   }, [user, isInitialized, segments, navigationState?.key]);
 
@@ -131,9 +132,12 @@ export default function RootLayout() {
   // moment they're read. Updates whenever the store's unreadCount changes (chat load, WS
   // message, mark as read/unread).
   const unreadCount = useChatStore((s) => s.unreadCount);
+  // Users without chat access don't see the Chats tab, so the OS app-icon badge (unread messages)
+  // must not appear for them either — otherwise they get an unread count they can't act on.
+  const canSeeChats = hasPermission(user?.Permissions, user?.SecurityRole, 'chats');
   useEffect(() => {
-    notificationService.setBadgeCount(unreadCount ?? 0).catch(() => {});
-  }, [unreadCount]);
+    notificationService.setBadgeCount(canSeeChats ? (unreadCount ?? 0) : 0).catch(() => {});
+  }, [unreadCount, canSeeChats]);
 
   // Notification taps that launch the app from a KILLED/background state are delivered via
   // getLastNotificationResponseAsync() — NOT through the runtime listener below (which only
@@ -183,7 +187,7 @@ export default function RootLayout() {
           break;
         case 'incomingMessage':
           if (data.contactPhone) {
-            router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone } });
+            router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone as string } });
           } else {
             router.push('/(tabs)/chats');
           }
@@ -191,7 +195,7 @@ export default function RootLayout() {
         case 'newLead':
         case 'leadAssigned':
           if (data.leadId) {
-            router.push({ pathname: '/(tabs)/leads/[id]', params: { id: data.leadId } });
+            router.push({ pathname: '/(tabs)/leads/[id]', params: { id: data.leadId as string } });
           } else {
             router.push('/(tabs)/leads');
           }
@@ -214,14 +218,20 @@ export default function RootLayout() {
           break;
         case 'taskAssigned':
         case 'taskReminder':
-          router.push('/(tabs)/tasks');
+          // Open the specific task straight from the tap instead of dumping the user on the
+          // list. taskId is always present on these payloads (the MARK_COMPLETE action uses it).
+          if (data.taskId) {
+            router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: data.taskId as string } });
+          } else {
+            router.push('/(tabs)/tasks');
+          }
           break;
         case 'calendarEventReminder':
           router.push('/(tabs)/more/calendar');
           break;
         case 'gambotAiTransfer':
           if (data.contactPhone) {
-            router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone } });
+            router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone as string } });
           } else {
             router.push('/(tabs)/chats');
           }
@@ -231,6 +241,13 @@ export default function RootLayout() {
             router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: (data.contactPhone || data.phoneNumber) as string } });
           } else {
             router.push('/(tabs)/chats');
+          }
+          break;
+        case 'scheduledReport':
+          if (data.reportId) {
+            router.push({ pathname: '/(tabs)/more/reports/view', params: { reportId: data.reportId as string } });
+          } else {
+            router.push('/(tabs)/more/reports/scheduled');
           }
           break;
       }

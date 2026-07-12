@@ -67,18 +67,42 @@ interface ClockStatus {
 }
 
 function parseTimestamp(dt: any): Date | null {
-  if (!dt) return null;
-  if (typeof dt === 'string') {
-    const d = new Date(dt);
-    return isNaN(d.getTime()) ? null : d;
-  }
+  if (dt === null || dt === undefined || dt === '') return null;
+  if (typeof dt === 'number') return new Date(dt);
   if (typeof dt === 'object') {
     const seconds = dt._seconds ?? dt.seconds ?? dt.Seconds;
     if (typeof seconds === 'number') return new Date(seconds * 1000);
-    const nanos = dt._nanoseconds ?? dt.nanoseconds;
-    if (typeof nanos === 'number' && typeof seconds === 'number') return new Date(seconds * 1000);
+    return null;
   }
-  if (typeof dt === 'number') return new Date(dt);
+  if (typeof dt !== 'string') return null;
+
+  const raw = dt.trim();
+  if (!raw) return null;
+
+  // 1) Fast path — engine-native parse (works for full ISO with an offset or trailing Z).
+  const direct = new Date(raw);
+  if (!isNaN(direct.getTime())) return direct;
+
+  // 2) Hermes (React Native's JS engine) is stricter than the browser's V8: it rejects
+  //    values the web parses fine, e.g. "2026-07-09 10:00:00" (space instead of T) or
+  //    "2026-07-09T10:00" (no seconds, no timezone). MANAGER-entered attendance records can
+  //    be saved in exactly these shapes, which is why they rendered as "—" / 0:00 in the app
+  //    while showing correctly on the web. Normalize the string and retry.
+  let s = raw.replace(' ', 'T');
+  s = s.replace(/(\.\d{3})\d+/, '$1'); // trim over-long fractional seconds (".1234567" → ".123")
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) s += ':00'; // add seconds strict parsers require
+  const retry = new Date(s);
+  if (!isNaN(retry.getTime())) return retry;
+
+  // 3) Last resort — extract the components and build a local Date by hand.
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) {
+    const [, y, mo, d, hh, mi, ss] = m;
+    return new Date(
+      parseInt(y, 10), parseInt(mo, 10) - 1, parseInt(d, 10),
+      hh ? parseInt(hh, 10) : 0, mi ? parseInt(mi, 10) : 0, ss ? parseInt(ss, 10) : 0
+    );
+  }
   return null;
 }
 
@@ -262,7 +286,23 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
   const [errorDialog, setErrorDialog] = useState<{
     visible: boolean; icon: string; iconColor: string; title: string; message: string;
   }>({ visible: false, icon: 'alert-circle-outline', iconColor: WARN_COLOR, title: '', message: '' });
-  const liveElapsed = useLiveTimer(status?.isClockedIn ? status.clockInTime : undefined);
+
+  // An OPEN shift is any record with a clock-in but no clock-out. We look across the whole
+  // month (not just today) so a shift a MANAGER opened for the employee shows up as an active
+  // shift the employee can finish — even if it was entered for an earlier day.
+  const openRecord = useMemo(
+    () => records.find((r) => parseTimestamp(r.clockIn) && (!r.clockOut || r.clockOut === '')) || null,
+    [records]
+  );
+  const openClockInIso = useMemo(
+    () => (openRecord ? parseTimestamp(openRecord.clockIn)?.toISOString() : undefined),
+    [openRecord]
+  );
+  // Clocked-in state is driven by an open record if we found one; otherwise fall back to the
+  // today-only status probe (covers the brief window before the month list finishes loading).
+  const isClockedIn = openRecord ? true : !!status?.isClockedIn;
+  const activeClockInIso = openClockInIso || status?.clockInTime;
+  const liveElapsed = useLiveTimer(isClockedIn ? activeClockInIso : undefined);
 
   // Whether the org actually requires location for time reporting (geofence enabled + at least
   // one configured location). When it doesn't, we must NOT ask for location permission at all —
@@ -375,8 +415,15 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
     setClocking(true);
     try {
       const coords = await getCoords();
-      if (status?.isClockedIn) {
-        await axiosInstance.post(ENDPOINTS.CLOCK_OUT, { organizationName: org, ...coords });
+      if (isClockedIn) {
+        // Pass the exact open record id so the employee can finish a shift a MANAGER opened for
+        // them — even if it was entered for an earlier day (the backend's no-recordId path only
+        // looks at today's records and would otherwise fail with "No active clock-in found").
+        await axiosInstance.post(ENDPOINTS.CLOCK_OUT, {
+          organizationName: org,
+          ...(openRecord?.id ? { recordId: openRecord.id } : {}),
+          ...coords,
+        });
       } else {
         await axiosInstance.post(ENDPOINTS.CLOCK_IN, { organizationName: org, ...coords });
       }
@@ -416,7 +463,7 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
     }
   };
 
-  const currentHours = status?.isClockedIn ? liveElapsed : (status?.todayHours || 0);
+  const currentHours = isClockedIn ? liveElapsed : (status?.todayHours || 0);
 
   if (loading) return (
     <View style={[s.center, { flex: 1 }]}>
@@ -431,9 +478,9 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
       <Surface style={[s.clockCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
         <View style={s.clockCardInner}>
           <MaterialCommunityIcons
-            name={status?.isClockedIn ? 'clock-time-four' : 'clock-outline'}
+            name={isClockedIn ? 'clock-time-four' : 'clock-outline'}
             size={48}
-            color={status?.isClockedIn ? CLOCK_COLOR : theme.colors.onSurfaceVariant}
+            color={isClockedIn ? CLOCK_COLOR : theme.colors.onSurfaceVariant}
           />
           <Text variant="headlineMedium" style={{ color: theme.colors.onSurface, fontWeight: '800', marginTop: 8 }}>
             {formatHours(currentHours)}
@@ -441,10 +488,10 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 4 }}>
             {t('employees.todayHours')}
           </Text>
-          {status?.isClockedIn && status.clockInTime && (
+          {isClockedIn && activeClockInIso && (
             <Chip compact icon="login" style={{ backgroundColor: CLOCK_COLOR + '15', marginBottom: 12 }}>
               <Text style={{ color: CLOCK_COLOR, fontSize: 12, fontWeight: '600' }}>
-                {t('employees.clockedInSince')} {formatTime(status.clockInTime)}
+                {t('employees.clockedInSince')} {formatTime(activeClockInIso)}
               </Text>
             </Chip>
           )}
@@ -453,12 +500,12 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
             onPress={handleClockInOut}
             loading={clocking}
             disabled={clocking}
-            buttonColor={status?.isClockedIn ? WARN_COLOR : CLOCK_COLOR}
+            buttonColor={isClockedIn ? WARN_COLOR : CLOCK_COLOR}
             style={{ borderRadius: 28, minWidth: 200, marginTop: 8 }}
             contentStyle={{ paddingVertical: 6 }}
-            icon={status?.isClockedIn ? 'logout' : 'login'}
+            icon={isClockedIn ? 'logout' : 'login'}
           >
-            {status?.isClockedIn ? t('employees.clockOut') : t('employees.clockIn')}
+            {isClockedIn ? t('employees.clockOut') : t('employees.clockIn')}
           </Button>
         </View>
       </Surface>
@@ -475,25 +522,31 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
           {t('common.noResults')}
         </Text>
       ) : (
-        records.map((rec, i) => (
+        records.map((rec, i) => {
+          const recIsOpen = !!parseTimestamp(rec.clockIn) && (!rec.clockOut || rec.clockOut === '');
+          const recDate = parseTimestamp(rec.date) || parseTimestamp(rec.clockIn);
+          return (
           <Surface key={rec.id || i} style={[s.recordCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
             <View style={[s.recordRow, { flexDirection: 'row' }]}>
               <View style={{ flex: 1 }}>
                 <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign: isRTL ? 'right' : 'left' }}>
-                  {new Date(rec.date).toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short' })}
+                  {recDate ? recDate.toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short' }) : '—'}
                 </Text>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left' }}>
-                  {formatTime(rec.clockIn)} — {formatTime(rec.clockOut)}
+                  {recIsOpen
+                    ? `${formatTime(rec.clockIn)} — ${t('employees.ongoing', 'עכשיו')}`
+                    : `${formatTime(rec.clockIn)} — ${formatTime(rec.clockOut)}`}
                 </Text>
               </View>
-              <Chip compact style={{ backgroundColor: BRAND_COLOR + '15' }}>
-                <Text style={{ color: BRAND_COLOR, fontWeight: '700', fontSize: 13 }}>
-                  {formatHours(computeHours(rec))}
+              <Chip compact style={{ backgroundColor: (recIsOpen ? CLOCK_COLOR : BRAND_COLOR) + '15' }}>
+                <Text style={{ color: recIsOpen ? CLOCK_COLOR : BRAND_COLOR, fontWeight: '700', fontSize: 13 }}>
+                  {recIsOpen ? t('employees.activeShift', 'משמרת פעילה') : formatHours(computeHours(rec))}
                 </Text>
               </Chip>
             </View>
           </Surface>
-        ))
+          );
+        })
       )}
     </ScrollView>
 
@@ -696,7 +749,7 @@ function ManageTab({ org }: { org: string }) {
                 </View>
                 <View style={s.empModalStat}>
                   <Text variant="titleMedium" style={{ color: BRAND_COLOR, fontWeight: '800' }}>
-                    {formatHours(records.reduce((s, r) => s + (r.totalHours || 0), 0))}
+                    {formatHours(records.reduce((s, r) => s + computeHours(r), 0))}
                   </Text>
                   <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('employees.thisMonth')}</Text>
                 </View>
@@ -713,19 +766,25 @@ function ManageTab({ org }: { org: string }) {
               ) : records.length === 0 ? (
                 <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 16 }}>{t('common.noResults')}</Text>
               ) : (
-                records.map((rec, i) => (
+                records.map((rec, i) => {
+                  const recIsOpen = !!parseTimestamp(rec.clockIn) && (!rec.clockOut || rec.clockOut === '');
+                  const recDate = parseTimestamp(rec.date) || parseTimestamp(rec.clockIn);
+                  return (
                   <View key={rec.id || i} style={[s.recRow, { flexDirection: 'row', borderColor: theme.colors.outlineVariant }]}>
                     <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
-                      {new Date(rec.date).toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short' })}
+                      {recDate ? recDate.toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short' }) : '—'}
                     </Text>
                     <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                      {formatTime(rec.clockIn)} — {formatTime(rec.clockOut)}
+                      {recIsOpen
+                        ? `${formatTime(rec.clockIn)} — ${t('employees.ongoing', 'עכשיו')}`
+                        : `${formatTime(rec.clockIn)} — ${formatTime(rec.clockOut)}`}
                     </Text>
-                    <Text variant="labelMedium" style={{ color: BRAND_COLOR, fontWeight: '700', minWidth: 40, textAlign: 'center' }}>
-                      {formatHours(computeHours(rec))}
+                    <Text variant="labelMedium" style={{ color: recIsOpen ? CLOCK_COLOR : BRAND_COLOR, fontWeight: '700', minWidth: 40, textAlign: 'center' }}>
+                      {recIsOpen ? t('employees.activeShift', 'פעילה') : formatHours(computeHours(rec))}
                     </Text>
                   </View>
-                ))
+                  );
+                })
               )}
             </ScrollView>
           )}
