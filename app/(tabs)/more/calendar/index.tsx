@@ -301,8 +301,9 @@ export default function CalendarScreen() {
 
   const todayStr = toLocalDateStr(new Date());
 
-  // Resolve the display color for an event: an explicit per-event color wins; 'auto'/empty inherits
-  // the calendar's color; falls back to the brand color.
+  // Resolve the display color for an event (mirrors the web priority):
+  //   1) explicit per-event color, 2) the calendar's per-user color for a linked team member / owner
+  //      (userColors map), 3) the calendar's base color, 4) the brand color.
   const getEventColor = useCallback((event: CalendarEvent): string => {
     const c = event.color || '';
     if (c && c !== 'auto') {
@@ -311,6 +312,18 @@ export default function CalendarScreen() {
       if (c.startsWith('#')) return c;
     }
     const cal = calendars.find(cl => cl.id === (event.calendarId || ''));
+    const userColors = (cal as any)?.userColors as Record<string, string> | undefined;
+    if (userColors && Object.keys(userColors).length > 0) {
+      const candidates: string[] = [];
+      const links = event.linkedEntities || [];
+      links.forEach((l: any) => {
+        if ((l?.type || l?.Type) === 'user' && (l?.id || l?.Id)) candidates.push(l.id || l.Id);
+      });
+      if (event.userId) candidates.push(event.userId);
+      for (const cid of candidates) {
+        if (cid && userColors[cid]) return userColors[cid];
+      }
+    }
     return cal?.color || BRAND_COLOR;
   }, [calendars]);
 

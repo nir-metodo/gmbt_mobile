@@ -41,6 +41,9 @@ export interface CalendarInfo {
   connectionId: string;
   isShared: boolean;
   sharedWithUserIds?: string[];
+  // Per-user color overrides (userId → hex), mirrors the web calendar so a shared event shows in the
+  // assigned team member's color.
+  userColors?: Record<string, string>;
   isDefault?: boolean;
 }
 
@@ -145,6 +148,7 @@ export const calendarApi = {
       connectionId: c.connectionId || c.ConnectionId || '',
       isShared: c.isShared || c.IsShared || false,
       sharedWithUserIds: c.sharedWithUserIds || c.SharedWithUserIds || [],
+      userColors: c.userColors || c.UserColors || {},
       isDefault: c.isDefault || c.IsDefault || false,
     }));
   },
