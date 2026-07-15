@@ -79,6 +79,13 @@ function isValidNormalizedPhone(digits: string): boolean {
   return /^\d{10,15}$/.test(digits);
 }
 
+// Milliseconds of a chat's last activity. NaN-safe (an empty/invalid timestamp becomes 0 rather
+// than NaN, which would make every comparison false and scramble the order).
+function chatActivityMs(c: Chat): number {
+  const t = new Date((c && c.lastMessageTime) || 0).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 const BULK_STATUS_OPTIONS = ['Open', 'In Process', 'Closed'] as const;
 
 // Order matters — chips render left-to-right (RTL-aware) in this order, and the Category dropdown
@@ -656,7 +663,13 @@ export default function ChatsListScreen() {
       );
     }
 
-    return result;
+    // Always present newest-first, regardless of the store's internal ordering. The store keeps
+    // its array sorted via a binary-search insert, but a single out-of-order update (e.g. a live
+    // message using a "now" fallback timestamp, or an entry loaded with a differently-formatted
+    // time) would otherwise linger visibly out of place until a full reload — this was the
+    // "list re-sorts wrong after entering a chat and coming back" report. Sorting the (already
+    // filtered) copy here makes the displayed order correct no matter what.
+    return [...result].sort((a, b) => chatActivityMs(b) - chatActivityMs(a));
   }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, user, contactLeadMap, contactCaseMap, leadStages]);
 
   // When searching, show all results; otherwise paginate for smooth scrolling

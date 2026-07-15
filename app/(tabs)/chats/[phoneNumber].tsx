@@ -400,6 +400,11 @@ export default function ChatConversationScreen() {
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionedUsers, setMentionedUsers] = useState<{ userId: string; userName: string }[]>([]);
+  // @mentions for the timeline note composer (Add-Note modal + timeline sheet). When a note has
+  // mentions we send it as an internal message (mirrors web) so the tagged users get notified.
+  const [showNoteMentionPicker, setShowNoteMentionPicker] = useState(false);
+  const [noteMentionQuery, setNoteMentionQuery] = useState('');
+  const [noteMentions, setNoteMentions] = useState<{ userId: string; userName: string }[]>([]);
 
   // Prefetch org users so the @-mention list appears instantly the moment "@" is typed.
   const loadOrgUsers = useCallback(() => {
@@ -973,19 +978,37 @@ export default function ChatConversationScreen() {
     if (!noteText.trim() || !user?.organization || !phoneNumber) return;
     setSavingNote(true);
     try {
-      const { contactsApi } = await import('../../../services/api/contacts');
-      const saveRes = await contactsApi.addTimelineEntry(
-        user.organization,
-        phoneNumber as string,
-        noteText.trim(),
-        (user as any).userId || (user as any).uID || (user as any).uid || '',
-        user.fullname || (user as any).displayName || ''
-      );
-      if (saveRes && (saveRes.Success === false || saveRes.success === false)) {
-        throw new Error(saveRes.Message || saveRes.message || 'save failed');
+      const senderName = user.fullname || (user as any).displayName || '';
+      const senderId = (user as any).userId || (user as any).uID || (user as any).uid || '';
+      // A note that tags users becomes an internal message (mirrors web) so the mentioned
+      // users get notified; otherwise it's a plain timeline note.
+      if (noteMentions.length > 0) {
+        await sendInternalMessage(
+          user.organization,
+          phoneNumber as string,
+          noteText.trim(),
+          senderName,
+          senderId,
+          noteMentions,
+        );
+      } else {
+        const { contactsApi } = await import('../../../services/api/contacts');
+        const saveRes = await contactsApi.addTimelineEntry(
+          user.organization,
+          phoneNumber as string,
+          noteText.trim(),
+          senderId,
+          senderName
+        );
+        if (saveRes && (saveRes.Success === false || saveRes.success === false)) {
+          throw new Error(saveRes.Message || saveRes.message || 'save failed');
+        }
       }
       pushLocalTimeline('note', noteText.trim());
       setNoteText('');
+      setNoteMentions([]);
+      setShowNoteMentionPicker(false);
+      setNoteMentionQuery('');
       setShowAddNoteModal(false);
       setTimeout(refreshTimeline, 1200);
     } catch (e) {
@@ -993,7 +1016,7 @@ export default function ChatConversationScreen() {
     } finally {
       setSavingNote(false);
     }
-  }, [noteText, user, phoneNumber, isRTL, pushLocalTimeline, refreshTimeline]);
+  }, [noteText, noteMentions, user, phoneNumber, isRTL, pushLocalTimeline, refreshTimeline, sendInternalMessage]);
 
   // Load available owners for assign
   const handleOpenAssignOwner = useCallback(async () => {
@@ -2290,7 +2313,8 @@ export default function ChatConversationScreen() {
     const atIdx = text.lastIndexOf('@');
     if (atIdx >= 0 && (atIdx === 0 || /\s/.test(text[atIdx - 1]))) {
       const afterAt = text.slice(atIdx + 1);
-      if (!afterAt.includes(' ') && !afterAt.includes('\n')) {
+      // A '.' means the token is an email/domain ("gmail.com"), never a mention.
+      if (!afterAt.includes(' ') && !afterAt.includes('\n') && !afterAt.includes('.')) {
         if (!isInternalNote) setIsInternalNote(true);
         const query = afterAt.toLowerCase();
         setMentionQuery(query);
@@ -2333,6 +2357,48 @@ export default function ChatConversationScreen() {
     chatInputRef.current?.insertText(`@${name} `);
     setShowMentionPicker(false);
     setMentionQuery('');
+  }, []);
+
+  // --- Timeline note @-mention (Add-Note modal + timeline sheet) ---
+  const handleNoteTextChange = useCallback((text: string) => {
+    setNoteText(text);
+    const atIdx = text.lastIndexOf('@');
+    if (atIdx >= 0 && (atIdx === 0 || /\s/.test(text[atIdx - 1]))) {
+      const afterAt = text.slice(atIdx + 1);
+      // A '.' means the token is an email/domain ("gmail.com"), never a mention.
+      if (!afterAt.includes(' ') && !afterAt.includes('\n') && !afterAt.includes('.')) {
+        setNoteMentionQuery(afterAt.toLowerCase());
+        setShowNoteMentionPicker(true);
+        if (orgUsers.length === 0 && !orgUsersLoading && user?.organization) loadOrgUsers();
+        return;
+      }
+    }
+    setShowNoteMentionPicker(false);
+  }, [orgUsers.length, orgUsersLoading, loadOrgUsers, user?.organization]);
+
+  const filteredNoteMentionUsers = useMemo(() => {
+    if (!noteMentionQuery) return orgUsers.slice(0, 8);
+    return orgUsers
+      .filter((u: any) =>
+        getMentionUserName(u).toLowerCase().includes(noteMentionQuery) ||
+        (u.Email || u.email || '').toLowerCase().includes(noteMentionQuery),
+      )
+      .slice(0, 8);
+  }, [orgUsers, noteMentionQuery]);
+
+  const handleSelectNoteMention = useCallback((mentionUser: any) => {
+    const name = getMentionUserName(mentionUser);
+    const uid = mentionUser.userId || mentionUser.uID || mentionUser.uid || mentionUser.id || '';
+    setNoteMentions((prev) =>
+      prev.some((u) => u.userId === uid) ? prev : [...prev, { userId: uid, userName: name }],
+    );
+    // Replace the trailing "@query" with "@name ".
+    setNoteText((prev) => {
+      const atIdx = prev.lastIndexOf('@');
+      return (atIdx >= 0 ? prev.slice(0, atIdx) : prev) + `@${name} `;
+    });
+    setShowNoteMentionPicker(false);
+    setNoteMentionQuery('');
   }, []);
 
   const loadingOlderRef = useRef(false);
@@ -4094,21 +4160,24 @@ export default function ChatConversationScreen() {
                   >
                     <Text style={{ color: selectedDate ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 14 }}>
                       {selectedDate
-                        ? selectedDate.toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: 'numeric' })
-                        : t('tasks.selectDate', 'בחר תאריך')}
+                        ? selectedDate.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' })
+                        : t('tasks.selectDueDate', 'בחר תאריך ושעה')}
                     </Text>
-                    <MaterialCommunityIcons name="calendar" size={18} color={theme.colors.onSurfaceVariant} />
+                    <MaterialCommunityIcons name="calendar-clock" size={18} color={theme.colors.onSurfaceVariant} />
                   </Pressable>
+                  {/* Same combined date+time picker the Tasks screen uses, and we store the full ISO
+                      (date AND time) so a task created here carries an identical dueDate to one created
+                      in the Tasks module — the two were out of sync (this modal was date-only). */}
                   <GambotDateTimePicker
                     visible={showDatePicker}
-                    mode="date"
                     value={selectedDate || new Date()}
-                    minimumDate={new Date()}
-                    title={t('tasks.selectDate', 'בחר תאריך')}
+                    title={t('tasks.dueDate', 'תאריך יעד')}
+                    allowClear
                     onConfirm={(date) => {
                       setSelectedDate(date);
-                      setCreateTaskDueDate(date.toISOString().split('T')[0]);
+                      setCreateTaskDueDate(date.toISOString());
                     }}
+                    onClear={() => { setSelectedDate(null); setCreateTaskDueDate(''); }}
                     onDismiss={() => setShowDatePicker(false)}
                   />
                   <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
@@ -4191,8 +4260,8 @@ export default function ChatConversationScreen() {
 
                 <TextInput
                   value={noteText}
-                  onChangeText={setNoteText}
-                  placeholder={isRTL ? 'כתוב הערה...' : 'Write a note...'}
+                  onChangeText={handleNoteTextChange}
+                  placeholder={isRTL ? 'כתוב הערה... (@ לאזכור)' : 'Write a note... (@ to mention)'}
                   placeholderTextColor={theme.colors.onSurfaceVariant}
                   multiline
                   autoFocus
@@ -4211,6 +4280,32 @@ export default function ChatConversationScreen() {
                     marginHorizontal: 20,
                   }}
                 />
+
+                {showNoteMentionPicker && (
+                  <View style={{ marginHorizontal: 20, marginTop: 8, borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 10, maxHeight: 180, backgroundColor: theme.colors.surface, overflow: 'hidden' }}>
+                    <ScrollView keyboardShouldPersistTaps="handled">
+                      {filteredNoteMentionUsers.length > 0 ? (
+                        filteredNoteMentionUsers.map((u: any, idx: number) => (
+                          <Pressable
+                            key={u.userId || u.uID || idx}
+                            onPress={() => handleSelectNoteMention(u)}
+                            style={({ pressed }) => [styles.mentionItem, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+                          >
+                            <MaterialCommunityIcons name="account-circle-outline" size={18} color={theme.colors.primary} />
+                            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginStart: 8 }}>{getMentionUserName(u)}</Text>
+                          </Pressable>
+                        ))
+                      ) : orgUsersLoading ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 14, gap: 8 }}>
+                          <ActivityIndicator size="small" color={theme.colors.primary} />
+                          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{isRTL ? 'טוען משתמשים...' : 'Loading users...'}</Text>
+                        </View>
+                      ) : (
+                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, padding: 14 }}>{isRTL ? 'לא נמצאו משתמשים תואמים' : 'No matching users'}</Text>
+                      )}
+                    </ScrollView>
+                  </View>
+                )}
 
                 <Button
                   mode="contained"
@@ -4356,11 +4451,36 @@ export default function ChatConversationScreen() {
 
                 {/* Add-note composer pinned at the bottom */}
                 <Divider />
+                {showNoteMentionPicker && (
+                  <View style={{ marginHorizontal: 16, marginBottom: 4, borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 10, maxHeight: 160, backgroundColor: theme.colors.surface, overflow: 'hidden' }}>
+                    <ScrollView keyboardShouldPersistTaps="handled">
+                      {filteredNoteMentionUsers.length > 0 ? (
+                        filteredNoteMentionUsers.map((u: any, idx: number) => (
+                          <Pressable
+                            key={u.userId || u.uID || idx}
+                            onPress={() => handleSelectNoteMention(u)}
+                            style={({ pressed }) => [styles.mentionItem, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+                          >
+                            <MaterialCommunityIcons name="account-circle-outline" size={18} color={theme.colors.primary} />
+                            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginStart: 8 }}>{getMentionUserName(u)}</Text>
+                          </Pressable>
+                        ))
+                      ) : orgUsersLoading ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 14, gap: 8 }}>
+                          <ActivityIndicator size="small" color={theme.colors.primary} />
+                          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{isRTL ? 'טוען משתמשים...' : 'Loading users...'}</Text>
+                        </View>
+                      ) : (
+                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, padding: 14 }}>{isRTL ? 'לא נמצאו משתמשים תואמים' : 'No matching users'}</Text>
+                      )}
+                    </ScrollView>
+                  </View>
+                )}
                 <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 8 }}>
                   <TextInput
                     value={noteText}
-                    onChangeText={setNoteText}
-                    placeholder={isRTL ? 'הוסף הערה לציר הזמן...' : 'Add a note to the timeline...'}
+                    onChangeText={handleNoteTextChange}
+                    placeholder={isRTL ? 'הוסף הערה לציר הזמן... (@ לאזכור)' : 'Add a note... (@ to mention)'}
                     placeholderTextColor={theme.colors.onSurfaceVariant}
                     multiline
                     style={{

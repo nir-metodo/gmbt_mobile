@@ -192,6 +192,13 @@ export default function CreateESignatureScreen() {
           userName: user.fullname,
           requiresSequentialSigning: sequentialSigning,
         });
+        // The backend returns HTTP 200 with { success:false, error } for expected failures
+        // (e.g. an empty template that would produce a blank signing document). Surface that
+        // instead of advancing to the success step with an empty document.
+        if (result && result.success === false) {
+          Alert.alert(t('common.error'), result.error || t('errors.generic'));
+          return;
+        }
         setCreatedDocument(result?.data || result);
         setStep(3);
         return;

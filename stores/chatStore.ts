@@ -83,6 +83,20 @@ interface ChatState {
   setActiveWabaNumber: (number: string | null) => void;
 }
 
+// Milliseconds of a chat's last activity, used to keep the list sorted newest-first.
+// Guards against empty/invalid timestamps: `new Date('').getTime()` / `new Date('garbage')`
+// return NaN, and every comparison with NaN is false — which made the binary-search insert
+// below drift rows to the top and progressively scramble the order (the "list re-sorts wrong
+// after entering a chat and coming back" / "opens on a stale top" bugs).
+function chatTimeMs(chat: Chat): number {
+  const t = new Date((chat && chat.lastMessageTime) || 0).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function sortChatsDesc(list: Chat[]): Chat[] {
+  return [...list].sort((a, b) => chatTimeMs(b) - chatTimeMs(a));
+}
+
 const messageIdSet = new Set<string>();
 
 // Guards against the SAME outbound message being POSTed twice (which creates two real rows in
@@ -223,8 +237,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (cached) {
           const parsed = JSON.parse(cached) as Chat[];
           if (parsed.length > 0) {
-            const totalUnread = parsed.filter((c) => c.isRead === false).length;
-            set({ chats: parsed, isLoadingChats: false, unreadCount: totalUnread });
+            // Sort defensively so a cold start always opens on the freshest conversations,
+            // even if an older cache was written before the ordering fix.
+            const sorted = sortChatsDesc(parsed);
+            const totalUnread = sorted.filter((c) => c.isRead === false).length;
+            set({ chats: sorted, isLoadingChats: false, unreadCount: totalUnread });
           }
         }
       } catch {}
@@ -266,9 +283,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           humanReviewed: c.humanReviewed,
           usersWithUnreadInternalMessages: c.usersWithUnreadInternalMessages || [],
         }));
-      chatList.sort((a, b) =>
-        new Date(b.lastMessageTime || 0).getTime() - new Date(a.lastMessageTime || 0).getTime()
-      );
+      chatList.sort((a, b) => chatTimeMs(b) - chatTimeMs(a));
       const totalUnread = chatList.filter((c) => c.isRead === false).length;
       set({ chats: chatList, isLoadingChats: false, unreadCount: totalUnread });
       AsyncStorage.setItem(`${CHATS_CACHE_KEY}_${organization}`, JSON.stringify(chatList.slice(0, 100))).catch(() => {});
@@ -330,8 +345,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setChats: (chats) => {
-    const totalUnread = chats.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
-    set({ chats, unreadCount: totalUnread });
+    // Always keep newest-first. A WebSocket `chat_list`/`chats` payload arrives in server
+    // order, and setting it as-is broke the sorted invariant that addOrUpdateChat's
+    // binary-search insert relies on — which then scrambled the list on the next update.
+    const sorted = sortChatsDesc(chats);
+    const totalUnread = sorted.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
+    set({ chats: sorted, unreadCount: totalUnread });
   },
 
   addOrUpdateChat: (chat) => {
@@ -350,12 +369,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         newChats = [...state.chats];
       }
 
-      // Insert at correct position (sorted by lastMessageTime desc) using binary search
-      const chatTime = new Date(updatedChat.lastMessageTime || 0).getTime();
+      // Insert at correct position (sorted by lastMessageTime desc) using binary search.
+      // Uses NaN-safe timestamps so an empty/invalid lastMessageTime can't drift rows to the top.
+      const chatTime = chatTimeMs(updatedChat);
       let lo = 0, hi = newChats.length;
       while (lo < hi) {
         const mid = (lo + hi) >>> 1;
-        if (new Date(newChats[mid].lastMessageTime || 0).getTime() >= chatTime) lo = mid + 1;
+        if (chatTimeMs(newChats[mid]) >= chatTime) lo = mid + 1;
         else hi = mid;
       }
       newChats.splice(lo, 0, updatedChat);

@@ -164,9 +164,19 @@ export default function TabsLayout() {
             tabPress: (e) => {
               const state = navigation.getState();
               const tabRoute = state.routes.find((r: any) => r.name === tab.name);
-              const nestedState = tabRoute?.state;
-              // If the tab has a nested stack with more than 1 screen, reset to root
-              if (nestedState && nestedState.routes && nestedState.routes.length > 1) {
+              const nestedState: any = tabRoute?.state;
+              if (!nestedState || !nestedState.routes || nestedState.routes.length === 0) return;
+              // Tapping a tab should ALWAYS land on that tab's root ("index"), like every
+              // world-class app. Reset when the tab isn't already at its root — this covers both
+              // a deep stack (length > 1) AND the subtle case where a detail screen (e.g. a task
+              // opened via "View task" from a chat) was pushed cross-tab so the tab's stack holds
+              // ONLY "[id]" (length 1, but its top route is not "index"). Without this, tapping
+              // the tab stayed stuck on that detail screen and Back jumped to the chat — an
+              // inescapable loop the user had to kill the app to break.
+              const topIndex = typeof nestedState.index === 'number' ? nestedState.index : nestedState.routes.length - 1;
+              const topRoute = nestedState.routes[topIndex];
+              const needsReset = nestedState.routes.length > 1 || (topRoute && topRoute.name !== 'index');
+              if (needsReset) {
                 e.preventDefault();
                 navigation.dispatch({
                   ...CommonActions.reset({
