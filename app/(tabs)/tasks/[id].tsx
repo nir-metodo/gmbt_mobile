@@ -1267,7 +1267,7 @@ export default function TaskDetailScreen() {
                 ]}
               >
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 2 }}>
-                  {t('tasks.assignedTo')}
+                  {t('tasks.assignedTo', 'אחראי')}
                 </Text>
                 <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
                   <MaterialCommunityIcons name="account" size={16} color={theme.colors.onSurfaceVariant} />
@@ -1277,6 +1277,9 @@ export default function TaskDetailScreen() {
                   <MaterialCommunityIcons name={userPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
                 </View>
               </Pressable>
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, marginBottom: 4, textAlign }}>
+                {t('tasks.assignedToHint', 'המשתמש בצוות שאחראי לבצע את המשימה')}
+              </Text>
               {userPickerExpanded && (
                 <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 4, marginTop: -14, marginBottom: 14, overflow: 'hidden' }}>
                   <Pressable
@@ -1305,7 +1308,10 @@ export default function TaskDetailScreen() {
               )}
 
               <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('tasks.relatedTo', 'משויך ל')}
+                {t('tasks.relatedTo', 'רשומה מקושרת')}
+              </Text>
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8, textAlign }}>
+                {t('tasks.relatedToHint', 'הרשומה שאליה המשימה מקושרת (איש קשר / ליד)')}
               </Text>
 
               {/* Entity type chips */}

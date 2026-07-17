@@ -61,6 +61,7 @@ import { MessageBubble } from '../../../components/chat/MessageBubble';
 import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/ChatInput';
 import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
+import AddTaskSheet from '../../../components/AddTaskSheet';
 import { chatsApi } from '../../../services/api/chats';
 import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
@@ -473,13 +474,9 @@ export default function ChatConversationScreen() {
   const [assigningOwner, setAssigningOwner] = useState(false);
 
   // Create Task from chat
+  // Create-task from chat now reuses the shared AddTaskSheet (same bottom sheet as the Lead flow),
+  // so we only need a visibility flag here — title/time/reminder/assignee are handled inside the sheet.
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false);
-  const [createTaskTitle, setCreateTaskTitle] = useState('');
-  const [createTaskDueDate, setCreateTaskDueDate] = useState('');
-  const [createTaskPriority, setCreateTaskPriority] = useState<'low' | 'medium' | 'high'>('medium');
-  const [isCreatingTask, setIsCreatingTask] = useState(false);
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
 
   const contactName = chat?.contactName || phoneNumber || '';
 
@@ -1992,44 +1989,6 @@ export default function ChatConversationScreen() {
       setIsLoadingQuickMessages(false);
     }
   }, [user?.organization]);
-
-  // Create task from chat
-  const handleCreateTaskInChat = useCallback(async () => {
-    if (!user?.organization || !createTaskTitle.trim()) return;
-    setIsCreatingTask(true);
-    try {
-      await tasksApi.create(
-        user.organization,
-        {
-          title: createTaskTitle.trim(),
-          dueDate: createTaskDueDate || undefined,
-          priority: createTaskPriority,
-          relatedTo: {
-            type: 'contact',
-            entityId: phoneNumber as string,
-            entityName: contactName,
-          },
-          assignedToId: user.uID || user.userId || '',
-          assignedTo: user.uID || user.userId || '',
-          assignedToName: user.fullname || '',
-          status: 'open',
-          source: 'chat',
-        } as any,
-        user.uID || user.userId || '',
-        user.fullname || '',
-      );
-      setShowCreateTaskModal(false);
-      setCreateTaskTitle('');
-      setCreateTaskDueDate('');
-      setCreateTaskPriority('medium');
-      setSelectedDate(null);
-      Alert.alert(t('common.success'), t('tasks.taskCreated', 'המשימה נוצרה'));
-    } catch (err: any) {
-      Alert.alert(t('common.error'), err.message || t('errors.generic'));
-    } finally {
-      setIsCreatingTask(false);
-    }
-  }, [user, phoneNumber, contactName, createTaskTitle, createTaskDueDate, createTaskPriority, t]);
 
   const handleSelectQuickMessage = useCallback((msg: QuickMessage) => {
     setShowQuickMessages(false);
@@ -4034,7 +3993,7 @@ export default function ChatConversationScreen() {
                 { icon: 'note-edit-outline', label: isRTL ? 'הוסף הערה לציר זמן' : 'Add Timeline Note', color: '#795548', action: () => { setShowQuickActionsSheet(false); setShowAddNoteModal(true); } },
                 { icon: 'account-switch-outline', label: isRTL ? 'שייך בעלים' : 'Assign Owner', color: '#3F51B5', action: () => { setShowQuickActionsSheet(false); setShowAssignOwnerModal(true); } },
                 { icon: 'clock-outline', label: t('chats.scheduleMessage', 'תזמן הודעה'), color: '#607D8B', action: () => { setShowQuickActionsSheet(false); setShowScheduleModal(true); } },
-                { icon: 'clipboard-check-outline', label: t('tasks.addTask'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setCreateTaskTitle(''); setCreateTaskDueDate(''); setCreateTaskPriority('medium'); setSelectedDate(null); setShowCreateTaskModal(true); } },
+                { icon: 'clipboard-check-outline', label: t('tasks.addTask'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setShowCreateTaskModal(true); } },
                 { icon: 'image-multiple', label: isRTL ? 'מדיה' : 'Media', color: '#7C4DFF', action: () => { setShowQuickActionsSheet(false); setMediaPanelVisible(true); } },
                 { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
                 { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
@@ -4112,119 +4071,22 @@ export default function ChatConversationScreen() {
           </Pressable>
         </Modal>
 
-        {/* Create Task Modal */}
-        <Modal
+        {/* Create Task — shared lightweight sheet (same UX as the Lead flow): title auto-fills to
+            "שיחת טלפון - {contact}", due date + reminder default to now, assignee = current user,
+            and the task auto-links to this contact. Bottom sheet, not a centered modal. */}
+        <AddTaskSheet
           visible={showCreateTaskModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowCreateTaskModal(false)}
-        >
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-            <Pressable style={styles.modalOverlay} onPress={() => setShowCreateTaskModal(false)}>
-              <Pressable style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]} onPress={(e) => e.stopPropagation()}>
-                <View style={styles.actionSheetHandle} />
-                <View style={styles.templateSheetHeader}>
-                  <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
-                    {t('tasks.addTask', 'הוסף משימה')}
-                  </Text>
-                  <IconButton icon="close" size={20} onPress={() => setShowCreateTaskModal(false)} />
-                </View>
-                <ScrollView style={{ paddingHorizontal: 16 }} contentContainerStyle={{ gap: 12, paddingBottom: 8 }} keyboardShouldPersistTaps="handled">
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('tasks.taskTitle', 'כותרת')} *
-                  </Text>
-                  <TextInput
-                    value={createTaskTitle}
-                    onChangeText={setCreateTaskTitle}
-                    placeholder={t('tasks.taskTitle', 'כותרת משימה')}
-                    style={[styles.scheduleInput, { backgroundColor: theme.colors.surfaceVariant, color: theme.colors.onSurface, borderColor: theme.colors.outline }]}
-                    placeholderTextColor={theme.colors.onSurfaceVariant}
-                    autoFocus
-                  />
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('tasks.dueDate', 'תאריך יעד')}
-                  </Text>
-                  <Pressable
-                    onPress={() => setShowDatePicker(true)}
-                    style={[
-                      styles.scheduleInput,
-                      {
-                        backgroundColor: theme.colors.surfaceVariant,
-                        borderColor: theme.colors.outline,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        paddingVertical: 12,
-                      },
-                    ]}
-                  >
-                    <Text style={{ color: selectedDate ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 14 }}>
-                      {selectedDate
-                        ? selectedDate.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' })
-                        : t('tasks.selectDueDate', 'בחר תאריך ושעה')}
-                    </Text>
-                    <MaterialCommunityIcons name="calendar-clock" size={18} color={theme.colors.onSurfaceVariant} />
-                  </Pressable>
-                  {/* Same combined date+time picker the Tasks screen uses, and we store the full ISO
-                      (date AND time) so a task created here carries an identical dueDate to one created
-                      in the Tasks module — the two were out of sync (this modal was date-only). */}
-                  <GambotDateTimePicker
-                    visible={showDatePicker}
-                    value={selectedDate || new Date()}
-                    title={t('tasks.dueDate', 'תאריך יעד')}
-                    allowClear
-                    onConfirm={(date) => {
-                      setSelectedDate(date);
-                      setCreateTaskDueDate(date.toISOString());
-                    }}
-                    onClear={() => { setSelectedDate(null); setCreateTaskDueDate(''); }}
-                    onDismiss={() => setShowDatePicker(false)}
-                  />
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('tasks.priority', 'עדיפות')}
-                  </Text>
-                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
-                    {(['low', 'medium', 'high'] as const).map((p) => (
-                      <Pressable
-                        key={p}
-                        onPress={() => setCreateTaskPriority(p)}
-                        style={[
-                          styles.priorityChip,
-                          createTaskPriority === p && { backgroundColor: '#2e615520', borderColor: '#2e6155', borderWidth: 1.5 },
-                        ]}
-                      >
-                        <Text style={{ fontSize: 12, color: createTaskPriority === p ? '#2e6155' : theme.colors.onSurfaceVariant, fontWeight: createTaskPriority === p ? '700' : '400' }}>
-                          {t(`tasks.${p}`, p)}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                  {contactName ? (
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                      {t('tasks.for', 'עבור')}: {contactName}
-                    </Text>
-                  ) : null}
-                </ScrollView>
-                <View style={[styles.scheduleActions, { paddingHorizontal: 16, marginTop: 12 }]}>
-                  <Button mode="outlined" onPress={() => setShowCreateTaskModal(false)} style={{ flex: 1 }}>
-                    {t('common.cancel', 'ביטול')}
-                  </Button>
-                  <Button
-                    mode="contained"
-                    onPress={handleCreateTaskInChat}
-                    style={{ flex: 1 }}
-                    buttonColor="#2e6155"
-                    textColor="#fff"
-                    loading={isCreatingTask}
-                    disabled={isCreatingTask || !createTaskTitle.trim()}
-                  >
-                    {t('tasks.addTask', 'הוסף')}
-                  </Button>
-                </View>
-              </Pressable>
-            </Pressable>
-          </KeyboardAvoidingView>
-        </Modal>
+          onDismiss={() => setShowCreateTaskModal(false)}
+          organization={user?.organization || ''}
+          user={user}
+          relatedPhone={phoneNumber as string}
+          relatedTo={{
+            type: 'contact',
+            entityId: phoneNumber as string,
+            entityName: contactName,
+          }}
+          defaultTitle={contactName ? `${t('contacts.phoneCall', 'שיחת טלפון')} - ${contactName}` : undefined}
+        />
 
         {/* Add Note Modal — keyboard-safe bottom sheet */}
         <Modal
