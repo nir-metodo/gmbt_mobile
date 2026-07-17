@@ -4383,7 +4383,10 @@ export default function ChatConversationScreen() {
             const content = (qm.messageText || qm.text || qm.message || qm.body || '').toLowerCase();
             return sc.includes(needle) || content.includes(needle);
           });
-          if (filtered.length === 0 && !isLoadingQuickMessages) return null;
+          // Always render the picker (even with zero results) so the user gets visible feedback
+          // instead of a silent nothing — either "no quick messages defined" or "no match".
+          const isEmpty = filtered.length === 0 && !isLoadingQuickMessages;
+          const noneDefined = quickMessages.length === 0;
           return (
             <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220 }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.outline }}>
@@ -4398,6 +4401,20 @@ export default function ChatConversationScreen() {
               <ScrollView keyboardShouldPersistTaps="handled">
                 {isLoadingQuickMessages ? (
                   <ActivityIndicator size="small" style={{ padding: 12 }} />
+                ) : isEmpty ? (
+                  <View style={{ paddingHorizontal: 14, paddingVertical: 16, alignItems: 'center', gap: 4 }}>
+                    <MaterialCommunityIcons name="lightning-bolt-outline" size={22} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+                      {noneDefined
+                        ? t('chats.noQuickMessages', 'אין הודעות מהירות מוגדרות')
+                        : (isRTL ? 'לא נמצאו הודעות מהירות תואמות' : 'No matching quick messages')}
+                    </Text>
+                    {noneDefined && (
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', opacity: 0.8 }}>
+                        {isRTL ? 'ניתן להגדיר הודעות מהירות בהגדרות' : 'You can define quick messages in settings'}
+                      </Text>
+                    )}
+                  </View>
                 ) : filtered.map((qm: any, idx: number) => (
                   <Pressable
                     key={qm.id || idx}

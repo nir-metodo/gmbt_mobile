@@ -103,7 +103,7 @@ export default function ESignatureDetailScreen() {
       return `https://gambot.co.il/${orgName}/esignature/${id}/sign/${signer.signingToken}`;
     }
     if (document?.token) {
-      return `https://app.gambot.io/sign/${document.token}`;
+      return `https://gambot.co.il/sign/${document.token}`;
     }
     return null;
   };
@@ -133,7 +133,7 @@ export default function ESignatureDetailScreen() {
     if (!document) return;
     try {
       const link = document.token
-        ? `https://app.gambot.io/sign/${document.token}`
+        ? `https://gambot.co.il/sign/${document.token}`
         : document.documentName || document.title;
       await Share.share({ message: `${document.documentName || document.title}\n${link}` });
     } catch {

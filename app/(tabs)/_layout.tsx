@@ -178,6 +178,12 @@ export default function TabsLayout() {
               const needsReset = nestedState.routes.length > 1 || (topRoute && topRoute.name !== 'index');
               if (needsReset) {
                 e.preventDefault();
+                // Focus this tab FIRST. Previously we only preventDefault()'d and reset the nested
+                // stack — but preventDefault blocks the default focus, so when the tab wasn't the
+                // active one (the exact case after a cross-tab "View task" push), the reset ran on a
+                // background tab and the user either saw nothing happen or stayed stuck on the task.
+                // navigate() switches to the tab, then we reset its stack to the list root.
+                navigation.navigate(tab.name as never);
                 navigation.dispatch({
                   ...CommonActions.reset({
                     index: 0,
