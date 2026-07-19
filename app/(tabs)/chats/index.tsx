@@ -194,6 +194,26 @@ export default function ChatsListScreen() {
     try { listRef.current?.scrollToOffset({ offset: 0, animated }); } catch { /* list not ready */ }
   }, []);
 
+  // Tracks the last FULL chat-list resync so re-entering the app can refresh without doing a
+  // heavy full read on every quick tab toggle.
+  const lastFullLoadRef = useRef(0);
+
+  // Full resync of the chat list (same fetch as pull-to-refresh). Shows the top refresh spinner
+  // even when a stale list is already on screen, so the user gets a clear indication that the app
+  // is fetching the current chats instead of silently sitting on old data.
+  const refreshChatsFull = useCallback(async (showIndicator = true) => {
+    if (!user?.organization) return;
+    // Stamp immediately so concurrent triggers (mount + focus firing together) don't double-fetch.
+    lastFullLoadRef.current = Date.now();
+    if (showIndicator) setRefreshing(true);
+    try {
+      await loadChats(user.organization, currentUserId, chatsDV || 'all');
+      lastFullLoadRef.current = Date.now();
+    } finally {
+      if (showIndicator) setRefreshing(false);
+    }
+  }, [user?.organization, loadChats, currentUserId, chatsDV]);
+
   // Saved Views
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeViewId, setActiveViewId] = useState<string>('__all__');
@@ -439,11 +459,8 @@ export default function ChatsListScreen() {
 
   useEffect(() => {
     if (user?.organization) {
-      loadChats(
-        user.organization,
-        currentUserId,
-        chatsDV || 'all',
-      );
+      // Full load on mount (cold start shows the full-screen spinner since the list is empty).
+      refreshChatsFull(false);
     }
   }, [user?.organization, chatsDV, currentUserId]);
 
@@ -468,20 +485,34 @@ export default function ChatsListScreen() {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active' && user?.organization) {
         WebSocketService.reconnectAll();
-        refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
+        // The list often looks stale after the app was in the background (WebSocket may have missed
+        // events). If it's been a while, do a FULL resync (with the refresh indicator) so the user
+        // immediately sees the current chats instead of the state from when they left. For quick
+        // in-and-out switches, the cheap incremental refresh is enough and avoids a full read.
+        const stale = Date.now() - lastFullLoadRef.current > 30000;
+        if (stale) {
+          refreshChatsFull(true);
+        } else {
+          refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
+        }
         // Returning to the app should land the user on the newest chats, not the stale offset
         // they left the list at.
         InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
       }
     });
     return () => subscription.remove();
-  }, [user?.organization, refreshRecentChats, chatsDV, currentUserId, scrollChatsToTop]);
+  }, [user?.organization, refreshRecentChats, refreshChatsFull, chatsDV, currentUserId, scrollChatsToTop]);
 
-  // Also snap to the top whenever the chats tab regains focus (e.g. switching back from another tab).
+  // Snap to the top whenever the chats tab regains focus, and resync the list if it's gone stale
+  // (e.g. coming back from a conversation or another tab after a while) so it never keeps showing
+  // an old snapshot from a previous session.
   useFocusEffect(
     useCallback(() => {
+      if (user?.organization && Date.now() - lastFullLoadRef.current > 30000) {
+        refreshChatsFull(true);
+      }
       InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
-    }, [scrollChatsToTop])
+    }, [user?.organization, refreshChatsFull, scrollChatsToTop])
   );
 
   useEffect(() => {
@@ -691,16 +722,8 @@ export default function ChatsListScreen() {
   }, [filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, numberFilter]);
 
   const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    if (user?.organization) {
-      await loadChats(
-        user.organization,
-        currentUserId,
-        chatsDV || 'all',
-      );
-    }
-    setRefreshing(false);
-  }, [user?.organization, loadChats, chatsDV, currentUserId]);
+    await refreshChatsFull(true);
+  }, [refreshChatsFull]);
 
   const openChat = useCallback(
     (chat: Chat) => {

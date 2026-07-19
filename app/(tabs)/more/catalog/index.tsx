@@ -127,7 +127,7 @@ export default function CatalogScreen() {
   const [shareLinkVisible, setShareLinkVisible] = useState(false);
   const [slName, setSlName] = useState('');
   const [slPhone, setSlPhone] = useState('');
-  const [slScope, setSlScope] = useState<'selected' | 'all'>('selected');
+  const [slScope, setSlScope] = useState<'selected' | 'filtered' | 'all'>('selected');
   const [slPurpose, setSlPurpose] = useState<string>('browse');
   const [slCreating, setSlCreating] = useState(false);
   const [slUrl, setSlUrl] = useState('');
@@ -529,40 +529,6 @@ export default function CatalogScreen() {
     }
   }, [user?.organization, shareCfg, items, isRTL, t]);
 
-  // Open the "personal customer link" sheet, seeding defaults from the current share config.
-  const openShareLink = useCallback(() => {
-    setSlName('');
-    setSlPhone('');
-    setSlScope('selected');
-    setSlPurpose(shareCfg.purpose || 'browse');
-    setSlUrl('');
-    setSlCopied(false);
-    setShareLinkVisible(true);
-  }, [shareCfg.purpose]);
-
-  // Create the personalized share link (item allowlist = the selected items, or whole catalog).
-  const createCustomerLink = useCallback(async () => {
-    if (!user?.organization) return;
-    setSlCreating(true);
-    try {
-      const ids = slScope === 'selected' ? Array.from(selectedIds) : [];
-      const { token } = await catalogApi.createShareLink(user.organization, {
-        itemIds: ids,
-        contactName: slName.trim(),
-        contactPhone: slPhone,
-        title: slName.trim() ? (isRTL ? `קטלוג עבור ${slName.trim()}` : `Catalog for ${slName.trim()}`) : '',
-        purpose: slPurpose,
-        createdBy: (user as any)?.fullname || (user as any)?.displayName || '',
-        createdById: (user as any)?.uID || (user as any)?.userId || '',
-      });
-      setSlUrl(`${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?p=${token}`);
-    } catch {
-      Alert.alert(t('common.error'), isRTL ? 'יצירת הקישור נכשלה' : 'Failed to create link');
-    } finally {
-      setSlCreating(false);
-    }
-  }, [user, slScope, selectedIds, slName, slPhone, slPurpose, isRTL, t]);
-
   const copyCustomerLink = useCallback(async () => {
     if (!slUrl) return;
     try { await Clipboard.setStringAsync(slUrl); setSlCopied(true); setTimeout(() => setSlCopied(false), 2000); } catch { /* noop */ }
@@ -731,6 +697,64 @@ export default function CatalogScreen() {
     }
     return result;
   }, [items, categoryFilter, debouncedSearch, fieldsConfig, customColumns, passesAdvancedFilters]);
+
+  // Is any search/filter currently narrowing the list? When true, the filtered results can act as an
+  // implicit selection for sharing (no need to manually check each item).
+  const hasActiveFilter = useMemo(() => (
+    !!debouncedSearch.trim() ||
+    categoryFilter !== 'all' ||
+    !!priceMin || !!priceMax ||
+    imageFilter !== 'all' ||
+    Object.values(colFilters).some((v) => {
+      if (v === undefined || v === null || v === '') return false;
+      if (typeof v === 'object') return Object.values(v).some((x) => x !== undefined && x !== null && x !== '');
+      return true;
+    })
+  ), [debouncedSearch, categoryFilter, priceMin, priceMax, imageFilter, colFilters]);
+
+  // Open the "personal customer link" sheet, seeding defaults from the current share config.
+  // (Defined here — after filteredItems/hasActiveFilter — so it can depend on them.)
+  const openShareLink = useCallback(() => {
+    setSlName('');
+    setSlPhone('');
+    // Pick the most relevant default scope: manually-selected items win, otherwise the active
+    // search/filter results, otherwise the whole catalog.
+    setSlScope(selectedIds.size > 0 ? 'selected' : (hasActiveFilter ? 'filtered' : 'all'));
+    setSlPurpose(shareCfg.purpose || 'browse');
+    setSlUrl('');
+    setSlCopied(false);
+    setShareLinkVisible(true);
+  }, [shareCfg.purpose, selectedIds, hasActiveFilter]);
+
+  // Create the personalized share link (item allowlist = selected items, filtered results, or whole catalog).
+  const createCustomerLink = useCallback(async () => {
+    if (!user?.organization) return;
+    setSlCreating(true);
+    try {
+      // 'all' → empty list (backend shows the whole catalog); 'filtered' → exactly the current
+      // search/filter results (filtering acts as the selection); 'selected' → manually-checked items.
+      const ids =
+        slScope === 'all'
+          ? []
+          : slScope === 'filtered'
+            ? filteredItems.map((i) => i.id)
+            : Array.from(selectedIds);
+      const { token } = await catalogApi.createShareLink(user.organization, {
+        itemIds: ids,
+        contactName: slName.trim(),
+        contactPhone: slPhone,
+        title: slName.trim() ? (isRTL ? `קטלוג עבור ${slName.trim()}` : `Catalog for ${slName.trim()}`) : '',
+        purpose: slPurpose,
+        createdBy: (user as any)?.fullname || (user as any)?.displayName || '',
+        createdById: (user as any)?.uID || (user as any)?.userId || '',
+      });
+      setSlUrl(`${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?p=${token}`);
+    } catch {
+      Alert.alert(t('common.error'), isRTL ? 'יצירת הקישור נכשלה' : 'Failed to create link');
+    } finally {
+      setSlCreating(false);
+    }
+  }, [user, slScope, selectedIds, filteredItems, slName, slPhone, slPurpose, isRTL, t]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visibleItems, hasMore: itemsHasMore, loadMore: itemsLoadMore, loadAll: itemsLoadAll, count: itemsCount } = useWindowedList(filteredItems, {
@@ -1228,10 +1252,16 @@ export default function CatalogScreen() {
       )}
 
       {/* Stats bar */}
-      <View style={[styles.statsBar, { flexDirection }]}>
+      <View style={[styles.statsBar, { flexDirection, alignItems: 'center', justifyContent: 'space-between' }]}>
         <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-          {filteredItems.length} פריטים
+          {filteredItems.length} {isRTL ? 'פריטים' : 'items'}
         </Text>
+        {/* Share exactly the current search/filter results (filter acts as the selection). */}
+        {hasActiveFilter && filteredItems.length > 0 && !selectionMode && (
+          <Button mode="text" icon="share-variant" compact textColor={BRAND_COLOR} onPress={openShareLink}>
+            {isRTL ? 'שתף תוצאות' : 'Share results'}
+          </Button>
+        )}
       </View>
 
       {/* Items list */}
@@ -1726,15 +1756,31 @@ export default function CatalogScreen() {
                   {isRTL ? 'צור קישור שמציג ללקוח הזה בדיוק את המוצרים שבחרת.' : 'Create a link that shows this customer exactly the items you picked.'}
                 </Text>
 
-                <Pressable
-                  style={[styles.shareModeRowCompact, { flexDirection, borderColor: slScope === 'selected' ? BRAND_COLOR : theme.colors.outlineVariant }]}
-                  onPress={() => setSlScope('selected')}
-                >
-                  <MaterialCommunityIcons name={slScope === 'selected' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'selected' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
-                    {isRTL ? `רק המוצרים שנבחרו (${selectedIds.size})` : `Only selected items (${selectedIds.size})`}
-                  </Text>
-                </Pressable>
+                {/* Filter-as-selection: when a search/filter is active, the current results can be shared
+                    directly — no need to manually check each item. */}
+                {hasActiveFilter && (
+                  <Pressable
+                    style={[styles.shareModeRowCompact, { flexDirection, borderColor: slScope === 'filtered' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                    onPress={() => setSlScope('filtered')}
+                  >
+                    <MaterialCommunityIcons name={slScope === 'filtered' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'filtered' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                      {isRTL ? `תוצאות החיפוש הנוכחיות (${filteredItems.length})` : `Current search results (${filteredItems.length})`}
+                    </Text>
+                  </Pressable>
+                )}
+
+                {selectedIds.size > 0 && (
+                  <Pressable
+                    style={[styles.shareModeRowCompact, { flexDirection, borderColor: slScope === 'selected' ? BRAND_COLOR : theme.colors.outlineVariant }]}
+                    onPress={() => setSlScope('selected')}
+                  >
+                    <MaterialCommunityIcons name={slScope === 'selected' ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={slScope === 'selected' ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginHorizontal: 10, flex: 1, textAlign }}>
+                      {isRTL ? `רק המוצרים שנבחרו (${selectedIds.size})` : `Only selected items (${selectedIds.size})`}
+                    </Text>
+                  </Pressable>
+                )}
                 <Pressable
                   style={[styles.shareModeRowCompact, { flexDirection, borderColor: slScope === 'all' ? BRAND_COLOR : theme.colors.outlineVariant }]}
                   onPress={() => setSlScope('all')}
@@ -1789,7 +1835,7 @@ export default function CatalogScreen() {
                   icon="link-variant"
                   onPress={() => { Keyboard.dismiss(); createCustomerLink(); }}
                   loading={slCreating}
-                  disabled={slCreating || (slScope === 'selected' && selectedIds.size === 0)}
+                  disabled={slCreating || (slScope === 'selected' && selectedIds.size === 0) || (slScope === 'filtered' && filteredItems.length === 0)}
                   style={[styles.actionBtn, { backgroundColor: BRAND_COLOR, marginTop: 16 }]}
                   textColor="#fff"
                 >
