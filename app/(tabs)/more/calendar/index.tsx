@@ -37,8 +37,15 @@ const recurrenceLabel = (key: string, he: boolean) =>
     yearly: he ? 'מדי שנה' : 'Yearly',
   } as Record<string, string>)[key] || key);
 
+// Format a Date as 'yyyy-MM-dd' using its LOCAL components. Do NOT use toISOString(), which
+// converts to UTC — in +offset timezones (e.g. Israel UTC+3) local midnight on the 21st becomes
+// "...20T21:00Z", so the string would be the 20th. That off-by-one shifted the "today" highlight,
+// event dots, and the selected-day lookup onto the wrong day (matching the web app's helper).
 function toLocalDateStr(date: Date): string {
-  return date.toISOString().split('T')[0];
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 // Parse a 'yyyy-MM-dd' (or ISO) string into a local Date at midnight.
@@ -253,7 +260,10 @@ export default function CalendarScreen() {
     const map: Record<string, CalendarEvent[]> = {};
     for (const e of expandedEvents) {
       if (!e.startDate) continue;
-      (map[e.startDate] = map[e.startDate] || []).push(e);
+      // Normalize to the bare date so an ISO value like "2026-07-21T00:00:00" keys under
+      // "2026-07-21" and matches selectedDay / the grid cell keys.
+      const key = String(e.startDate).split('T')[0];
+      (map[key] = map[key] || []).push(e);
     }
     Object.values(map).forEach((list) =>
       list.sort((a, b) => (a.startTime || '00:00').localeCompare(b.startTime || '00:00')),
@@ -690,7 +700,7 @@ export default function CalendarScreen() {
               {selectedDayEvents.length > 0 ? `  ·  ${selectedDayEvents.length}` : ''}
             </Text>
             {selectedDayEvents.length === 0 ? (
-              <View style={styles.emptyState}>
+              <View style={styles.dayAgendaEmpty}>
                 <MaterialCommunityIcons name="calendar-blank-outline" size={40} color={theme.colors.onSurfaceVariant} />
                 <Text style={[styles.emptyText, { color: theme.colors.onSurfaceVariant }]}>{isRTL ? 'אין אירועים ביום זה' : 'No events on this day'}</Text>
                 <Button mode="text" textColor={BRAND_COLOR} icon="plus" onPress={() => openCreateModalForDay(selectedDay)}>
@@ -1317,6 +1327,9 @@ const styles = StyleSheet.create({
   dayAgendaTitle: { fontSize: 15, fontWeight: '700', marginBottom: 10 },
   listInner: { paddingHorizontal: 16, paddingTop: 12 },
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
+  // Compact empty state used inline under the month grid (the full 80px paddingTop left a big
+  // dead gap between the grid and the day agenda when the selected day had no events).
+  dayAgendaEmpty: { alignItems: 'center', justifyContent: 'center', paddingTop: 8, paddingBottom: 8 },
   emptyText: { fontSize: 15, marginTop: 12 },
   eventCard: { marginBottom: 10, borderRadius: 12, elevation: 1 },
   eventHeader: { flexDirection: 'row', alignItems: 'flex-start' },

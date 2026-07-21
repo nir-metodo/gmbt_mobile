@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  TouchableOpacity,
 } from 'react-native';
 import {
   Text,
@@ -39,12 +40,14 @@ import { useRTL } from '../../../hooks/useRTL';
 import { useWindowedList } from '../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../components/ListPaginationFooter';
 import { tasksApi } from '../../../services/api/tasks';
+import { usersApi } from '../../../services/api/users';
+import { leadsApi } from '../../../services/api/leads';
 import { cacheEntities } from '../../../services/entityCache';
 import { readList as readDiskList, cacheList as cacheDiskList } from '../../../services/db/genericCache';
 import { getDataVisibility } from '../../../constants/permissions';
 import { formatDate, formatDueDate, formatRelativeTime, getInitials } from '../../../utils/formatters';
 import { spacing, borderRadius, fontSize } from '../../../constants/theme';
-import type { Task } from '../../../types';
+import type { Task, OrgUser } from '../../../types';
 import { useContactLookup } from '../../../hooks/useContactLookup';
 import ContactLookupField from '../../../components/ContactLookupField';
 import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
@@ -134,8 +137,21 @@ export default function TasksMoreScreen() {
   const [formPriority, setFormPriority] = useState<string>('medium');
   const [formDueDate, setFormDueDate] = useState('');
   const [formAssignedTo, setFormAssignedTo] = useState('');
+  const [formAssignedToId, setFormAssignedToId] = useState('');
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
+  const [orgUsersLoading, setOrgUsersLoading] = useState(false);
+  const [userPickerExpanded, setUserPickerExpanded] = useState(false);
   const [formTaskType, setFormTaskType] = useState<string>('general');
-  const [formRelatedEntityName, setFormRelatedEntityName] = useState('');
+
+  // Linked entity: pick a type (contact / lead), then pick the specific record.
+  const [formRelatedEntityType, setFormRelatedEntityType] = useState<'' | 'contact' | 'lead'>('');
+  const [formRelatedLeadName, setFormRelatedLeadName] = useState('');
+  const [formRelatedLeadId, setFormRelatedLeadId] = useState('');
+  const [leadPickerVisible, setLeadPickerVisible] = useState(false);
+  const [leadSearch, setLeadSearch] = useState('');
+  const [leadResults, setLeadResults] = useState<any[]>([]);
+  const [leadSearching, setLeadSearching] = useState(false);
+  const leadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [showDueDatePicker, setShowDueDatePicker] = useState(false);
   const [dueDateObj, setDueDateObj] = useState<Date>(new Date());
@@ -340,14 +356,22 @@ export default function TasksMoreScreen() {
     setFormDescription('');
     setFormPriority('medium');
     setFormDueDate(now.toISOString());
-    setFormAssignedTo('');
+    // Default the responsible user to the currently logged-in user (like the web + AddTaskSheet).
+    setFormAssignedTo(user?.fullname || (user as any)?.name || '');
+    setFormAssignedToId(user?.uID || user?.userId || '');
+    setUserPickerExpanded(false);
     setFormTaskType('general');
-    setFormRelatedEntityName('');
+    setFormRelatedEntityType('');
+    setFormRelatedLeadName('');
+    setFormRelatedLeadId('');
+    setLeadPickerVisible(false);
+    setLeadSearch('');
+    setLeadResults([]);
     setDueDateObj(new Date(now));
     setReminderEnabled(true);
     setReminderDateObj(new Date(now));
     resetContactLookup();
-  }, [resetContactLookup]);
+  }, [resetContactLookup, user?.fullname, user?.uID, user?.userId]);
 
   const handleCreate = useCallback(async () => {
     if (!user?.organization || !formTitle.trim()) return;
@@ -355,25 +379,39 @@ export default function TasksMoreScreen() {
     try {
       const meId = user?.uID || user?.userId || '';
       const meName = user?.fullname || (user as any)?.name || '';
+      // Assignee: use the picked user; fall back to the logged-in user.
+      const assigneeId = formAssignedToId || meId;
+      const assigneeName = formAssignedTo.trim() || meName;
       const contactName = selectedContact
-        ? (selectedContact.fullName || selectedContact.name || formRelatedEntityName.trim())
-        : formRelatedEntityName.trim();
+        ? (selectedContact.fullName || selectedContact.name || '')
+        : '';
       const contactPhone = selectedContact?.phoneNumber || selectedContact?.phone || undefined;
+      // Linked entity: contact or lead, based on the chosen type.
+      const relatedContact = formRelatedEntityType === 'contact' && selectedContact;
+      const relatedLead = formRelatedEntityType === 'lead' && formRelatedLeadId;
       await tasksApi.create(user.organization, {
         title: formTitle.trim(),
         description: formDescription.trim() || undefined,
         priority: formPriority as Task['priority'],
         taskType: formTaskType as Task['taskType'],
         dueDate: formDueDate.trim() || undefined,
-        // Default assignee to the current user (like web) when no one is typed in.
-        assignedToId: meId,
-        assignedToName: formAssignedTo.trim() || meName,
-        assignedTo: formAssignedTo.trim() || meName || undefined,
-        relatedEntityName: contactName || undefined,
-        relatedEntityPhone: contactPhone,
-        relatedContactId: selectedContact?.id || undefined,
-        ...(selectedContact
-          ? { relatedTo: { type: 'contact', entityId: selectedContact.id || contactPhone || '', entityName: contactName } }
+        assignedToId: assigneeId,
+        assignedToName: assigneeName,
+        assignedTo: assigneeName || undefined,
+        ...(relatedContact
+          ? {
+              relatedEntityName: contactName || undefined,
+              relatedEntityPhone: contactPhone,
+              relatedContactId: selectedContact?.id || undefined,
+              relatedTo: { type: 'contact', entityId: selectedContact.id || contactPhone || '', entityName: contactName },
+            }
+          : {}),
+        ...(relatedLead
+          ? {
+              relatedEntityName: formRelatedLeadName || undefined,
+              relatedLeadId: formRelatedLeadId,
+              relatedTo: { type: 'lead', entityId: formRelatedLeadId, entityName: formRelatedLeadName },
+            }
           : {}),
         status: 'open',
         reminderEnabled: reminderEnabled || undefined,
@@ -389,7 +427,38 @@ export default function TasksMoreScreen() {
     } finally {
       setCreating(false);
     }
-  }, [user?.organization, formTitle, formDescription, formPriority, formTaskType, formDueDate, formAssignedTo, formRelatedEntityName, resetForm, fetchTasks, t, reminderEnabled, reminderDateObj, selectedContact]);
+  }, [user?.organization, user?.uID, user?.userId, user?.fullname, formTitle, formDescription, formPriority, formTaskType, formDueDate, formAssignedTo, formAssignedToId, formRelatedEntityType, formRelatedLeadId, formRelatedLeadName, resetForm, fetchTasks, t, reminderEnabled, reminderDateObj, selectedContact]);
+
+  const handleLeadSearch = useCallback((text: string) => {
+    setLeadSearch(text);
+    if (leadDebounceRef.current) clearTimeout(leadDebounceRef.current);
+    setLeadSearching(true);
+    leadDebounceRef.current = setTimeout(async () => {
+      try {
+        const result = await leadsApi.getAll(user?.organization || '', { filters: { searchTerm: text.trim() || undefined }, pageSize: 30 });
+        setLeadResults(result.data || []);
+      } catch { setLeadResults([]); }
+      finally { setLeadSearching(false); }
+    }, 300);
+  }, [user?.organization]);
+
+  const openLeadPicker = useCallback(() => {
+    setLeadSearch('');
+    setLeadResults([]);
+    setLeadSearching(true);
+    setLeadPickerVisible(true);
+    leadsApi.getAll(user?.organization || '', { pageSize: 30 })
+      .then((r) => setLeadResults(r.data || []))
+      .catch(() => setLeadResults([]))
+      .finally(() => setLeadSearching(false));
+  }, [user?.organization]);
+
+  // Load org users once the create modal opens so the assignee picker is populated.
+  useEffect(() => {
+    if (!createModalVisible || !user?.organization || orgUsers.length > 0) return;
+    setOrgUsersLoading(true);
+    usersApi.getAll(user.organization).then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+  }, [createModalVisible, user?.organization, orgUsers.length]);
 
   const openTask = useCallback(
     (task: Task) => {
@@ -958,17 +1027,6 @@ export default function TasksMoreScreen() {
                 <IconButton icon="close" size={22} onPress={() => { setCreateModalVisible(false); resetForm(); }} />
               </View>
 
-              <ContactLookupField
-                contactSearch={contactSearch}
-                contactResults={contactResults}
-                contactSearching={contactSearching}
-                selectedContact={selectedContact}
-                brandColor={BRAND_COLOR}
-                onSearch={(text) => handleContactSearch(text, user?.organization || '')}
-                onSelect={handleSelectContact}
-                onClear={resetContactLookup}
-              />
-
               <TextInput
                 label={t('tasks.taskTitle')}
                 value={formTitle}
@@ -1131,28 +1189,133 @@ export default function TasksMoreScreen() {
                 </>
               )}
 
-              <TextInput
-                label={t('tasks.assignedTo')}
-                value={formAssignedTo}
-                onChangeText={setFormAssignedTo}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="account" />}
-              />
+              {/* Assigned to - user picker (defaults to the logged-in user) */}
+              <Pressable
+                onPress={() => setUserPickerExpanded((v) => !v)}
+                style={[
+                  styles.formInput,
+                  {
+                    borderWidth: 1,
+                    borderRadius: 4,
+                    borderColor: userPickerExpanded ? BRAND_COLOR : theme.colors.outline,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    backgroundColor: theme.colors.surface,
+                  },
+                ]}
+              >
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 2 }}>
+                  {t('tasks.assignedTo', 'אחראי')}
+                </Text>
+                <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+                  <MaterialCommunityIcons name="account" size={16} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="bodyMedium" style={{ flex: 1, color: formAssignedTo ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                    {orgUsersLoading ? (t('common.loading') || 'טוען...') : (formAssignedTo || t('tasks.selectUser') || 'בחר משתמש')}
+                  </Text>
+                  <MaterialCommunityIcons name={userPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+                </View>
+              </Pressable>
+              {userPickerExpanded && (
+                <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 4, marginTop: -8, marginBottom: 12, overflow: 'hidden' }}>
+                  <Pressable
+                    style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8 }]}
+                    onPress={() => { setFormAssignedTo(''); setFormAssignedToId(''); setUserPickerExpanded(false); }}
+                  >
+                    <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {t('common.none') || 'ללא'}
+                    </Text>
+                  </Pressable>
+                  <Divider />
+                  {orgUsers.map((u) => (
+                    <Pressable
+                      key={u.uID || u.userId}
+                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId) === formAssignedToId ? `${BRAND_COLOR}15` : 'transparent' }]}
+                      onPress={() => { setFormAssignedTo(u.fullname || u.name || ''); setFormAssignedToId(u.uID || u.userId || ''); setUserPickerExpanded(false); }}
+                    >
+                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId) === formAssignedToId ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId) === formAssignedToId ? BRAND_COLOR : theme.colors.onSurface, fontWeight: (u.uID || u.userId) === formAssignedToId ? '700' : '400' }}>
+                        {u.fullname || u.name}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
 
-              <TextInput
-                label={t('tasks.relatedEntity')}
-                value={formRelatedEntityName}
-                onChangeText={setFormRelatedEntityName}
-                mode="outlined"
-                placeholder={t('tasks.relatedEntityPlaceholder')}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="link-variant" />}
-              />
+              {/* Linked entity: choose a type, then pick the record */}
+              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
+                {t('tasks.relatedTo', 'רשומה מקושרת')}
+              </Text>
+              <View style={{ flexDirection, gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+                {[
+                  { key: '', label: t('common.none', 'ללא'), icon: 'close-circle-outline' },
+                  { key: 'contact', label: t('tasks.relatedContact', 'איש קשר'), icon: 'account' },
+                  { key: 'lead', label: t('tasks.relatedLead', 'ליד'), icon: 'chart-line' },
+                ].map(({ key, label, icon }) => (
+                  <Chip
+                    key={key}
+                    selected={formRelatedEntityType === key}
+                    onPress={() => {
+                      setFormRelatedEntityType(key as '' | 'contact' | 'lead');
+                      if (key !== 'contact') resetContactLookup();
+                      if (key !== 'lead') { setFormRelatedLeadName(''); setFormRelatedLeadId(''); }
+                    }}
+                    icon={icon}
+                    style={formRelatedEntityType === key ? { backgroundColor: `${BRAND_COLOR}20` } : undefined}
+                    selectedColor={BRAND_COLOR}
+                  >
+                    {label}
+                  </Chip>
+                ))}
+              </View>
+
+              {/* Contact record picker */}
+              {formRelatedEntityType === 'contact' && (
+                <ContactLookupField
+                  contactSearch={contactSearch}
+                  contactResults={contactResults}
+                  contactSearching={contactSearching}
+                  selectedContact={selectedContact}
+                  brandColor={BRAND_COLOR}
+                  onSearch={(text) => handleContactSearch(text, user?.organization || '')}
+                  onSelect={handleSelectContact}
+                  onClear={resetContactLookup}
+                />
+              )}
+
+              {/* Lead record picker */}
+              {formRelatedEntityType === 'lead' && (
+                <Pressable
+                  onPress={openLeadPicker}
+                  style={[
+                    styles.formInput,
+                    {
+                      borderWidth: 1,
+                      borderRadius: 4,
+                      borderColor: formRelatedLeadId ? BRAND_COLOR : theme.colors.outline,
+                      paddingHorizontal: 12,
+                      paddingVertical: 12,
+                      backgroundColor: theme.colors.surfaceVariant,
+                      flexDirection,
+                      alignItems: 'center',
+                      gap: 8,
+                    },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="chart-line" size={20} color={formRelatedLeadId ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+                  <Text
+                    style={{ color: formRelatedLeadName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontSize: 15, textAlign, flex: 1 }}
+                    numberOfLines={1}
+                  >
+                    {formRelatedLeadName || t('tasks.selectLead', 'בחר ליד')}
+                  </Text>
+                  {formRelatedLeadId ? (
+                    <Pressable onPress={() => { setFormRelatedLeadName(''); setFormRelatedLeadId(''); }} hitSlop={8}>
+                      <MaterialCommunityIcons name="close-circle" size={18} color={BRAND_COLOR} />
+                    </Pressable>
+                  ) : null}
+                </Pressable>
+              )}
 
               <View style={[styles.modalActions, { flexDirection }]}>
                 <Button
@@ -1176,6 +1339,67 @@ export default function TasksMoreScreen() {
               </View>
             </ScrollView>
           </KeyboardAvoidingView>
+        </Modal>
+      </Portal>
+
+      {/* Lead picker modal */}
+      <Portal>
+        <Modal
+          visible={leadPickerVisible}
+          onDismiss={() => { setLeadPickerVisible(false); setLeadSearch(''); }}
+          contentContainerStyle={[{ margin: 16, borderRadius: 12, backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
+        >
+          <View style={[{ flexDirection, alignItems: 'center', padding: 12, paddingBottom: 4 }]}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+              {t('tasks.selectLead', 'בחר ליד')}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => { setLeadPickerVisible(false); setLeadSearch(''); }} />
+          </View>
+          <Searchbar
+            placeholder={t('common.search')}
+            value={leadSearch}
+            onChangeText={handleLeadSearch}
+            style={{ marginHorizontal: 12, marginBottom: 8 }}
+            autoFocus
+          />
+          {leadSearching ? (
+            <ActivityIndicator size="large" color={BRAND_COLOR} style={{ marginVertical: 32 }} />
+          ) : (
+            <FlatList
+              data={leadResults}
+              keyExtractor={(item) => item.id || String(Math.random())}
+              style={{ maxHeight: 380 }}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[{ flexDirection, alignItems: 'center', gap: 10, padding: 12, borderBottomWidth: 1, borderBottomColor: theme.colors.outlineVariant }]}
+                  onPress={() => {
+                    setFormRelatedLeadId(item.id);
+                    setFormRelatedLeadName(item.title || item.contactName || item.id);
+                    setLeadPickerVisible(false);
+                    setLeadSearch('');
+                  }}
+                >
+                  <MaterialCommunityIcons name="chart-line" size={20} color={BRAND_COLOR} />
+                  <View style={{ flex: 1 }}>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
+                      {item.title || item.contactName || item.id}
+                    </Text>
+                    {item.contactName && item.title && (
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                        {item.contactName}
+                      </Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
+                  {t('common.noResults')}
+                </Text>
+              }
+            />
+          )}
         </Modal>
       </Portal>
     </View>

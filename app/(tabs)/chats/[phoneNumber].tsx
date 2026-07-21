@@ -62,6 +62,7 @@ import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/
 import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
 import AddTaskSheet from '../../../components/AddTaskSheet';
+import ZoomableImage from '../../../components/ZoomableImage';
 import { chatsApi } from '../../../services/api/chats';
 import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
@@ -445,6 +446,8 @@ export default function ChatConversationScreen() {
   // Media gallery viewer
   const [galleryVisible, setGalleryVisible] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
+  // Hide the prev/next arrows while an image is pinch-zoomed so panning doesn't fight navigation.
+  const [galleryZoomed, setGalleryZoomed] = useState(false);
 
   // Contact Info sheet (category, status, lead stage, tags, timeline)
   const [showContactInfoSheet, setShowContactInfoSheet] = useState(false);
@@ -4502,10 +4505,10 @@ export default function ChatConversationScreen() {
 
       {/* Media Gallery Viewer (opened from message bubble tap) */}
       {galleryVisible && mediaMessages.length > 0 && (
-        <Modal visible animationType="fade" transparent onRequestClose={() => setGalleryVisible(false)}>
+        <Modal visible animationType="fade" transparent onRequestClose={() => { setGalleryZoomed(false); setGalleryVisible(false); }}>
           <View style={styles.galleryOverlay}>
             <View style={styles.galleryHeader}>
-              <IconButton icon="close" size={28} iconColor="#fff" onPress={() => setGalleryVisible(false)} />
+              <IconButton icon="close" size={28} iconColor="#fff" onPress={() => { setGalleryZoomed(false); setGalleryVisible(false); }} />
               <Text style={styles.galleryCounter}>
                 {galleryIndex + 1} / {mediaMessages.length}
               </Text>
@@ -4521,12 +4524,12 @@ export default function ChatConversationScreen() {
               />
             </View>
             <View style={styles.galleryContent}>
-              {galleryIndex > 0 && (
+              {!galleryZoomed && galleryIndex > 0 && (
                 <Pressable style={[styles.galleryNavBtn, { left: 8 }]} onPress={() => setGalleryIndex((i) => i - 1)}>
                   <MaterialCommunityIcons name="chevron-left" size={36} color="#fff" />
                 </Pressable>
               )}
-              {galleryIndex < mediaMessages.length - 1 && (
+              {!galleryZoomed && galleryIndex < mediaMessages.length - 1 && (
                 <Pressable style={[styles.galleryNavBtn, { right: 8 }]} onPress={() => setGalleryIndex((i) => i + 1)}>
                   <MaterialCommunityIcons name="chevron-right" size={36} color="#fff" />
                 </Pressable>
@@ -4542,10 +4545,10 @@ export default function ChatConversationScreen() {
                   return <VideoComp source={{ uri: url }} style={styles.galleryVideo} useNativeControls resizeMode={RM.CONTAIN} shouldPlay />;
                 }
                 return (
-                  <Image
-                    source={{ uri: url }}
-                    style={styles.galleryImage}
-                    contentFit="contain"
+                  <ZoomableImage
+                    uri={url}
+                    resetKey={galleryIndex}
+                    onZoomChange={setGalleryZoomed}
                   />
                 );
               })()}
