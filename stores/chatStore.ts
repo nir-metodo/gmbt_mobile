@@ -57,6 +57,10 @@ interface ChatState {
   displayedCount: number;
   hasMoreMessages: boolean;
   activeWabaNumber: string | null;
+  // Set when a conversation is opened from a push notification (possibly before the full chat list
+  // has loaded, e.g. cold start). The list screen consumes this on focus to force a full reload so
+  // that pressing Back never leaves the list showing only the push-opened contact.
+  pendingListReload: boolean;
 
   loadChats: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
   refreshRecentChats: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
@@ -81,6 +85,8 @@ interface ChatState {
   clearCurrentChat: () => void;
   updateUnreadCount: (count: number) => void;
   setActiveWabaNumber: (number: string | null) => void;
+  requestListReload: () => void;
+  clearListReload: () => void;
 }
 
 // Milliseconds of a chat's last activity, used to keep the list sorted newest-first.
@@ -225,6 +231,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   displayedCount: PAGE_SIZE,
   hasMoreMessages: false,
   activeWabaNumber: null,
+  pendingListReload: false,
 
   loadChats: async (organization, userId?, dataVisibility?) => {
     const { chats: existingChats } = get();
@@ -1028,4 +1035,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   updateUnreadCount: (count) => set({ unreadCount: count }),
 
   setActiveWabaNumber: (number) => set({ activeWabaNumber: number }),
+
+  requestListReload: () => set({ pendingListReload: true }),
+  clearListReload: () => set({ pendingListReload: false }),
 }));

@@ -508,8 +508,20 @@ export default function ChatsListScreen() {
   // an old snapshot from a previous session.
   useFocusEffect(
     useCallback(() => {
-      if (user?.organization && Date.now() - lastFullLoadRef.current > 30000) {
-        refreshChatsFull(true);
+      if (user?.organization) {
+        const { pendingListReload, clearListReload } = useChatStore.getState();
+        if (pendingListReload) {
+          // We just came back from a conversation that was opened via a push notification. The list
+          // may have been left showing only that one contact (cold-start / partial-list race), so
+          // force a full reload and drop any transient search so the complete list is shown.
+          clearListReload();
+          setSearchInput('');
+          setDebouncedSearch('');
+          setSearchVisible(false);
+          refreshChatsFull(true);
+        } else if (Date.now() - lastFullLoadRef.current > 30000) {
+          refreshChatsFull(true);
+        }
       }
       InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
     }, [user?.organization, refreshChatsFull, scrollChatsToTop])

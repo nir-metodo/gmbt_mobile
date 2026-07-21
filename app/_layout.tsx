@@ -187,6 +187,9 @@ export default function RootLayout() {
           break;
         case 'incomingMessage':
           if (data.contactPhone) {
+            // Force the chat list to fully reload when the user backs out of this push-opened chat,
+            // so it never shows only the single contact (cold-start / partial-list race).
+            useChatStore.getState().requestListReload();
             router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone as string } });
           } else {
             router.push('/(tabs)/chats');
@@ -206,6 +209,7 @@ export default function RootLayout() {
           break;
         case 'contactAssigned':
           if (data.contactPhone || data.phoneNumber) {
+            useChatStore.getState().requestListReload();
             router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: (data.contactPhone || data.phoneNumber) as string } });
           } else {
             router.push('/(tabs)/chats');
@@ -231,6 +235,7 @@ export default function RootLayout() {
           break;
         case 'gambotAiTransfer':
           if (data.contactPhone) {
+            useChatStore.getState().requestListReload();
             router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: data.contactPhone as string } });
           } else {
             router.push('/(tabs)/chats');
@@ -238,6 +243,7 @@ export default function RootLayout() {
           break;
         case 'internal_message':
           if (data.contactPhone || data.phoneNumber) {
+            useChatStore.getState().requestListReload();
             router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: (data.contactPhone || data.phoneNumber) as string } });
           } else {
             router.push('/(tabs)/chats');
