@@ -93,6 +93,10 @@ export default function ContactDetailScreen() {
   const organization = user?.organization ?? '';
 
   const contacts = useContactStore((s) => s.contacts);
+  // All tags across the org (derived from the whole DB in the store) — used to autocomplete tags
+  // as the user types, so the app matches the web where typing "ר" suggests existing tags.
+  const allTags = useContactStore((s) => s.facets.tags);
+  const refreshFacets = useContactStore((s) => s.refreshFacets);
   const updateContact = useContactStore((s) => s.updateContact);
   const deleteContact = useContactStore((s) => s.deleteContact);
   const loadContacts = useContactStore((s) => s.loadContacts);
@@ -383,6 +387,31 @@ export default function ContactDetailScreen() {
   );
 
   const tags = useMemo(() => extractTags(contact?.keys), [contact]);
+
+  // Autocomplete suggestions for the tag input: existing org tags that start with (or, as a fallback,
+  // contain) what the user typed, excluding tags already added to this contact. Prefix matches first.
+  const tagSuggestions = useMemo(() => {
+    const q = tagInput.trim().toLowerCase();
+    if (!q) return [];
+    const pool = (allTags || []).filter((tg) => tg && !formTags.includes(tg));
+    const starts = pool.filter((tg) => tg.toLowerCase().startsWith(q));
+    const contains = pool.filter((tg) => !tg.toLowerCase().startsWith(q) && tg.toLowerCase().includes(q));
+    return [...starts, ...contains].slice(0, 8);
+  }, [tagInput, allTags, formTags]);
+
+  const addTag = useCallback((raw: string) => {
+    const trimmed = (raw || '').trim();
+    if (trimmed && !formTags.includes(trimmed)) {
+      setFormTags((prev) => [...prev, trimmed]);
+    }
+    setTagInput('');
+  }, [formTags]);
+
+  // Make sure the tag autocomplete pool is populated even when a contact is opened directly
+  // (e.g. from a chat) without having visited the contacts list first. Cheap local-DB distinct read.
+  useEffect(() => {
+    refreshFacets?.();
+  }, [refreshFacets]);
 
   const handleCall = useCallback(() => {
     if (contact?.phoneNumber) {
@@ -1181,23 +1210,13 @@ export default function ContactDetailScreen() {
                         borderColor: theme.colors.outline,
                       },
                     ]}
-                    onSubmitEditing={() => {
-                      const trimmed = tagInput.trim();
-                      if (trimmed && !formTags.includes(trimmed)) {
-                        setFormTags((prev) => [...prev, trimmed]);
-                        setTagInput('');
-                      }
-                    }}
+                    onSubmitEditing={() => addTag(tagInput)}
                     returnKeyType="done"
+                    autoCorrect={false}
+                    autoCapitalize="none"
                   />
                   <Pressable
-                    onPress={() => {
-                      const trimmed = tagInput.trim();
-                      if (trimmed && !formTags.includes(trimmed)) {
-                        setFormTags((prev) => [...prev, trimmed]);
-                        setTagInput('');
-                      }
-                    }}
+                    onPress={() => addTag(tagInput)}
                     style={{
                       backgroundColor: theme.colors.primary,
                       borderRadius: 10,
@@ -1208,6 +1227,22 @@ export default function ContactDetailScreen() {
                     <MaterialCommunityIcons name="plus" size={20} color="#FFF" />
                   </Pressable>
                 </View>
+                {tagSuggestions.length > 0 ? (
+                  <View style={[styles.tagsWrap, { flexDirection, marginTop: 8 }]}>
+                    {tagSuggestions.map((tg) => (
+                      <Chip
+                        key={`sugg-${tg}`}
+                        compact
+                        icon="tag-outline"
+                        onPress={() => addTag(tg)}
+                        style={{ backgroundColor: theme.custom.inputBackground, borderColor: theme.colors.outline, borderWidth: 1 }}
+                        textStyle={{ color: theme.colors.onSurface, fontSize: 12 }}
+                      >
+                        {tg}
+                      </Chip>
+                    ))}
+                  </View>
+                ) : null}
               </View>
               <DynamicFieldsSectionForm
                 sections={contactFormSections}

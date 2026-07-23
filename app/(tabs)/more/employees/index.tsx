@@ -35,6 +35,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../../constants/api';
 import { getInitials } from '../../../../utils/formatters';
+import { getDataVisibility } from '../../../../constants/permissions';
 
 const BRAND_COLOR = '#2e6155';
 const CLOCK_COLOR = '#2A9D8F';
@@ -802,7 +803,18 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
   const theme = useAppTheme();
   const { isRTL } = useRTL();
   const user = useAuthStore((st) => st.user);
-  const admin = isAdmin(user);
+  // "See all hours" follows the per-user work-hours data-visibility setting (employees: all/own),
+  // mirroring the web. Admin/manager roles always see all; a non-admin with employees:'own' is
+  // restricted to their own report (no employee picker). getDataVisibility returns 'all' when the
+  // setting is missing, so the retro sync (RetroSyncWorkHoursVisibility) is what pins non-admins to 'own'.
+  const canSeeAll =
+    isAdmin(user) ||
+    getDataVisibility(
+      (user as any)?.DataVisibility ?? (user as any)?.dataVisibility,
+      (user as any)?.SecurityRole ?? (user as any)?.securityRole,
+      'employees'
+    ) === 'all';
+  const admin = canSeeAll;
 
   const [range, setRange] = useState<ReportRange>('this_month');
   const [dateFrom, setDateFrom] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth(), 1));

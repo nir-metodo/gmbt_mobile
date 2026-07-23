@@ -136,8 +136,11 @@ export const calendarApi = {
     return response.data;
   },
 
-  async getCalendars(organization: string): Promise<CalendarInfo[]> {
-    const response = await axiosInstance.post(ENDPOINTS.GET_CALENDARS, { organization });
+  // Mirrors the web app: non-admins pass their userId so the server returns only calendars they can
+  // see (own + "all team" shared + calendars shared specifically with them). Admins omit userId and
+  // get every calendar. Without this a regular user would receive the whole org's calendar list.
+  async getCalendars(organization: string, userId?: string): Promise<CalendarInfo[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CALENDARS, { organization, userId });
     const data = response.data;
     const calendars = Array.isArray(data) ? data : (data?.calendars || data?.Calendars || []);
     return calendars.map((c: any) => ({

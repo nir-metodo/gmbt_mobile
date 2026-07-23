@@ -193,7 +193,7 @@ export default function CalendarScreen() {
     try {
       const [evts, cals, conns, usrs] = await Promise.all([
         calendarApi.getEvents(org, isAdmin ? undefined : (user?.userId || user?.uID || undefined)),
-        calendarApi.getCalendars(org),
+        calendarApi.getCalendars(org, isAdmin ? undefined : (user?.userId || user?.uID || undefined)),
         calendarApi.getConnections(org),
         usersApi.getAll(org).catch(() => [] as OrgUser[]),
       ]);

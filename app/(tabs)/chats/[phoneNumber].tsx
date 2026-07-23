@@ -43,6 +43,7 @@ import * as Haptics from 'expo-haptics';
 import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
 import { useChatStore } from '../../../stores/chatStore';
 import { useAuthStore } from '../../../stores/authStore';
+import { useContactStore } from '../../../stores/contactStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import {
@@ -882,6 +883,21 @@ export default function ChatConversationScreen() {
     setShowCaseStageMenu(false);
     router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: activeCase.id } } as any);
   }, [activeCase, router]);
+
+  // Tag autocomplete: suggest existing org tags (from the whole DB, via the contact store facets)
+  // that match what the user typed, excluding tags already on this chat. Matches web behaviour.
+  const allOrgTags = useContactStore((s) => s.facets.tags);
+  const refreshContactFacets = useContactStore((s) => s.refreshFacets);
+  useEffect(() => { if (showAddTagInline) refreshContactFacets?.(); }, [showAddTagInline, refreshContactFacets]);
+  const tagSuggestions = useMemo(() => {
+    const q = newTagText.trim().toLowerCase();
+    if (!q) return [];
+    const current = chat?.tags || [];
+    const pool = (allOrgTags || []).filter((tg) => tg && !current.includes(tg));
+    const starts = pool.filter((tg) => tg.toLowerCase().startsWith(q));
+    const contains = pool.filter((tg) => !tg.toLowerCase().startsWith(q) && tg.toLowerCase().includes(q));
+    return [...starts, ...contains].slice(0, 8);
+  }, [newTagText, allOrgTags, chat?.tags]);
 
   const handleAddTag = useCallback(async (tag: string) => {
     if (!user?.organization || !phoneNumber || !tag.trim()) return;
@@ -2901,6 +2917,7 @@ export default function ChatConversationScreen() {
 
         {/* Inline tag entry — full-width row below meta bar */}
         {showAddTagInline && (
+          <>
           <View style={{
             flexDirection: isRTL ? 'row-reverse' : 'row',
             alignItems: 'center',
@@ -2944,6 +2961,27 @@ export default function ChatConversationScreen() {
               <MaterialCommunityIcons name="close" size={18} color="#64748b" />
             </Pressable>
           </View>
+          {tagSuggestions.length > 0 && (
+            <ScrollView
+              horizontal
+              keyboardShouldPersistTaps="always"
+              showsHorizontalScrollIndicator={false}
+              style={{ backgroundColor: '#f0fdf4', borderBottomWidth: 1, borderBottomColor: '#86efac' }}
+              contentContainerStyle={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 6 }}
+            >
+              {tagSuggestions.map((tg) => (
+                <Pressable
+                  key={`sugg-${tg}`}
+                  onPress={() => handleAddTag(tg)}
+                  style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#dcfce7', borderColor: '#86efac', borderWidth: 1, borderRadius: 14, paddingHorizontal: 10, paddingVertical: 4, gap: 4 }}
+                >
+                  <MaterialCommunityIcons name="tag-outline" size={12} color="#16a34a" />
+                  <Text style={{ fontSize: 12, color: '#166534', fontWeight: '600' }}>{tg}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          </>
         )}
 
         {/* Messages — wrapped in a flex:1 region so the list (not the input) shrinks when
