@@ -65,6 +65,12 @@ export default function RootLayout() {
             const newToken = res.data.IdToken;
             await secureStorage.setToken(newToken);
             useAuthStore.getState().updateUser({ authToken: newToken });
+            // Persist a rotated refresh token so the subsequent syncDeviceCallEventsConfig() pushes
+            // the current one into native storage — keeps Call2Chat authenticated indefinitely.
+            const rotatedRefresh = res.data.RefreshToken;
+            if (rotatedRefresh && rotatedRefresh !== refreshToken) {
+              await secureStorage.setRefreshToken(rotatedRefresh);
+            }
           }
         } catch {
           // Non-critical — token refresh on foreground failed; user will get 401 on next request

@@ -297,6 +297,18 @@ export default function NotificationsSettingsScreen() {
             onToggle={(v) => handleToggle('contactAssignedToMe', v)}
             disabled={saving === 'contactAssignedToMe'}
           />
+          <Divider style={styles.divider} />
+          <SettingRow
+            icon="at"
+            iconColor="#2A9D8F"
+            label={t('pushSettings.internalMessage', 'הודעה פנימית / אזכור')}
+            description={t('pushSettings.internalMessageDesc', 'קבל התראה כשמזכירים אותך (@) בהודעה פנימית')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.internalMessage}
+            onToggle={(v) => handleToggle('internalMessage', v)}
+            disabled={saving === 'internalMessage'}
+          />
         </Surface></>
         )}
 

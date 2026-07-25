@@ -25,6 +25,7 @@ import {
   AppState,
   TouchableOpacity,
   InteractionManager,
+  Dimensions,
 } from 'react-native';
 import { Text, IconButton, Menu, Avatar, Button, Divider } from 'react-native-paper';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
@@ -403,6 +404,10 @@ export default function ChatConversationScreen() {
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionedUsers, setMentionedUsers] = useState<{ userId: string; userName: string }[]>([]);
+  // Measured height of the bottom input bar (composer / closed-window buttons). The @mention and
+  // "/" quick-message pickers anchor exactly on top of it. A previous fixed 70px offset hid the
+  // pickers behind the input on devices with a gesture-nav safe-area inset (taller input bar).
+  const [inputBarHeight, setInputBarHeight] = useState(72);
   // @mentions for the timeline note composer (Add-Note modal + timeline sheet). When a note has
   // mentions we send it as an internal message (mirrors web) so the tagged users get notified.
   const [showNoteMentionPicker, setShowNoteMentionPicker] = useState(false);
@@ -449,6 +454,8 @@ export default function ChatConversationScreen() {
   const [galleryIndex, setGalleryIndex] = useState(0);
   // Hide the prev/next arrows while an image is pinch-zoomed so panning doesn't fight navigation.
   const [galleryZoomed, setGalleryZoomed] = useState(false);
+  // Media grid — a WhatsApp-style "shared media" overview opened from the header.
+  const [mediaGridVisible, setMediaGridVisible] = useState(false);
 
   // Contact Info sheet (category, status, lead stage, tags, timeline)
   const [showContactInfoSheet, setShowContactInfoSheet] = useState(false);
@@ -482,7 +489,41 @@ export default function ChatConversationScreen() {
   // so we only need a visibility flag here — title/time/reminder/assignee are handled inside the sheet.
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false);
 
-  const contactName = chat?.contactName || phoneNumber || '';
+  // Name resolved from the contacts API when the chat isn't in the store yet (opened via push /
+  // deep link before the chat list loaded) or when the store only has the phone number. Prevents
+  // the header from being stuck showing the raw phone number.
+  const [resolvedContactName, setResolvedContactName] = useState('');
+
+  const phoneDigits = String(phoneNumber || '').replace(/\D/g, '');
+  const storeContactName =
+    chat?.contactName && chat.contactName.replace(/\D/g, '') !== phoneDigits
+      ? chat.contactName
+      : '';
+  const contactName = storeContactName || resolvedContactName || phoneNumber || '';
+
+  useEffect(() => {
+    // Only resolve when we don't already have a real (non-phone) name.
+    if (storeContactName || resolvedContactName) return;
+    if (!user?.organization || !phoneNumber) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const c: any = await contactsApi.getById(user.organization, phoneNumber as string);
+        if (cancelled || !c) return;
+        const name =
+          c.name || c.Name || c.fullName || c.FullName ||
+          [c.firstName || c.FirstName, c.lastName || c.LastName].filter(Boolean).join(' ').trim() ||
+          c.contactName || c.ContactName || '';
+        if (name && name.replace(/\D/g, '') !== phoneDigits) {
+          setResolvedContactName(name);
+        }
+      } catch {
+        // best-effort — header falls back to the phone number
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.organization, phoneNumber, storeContactName]);
 
   const [orgWabaNumbers, setOrgWabaNumbers] = useState<WabaNumberInfo[]>([]);
   // Memoize so the reference is stable across renders. `|| []` would otherwise produce a NEW empty
@@ -887,8 +928,10 @@ export default function ChatConversationScreen() {
   // Tag autocomplete: suggest existing org tags (from the whole DB, via the contact store facets)
   // that match what the user typed, excluding tags already on this chat. Matches web behaviour.
   const allOrgTags = useContactStore((s) => s.facets.tags);
-  const refreshContactFacets = useContactStore((s) => s.refreshFacets);
-  useEffect(() => { if (showAddTagInline) refreshContactFacets?.(); }, [showAddTagInline, refreshContactFacets]);
+  const ensureContactFacets = useContactStore((s) => s.ensureFacets);
+  useEffect(() => {
+    if (showAddTagInline && user?.organization) ensureContactFacets?.(user.organization);
+  }, [showAddTagInline, ensureContactFacets, user?.organization]);
   const tagSuggestions = useMemo(() => {
     const q = newTagText.trim().toLowerCase();
     if (!q) return [];
@@ -2693,12 +2736,11 @@ export default function ChatConversationScreen() {
               {/* Tag / Note / Assign are all in the meta bar below — header is clean */}
 
               <IconButton
-                icon={isInitiatingCall ? 'phone-in-talk' : 'phone'}
+                icon="image-multiple-outline"
                 size={20}
                 iconColor={theme.custom.headerText}
-                disabled={isInitiatingCall}
-                onPress={handleInitiateCall}
-                accessibilityLabel={isRTL ? 'התקשר' : 'Call'}
+                onPress={() => setMediaGridVisible(true)}
+                accessibilityLabel={isRTL ? 'מדיה משותפת' : 'Shared media'}
               />
 
               <IconButton
@@ -2741,6 +2783,12 @@ export default function ChatConversationScreen() {
                   leadingIcon="lightning-bolt"
                   onPress={() => { setMenuVisible(false); handleQuickActionsPress(); }}
                   title={t('chats.quickActions', 'פעולות מהירות')}
+                />
+                <Menu.Item
+                  leadingIcon={isInitiatingCall ? 'phone-in-talk' : 'phone'}
+                  disabled={isInitiatingCall}
+                  onPress={() => { setMenuVisible(false); handleInitiateCall(); }}
+                  title={isRTL ? 'התקשר' : 'Call'}
                 />
                 <Menu.Item
                   leadingIcon="information-outline"
@@ -2933,12 +2981,15 @@ export default function ChatConversationScreen() {
               value={newTagText}
               onChangeText={setNewTagText}
               onSubmitEditing={() => { if (newTagText.trim()) handleAddTag(newTagText); else setShowAddTagInline(false); }}
-              placeholder={isRTL ? 'הקלד שם תיוג ולחץ ✓ לסיום' : 'Type tag name and press ✓ to confirm'}
-              placeholderTextColor="#86efac"
+              placeholder={isRTL ? 'הקלד שם תיוג...' : 'Type a tag name...'}
+              placeholderTextColor="#4b9e6b"
               style={{
                 flex: 1,
-                fontSize: 13,
-                color: theme.colors.onSurface,
+                fontSize: 14,
+                // The row background is a fixed light green, so the text must always be dark —
+                // theme.colors.onSurface turns near-white in dark mode and became invisible here.
+                color: '#111827',
+                fontWeight: '600',
                 padding: 0,
                 textAlign: isRTL ? 'right' : 'left',
               }}
@@ -3077,6 +3128,9 @@ export default function ChatConversationScreen() {
         </View>
 
         {/* Template send banner — shown whenever free-text input is not allowed (matches web) */}
+        {/* Measure the input-bar height so the @mention / quick-message pickers can anchor exactly
+            above it (a fixed bottom offset hid them behind the input on devices with a nav-bar inset). */}
+        <View onLayout={(e) => setInputBarHeight(e.nativeEvent.layout.height)}>
         {!canSendFreeText ? (
           <>
             {showFreeTemplateWindow && (
@@ -3165,7 +3219,7 @@ export default function ChatConversationScreen() {
                     gap: 5,
                     backgroundColor: noDefault
                       ? (theme.dark ? '#3f3f46' : '#d1d5db')
-                      : (pressed ? '#1a7a5e' : '#25D366'),
+                      : (pressed ? '#d97706' : '#f59e0b'),
                     paddingVertical: 11,
                     borderRadius: 10,
                     opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : (noDefault ? 0.7 : 1),
@@ -3192,14 +3246,14 @@ export default function ChatConversationScreen() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: 5,
-                  backgroundColor: pressed ? '#1d4ed8' : '#2563eb',
+                  backgroundColor: pressed ? '#245049' : '#2e6155',
                   paddingVertical: 11,
                   borderRadius: 10,
                 })}
               >
                 <MaterialCommunityIcons name="card-text-outline" size={18} color="#fff" />
                 <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
-                  {isRTL ? 'בחר תבנית' : 'Template'}
+                  {isRTL ? 'התחל שיחה' : 'Start Chat'}
                 </Text>
               </Pressable>
 
@@ -3212,13 +3266,16 @@ export default function ChatConversationScreen() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: 5,
-                  backgroundColor: pressed ? '#6d28d9' : '#7c3aed',
+                  // Match web: schedule is an outline/white button (transparent bg, grey border+text).
+                  backgroundColor: pressed ? (theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6') : 'transparent',
+                  borderWidth: 1.5,
+                  borderColor: theme.dark ? '#52525b' : '#d1d5db',
                   paddingVertical: 11,
                   borderRadius: 10,
                 })}
               >
-                <MaterialCommunityIcons name="clock-outline" size={18} color="#fff" />
-                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
+                <MaterialCommunityIcons name="clock-outline" size={18} color={theme.dark ? '#a1a1aa' : '#6b7280'} />
+                <Text style={{ color: theme.dark ? '#a1a1aa' : '#6b7280', fontSize: 13, fontWeight: '700' }}>
                   {isRTL ? 'תזמן' : 'Schedule'}
                 </Text>
               </Pressable>
@@ -3250,6 +3307,7 @@ export default function ChatConversationScreen() {
             />
           </>
         )}
+        </View>
 
         {/* Template Selector Modal — Quick / Manual tabs */}
         <Modal
@@ -3362,6 +3420,9 @@ export default function ChatConversationScreen() {
                                 <Text style={{ fontWeight: '700', color: theme.colors.onSurface, fontSize: 14 }}>
                                   {item.friendlyName || item.name}
                                 </Text>
+                                {item.friendlyName && item.name && item.friendlyName !== item.name && (
+                                  <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant, marginTop: 1 }} numberOfLines={1}>{item.name}</Text>
+                                )}
                                 {item.usageType && (
                                   <Text style={{ fontSize: 11, color: '#6c63ff', marginTop: 1 }}>{item.usageType}</Text>
                                 )}
@@ -3694,6 +3755,9 @@ export default function ChatConversationScreen() {
                                 <Text style={{ fontWeight: '600', fontSize: 13, color: theme.colors.onSurface }} numberOfLines={1}>
                                   {tpl.friendlyName || tpl.name}
                                 </Text>
+                                {tpl.friendlyName && tpl.name && tpl.friendlyName !== tpl.name && (
+                                  <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }} numberOfLines={1}>{tpl.name}</Text>
+                                )}
                                 <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }} numberOfLines={1}>
                                   {getTemplateBodyText(tpl)}
                                 </Text>
@@ -4429,7 +4493,7 @@ export default function ChatConversationScreen() {
           const isEmpty = filtered.length === 0 && !isLoadingQuickMessages;
           const noneDefined = quickMessages.length === 0;
           return (
-            <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220 }]}>
+            <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220, bottom: inputBarHeight, zIndex: 1000 }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.outline }}>
                 <MaterialCommunityIcons name="lightning-bolt" size={16} color="#FF9800" />
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 6 }}>
@@ -4483,7 +4547,7 @@ export default function ChatConversationScreen() {
             @mention is being composed). We always render a state (list / loading / empty) so the
             user gets feedback instead of a silent nothing when users haven't loaded yet. */}
         {showMentionPicker && (
-          <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220 }]}>
+          <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220, bottom: inputBarHeight, zIndex: 1000 }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.outline }}>
               <MaterialCommunityIcons name="at" size={16} color={theme.colors.primary} />
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 6 }}>
@@ -4541,6 +4605,72 @@ export default function ChatConversationScreen() {
         wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
       />
 
+      {/* Shared-media grid (opened from the header) — a WhatsApp-style overview of every photo/video
+          exchanged with this contact. Tapping a tile opens the existing full-screen viewer. */}
+      {mediaGridVisible && (
+        <Modal visible animationType="slide" onRequestClose={() => setMediaGridVisible(false)}>
+          <View style={{ flex: 1, backgroundColor: theme.colors.background, paddingTop: insets.top }}>
+            <View style={{
+              flexDirection: isRTL ? 'row-reverse' : 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingHorizontal: 8,
+              paddingVertical: 6,
+              borderBottomWidth: 1,
+              borderBottomColor: theme.colors.outlineVariant || 'rgba(0,0,0,0.08)',
+            }}>
+              <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} size={24} iconColor={theme.colors.onSurface} onPress={() => setMediaGridVisible(false)} />
+              <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.onSurface }}>
+                {isRTL ? 'מדיה משותפת' : 'Shared media'}
+              </Text>
+              <View style={{ width: 48 }} />
+            </View>
+            {mediaMessages.length === 0 ? (
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                <MaterialCommunityIcons name="image-off-outline" size={48} color={theme.colors.onSurfaceVariant} />
+                <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 14 }}>
+                  {isRTL ? 'אין עדיין מדיה בשיחה זו' : 'No media in this chat yet'}
+                </Text>
+              </View>
+            ) : (
+              (() => {
+                const NUM_COLS = 3;
+                const GAP = 2;
+                const tile = Math.floor((Dimensions.get('window').width - GAP * (NUM_COLS - 1)) / NUM_COLS);
+                return (
+                  <FlatList
+                    data={mediaMessages}
+                    key={`media-grid-${NUM_COLS}`}
+                    numColumns={NUM_COLS}
+                    keyExtractor={(m, i) => m.messageId || `media-${i}`}
+                    contentContainerStyle={{ paddingBottom: insets.bottom + 12 }}
+                    columnWrapperStyle={{ gap: GAP, marginBottom: GAP }}
+                    renderItem={({ item, index }) => {
+                      const url = (item as any).gmbt_mediaUrl || item.mediaUrl || (item as any).MediaUrl || (item as any).media_url || '';
+                      const tp = (item.type || item.mediaType || '').toLowerCase();
+                      const isVideo = tp === 'video' || /\.(mp4|mov|avi|webm|3gp)(\?|$)/i.test(url);
+                      return (
+                        <Pressable
+                          onPress={() => { setGalleryIndex(index); setMediaGridVisible(false); setGalleryVisible(true); }}
+                          style={{ width: tile, height: tile, backgroundColor: theme.dark ? '#1f1f22' : '#e5e7eb' }}
+                        >
+                          <Image source={{ uri: url }} style={{ width: '100%', height: '100%' }} contentFit="cover" transition={120} />
+                          {isVideo && (
+                            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.15)' }}>
+                              <MaterialCommunityIcons name="play-circle" size={30} color="rgba(255,255,255,0.95)" />
+                            </View>
+                          )}
+                        </Pressable>
+                      );
+                    }}
+                  />
+                );
+              })()
+            )}
+          </View>
+        </Modal>
+      )}
+
       {/* Media Gallery Viewer (opened from message bubble tap) */}
       {galleryVisible && mediaMessages.length > 0 && (
         <Modal visible animationType="fade" transparent onRequestClose={() => { setGalleryZoomed(false); setGalleryVisible(false); }}>
@@ -4587,6 +4717,14 @@ export default function ChatConversationScreen() {
                     uri={url}
                     resetKey={galleryIndex}
                     onZoomChange={setGalleryZoomed}
+                    onHorizontalSwipe={(dir) => {
+                      // Swipe right → next media, swipe left → previous (clamped to bounds).
+                      setGalleryIndex((i) => {
+                        const next = dir > 0 ? i + 1 : i - 1;
+                        if (next < 0 || next >= mediaMessages.length) return i;
+                        return next;
+                      });
+                    }}
                   />
                 );
               })()}
@@ -4886,11 +5024,14 @@ const styles = StyleSheet.create({
     maxHeight: 200,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    elevation: 8,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    elevation: 16,
+    zIndex: 1000,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
   },
   mentionItem: {
     flexDirection: 'row',

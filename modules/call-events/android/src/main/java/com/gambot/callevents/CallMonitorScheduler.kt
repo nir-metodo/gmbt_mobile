@@ -43,6 +43,10 @@ class CallMonitorWorker(appContext: Context, params: WorkerParameters) :
       if (!prefs.getBoolean(CallEventsModule.KEY_ENABLED, false)) return Result.success()
       // Restart the foreground service if an OEM killed it.
       CallMonitorService.start(applicationContext)
+      // Keep the access token fresh proactively (every ~15 min) so a backgrounded/long-idle device
+      // never fails to report a call because its cached ~1h token expired. This is the scheduled
+      // token refresh — device-side, using the long-lived refresh token.
+      try { CallReporter.refreshTokenIfPossible(applicationContext) } catch (_: Exception) {}
       try { CallReporter.scan(applicationContext, waitForFresh = false) } catch (_: Exception) {}
       Result.success()
     } catch (e: Exception) {

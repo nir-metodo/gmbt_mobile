@@ -167,6 +167,13 @@ const performTokenRefresh = async (): Promise<string> => {
   _cachedToken = newToken;
   await secureStorage.setToken(newToken);
 
+  // Persist the (possibly rotated) refresh token so both the JS layer and the native Call2Chat
+  // background refresher always hold the current one — keeps the device authenticated for years.
+  const rotatedRefresh = res.data.RefreshToken;
+  if (rotatedRefresh && rotatedRefresh !== refreshToken) {
+    await secureStorage.setRefreshToken(rotatedRefresh);
+  }
+
   const user = await appStorage.getUser();
   if (user) {
     user.authToken = newToken;

@@ -44,8 +44,12 @@ class CallMonitorService : Service() {
       return START_NOT_STICKY
     }
     CallEventsModule.registerCallLogObserver(applicationContext)
-    // Catch up on anything that happened while we were (re)starting.
-    Thread { try { CallReporter.scan(applicationContext, waitForFresh = false) } catch (_: Exception) {} }.start()
+    // Catch up on anything that happened while we were (re)starting, and refresh the token first so
+    // the catch-up scan (and the next real-time call) sends with a valid, non-expired token.
+    Thread {
+      try { CallReporter.refreshTokenIfPossible(applicationContext) } catch (_: Exception) {}
+      try { CallReporter.scan(applicationContext, waitForFresh = false) } catch (_: Exception) {}
+    }.start()
     // START_STICKY: if the OS kills us under memory pressure, recreate the service when possible.
     return START_STICKY
   }

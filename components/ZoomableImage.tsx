@@ -19,12 +19,17 @@ type Props = {
   resetKey?: string | number;
   /** Called when the user pinches past 1x, so the parent can disable swipe/paging while zoomed. */
   onZoomChange?: (zoomed: boolean) => void;
+  /**
+   * Called when the user swipes horizontally while NOT zoomed, to page between media.
+   * dir = +1 when swiping to the right, -1 when swiping to the left.
+   */
+  onHorizontalSwipe?: (dir: number) => void;
 };
 
 // Full-screen pinch-to-zoom + pan + double-tap image, built on the gesture-handler / reanimated
 // stack already used across the app. Used by the chat media gallery so opened images can be
 // zoomed in and out.
-export default function ZoomableImage({ uri, resetKey, onZoomChange }: Props) {
+export default function ZoomableImage({ uri, resetKey, onZoomChange, onHorizontalSwipe }: Props) {
   const { width, height } = useWindowDimensions();
 
   const scale = useSharedValue(1);
@@ -33,6 +38,8 @@ export default function ZoomableImage({ uri, resetKey, onZoomChange }: Props) {
   const translateY = useSharedValue(0);
   const savedTranslateX = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
+  // Horizontal drag offset used ONLY while not zoomed, to page between media (with live feedback).
+  const swipeX = useSharedValue(0);
 
   const reset = () => {
     'worklet';
@@ -52,6 +59,7 @@ export default function ZoomableImage({ uri, resetKey, onZoomChange }: Props) {
     translateY.value = 0;
     savedTranslateX.value = 0;
     savedTranslateY.value = 0;
+    swipeX.value = 0;
     onZoomChange?.(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey, uri]);
@@ -90,15 +98,29 @@ export default function ZoomableImage({ uri, resetKey, onZoomChange }: Props) {
   const pan = Gesture.Pan()
     .minPointers(1)
     .onUpdate((e) => {
-      if (scale.value <= MIN_SCALE) return;
-      translateX.value = savedTranslateX.value + e.translationX;
-      translateY.value = savedTranslateY.value + e.translationY;
+      if (scale.value > MIN_SCALE) {
+        translateX.value = savedTranslateX.value + e.translationX;
+        translateY.value = savedTranslateY.value + e.translationY;
+      } else if (onHorizontalSwipe) {
+        // Not zoomed → track horizontal drag to page between media (with rubber-band feedback).
+        swipeX.value = e.translationX;
+      }
     })
-    .onEnd(() => {
-      if (scale.value <= MIN_SCALE) return;
-      clampTranslation();
-      savedTranslateX.value = translateX.value;
-      savedTranslateY.value = translateY.value;
+    .onEnd((e) => {
+      if (scale.value > MIN_SCALE) {
+        clampTranslation();
+        savedTranslateX.value = translateX.value;
+        savedTranslateY.value = translateY.value;
+        return;
+      }
+      if (onHorizontalSwipe) {
+        const SWIPE_THRESHOLD = 55;
+        if (Math.abs(e.translationX) > SWIPE_THRESHOLD && Math.abs(e.translationX) > Math.abs(e.translationY)) {
+          const dir = e.translationX > 0 ? 1 : -1;
+          runOnJS(onHorizontalSwipe)(dir);
+        }
+        swipeX.value = withTiming(0);
+      }
     });
 
   const doubleTap = Gesture.Tap()
@@ -118,7 +140,7 @@ export default function ZoomableImage({ uri, resetKey, onZoomChange }: Props) {
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [
-      { translateX: translateX.value },
+      { translateX: translateX.value + swipeX.value },
       { translateY: translateY.value },
       { scale: scale.value },
     ],

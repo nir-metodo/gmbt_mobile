@@ -60,6 +60,7 @@ interface ContactState {
   loadMore: () => Promise<void>;
   reloadWindow: () => Promise<void>;
   refreshFacets: () => Promise<void>;
+  ensureFacets: (organization: string) => Promise<void>;
   setSearchQuery: (query: string) => void;
   setSelectedContact: (contact: Contact | null) => void;
   setFilters: (partial: Partial<ContactFilters>) => void;
@@ -233,6 +234,15 @@ export const useContactStore = create<ContactState>((set, get) => ({
     } catch {
       // keep previous facets on failure
     }
+  },
+
+  // Lightweight: make sure org tag facets are available even when the Contacts tab was never
+  // opened (so tag autocomplete works from the chat screen). Sets the org if missing, then reads
+  // distinct tags from the on-device DB — no network sync, unlike loadContacts.
+  ensureFacets: async (organization) => {
+    if (!organization) return;
+    if (get().organization !== organization) set({ organization });
+    await get().refreshFacets();
   },
 
   setSearchQuery: (query) => {

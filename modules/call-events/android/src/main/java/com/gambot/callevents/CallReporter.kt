@@ -147,6 +147,27 @@ object CallReporter {
     }
   }
 
+  /**
+   * Proactively refresh the stored access token from the long-lived refresh token, OFF any call event.
+   * Called on the periodic WorkManager tick and on service (re)start so the cached token never goes
+   * stale in the background — the root cause of the "stopped working for everyone until the app was
+   * reopened" outage. This is the correct "scheduled token refresh": it runs on the device (where the
+   * refresh token lives and where the fresh token must be stored), not on the backend. No-op when
+   * reporting is disabled or no refresh token/url is configured.
+   */
+  fun refreshTokenIfPossible(ctx: Context) {
+    val prefs = ctx.getSharedPreferences(CallEventsModule.PREFS, Context.MODE_PRIVATE)
+    if (!prefs.getBoolean(CallEventsModule.KEY_ENABLED, false)) return
+    synchronized(LOCK) {
+      try {
+        val fresh = refreshAccessToken(prefs)
+        Log.d(TAG, "scheduled token refresh -> ${if (fresh.isNullOrEmpty()) "unavailable" else "ok"}")
+      } catch (e: Exception) {
+        Log.e(TAG, "scheduled token refresh error: ${e.message}")
+      }
+    }
+  }
+
   /** True while the phone is ringing or on a call — i.e. the current call hasn't finished yet. */
   private fun callInProgress(ctx: Context): Boolean = try {
     val tm = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
@@ -232,9 +253,19 @@ object CallReporter {
     durationSec: Int,
     incoming: Boolean
   ): Boolean {
-    val token = prefs.getString(CallEventsModule.KEY_TOKEN, "") ?: ""
     val userId = prefs.getString(CallEventsModule.KEY_USER_ID, "") ?: ""
     val userName = prefs.getString(CallEventsModule.KEY_USER_NAME, "") ?: ""
+
+    // Proactively mint a fresh access token BEFORE sending. The cached access token is only ~1h-lived,
+    // and when the app has been backgrounded/killed for a while — or the backend was just restarted by a
+    // deploy — it is almost always already expired. Relying on the reactive 401→refresh path is fragile:
+    // if that single refresh attempt misses (backend still recycling, transient network), the event is
+    // queued to "pending" and then silently DROPPED after the 5-min freshness window if the app isn't
+    // reopened in time. That is exactly the "it broke for everyone with no app update" outage. Since we
+    // hold the long-lived refresh token, refresh up-front so every real-time report carries a valid token
+    // regardless of app state. Falls back to the cached token when refresh is unavailable (older logins).
+    val cachedToken = prefs.getString(CallEventsModule.KEY_TOKEN, "") ?: ""
+    val token = (refreshAccessToken(prefs) ?: "").ifEmpty { cachedToken }
 
     val json = JSONObject().apply {
       put("organization", org)
@@ -320,9 +351,19 @@ object CallReporter {
       else ""
       conn.disconnect()
       if (httpCode in 200..299 && respText.isNotEmpty()) {
-        val idToken = JSONObject(respText).optString("IdToken", "")
+        val respJson = JSONObject(respText)
+        val idToken = respJson.optString("IdToken", "")
         if (idToken.isNotEmpty()) {
-          prefs.edit().putString(CallEventsModule.KEY_TOKEN, idToken).apply()
+          val editor = prefs.edit().putString(CallEventsModule.KEY_TOKEN, idToken)
+          // Persist the (possibly rotated) refresh token so the device never ends up holding a stale
+          // one. Firebase usually keeps it stable, but honoring rotation here is what lets the
+          // background service keep refreshing on its own for years without the app being reopened.
+          val rotated = respJson.optString("RefreshToken", "")
+          if (rotated.isNotEmpty() && rotated != refreshToken) {
+            editor.putString(CallEventsModule.KEY_REFRESH_TOKEN, rotated)
+            Log.d(TAG, "background token refresh: refresh token rotated & persisted")
+          }
+          editor.apply()
           Log.d(TAG, "background token refresh succeeded")
           idToken
         } else {

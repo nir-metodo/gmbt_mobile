@@ -12,6 +12,36 @@ import { ENDPOINTS } from '../../../../constants/api';
 
 const BRAND = '#2563eb';
 
+// Convert the report's email HTML into readable plain text for the OS share sheet (WhatsApp,
+// email, etc.). Unlike a naive tag-strip that collapses everything to one line, this preserves
+// structure: table rows become lines, cells are separated by " | ", and block elements break
+// onto new lines — so a shared report stays legible.
+function htmlToShareText(html: string): string {
+  if (!html) return '';
+  let text = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<head[\s\S]*?<\/head>/gi, '')
+    .replace(/<\/(td|th)>/gi, ' | ')
+    .replace(/<\/(tr|p|div|li|h[1-6]|table)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+  // Decode the handful of entities that actually appear in these reports.
+  text = text
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)));
+  return text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').replace(/\s*\|\s*$/, '').trim())
+    .filter((line) => line.length > 0)
+    .join('\n')
+    .slice(0, 6000);
+}
+
 // Report HTML is generated for email at a fixed 700px width. On a phone that would overflow
 // horizontally, so we widen the viewport meta to ~740px which makes the mobile browser scale the
 // whole page down to fit the screen (still pinch-to-zoomable).
@@ -77,7 +107,7 @@ export default function ReportViewScreen() {
   const handleShare = useCallback(async () => {
     if (!html) return;
     try {
-      await Share.share({ message: `${title}\n\n${html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000)}` });
+      await Share.share({ message: `${title}\n\n${htmlToShareText(html)}` });
     } catch {
       // ignore
     }
