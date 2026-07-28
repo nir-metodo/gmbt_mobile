@@ -104,6 +104,9 @@ export const leadsApi = {
       leadData: lead,
       userId,
       userName,
+      // The backend attributes timeline entries from json["user"]["userName"] (mirrors web + cases).
+      // Without this the lead's timeline documented every change as "system" instead of the real user.
+      user: { userName: userName || '' },
     });
     return response.data;
   },
@@ -115,6 +118,9 @@ export const leadsApi = {
       leadData: lead,
       userId,
       userName,
+      // The backend attributes timeline entries from json["user"]["userName"] (mirrors web + cases).
+      // Without this the lead's timeline documented every change as "system" instead of the real user.
+      user: { userName: userName || '' },
     });
     return response.data;
   },

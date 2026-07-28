@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "96",
+      "buildNumber": "97",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -35,7 +35,7 @@
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 146,
+      "versionCode": 147,
       "minSdkVersion": 26,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",

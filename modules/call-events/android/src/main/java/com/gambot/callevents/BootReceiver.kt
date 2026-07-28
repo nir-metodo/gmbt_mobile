@@ -22,11 +22,22 @@ class BootReceiver : BroadcastReceiver() {
     if (!prefs.getBoolean(CallEventsModule.KEY_ENABLED, false)) return
 
     Log.d("GambotCallEvents", "BootReceiver: restarting call monitor after $action")
+    // Always (re)schedule the WorkManager jobs first — this is allowed from the background even
+    // when starting a foreground service isn't (e.g. after MY_PACKAGE_REPLACED on Android 12+).
+    // The one-shot does an immediate Call Log scan so a call made right after an update is reported
+    // within seconds, without waiting for the user to open the app or for the 15-min periodic tick.
+    try {
+      CallMonitorScheduler.ensurePeriodic(context.applicationContext)
+      CallMonitorScheduler.runOnceNow(context.applicationContext)
+    } catch (e: Exception) {
+      Log.e("GambotCallEvents", "BootReceiver scheduler failed: ${e.message}")
+    }
+    // Best-effort: also try the always-on foreground service (may be blocked from background on
+    // newer Android when triggered by an update — the WorkManager backup above covers that case).
     try {
       CallMonitorService.start(context.applicationContext)
-      CallMonitorScheduler.ensurePeriodic(context.applicationContext)
     } catch (e: Exception) {
-      Log.e("GambotCallEvents", "BootReceiver start failed: ${e.message}")
+      Log.e("GambotCallEvents", "BootReceiver FGS start failed (WorkManager backup active): ${e.message}")
     }
   }
 }

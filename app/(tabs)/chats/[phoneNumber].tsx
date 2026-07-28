@@ -2374,8 +2374,9 @@ export default function ChatConversationScreen() {
         ? prev
         : [...prev, { userId: uid, userName: name }],
     );
-    // Remove the @query from input and insert @name
-    chatInputRef.current?.insertText(`@${name} `);
+    // Replace only the trailing "@query" with "@name " so text typed before the mention is kept
+    // (insertText replaced the whole composer, silently wiping the message being written).
+    chatInputRef.current?.insertMention(name);
     setShowMentionPicker(false);
     setMentionQuery('');
   }, []);

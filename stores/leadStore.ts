@@ -2,6 +2,17 @@ import { create } from 'zustand';
 import type { Lead } from '../types';
 import { leadsApi } from '../services/api/leads';
 import { readList, cacheList, removeFromCache } from '../services/db/genericCache';
+import { useAuthStore } from './authStore';
+
+// Resolve the acting user for timeline attribution. Read from the auth store at call time (not via a
+// hook) so create/update document who made the change — matching web and the cases flow.
+function actingUser(): { userId: string; userName: string } {
+  const u = useAuthStore.getState().user;
+  return {
+    userId: u?.userId || u?.uID || '',
+    userName: u?.fullname || u?.name || '',
+  };
+}
 
 interface LeadState {
   leads: Lead[];
@@ -54,7 +65,8 @@ export const useLeadStore = create<LeadState>((set, get) => ({
 
   createLead: async (organization, lead) => {
     try {
-      const result = await leadsApi.create(organization, lead);
+      const { userId, userName } = actingUser();
+      const result = await leadsApi.create(organization, lead, userId, userName);
       if (result) {
         set((state) => ({ leads: [result, ...state.leads] }));
         cacheList('leads', organization, [result], (l) => l.id);
@@ -73,7 +85,8 @@ export const useLeadStore = create<LeadState>((set, get) => ({
       ),
     }));
     try {
-      await leadsApi.update(organization, lead);
+      const { userId, userName } = actingUser();
+      await leadsApi.update(organization, lead, userId, userName);
       const updated = get().leads.find((l) => l.id === lead.id);
       if (updated) cacheList('leads', organization, [updated], (l) => l.id);
     } catch (err) {

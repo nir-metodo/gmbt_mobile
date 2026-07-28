@@ -185,6 +185,10 @@ export default function QuoteDetailScreen() {
   const [statusMenuVisible, setStatusMenuVisible] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
 
+  // Timeline (change history) — mirrors leads/cases so quote edits are documented & visible.
+  const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+
   // Contact picker modal
   const [contactPickerVisible, setContactPickerVisible] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
@@ -289,6 +293,30 @@ export default function QuoteDetailScreen() {
   useEffect(() => {
     fetchQuote();
   }, [fetchQuote]);
+
+  // Load the quote's change history (created / updated / status changes) written by the backend.
+  const fetchQuoteTimeline = useCallback(async () => {
+    if (!user?.organization || !id || id === 'new') return;
+    setTimelineLoading(true);
+    try {
+      const data = await contactsApi.getTimeline(user.organization, `quote_${id}`).catch(() => []);
+      const arr = Array.isArray(data) ? data : [];
+      arr.sort((a: any, b: any) => {
+        const ta = new Date(a.createdOn || a.CreateDateTimeUTC || a.timestamp || 0).getTime();
+        const tb = new Date(b.createdOn || b.CreateDateTimeUTC || b.timestamp || 0).getTime();
+        return tb - ta;
+      });
+      setTimelineEvents(arr);
+    } catch {
+      setTimelineEvents([]);
+    } finally {
+      setTimelineLoading(false);
+    }
+  }, [user?.organization, id]);
+
+  useEffect(() => {
+    fetchQuoteTimeline();
+  }, [fetchQuoteTimeline]);
 
   const openEditModeWithQuote = useCallback((q: Quote) => {
     setFormTitle(q.title || '');
@@ -595,13 +623,14 @@ export default function QuoteDetailScreen() {
         );
         setEditMode(false);
         await fetchQuote();
+        fetchQuoteTimeline();
       }
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
     } finally {
       setSaving(false);
     }
-  }, [user, quote, id, formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formItems, calculatedTotals, formDiscount, formDiscountType, formTax, formCurrency, formStatus, formSalesperson, formSalespersonId, fetchQuote, router, t]);
+  }, [user, quote, id, formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formItems, calculatedTotals, formDiscount, formDiscountType, formTax, formCurrency, formStatus, formSalesperson, formSalespersonId, fetchQuote, fetchQuoteTimeline, router, t]);
 
   const handleDelete = useCallback(() => {
     Alert.alert(
@@ -2085,6 +2114,68 @@ export default function QuoteDetailScreen() {
               {t('common.delete')}
             </Button>
           </View>
+        </View>
+
+        {/* ─── Timeline (change history) — documents create / update / status changes ─── */}
+        <View
+          style={[
+            styles.sectionCard,
+            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+          ]}
+        >
+          <View style={{ flexDirection, alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <MaterialCommunityIcons name="history" size={18} color={theme.colors.primary} />
+            <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+              {isRTL ? 'ציר זמן' : 'Timeline'}
+            </Text>
+          </View>
+
+          {timelineLoading && timelineEvents.length === 0 ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+          ) : timelineEvents.length === 0 ? (
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+              {isRTL ? 'אין עדיין תיעוד שינויים' : 'No change history yet'}
+            </Text>
+          ) : (
+            timelineEvents.map((ev: any, idx: number) => {
+              const type = (ev.TimelineType || ev.timelineType || ev.type || '').toLowerCase();
+              const creator = ev.createdByName || ev.CreatedByName || '';
+              const ts = ev.createdOn || ev.CreateDateTimeUTC || ev.timestamp || '';
+              const note = ev.note || ev.Note || ev.notes || ev.description || '';
+              let icon = 'circle-small';
+              let color = theme.colors.primary;
+              let label = isRTL ? 'עדכון' : 'Update';
+              if (type === 'quote_created') { icon = 'file-plus-outline'; color = '#2e6155'; label = isRTL ? 'הצעה נוצרה' : 'Quote created'; }
+              else if (type === 'quote_status_change') { icon = 'swap-horizontal'; color = '#8b5cf6'; label = isRTL ? 'סטטוס שונה' : 'Status changed'; }
+              else if (type === 'quote_updated') { icon = 'pencil-outline'; color = '#d97706'; label = isRTL ? 'הצעה עודכנה' : 'Quote updated'; }
+              else if (type === 'note') { icon = 'note-text-outline'; color = '#0891b2'; label = isRTL ? 'הערה' : 'Note'; }
+              return (
+                <View key={ev.TimelineId || ev.timelineId || idx} style={{ flexDirection, gap: 10, marginBottom: 12, alignItems: 'flex-start' }}>
+                  <MaterialCommunityIcons name={icon as any} size={18} color={color} style={{ marginTop: 2 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign }}>
+                      {label}
+                    </Text>
+                    {note ? (
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, writingDirection: isRTL ? 'rtl' : 'ltr' }}>
+                        {note}
+                      </Text>
+                    ) : null}
+                    <View style={{ flexDirection, gap: 6, marginTop: 2 }}>
+                      {creator && creator.toLowerCase() !== 'system' ? (
+                        <Text variant="labelSmall" style={{ color: theme.colors.primary }}>{creator}</Text>
+                      ) : null}
+                      {ts ? (
+                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                          {formatDate(ts, 'dd/MM/yyyy HH:mm')}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </View>
+                </View>
+              );
+            })
+          )}
         </View>
 
         <View style={{ height: insets.bottom + 24 }} />

@@ -3,7 +3,9 @@ package com.gambot.callevents
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
@@ -18,6 +20,7 @@ import java.util.concurrent.TimeUnit
  */
 object CallMonitorScheduler {
   private const val UNIQUE_PERIODIC = "gambot_call_monitor_periodic"
+  private const val UNIQUE_ONESHOT = "gambot_call_monitor_oneshot"
 
   fun ensurePeriodic(ctx: Context) {
     val req = PeriodicWorkRequestBuilder<CallMonitorWorker>(15, TimeUnit.MINUTES)
@@ -30,6 +33,21 @@ object CallMonitorScheduler {
 
   fun cancelPeriodic(ctx: Context) {
     WorkManager.getInstance(ctx.applicationContext).cancelUniqueWork(UNIQUE_PERIODIC)
+  }
+
+  /**
+   * Immediate one-shot catch-up. After an app update the OS blocks starting the foreground service
+   * from the background, so instant (PHONE_STATE) detection can stay down until the user opens the
+   * app once. Enqueuing a one-time WorkManager job IS allowed from the background and runs ASAP (no
+   * 15-min floor) — it does a Call Log scan, so a call placed right after an update is reported
+   * within seconds instead of waiting up to 15 minutes for the periodic tick.
+   */
+  fun runOnceNow(ctx: Context) {
+    val req = OneTimeWorkRequestBuilder<CallMonitorWorker>()
+      .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+      .build()
+    WorkManager.getInstance(ctx.applicationContext)
+      .enqueueUniqueWork(UNIQUE_ONESHOT, ExistingWorkPolicy.REPLACE, req)
   }
 }
 

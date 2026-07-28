@@ -27,6 +27,9 @@ import type { WabaNumberInfo } from '../../types';
 
 export interface ChatInputRef {
   insertText: (text: string) => void;
+  // Replace only the trailing "@query" being composed with "@name " — preserves any text the
+  // user already typed before the mention (insertText would wipe the whole composer).
+  insertMention: (name: string) => void;
   focus: () => void;
   clear: () => void;
 }
@@ -109,6 +112,13 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   useImperativeHandle(ref, () => ({
     insertText: (t: string) => {
       setText(t);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    },
+    insertMention: (name: string) => {
+      setText((prev) => {
+        const atIdx = prev.lastIndexOf('@');
+        return (atIdx >= 0 ? prev.slice(0, atIdx) : prev) + `@${name} `;
+      });
       setTimeout(() => inputRef.current?.focus(), 50);
     },
     focus: () => inputRef.current?.focus(),
