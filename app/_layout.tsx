@@ -211,7 +211,13 @@ export default function RootLayout() {
           break;
         case 'newCase':
         case 'caseAssigned':
-          router.push('/(tabs)/cases');
+        case 'caseStageChanged':
+        case 'caseSlaBreach':
+          if (data.caseId) {
+            router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: data.caseId as string } });
+          } else {
+            router.push('/(tabs)/more/cases');
+          }
           break;
         case 'contactAssigned':
           if (data.contactPhone || data.phoneNumber) {

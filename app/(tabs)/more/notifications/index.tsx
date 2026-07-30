@@ -383,6 +383,30 @@ export default function NotificationsSettingsScreen() {
           />
           <Divider style={styles.divider} />
           <SettingRow
+            icon="swap-horizontal"
+            iconColor="#4A90D9"
+            label={t('pushSettings.caseStageChanged', 'שלב פנייה עודכן')}
+            description={t('pushSettings.caseStageChangedDesc', 'קבל התראה כאשר שלב הפנייה שבבעלותך משתנה')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.caseStageChanged}
+            onToggle={(v) => handleToggle('caseStageChanged', v)}
+            disabled={saving === 'caseStageChanged'}
+          />
+          <Divider style={styles.divider} />
+          <SettingRow
+            icon="clock-alert-outline"
+            iconColor="#E63946"
+            label={t('pushSettings.caseSlaBreach', 'חריגת SLA')}
+            description={t('pushSettings.caseSlaBreachDesc', 'קבל התראה כאשר פנייה חורגת מזמן התגובה/טיפול שהוגדר')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            value={settings.caseSlaBreach}
+            onToggle={(v) => handleToggle('caseSlaBreach', v)}
+            disabled={saving === 'caseSlaBreach'}
+          />
+          <Divider style={styles.divider} />
+          <SettingRow
             icon="account-filter-outline"
             iconColor="#FF6B35"
             label={t('pushSettings.onlyMyCases', 'רק פניות שלי')}

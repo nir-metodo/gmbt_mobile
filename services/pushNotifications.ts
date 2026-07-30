@@ -16,6 +16,8 @@ export interface PushNotificationSettings {
   newCaseCreated: boolean;
   caseAssignedToMe: boolean;
   casesOnlyMyCases: boolean;
+  caseStageChanged: boolean;
+  caseSlaBreach: boolean;
   contactAssignedToMe: boolean;
   newOrderCreated: boolean;
   orderAssignedToMe: boolean;
@@ -38,6 +40,8 @@ export const DEFAULT_PUSH_SETTINGS: PushNotificationSettings = {
   newCaseCreated: true,
   caseAssignedToMe: true,
   casesOnlyMyCases: false,
+  caseStageChanged: true,
+  caseSlaBreach: true,
   contactAssignedToMe: true,
   newOrderCreated: true,
   orderAssignedToMe: true,
