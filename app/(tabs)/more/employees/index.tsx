@@ -67,6 +67,19 @@ interface ClockStatus {
   todayHours: number;
 }
 
+// The organization operates in Israel, so attendance times/dates must ALWAYS be shown in Israel
+// time — never the device's timezone. Without this, a shift saved as 06:00Z (i.e. 09:00 Israel)
+// renders as "06:00" on a UTC/emulator device, which is exactly the reported "09→06" bug. Mirrors
+// the web AttendanceReport (which formats with timeZone: 'Asia/Jerusalem').
+const IL_TZ = 'Asia/Jerusalem';
+
+// Format a Date as a LOCAL "YYYY-MM-DD" (the calendar day the user actually sees). Using
+// toISOString().slice(0,10) here is WRONG: it converts to UTC first, so on a UTC+3 device the 1st of
+// the month at 00:00 local becomes the PREVIOUS day ("…-07-31") and the last day loses a day. That's
+// exactly why July shifts leaked into the August report and Aug 31 could be dropped.
+const ymdLocal = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
 function parseTimestamp(dt: any): Date | null {
   if (dt === null || dt === undefined || dt === '') return null;
   if (typeof dt === 'number') return new Date(dt);
@@ -110,7 +123,7 @@ function parseTimestamp(dt: any): Date | null {
 function formatTime(dt?: any) {
   const d = parseTimestamp(dt);
   if (!d) return '—';
-  return d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: IL_TZ });
 }
 
 function formatHours(h: number | undefined | null) {
@@ -329,7 +342,7 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
   const fetchStatus = useCallback(async () => {
     try {
       const now = new Date();
-      const today = now.toISOString().slice(0, 10);
+      const today = ymdLocal(now);
       // Derive clock status from today's attendance records (GetMyClockStatus endpoint doesn't exist)
       const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
         organizationName: org,
@@ -364,8 +377,8 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
     setLoadingRecords(true);
     try {
       const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-      const lastDay  = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+      const firstDay = ymdLocal(new Date(now.getFullYear(), now.getMonth(), 1));
+      const lastDay  = ymdLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0));
       const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
         organizationName: org, userId, dateFrom: firstDay, dateTo: lastDay,
       });
@@ -531,7 +544,7 @@ function MyHoursTab({ org, userId }: { org: string; userId: string }) {
             <View style={[s.recordRow, { flexDirection: 'row' }]}>
               <View style={{ flex: 1 }}>
                 <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign: isRTL ? 'right' : 'left' }}>
-                  {recDate ? recDate.toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short' }) : '—'}
+                  {recDate ? recDate.toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short', timeZone: IL_TZ }) : '—'}
                 </Text>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left' }}>
                   {recIsOpen
@@ -629,8 +642,8 @@ function ManageTab({ org }: { org: string }) {
     setLoadingRec(true);
     try {
       const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-      const lastDay  = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+      const firstDay = ymdLocal(new Date(now.getFullYear(), now.getMonth(), 1));
+      const lastDay  = ymdLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0));
       const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
         organizationName: org, employeeId: emp.id, dateFrom: firstDay, dateTo: lastDay,
       });
@@ -773,7 +786,7 @@ function ManageTab({ org }: { org: string }) {
                   return (
                   <View key={rec.id || i} style={[s.recRow, { flexDirection: 'row', borderColor: theme.colors.outlineVariant }]}>
                     <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
-                      {recDate ? recDate.toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short' }) : '—'}
+                      {recDate ? recDate.toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'short', timeZone: IL_TZ }) : '—'}
                     </Text>
                     <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
                       {recIsOpen
@@ -878,8 +891,8 @@ function ReportTab({ org, userId, userName }: { org: string; userId: string; use
       const res = await axiosInstance.post(ENDPOINTS.GET_ATTENDANCE_RECORDS, {
         organizationName: org,
         ...(empId === userId ? { userId: empId } : { employeeId: empId }),
-        dateFrom: dateFrom.toISOString().slice(0, 10),
-        dateTo: dateTo.toISOString().slice(0, 10),
+        dateFrom: ymdLocal(dateFrom),
+        dateTo: ymdLocal(dateTo),
       });
       const data: AttendanceRecord[] = Array.isArray(res.data) ? res.data : [];
       data.sort((a, b) => new Date(b.date || b.clockIn || '').getTime() - new Date(a.date || a.clockIn || '').getTime());

@@ -194,25 +194,45 @@ export default function ChatsListScreen() {
     try { listRef.current?.scrollToOffset({ offset: 0, animated }); } catch { /* list not ready */ }
   }, []);
 
-  // Tracks the last FULL chat-list resync so re-entering the app can refresh without doing a
-  // heavy full read on every quick tab toggle.
+  // Tracks the last SUCCESSFUL full chat-list resync so re-entering the app can refresh without
+  // doing a heavy full read on every quick tab toggle. Only stamped on success (see below).
   const lastFullLoadRef = useRef(0);
+  // Concurrency guard so mount + focus + foreground firing together don't launch several full
+  // reads at once. Replaces the old "stamp at start" trick, which had a nasty side effect: a
+  // FAILED load (e.g. auth token not ready yet on a cold start) still marked the list as "fresh",
+  // so every later focus/foreground check skipped refreshing — leaving the user stuck on the
+  // previous session's cached list until they pulled to refresh by hand (the reported bug).
+  const fullLoadInFlightRef = useRef(false);
 
   // Full resync of the chat list (same fetch as pull-to-refresh). Shows the top refresh spinner
   // even when a stale list is already on screen, so the user gets a clear indication that the app
   // is fetching the current chats instead of silently sitting on old data.
   const refreshChatsFull = useCallback(async (showIndicator = true) => {
     if (!user?.organization) return;
-    // Stamp immediately so concurrent triggers (mount + focus firing together) don't double-fetch.
-    lastFullLoadRef.current = Date.now();
+    if (fullLoadInFlightRef.current) return; // a full load is already running — don't double-fetch
+    fullLoadInFlightRef.current = true;
     if (showIndicator) setRefreshing(true);
     try {
       await loadChats(user.organization, currentUserId, chatsDV || 'all');
+      // Stamp ONLY on success. A failed fetch leaves the clock stale so the next focus/foreground
+      // retries automatically instead of trusting a load that never delivered fresh data.
       lastFullLoadRef.current = Date.now();
     } finally {
+      fullLoadInFlightRef.current = false;
       if (showIndicator) setRefreshing(false);
     }
   }, [user?.organization, loadChats, currentUserId, chatsDV]);
+
+  // Cheap "catch me up" refresh for every entry into the tab/app: pulls only the most-recent
+  // conversations and upserts them, so returning to the list always reflects the current state
+  // without waiting on a manual pull-to-refresh — and without the heavy full-collection read.
+  const refreshChatsIncremental = useCallback(() => {
+    if (!user?.organization) return;
+    refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
+  }, [user?.organization, refreshRecentChats, currentUserId, chatsDV]);
+
+  // How long the full list may sit untouched before an entry triggers a fresh FULL resync.
+  const FULL_RESYNC_STALE_MS = 30000;
 
   // Saved Views
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
@@ -459,8 +479,12 @@ export default function ChatsListScreen() {
 
   useEffect(() => {
     if (user?.organization) {
-      // Full load on mount (cold start shows the full-screen spinner since the list is empty).
-      refreshChatsFull(false);
+      // Full load on mount. When the list is empty (true cold start) the empty-state spinner
+      // covers it; when a cached list from the previous session is ALREADY on screen, show the
+      // top refresh spinner so the user gets a clear "fetching the current chats" cue instead of
+      // silently staring at yesterday's snapshot.
+      const hasStaleCache = useChatStore.getState().chats.length > 0;
+      refreshChatsFull(hasStaleCache);
     }
   }, [user?.organization, chatsDV, currentUserId]);
 
@@ -489,11 +513,11 @@ export default function ChatsListScreen() {
         // events). If it's been a while, do a FULL resync (with the refresh indicator) so the user
         // immediately sees the current chats instead of the state from when they left. For quick
         // in-and-out switches, the cheap incremental refresh is enough and avoids a full read.
-        const stale = Date.now() - lastFullLoadRef.current > 30000;
+        const stale = Date.now() - lastFullLoadRef.current > FULL_RESYNC_STALE_MS;
         if (stale) {
           refreshChatsFull(true);
         } else {
-          refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
+          refreshChatsIncremental();
         }
         // Returning to the app should land the user on the newest chats, not the stale offset
         // they left the list at.
@@ -501,7 +525,7 @@ export default function ChatsListScreen() {
       }
     });
     return () => subscription.remove();
-  }, [user?.organization, refreshRecentChats, refreshChatsFull, chatsDV, currentUserId, scrollChatsToTop]);
+  }, [user?.organization, refreshChatsIncremental, refreshChatsFull, chatsDV, currentUserId, scrollChatsToTop]);
 
   // Snap to the top whenever the chats tab regains focus, and resync the list if it's gone stale
   // (e.g. coming back from a conversation or another tab after a while) so it never keeps showing
@@ -519,12 +543,18 @@ export default function ChatsListScreen() {
           setDebouncedSearch('');
           setSearchVisible(false);
           refreshChatsFull(true);
-        } else if (Date.now() - lastFullLoadRef.current > 30000) {
+        } else if (Date.now() - lastFullLoadRef.current > FULL_RESYNC_STALE_MS) {
+          // List has gone stale → full resync with the visible refresh spinner.
           refreshChatsFull(true);
+        } else if (!fullLoadInFlightRef.current) {
+          // Recently loaded but the user is re-entering the tab — do a cheap incremental catch-up
+          // so any conversation that changed elsewhere (web/other agent) shows up without a manual
+          // pull-to-refresh. Skipped while a full load is already running to avoid a double fetch.
+          refreshChatsIncremental();
         }
       }
       InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
-    }, [user?.organization, refreshChatsFull, scrollChatsToTop])
+    }, [user?.organization, refreshChatsFull, refreshChatsIncremental, scrollChatsToTop])
   );
 
   useEffect(() => {

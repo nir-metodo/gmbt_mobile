@@ -410,13 +410,20 @@ export const chatsApi = {
     phoneNumber: string,
     emoji: string,
   ): Promise<any> {
+    // Backend (GambotController.SendReaction) reads the recipient from `to` — NOT `phoneNumber`.
+    // Sending `phoneNumber` made `to` null on the server, which returned Success:false and the
+    // reaction silently never went out. Match the web client, which posts `to`.
     const response = await axiosInstance.post(ENDPOINTS.SEND_REACTION, {
       organization,
+      to: phoneNumber,
       messageId,
-      phoneNumber,
       emoji,
     });
-    return response.data;
+    const data = response.data;
+    if (data && data.Success === false) {
+      throw new Error(data.Message || 'Failed to send reaction');
+    }
+    return data;
   },
 
   async getChatTimeline(organization: string, phoneNumber: string): Promise<any[]> {

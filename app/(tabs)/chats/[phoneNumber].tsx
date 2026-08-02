@@ -2294,19 +2294,26 @@ export default function ChatConversationScreen() {
 
   const handleSendReaction = useCallback(async (emoji: string) => {
     if (!user?.organization || !selectedMessage || !phoneNumber) return;
+    const targetId = selectedMessage.messageId;
     setSelectedMessage(null);
     setShowReactions(false);
     try {
       await chatsApi.sendReaction(
         user.organization,
-        selectedMessage.messageId,
+        targetId,
         phoneNumber,
         emoji,
       );
+      // Reflect our own reaction on the bubble immediately. Unlike inbound reactions there is no
+      // WebSocket echo for a reaction WE send, and (unlike web) there is no full re-fetch here — so
+      // update the local message directly. An empty emoji clears the reaction.
+      if (targetId) {
+        updateMessage(targetId, { reactions: emoji ? { me: emoji } : {} } as Partial<Message>);
+      }
     } catch {
       Alert.alert(t('common.error'), t('chats.reactionFailed', 'שליחת הריאקציה נכשלה'));
     }
-  }, [user?.organization, selectedMessage, phoneNumber, t]);
+  }, [user?.organization, selectedMessage, phoneNumber, t, updateMessage]);
 
   // text change: detect / for quick messages, @ for mentions/internal note
   const handleTextChange = useCallback((text: string) => {

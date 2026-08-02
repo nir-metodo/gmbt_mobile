@@ -175,6 +175,9 @@ export default function CalendarScreen() {
   const [showRecurrenceUntilPicker, setShowRecurrenceUntilPicker] = useState(false);
   const [formLinkedUsers, setFormLinkedUsers] = useState<{ id: string; name: string }[]>([]);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  // Advanced fields (recurrence, location, attendees, reminder, …) are collapsed by default so
+  // creating a quick event is fast; tap "more options" to expand.
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Date pickers
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
@@ -338,8 +341,12 @@ export default function CalendarScreen() {
   }, [calendars]);
 
   const openCreateModal = () => {
-    const now = new Date();
+    // Default the new event to the currently selected day (so tapping a date then "+" uses that
+    // date, not always today). Falls back to today if nothing sensible is selected.
+    const selBase = selectedDay ? new Date(selectedDay + 'T12:00:00') : new Date();
+    const now = isNaN(selBase.getTime()) ? new Date() : selBase;
     setEditingEvent(null);
+    setShowAdvanced(false);
     setFormTitle('');
     setFormDescription('');
     setFormLocation('');
@@ -382,6 +389,7 @@ export default function CalendarScreen() {
       if (orig) event = orig;
     }
     setEditingEvent(event);
+    setShowAdvanced(true); // when editing, show all fields so existing data is visible
     setFormTitle(event.title);
     setFormDescription(event.description);
     setFormLocation(event.location);
@@ -934,6 +942,19 @@ export default function CalendarScreen() {
               ))}
             </View>
 
+            {/* More options toggle — advanced fields are collapsed by default so quick events are fast */}
+            <Pressable
+              onPress={() => setShowAdvanced(v => !v)}
+              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, marginBottom: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.outline }}
+            >
+              <MaterialCommunityIcons name={showAdvanced ? 'chevron-up' : 'chevron-down'} size={20} color={BRAND_COLOR} />
+              <Text style={{ color: BRAND_COLOR, fontWeight: '600' }}>
+                {showAdvanced ? (isRTL ? 'פחות אפשרויות' : 'Fewer options') : (isRTL ? 'אפשרויות נוספות' : 'More options')}
+              </Text>
+            </Pressable>
+
+            {showAdvanced && (
+              <>
             {/* Recurrence */}
             <Menu
               visible={showRecurrenceMenu}
@@ -1184,6 +1205,8 @@ export default function CalendarScreen() {
                 </Menu>
               )}
             </View>
+              </>
+            )}
 
             {/* Action buttons */}
             <View style={styles.modalActions}>
