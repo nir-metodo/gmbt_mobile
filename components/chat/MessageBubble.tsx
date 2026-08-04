@@ -1152,6 +1152,13 @@ function MessageBubbleInner({
         } else if (typeof reactions === 'object') {
           emojiList = Object.entries(reactions).map(([phone, emoji]) => ({ key: phone, emoji: emoji as string }));
         }
+        // Drop our optimistic 'me' placeholder whenever a real (server) key already carries the same
+        // emoji, so a single reaction of ours never renders as count "2" (optimistic + server echo).
+        if (emojiList.some((e) => e.key === 'me')) {
+          emojiList = emojiList.filter(
+            (e) => !(e.key === 'me' && emojiList.some((o) => o.key !== 'me' && o.emoji === e.emoji)),
+          );
+        }
         if (emojiList.length === 0) return null;
 
         const uniqueEmojis = [...new Set(emojiList.map(e => e.emoji))];

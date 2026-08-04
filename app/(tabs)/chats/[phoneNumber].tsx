@@ -408,6 +408,11 @@ export default function ChatConversationScreen() {
   // "/" quick-message pickers anchor exactly on top of it. A previous fixed 70px offset hid the
   // pickers behind the input on devices with a gesture-nav safe-area inset (taller input bar).
   const [inputBarHeight, setInputBarHeight] = useState(72);
+  // Live keyboard height. On iOS the screen uses KeyboardAvoidingView behavior="padding", which does
+  // NOT shift absolutely-positioned overlays — so the "/" and "@" pickers (anchored with `bottom`)
+  // ended up hidden BEHIND the keyboard. We track the keyboard height and add it to the pickers'
+  // bottom offset so they always float directly above the input bar while the keyboard is open.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   // @mentions for the timeline note composer (Add-Note modal + timeline sheet). When a note has
   // mentions we send it as an internal message (mirrors web) so the tagged users get notified.
   const [showNoteMentionPicker, setShowNoteMentionPicker] = useState(false);
@@ -430,6 +435,19 @@ export default function ChatConversationScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.organization]);
+
+  // Keep keyboardHeight in sync. iOS fires *Will* events (smoother, matches the padding animation);
+  // Android only reliably fires *Did* events. Height resets to 0 on hide so the pickers drop back to
+  // sitting directly on top of the input bar.
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e: any) => {
+      setKeyboardHeight(e?.endCoordinates?.height || 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   // / slash → inline quick messages
   const [quickSlashFilter, setQuickSlashFilter] = useState('');
@@ -1685,7 +1703,7 @@ export default function ChatConversationScreen() {
 
           // Reactions: update original message instead of adding as separate bubble
           if (msg.type === 'reaction') {
-            const targetId = msg.contextMessageId || msg.ContextMessageId || msg.reactionMessageId;
+            const targetId = msg.contextMessageId || msg.ContextMessageId || msg.reactedMessageId || msg.reactionMessageId;
             if (targetId) {
               const emoji = msg.text || msg.body || msg.emoji || '';
               const from = msg.from || '';
@@ -4501,7 +4519,7 @@ export default function ChatConversationScreen() {
           const isEmpty = filtered.length === 0 && !isLoadingQuickMessages;
           const noneDefined = quickMessages.length === 0;
           return (
-            <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220, bottom: inputBarHeight, zIndex: 1000 }]}>
+            <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220, bottom: inputBarHeight + (Platform.OS === 'ios' ? keyboardHeight : 0), zIndex: 1000 }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.outline }}>
                 <MaterialCommunityIcons name="lightning-bolt" size={16} color="#FF9800" />
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 6 }}>
@@ -4555,7 +4573,7 @@ export default function ChatConversationScreen() {
             @mention is being composed). We always render a state (list / loading / empty) so the
             user gets feedback instead of a silent nothing when users haven't loaded yet. */}
         {showMentionPicker && (
-          <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220, bottom: inputBarHeight, zIndex: 1000 }]}>
+          <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220, bottom: inputBarHeight + (Platform.OS === 'ios' ? keyboardHeight : 0), zIndex: 1000 }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.outline }}>
               <MaterialCommunityIcons name="at" size={16} color={theme.colors.primary} />
               <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 6 }}>

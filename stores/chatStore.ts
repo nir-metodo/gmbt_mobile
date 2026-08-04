@@ -865,7 +865,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addMessage: (message) => {
     if (!message.messageId) return;
-    if (messageIdSet.has(message.messageId)) return;
     const { currentMessages, allMessages, currentPhoneNumber } = get();
     if (!currentPhoneNumber) return;
     const normalizePhone = (p: string) => p.replace(/\D/g, '');
@@ -879,26 +878,91 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
     const relatedPhones = [(message as any).phoneNumber, message.from, message.to].filter(Boolean) as string[];
     if (relatedPhones.length > 0 && !relatedPhones.some((p) => samePhone(p, currentPhoneNumber))) return;
-    if (allMessages.some((m) => m.messageId === message.messageId)) return;
-    if (currentMessages.some((m) => m.messageId === message.messageId)) return;
 
-    // Content-based duplicate check: same text + direction within 2s window. Skip optimistic
-    // temp_ rows here — those are reconciled by the temp-replacement step below. If we treated a
-    // matching temp as a "duplicate" and dropped the echo, the temp would linger with its temp id
-    // (never picking up the real messageId/status), and any direction-casing mismatch downstream
-    // could then surface BOTH the temp and a later refetch of the real message as two bubbles.
-    const msgText = message.text || (message as any).body || '';
-    if (msgText) {
+    // ── Shared optimistic-temp matcher (used by every dedup path below) ──────────────────────────
+    // An OUTBOUND echo always corresponds to one of our pending optimistic `temp_` rows. Matching
+    // is by content (text, or media type/uri) because the WS echo's id/phone/url formatting often
+    // differs from what we sent.
+    const dir = (message.direction || '').toLowerCase();
+    const incomingText = (message.text || (message as any).body || '').trim();
+    const incomingMedia = (message as any).gmbt_mediaUrl || (message as any).mediaUrl || (message as any).MediaUrl || '';
+    const incomingType = String((message as any).type || (message as any).messageType || '').toLowerCase();
+    const isLocalUri = (u: string) => /^(file:|content:|ph:|assets-library:)/i.test(u);
+    const isReconcilableTemp = (m: any) =>
+      m.messageId?.startsWith('temp_') && !m.messageId.startsWith('temp_internal_') && m.status !== 'failed';
+    const contentMatchesTemp = (m: any) => {
+      if (!isReconcilableTemp(m)) return false;
+      const mText = (m.text || (m as any).body || '').trim();
+      const mMedia = (m as any).gmbt_mediaUrl || (m as any).mediaUrl || (m as any).MediaUrl || '';
+      const mType = String((m as any).type || (m as any).messageType || '').toLowerCase();
+      if (incomingText) return mText === incomingText;
+      if (incomingMedia) {
+        if (mMedia && mMedia === incomingMedia) return true;
+        // Optimistic media holds a *local* uri that can never equal the server URL, so fall back to
+        // matching a recent local-uri temp of the same media type (mirrors web's proximity dedup).
+        if (mMedia && isLocalUri(mMedia) && (!incomingType || !mType || incomingType === mType)) return true;
+        return false;
+      }
+      return mText === '' && !mMedia;
+    };
+    // Find the pending temp twin (exact content match, else oldest non-failed temp within 60s).
+    const findTempTwinIdx = () => {
+      if (dir === 'inbound') return -1;
+      let idx = currentMessages.findIndex(contentMatchesTemp);
+      if (idx === -1) {
+        const echoTs = new Date(message.createdOn || message.timestamp || Date.now()).getTime();
+        let bestTs = Infinity;
+        currentMessages.forEach((m, i) => {
+          if (!isReconcilableTemp(m)) return;
+          const mTs = new Date(m.createdOn || (m as any).timestamp || '').getTime() || 0;
+          if (Math.abs(echoTs - mTs) > 60000) return;
+          if (mTs < bestTs) { bestTs = mTs; idx = i; }
+        });
+      }
+      return idx;
+    };
+    // Remove a lingering optimistic temp twin without appending (used when the real message is
+    // already present). This closes the "shows twice right after sending" hole: a REST refetch can
+    // register the real id first, so this WS echo would otherwise short-circuit and leave the temp.
+    const stripTempTwin = () => {
+      const idx = findTempTwinIdx();
+      if (idx === -1) return;
+      const tempId = currentMessages[idx].messageId;
+      set({
+        currentMessages: currentMessages.filter((_, i) => i !== idx),
+        allMessages: allMessages.filter((m) => m.messageId !== tempId),
+      });
+    };
+
+    // Already ingested this server id (WS re-delivery or a prior REST refetch)? Skip appending, but
+    // first collapse any stale optimistic temp twin still on screen.
+    const alreadyKnown =
+      messageIdSet.has(message.messageId) ||
+      allMessages.some((m) => m.messageId === message.messageId) ||
+      currentMessages.some((m) => m.messageId === message.messageId);
+    if (alreadyKnown) {
+      stripTempTwin();
+      messageIdSet.add(message.messageId);
+      return;
+    }
+
+    // Content-based duplicate check: same text + direction within 2s window against a NON-temp row.
+    // (temps are handled by reconciliation below.) Still collapse a temp twin if one lingers.
+    if (incomingText) {
       const msgTs = new Date(message.createdOn || message.timestamp || '').getTime();
       const isDuplicate = currentMessages.some((m) => {
         if (m.messageId?.startsWith('temp_')) return false;
-        if ((m.direction || '').toLowerCase() !== (message.direction || '').toLowerCase()) return false;
-        const mText = m.text || (m as any).body || '';
-        if (mText !== msgText) return false;
+        if ((m.direction || '').toLowerCase() !== dir) return false;
+        const mText = (m.text || (m as any).body || '').trim();
+        if (mText !== incomingText) return false;
         const mTs = new Date(m.createdOn || m.timestamp || '').getTime();
         return Math.abs(mTs - msgTs) < 2000;
       });
-      if (isDuplicate) return;
+      if (isDuplicate) {
+        stripTempTwin();
+        messageIdSet.add(message.messageId);
+        return;
+      }
     }
 
     if (!message.quotedMessage) {
@@ -911,55 +975,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     }
 
-    // Replace optimistic temp message if this is the server-confirmed version.
-    // We already gated to the current chat above, so we match the pending temp by content +
-    // outbound (NOT by an exact `to` string — phone formats from the WS echo frequently differ
-    // from what we sent, which used to leave both the optimistic and the echo on screen).
-    // Optimistic temps are ALWAYS our own outbound messages, so we attempt reconciliation for any
-    // echo that isn't explicitly inbound. Requiring dir === 'outbound' was a bug: a WS echo with a
-    // missing/lowercase direction skipped replacement and got appended as a second bubble.
-    const dir = (message.direction || '').toLowerCase();
+    // Replace the optimistic temp message with this server-confirmed version.
     if (dir !== 'inbound') {
-      const incomingText = (message.text || (message as any).body || '').trim();
-      const incomingMedia = (message as any).gmbt_mediaUrl || (message as any).mediaUrl || (message as any).MediaUrl || '';
-      const incomingType = String((message as any).type || (message as any).messageType || '').toLowerCase();
-      const isLocalUri = (u: string) => /^(file:|content:|ph:|assets-library:)/i.test(u);
-      const isReconcilableTemp = (m: any) =>
-        m.messageId?.startsWith('temp_') && !m.messageId.startsWith('temp_internal_') && m.status !== 'failed';
-      let tempIdx = currentMessages.findIndex((m) => {
-        if (!isReconcilableTemp(m)) return false;
-        const mText = (m.text || (m as any).body || '').trim();
-        const mMedia = (m as any).gmbt_mediaUrl || (m as any).mediaUrl || (m as any).MediaUrl || '';
-        const mType = String((m as any).type || (m as any).messageType || '').toLowerCase();
-        // Match on text when present, otherwise on media URL (covers media/template sends).
-        if (incomingText) return mText === incomingText;
-        if (incomingMedia) {
-          if (mMedia && mMedia === incomingMedia) return true;
-          // Optimistic media holds a *local* uri that can never equal the server URL, so fall
-          // back to matching a recent local-uri temp of the same media type (mirrors web's
-          // time/type proximity dedup) — otherwise both the optimistic and echo bubbles show.
-          if (mMedia && isLocalUri(mMedia) && (!incomingType || !mType || incomingType === mType)) return true;
-          return false;
-        }
-        return mText === '' && !mMedia;
-      });
-      // Time-proximity fallback (mirrors web): an OUTBOUND echo always corresponds to one of our
-      // pending optimistic temps. If the exact text/media match above missed (e.g. the server
-      // normalized the text, returned it in a different field, or used different phone/url
-      // formatting), reconcile against the OLDEST pending non-failed temp created within the last
-      // 60s. Without this, the echo gets appended as a 2nd bubble that the WS path can never clean
-      // up later (the real id lands in messageIdSet, so a re-delivery short-circuits) — exactly the
-      // "message shows twice only right after sending" report.
-      if (tempIdx === -1) {
-        const echoTs = new Date(message.createdOn || message.timestamp || Date.now()).getTime();
-        let bestTs = Infinity;
-        currentMessages.forEach((m, i) => {
-          if (!isReconcilableTemp(m)) return;
-          const mTs = new Date(m.createdOn || (m as any).timestamp || '').getTime() || 0;
-          if (Math.abs(echoTs - mTs) > 60000) return;
-          if (mTs < bestTs) { bestTs = mTs; tempIdx = i; }
-        });
-      }
+      const tempIdx = findTempTwinIdx();
       if (tempIdx !== -1) {
         messageIdSet.add(message.messageId);
         set({
@@ -986,9 +1004,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const merge = (msg: any) => {
         if (msg.messageId !== messageId) return msg;
         const merged = { ...msg, ...updates };
-        // Merge reactions instead of replacing
-        if (updates.reactions && msg.reactions) {
-          merged.reactions = { ...(typeof msg.reactions === 'object' && !Array.isArray(msg.reactions) ? msg.reactions : {}), ...updates.reactions };
+        if (updates.reactions !== undefined) {
+          const inc: any = updates.reactions;
+          const base = (typeof msg.reactions === 'object' && !Array.isArray(msg.reactions)) ? msg.reactions : {};
+          const isEmptyObj = inc && typeof inc === 'object' && !Array.isArray(inc) && Object.keys(inc).length === 0;
+          if (isEmptyObj) {
+            // Explicit clear (empty {} = "reaction removed"). Without this the merge below kept the
+            // stale reaction, so un-reacting never visually cleared.
+            merged.reactions = {};
+          } else if (inc && msg.reactions) {
+            // Merge reactions by key instead of replacing.
+            merged.reactions = { ...base, ...inc };
+          }
+          // Collapse our optimistic 'me' placeholder once the server echoes the SAME reaction under
+          // our real phone-number key. Otherwise our single reaction is counted twice (me + realKey),
+          // which is exactly the "reaction shows as 2 until you reopen the chat" report.
+          if (merged.reactions && typeof merged.reactions === 'object' && !Array.isArray(merged.reactions) && merged.reactions.me) {
+            const meEmoji = merged.reactions.me;
+            const supersededByReal = Object.entries(merged.reactions).some(([k, v]) => k !== 'me' && v === meEmoji);
+            if (supersededByReal) {
+              const { me, ...rest } = merged.reactions as Record<string, string>;
+              merged.reactions = rest;
+            }
+          }
         }
         return merged;
       };
