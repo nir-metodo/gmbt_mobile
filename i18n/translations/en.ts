@@ -361,6 +361,7 @@ export default {
     contactName: 'Contact Name',
     contactPhone: 'Contact Phone',
     casesWithTasks: 'Cases with tasks',
+    slaBreaches: 'SLA Breaches',
   },
   quotes: {
     title: 'Quotes',

@@ -363,6 +363,7 @@ export default {
     contactName: 'שם איש קשר',
     contactPhone: 'טלפון איש קשר',
     casesWithTasks: 'פניות עם משימות',
+    slaBreaches: 'חריגות SLA',
   },
   quotes: {
     title: 'הצעות מחיר',

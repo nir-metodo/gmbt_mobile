@@ -57,6 +57,7 @@ import { notificationSound } from '../../../services/notificationSound';
 import { getDataVisibility, hasPermission, getLandingRoute } from '../../../constants/permissions';
 import { ENDPOINTS } from '../../../constants/api';
 import axiosInstance from '../../../services/api/axiosInstance';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usersApi } from '../../../services/api/users';
 import { contactsApi } from '../../../services/api/contacts';
 import { chatsApi } from '../../../services/api/chats';
@@ -101,6 +102,25 @@ interface SavedView {
   Visibility?: string;
   UserId?: string;
 }
+
+// Built-in views mirror the web Sidebar Contacts. The mobile app is VIEW-ONLY for views:
+// it shows everything created on the web (built-ins + saved), and lets the user hide,
+// reorder, or delete (own views only) — but never create new views here.
+const BUILT_IN_VIEWS: { id: string; labelKey: string; fallback: string }[] = [
+  { id: '__all__', labelKey: 'sidebar.allConversations', fallback: 'הכל' },
+  { id: '__mine__', labelKey: 'sidebar.myConversations', fallback: 'שלי' },
+  { id: '__unassigned__', labelKey: 'sidebar.unassigned', fallback: 'לא משויך' },
+  { id: '__unread__', labelKey: 'sidebar.unread', fallback: 'לא נקרא' },
+];
+
+type ViewTab = {
+  id: string;
+  label: string;
+  kind: 'builtin' | 'saved';
+  view?: SavedView;
+  shared: boolean;
+  deletable: boolean;
+};
 
 const ChatDivider = () => <Divider style={{ marginStart: 78 }} />;
 const chatKeyExtractor = (item: Chat) => item.phoneNumber;
@@ -234,12 +254,13 @@ export default function ChatsListScreen() {
   // How long the full list may sit untouched before an entry triggers a fresh FULL resync.
   const FULL_RESYNC_STALE_MS = 30000;
 
-  // Saved Views
+  // Saved Views (view-only on mobile — created on the web)
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeViewId, setActiveViewId] = useState<string>('__all__');
-  const [showSaveViewModal, setShowSaveViewModal] = useState(false);
-  const [newViewName, setNewViewName] = useState('');
-  const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
+  // View management (per-org, local): manual order + hidden tabs, plus the settings sheet.
+  const [showViewsSettings, setShowViewsSettings] = useState(false);
+  const [viewOrder, setViewOrder] = useState<string[]>([]);
+  const [hiddenViewIds, setHiddenViewIds] = useState<string[]>([]);
 
   // Advanced filters
   const [groupFilter, setGroupFilter] = useState<string[]>([]);

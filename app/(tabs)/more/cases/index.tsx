@@ -27,7 +27,7 @@ import {
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
@@ -99,6 +99,21 @@ function parseTaskDate(val: any): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// Whether a case is currently in SLA breach — mirrors the web/backend logic. Powers the "SLA
+// breaches" view opened from the aggregated digest push.
+function isCaseSlaBreached(c: any): boolean {
+  if (!c || c.resolvedAt) return false;
+  if (c.slaPaused === true || c.slaPaused === 'true') return false;
+  if (c.stageSlaBreached === true || c.slaResponseBreached === true || c.slaResolutionBreached === true) return true;
+  const parse = (v: any) => { const ms = parseTs(v); return ms || null; };
+  const hasFR = !!c.firstResponseAt;
+  const respDue = parse(c.slaResponseDueAt);
+  const resnDue = parse(c.slaResolutionDueAt);
+  const due = (!hasFR && respDue) ? respDue : resnDue;
+  if (!due) return false;
+  return (due - Date.now()) <= 0;
+}
+
 interface SavedView {
   id: string;
   Name: string;
@@ -117,6 +132,10 @@ export default function CasesListScreen() {
 
   const user = useAuthStore((s) => s.user);
   const userIsAdmin = user?.SecurityRole === 'admin' || user?.SecurityRole === 'Admin';
+  const routeParams = useLocalSearchParams<{ view?: string }>();
+
+  // "SLA breaches" fixed view — activated by the digest push (params.view === 'sla') or its tab.
+  const [slaOnly, setSlaOnly] = useState(false);
   const { contactSearch, contactResults, contactSearching, selectedContact, handleContactSearch, handleSelectContact, resetContactLookup } = useContactLookup();
 
   // ── Pagination state ────────────────────────────────────────────────────────
@@ -322,6 +341,7 @@ export default function CasesListScreen() {
     setFilterMine(false);
     setSearchQuery('');
     setTaskQuickFilter(null);
+    setSlaOnly(false);
   }, []);
 
   const saveCurrentView = useCallback(async () => {
@@ -385,12 +405,12 @@ export default function CasesListScreen() {
         return;
       }
       if (user?.organization) {
-        // Keep the full dataset when a task quick-filter is active so returning from a case detail
-        // doesn't collapse the pool to page 1 and empty out the filtered list.
-        if (taskQuickFilter) fetchAllCases();
+        // Keep the full dataset when a task quick-filter or the SLA view is active so returning from
+        // a case detail doesn't collapse the pool to page 1 and empty out the filtered list.
+        if (taskQuickFilter || slaOnly) fetchAllCases();
         else fetchPage(1, true);
       }
-    }, [user?.organization, fetchPage, fetchAllCases, taskQuickFilter])
+    }, [user?.organization, fetchPage, fetchAllCases, taskQuickFilter, slaOnly])
   );
 
   const onEndReached = useCallback(() => {
@@ -450,6 +470,7 @@ export default function CasesListScreen() {
     setTaskQuickFilter(type);
     setActiveViewId('__all');
     setFilterMine(false);
+    setSlaOnly(false);
     setTaskFilterLoading(true);
     try {
       const refresh = fetchCaseTaskBuckets();
@@ -462,10 +483,10 @@ export default function CasesListScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    // Preserve the full dataset when a task quick-filter is active (a page-1 reset would empty it).
-    await (taskQuickFilter ? fetchAllCases() : fetchPage(1, true));
+    // Preserve the full dataset when a task quick-filter or SLA view is active (a page-1 reset would empty it).
+    await ((taskQuickFilter || slaOnly) ? fetchAllCases() : fetchPage(1, true));
     setRefreshing(false);
-  }, [fetchPage, fetchAllCases, taskQuickFilter]);
+  }, [fetchPage, fetchAllCases, taskQuickFilter, slaOnly]);
 
   const toggleSearch = useCallback(() => {
     const willShow = !searchVisible;
@@ -488,6 +509,9 @@ export default function CasesListScreen() {
     if (taskQuickFilter) {
       const ids = taskFilterSets[taskQuickFilter];
       result = result.filter((c) => ids.has(c.id));
+    }
+    if (slaOnly) {
+      result = result.filter(isCaseSlaBreached);
     }
     result.sort((a: any, b: any) => {
       let aVal: number | string = 0;
@@ -514,7 +538,19 @@ export default function CasesListScreen() {
     });
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, taskQuickFilter, taskFilterSets, sortKey, sortDir]);
+  }, [cases, taskQuickFilter, taskFilterSets, sortKey, sortDir, slaOnly]);
+
+  // Deep-link from the SLA digest push: open straight into the breaches view (loads full dataset).
+  useEffect(() => {
+    if (routeParams?.view === 'sla') {
+      setSlaOnly(true);
+      setActiveViewId('__sla');
+      setTaskQuickFilter(null);
+      setFilterMine(false);
+      fetchAllCases();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeParams?.view]);
 
 
   const openCase = useCallback(
@@ -844,13 +880,37 @@ export default function CasesListScreen() {
             );
           })()}
           <Pressable
-            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setTaskQuickFilter(null); }}
+            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setTaskQuickFilter(null); setSlaOnly(false); }}
             style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
           >
             <Text style={[styles.viewTabText, { color: activeViewId === '__mine' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
               {t('leads.viewMine', 'שלי')}
             </Text>
           </Pressable>
+          {(() => {
+            const slaCount = cases.filter(isCaseSlaBreached).length;
+            const active = slaOnly;
+            const color = '#ef4444';
+            return (
+              <Pressable
+                onPress={() => {
+                  if (slaOnly) { setSlaOnly(false); setActiveViewId('__all'); }
+                  else { setSlaOnly(true); setActiveViewId('__sla'); setTaskQuickFilter(null); setFilterMine(false); fetchAllCases(); }
+                }}
+                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, active && { borderBottomColor: color, borderBottomWidth: 2 }]}
+              >
+                <MaterialCommunityIcons name="alert-decagram-outline" size={14} color={active ? color : theme.colors.onSurfaceVariant} />
+                <Text style={[styles.viewTabText, { color: active ? color : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
+                  {t('cases.slaBreaches', 'חריגות SLA')}
+                </Text>
+                {slaCount > 0 && (
+                  <View style={{ backgroundColor: color, borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{slaCount}</Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })()}
           {([
             { type: 'today' as TaskQuickFilter, icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
             { type: 'upcoming' as TaskQuickFilter, icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },

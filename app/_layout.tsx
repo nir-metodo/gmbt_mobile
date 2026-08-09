@@ -219,6 +219,10 @@ export default function RootLayout() {
             router.push('/(tabs)/more/cases');
           }
           break;
+        case 'caseSlaDigest':
+          // Aggregated SLA breach digest → open the cases list straight into the "SLA breaches" view.
+          router.push({ pathname: '/(tabs)/more/cases', params: { view: 'sla' } });
+          break;
         case 'contactAssigned':
           if (data.contactPhone || data.phoneNumber) {
             useChatStore.getState().requestListReload();
