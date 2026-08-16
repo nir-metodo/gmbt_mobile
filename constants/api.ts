@@ -34,6 +34,9 @@ export const ENDPOINTS = {
   GET_STARRED_MESSAGES: '/api/Webhooks/GetStarredMessages',
   CREATE_OUTBOUND_MESSAGE: '/api/Webhooks/CreateOutboundMessage',
   CREATE_MEDIA_MESSAGE: '/api/Webhooks/CreateWabaMediaMessages',
+  // Server-side media fetch used when forwarding a media message to new recipients (mirrors web —
+  // downloads the source media as base64 so it can be re-uploaded without storage-bucket CORS).
+  DOWNLOAD_MEDIA_FOR_FORWARD: '/api/Webhooks/DownloadMediaForForward',
   SCHEDULE_MESSAGE: '/api/Webhooks/ScheduleMessage',
   UPDATE_SCHEDULED_MESSAGE: '/api/Webhooks/UpdateScheduledMessage',
   CANCEL_SCHEDULED_MESSAGE: '/api/Webhooks/CancelScheduledMessage',
@@ -308,7 +311,9 @@ export const ENDPOINTS = {
   UPDATE_CALENDAR_EVENT: '/api/Webhooks/UpdateCalendarEvent',
   DELETE_CALENDAR_EVENT: '/api/Webhooks/DeleteCalendarEvent',
   GET_CALENDARS: '/api/Webhooks/GetCalendars',
+  SYNC_CALENDAR: '/api/Webhooks/SyncCalendarFromProvider',
   GET_CONNECTIONS: '/api/Webhooks/GetConnections',
+  GET_CALENDAR_SETTINGS: '/api/Webhooks/GetCalendarSettings',
 
   // Email
   SEND_EMAIL: '/api/Webhooks/contact-form/send-email',

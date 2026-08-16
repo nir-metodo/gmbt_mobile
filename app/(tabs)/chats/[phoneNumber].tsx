@@ -63,6 +63,7 @@ import { MessageBubble } from '../../../components/chat/MessageBubble';
 import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/ChatInput';
 import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
+import ForwardMessageSheet from '../../../components/chat/ForwardMessageSheet';
 import AddTaskSheet from '../../../components/AddTaskSheet';
 import ZoomableImage from '../../../components/ZoomableImage';
 import { chatsApi } from '../../../services/api/chats';
@@ -495,6 +496,10 @@ export default function ChatConversationScreen() {
   // Inline tag input
   const [showAddTagInline, setShowAddTagInline] = useState(false);
   const [newTagText, setNewTagText] = useState('');
+
+  // Forward message sheet
+  const [showForwardSheet, setShowForwardSheet] = useState(false);
+  const [forwardMessage, setForwardMessage] = useState<Message | null>(null);
 
   // Assign Owner modal
   const [showAssignOwnerModal, setShowAssignOwnerModal] = useState(false);
@@ -1118,6 +1123,7 @@ export default function ChatConversationScreen() {
     setAssigningOwner(true);
     try {
       await contactsApi.updateOwner(user.organization, phoneNumber as string, ownerId, user.fullname || user.displayName || 'system');
+      addOrUpdateChat({ phoneNumber: phoneNumber as string, ownerId, ownerName } as any);
       setShowAssignOwnerModal(false);
       Alert.alert('✅', isRTL ? `בעלות שויכה ל-${ownerName}` : `Assigned to ${ownerName}`);
     } catch {
@@ -1125,7 +1131,7 @@ export default function ChatConversationScreen() {
     } finally {
       setAssigningOwner(false);
     }
-  }, [user?.organization, phoneNumber, isRTL]);
+  }, [user?.organization, phoneNumber, isRTL, addOrUpdateChat]);
 
   const isStatusLoading = conversationLive === null;
 
@@ -2093,12 +2099,16 @@ export default function ChatConversationScreen() {
       const hasContact = !!(existing && (existing.id || existing.phoneNumber));
       const existingName = (existing?.name || (existing as any)?.fullName || (existing as any)?.contactName || '').trim();
       if (!hasContact) {
+        const myId = user.uID || user.userId || '';
+        const myName = user.fullname || user.name || '';
         await contactsApi.create(
           user.organization,
-          { phoneNumber: phoneNumber as string, name: phoneNumber as string },
-          user.uID || user.userId,
-          user.fullname,
+          { phoneNumber: phoneNumber as string, name: phoneNumber as string, ownerId: myId, ownerName: myName } as any,
+          myId,
+          myName,
         );
+        // Reflect ownership immediately in the conversation header + chat list (creator = owner).
+        addOrUpdateChat({ phoneNumber: phoneNumber as string, ownerId: myId, ownerName: myName } as any);
       } else if (!existingName) {
         // A record exists but has no name (e.g. auto-created) — label it with the phone number.
         await contactsApi.update(
@@ -2112,7 +2122,7 @@ export default function ChatConversationScreen() {
       // Allow a retry on the next send if this failed.
       ensuredContactRef.current = false;
     }
-  }, [user, phoneNumber]);
+  }, [user, phoneNumber, addOrUpdateChat]);
 
   const handleSend = useCallback(
     async (text: string) => {
@@ -2309,6 +2319,14 @@ export default function ChatConversationScreen() {
   const handleSwipeToReply = useCallback((message: Message) => {
     setReplyToMessage(message);
   }, []);
+
+  const handleForward = useCallback(() => {
+    if (!selectedMessage) return;
+    setForwardMessage(selectedMessage);
+    setSelectedMessage(null);
+    setShowReactions(false);
+    setShowForwardSheet(true);
+  }, [selectedMessage]);
 
   const handleSendReaction = useCallback(async (emoji: string) => {
     if (!user?.organization || !selectedMessage || !phoneNumber) return;
@@ -2867,6 +2885,18 @@ export default function ChatConversationScreen() {
 
         {/* Status / Category bar */}
         <View style={[styles.chatMetaBar, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant || 'rgba(0,0,0,0.06)' }]}>
+          {/* Owner chip — shows the conversation owner (or "unassigned"); tap to assign */}
+          <Pressable
+            onPress={() => setShowAssignOwnerModal(true)}
+            style={[styles.metaChip, { backgroundColor: chat?.ownerName ? 'rgba(46,97,85,0.12)' : '#fef3c7' }]}
+          >
+            <MaterialCommunityIcons name="account" size={12} color={chat?.ownerName ? '#2e6155' : '#b45309'} />
+            <Text style={{ fontSize: 11, fontWeight: '600', color: chat?.ownerName ? '#2e6155' : '#b45309', marginStart: 4 }} numberOfLines={1}>
+              {chat?.ownerName || (isRTL ? 'לא משויך' : 'Unassigned')}
+            </Text>
+            <MaterialCommunityIcons name="chevron-down" size={14} color={chat?.ownerName ? '#2e6155' : '#b45309'} style={{ marginStart: 2 }} />
+          </Pressable>
+
           <Menu
             visible={showStatusMenu}
             onDismiss={() => setShowStatusMenu(false)}
@@ -4036,6 +4066,19 @@ export default function ChatConversationScreen() {
                 </Text>
               </Pressable>
 
+              <Pressable
+                onPress={handleForward}
+                style={({ pressed }) => [
+                  styles.actionItem,
+                  pressed && { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+              >
+                <MaterialCommunityIcons name="share" size={22} color={theme.colors.onSurface} />
+                <Text variant="bodyLarge" style={{ marginStart: 16, color: theme.colors.onSurface }}>
+                  {t('chats.forward', 'העבר')}
+                </Text>
+              </Pressable>
+
               {/* Reactions row */}
               <View style={styles.reactionsRow}>
                 {['👍', '❤️', '😂', '😮', '😢', '🙏', '✅', '🔥'].map((emoji) => (
@@ -4051,6 +4094,13 @@ export default function ChatConversationScreen() {
             </View>
           </Pressable>
         </Modal>
+
+        {/* Forward message sheet */}
+        <ForwardMessageSheet
+          visible={showForwardSheet}
+          sourceMessage={forwardMessage}
+          onClose={() => { setShowForwardSheet(false); setForwardMessage(null); }}
+        />
 
         {/* Quick Messages Bottom Sheet */}
         <Modal

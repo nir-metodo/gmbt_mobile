@@ -22,6 +22,44 @@ export const contactsApi = {
     return Array.isArray(items) ? items : [];
   },
 
+  // Contact fetch used by the Forward picker: supports a search term plus the same server-side
+  // owner-name / tag filters the web sidebar views apply, so forwarding mirrors the chat views.
+  async searchForForward(
+    organization: string,
+    options: {
+      search?: string;
+      ownerNames?: string[];
+      tags?: string[];
+      userId?: string;
+      dataVisibility?: string;
+      pageSize?: number;
+    },
+  ): Promise<Contact[]> {
+    const payload: any = {
+      organizationiD: organization,
+      pageNumber: 1,
+      pageSize: options.pageSize || 200,
+      userId: options.userId || '',
+      dataVisibility: options.dataVisibility || 'all',
+    };
+    // Phone-like search → last 9 digits (matches both local 05x… and intl 9725…); else raw text.
+    const raw = (options.search || '').trim();
+    if (raw) {
+      const digits = raw.replace(/\D/g, '');
+      const isPhone = /^[+\d][\d\s\-().]*$/.test(raw) && digits.length >= 3;
+      payload.searchTerm = isPhone ? (digits.length >= 9 ? digits.slice(-9) : digits) : raw;
+    }
+    if (options.ownerNames?.length) payload.filterOwnerNames = options.ownerNames;
+    if (options.tags?.length) {
+      payload.filterTags = options.tags;
+      payload.filterTagsOperator = 'contains_any';
+    }
+    const response = await axiosInstance.post(ENDPOINTS.GET_CONTACTS_PAGINATED, payload);
+    const data = response.data;
+    const items = data?.Contacts || data?.Data || data?.data || (Array.isArray(data) ? data : []);
+    return Array.isArray(items) ? items : [];
+  },
+
   async getById(organization: string, contactId: string): Promise<Contact | null> {
     // Prefer the full record (incl. dynamic/custom fields) like the web ContactFormView does.
     try {
@@ -64,6 +102,10 @@ export const contactsApi = {
   ): Promise<any> {
     const now = new Date().toISOString();
     const cleanedNumber = (contact.phoneNumber || contact.id || '').replace(/\D/g, '');
+    // The creator becomes the contact owner by default (mirrors the web + backend behavior), so the
+    // person who adds a contact immediately sees themselves as the owner in Contacts and in chats.
+    const ownerId = (contact as any).ownerId || userId || '';
+    const ownerName = (contact as any).ownerName || userName || '';
     const response = await axiosInstance.post(ENDPOINTS.CREATE_CONTACT, {
       organization,
       contactData: {
@@ -80,6 +122,8 @@ export const contactsApi = {
         id: cleanedNumber,
         keys: contact.keys || '',
         ...contact,
+        ownerId,
+        ownerName,
       },
       user: {
         userId: userId || '',

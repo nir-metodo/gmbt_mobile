@@ -15,6 +15,9 @@ export interface CalendarEvent {
   location: string;
   color: string;
   source: string;
+  // Provenance for events synced FROM an external calendar (Google/Microsoft). Empty for local events.
+  sourceCalendarName?: string;
+  sourceExternalCalendarId?: string;
   userId: string;
   organization: string;
   attendeeEmail: string;
@@ -29,6 +32,8 @@ export interface CalendarEvent {
   reminderMinutesBefore: number;
   pushReminderEnabled?: boolean;
   shared?: boolean;
+  // Event status: 'confirmed' | 'tentative' | 'cancelled' (mirrors the web calendar).
+  status?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -44,7 +49,21 @@ export interface CalendarInfo {
   // Per-user color overrides (userId → hex), mirrors the web calendar so a shared event shows in the
   // assigned team member's color.
   userColors?: Record<string, string>;
+  // External calendars linked INTO this (internal) host calendar for two-way sync. Used to resolve
+  // which connection a synced external event belongs to.
+  linkedExternalCalendars?: Array<{ connectionId: string; externalCalendarId: string; color?: string }>;
   isDefault?: boolean;
+  // Last provider-sync failure surfaced by the backend, so the UI can warn the user (mirrors web).
+  lastSyncError?: string;
+}
+
+export interface CalendarSettings {
+  defaultView: string;       // 'day' | 'week' | 'month' | 'list' (mobile maps day/week → month)
+  defaultDuration: number;   // minutes
+  defaultCalendarId: string;
+  notifyBeforeEvent: boolean;
+  notifyBeforeMinutes: number;
+  defaultAssignSelf: boolean; // pre-assign new events to the creator (editable in the form)
 }
 
 export interface Connection {
@@ -80,6 +99,8 @@ function normalizeEvent(raw: any): CalendarEvent {
     location: raw.location || raw.Location || '',
     color: raw.color || raw.Color || 'green',
     source: raw.source || raw.Source || 'internal',
+    sourceCalendarName: raw.sourceCalendarName || raw.SourceCalendarName || '',
+    sourceExternalCalendarId: raw.sourceExternalCalendarId ?? raw.SourceExternalCalendarId ?? '',
     userId: raw.userId || raw.UserId || '',
     organization: raw.organization || raw.Organization || '',
     attendeeEmail: raw.attendeeEmail || raw.AttendeeEmail || '',
@@ -94,6 +115,7 @@ function normalizeEvent(raw: any): CalendarEvent {
     reminderMinutesBefore: raw.reminderMinutesBefore ?? raw.ReminderMinutesBefore ?? 15,
     pushReminderEnabled: raw.pushReminderEnabled ?? raw.PushReminderEnabled ?? false,
     shared: (raw.shared ?? raw.Shared) !== false, // legacy events (no field) default to shared
+    status: (raw.status || raw.Status || 'confirmed').toString().toLowerCase(),
     createdAt: raw.createdAt || raw.CreatedAt || '',
     updatedAt: raw.updatedAt || raw.UpdatedAt || '',
   };
@@ -152,8 +174,38 @@ export const calendarApi = {
       isShared: c.isShared || c.IsShared || false,
       sharedWithUserIds: c.sharedWithUserIds || c.SharedWithUserIds || [],
       userColors: c.userColors || c.UserColors || {},
+      linkedExternalCalendars: Array.isArray(c.linkedExternalCalendars || c.LinkedExternalCalendars)
+        ? (c.linkedExternalCalendars || c.LinkedExternalCalendars)
+        : [],
       isDefault: c.isDefault || c.IsDefault || false,
+      lastSyncError: c.lastSyncError || c.LastSyncError || '',
     }));
+  },
+
+  // Org/user calendar preferences (default view/duration/calendar + reminder defaults). Mirrors the
+  // web app's GetCalendarSettings. Returns sensible fallbacks on any error.
+  async getSettings(organization: string, userId?: string): Promise<CalendarSettings> {
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_CALENDAR_SETTINGS, { organization, userId });
+      const s = response.data || {};
+      return {
+        defaultView: (s.defaultView || s.DefaultView || '').toString().toLowerCase(),
+        defaultDuration: Number(s.defaultDuration ?? s.DefaultDuration ?? 60),
+        defaultCalendarId: s.defaultCalendarId || s.DefaultCalendarId || '',
+        notifyBeforeEvent: (s.notifyBeforeEvent ?? s.NotifyBeforeEvent) !== false,
+        notifyBeforeMinutes: Number(s.notifyBeforeMinutes ?? s.NotifyBeforeMinutes ?? 15),
+        defaultAssignSelf: (s.defaultAssignSelf ?? s.DefaultAssignSelf) !== false,
+      };
+    } catch {
+      return { defaultView: '', defaultDuration: 60, defaultCalendarId: '', notifyBeforeEvent: true, notifyBeforeMinutes: 15, defaultAssignSelf: true };
+    }
+  },
+
+  // Pull the latest events from a calendar's external provider (Google/Microsoft) into Gambot, so
+  // externally-created events show up here — mirrors the web app's per-calendar sync button.
+  async syncCalendar(organization: string, calendarId: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.SYNC_CALENDAR, { organization, calendarId });
+    return response.data;
   },
 
   async getConnections(organization: string): Promise<Connection[]> {

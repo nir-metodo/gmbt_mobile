@@ -145,6 +145,16 @@ export default function ContactDetailScreen() {
   const [consentCustomSource, setConsentCustomSource] = useState('');
   const [consentType, setConsentType] = useState('Explicit');
 
+  // New contact: default the owner to the creating user (creator = owner) so it's visible in the
+  // form immediately and persisted on save — matching the web contact form.
+  useEffect(() => {
+    if (!isNew) return;
+    const myId = user?.uID || user?.userId || '';
+    const myName = user?.fullname || user?.name || '';
+    if (!myId) return;
+    setForm((prev) => ((prev as any).ownerId ? prev : ({ ...prev, ownerId: myId, ownerName: myName, contactOwner: myId } as any)));
+  }, [isNew, user]);
+
   useEffect(() => {
     // Always load the full record for an existing contact (even if a sparse copy is in the list
     // store) so the dynamic/custom fields are available for viewing and editing.

@@ -7,7 +7,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Calendar from 'expo-calendar';
 import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { useAuthStore } from '../../../../stores/authStore';
-import { calendarApi, CalendarEvent, CalendarInfo, Connection } from '../../../../services/api/calendar';
+import { calendarApi, CalendarEvent, CalendarInfo, CalendarSettings, Connection } from '../../../../services/api/calendar';
 import { usersApi } from '../../../../services/api/users';
 import type { OrgUser } from '../../../../types';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
@@ -25,6 +25,16 @@ const COLOR_OPTIONS: { id: string; dot: string }[] = [
   { id: 'teal', dot: '#14b8a6' },
   { id: 'orange', dot: '#f97316' },
 ];
+
+// Event status (mirrors the web calendar). Cancelled events render struck-through + dimmed.
+const STATUS_KEYS = ['confirmed', 'tentative', 'cancelled'] as const;
+type StatusKey = (typeof STATUS_KEYS)[number];
+const statusLabel = (key: string, he: boolean) =>
+  (({
+    confirmed: he ? 'מאושר' : 'Confirmed',
+    tentative: he ? 'טנטטיבי' : 'Tentative',
+    cancelled: he ? 'בוטל' : 'Cancelled',
+  } as Record<string, string>)[key] || key);
 
 const RECURRENCE_KEYS = ['none', 'daily', 'weekly', 'monthly', 'yearly'] as const;
 type RecurrenceKey = (typeof RECURRENCE_KEYS)[number];
@@ -101,6 +111,14 @@ function formatTime(time: string): string {
   return time;
 }
 
+// Add `minutes` to an 'HH:mm' string, clamping to the same day (23:59 max). Used to derive the
+// default end time from the start time + the org's default event duration.
+function addMinutesToTime(time: string, minutes: number): string {
+  const [h, m] = (time || '09:00').split(':').map(Number);
+  const total = Math.min((h || 0) * 60 + (m || 0) + (minutes || 60), 23 * 60 + 59);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
 function formatDisplayDate(dateStr: string): string {
   if (!dateStr) return '';
   const parts = dateStr.split('-');
@@ -124,6 +142,11 @@ export default function CalendarScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Org/user calendar preferences (default view/duration/calendar + reminder defaults).
+  const [calPrefs, setCalPrefs] = useState<CalendarSettings>({ defaultView: '', defaultDuration: 60, defaultCalendarId: '', notifyBeforeEvent: true, notifyBeforeMinutes: 15, defaultAssignSelf: true });
+  // Apply the preferred default view only once, so it never fights the user's later navigation.
+  const appliedDefaultView = React.useRef(false);
+
   // View mode: agenda-style list or a real month grid calendar.
   const [viewMode, setViewMode] = useState<'month' | 'list'>('month');
   // Month the grid is showing + the day the user tapped (drives the day-agenda below the grid).
@@ -132,6 +155,9 @@ export default function CalendarScreen() {
 
   // Filter
   const [dateFilter, setDateFilter] = useState<'upcoming' | 'today' | 'week' | 'all'>('upcoming');
+  // Filter the calendar down to a single external (Google/Microsoft) source calendar. Only surfaced
+  // when at least one external calendar actually has synced events.
+  const [externalCalFilter, setExternalCalFilter] = useState<string>('all');
 
   // Calendar event visibility mirrors the web app: admins see every event in the org, while
   // regular users only get their own events + events on shared calendars (enforced server-side
@@ -169,6 +195,8 @@ export default function CalendarScreen() {
   const [showReminderMenu, setShowReminderMenu] = useState(false);
   const [formShared, setFormShared] = useState(true);
   const [formColor, setFormColor] = useState('auto');
+  const [formStatus, setFormStatus] = useState<string>('confirmed');
+  const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [formRecurrence, setFormRecurrence] = useState<string>('none');
   const [formRecurrenceUntil, setFormRecurrenceUntil] = useState<Date | null>(null);
   const [showRecurrenceMenu, setShowRecurrenceMenu] = useState(false);
@@ -191,28 +219,95 @@ export default function CalendarScreen() {
 
   const org = user?.organization || '';
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (withSync = false) => {
     if (!org) return;
+    const uid = isAdmin ? undefined : (user?.userId || user?.uID || undefined);
     try {
-      const [evts, cals, conns, usrs] = await Promise.all([
-        calendarApi.getEvents(org, isAdmin ? undefined : (user?.userId || user?.uID || undefined)),
-        calendarApi.getCalendars(org, isAdmin ? undefined : (user?.userId || user?.uID || undefined)),
+      const [evts, cals, conns, usrs, prefs] = await Promise.all([
+        calendarApi.getEvents(org, uid),
+        calendarApi.getCalendars(org, uid),
         calendarApi.getConnections(org),
         usersApi.getAll(org).catch(() => [] as OrgUser[]),
+        calendarApi.getSettings(org, user?.userId || user?.uID || undefined),
       ]);
       setEvents(evts);
       setCalendars(cals);
       setConnections(conns);
       setOrgUsers(usrs);
+      setCalPrefs(prefs);
+      // Apply the preferred default view once. Mobile only has 'month' + 'list', so day/week map to
+      // the month grid (which drives a per-day agenda anyway).
+      if (!appliedDefaultView.current && prefs.defaultView) {
+        appliedDefaultView.current = true;
+        setViewMode(prefs.defaultView === 'list' ? 'list' : 'month');
+      }
+      // Paint immediately, then pull fresh external events in the background so they "just appear"
+      // like on the web (which relies on the same SyncCalendarFromProvider).
+      setLoading(false);
+      setRefreshing(false);
+      if (withSync) {
+        const external = cals.filter(c =>
+          (c.type || 'internal').toLowerCase() !== 'internal' ||
+          (Array.isArray(c.linkedExternalCalendars) && c.linkedExternalCalendars.length > 0)
+        );
+        if (external.length > 0) {
+          await Promise.all(external.map(c => calendarApi.syncCalendar(org, c.id).catch(() => {})));
+          try {
+            const fresh = await calendarApi.getEvents(org, uid);
+            setEvents(fresh);
+          } catch { /* keep already-shown events */ }
+        }
+      }
     } catch (e) {
       console.error('Calendar load error:', e);
-    } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [org, user?.userId, user?.uID, isAdmin]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  // Sync external calendars on first load so externally-created events are displayed.
+  useEffect(() => { loadData(true); }, [loadData]);
+
+  // Identify the EXTERNAL source calendar an event was synced from (Google/Microsoft). Internal
+  // events return '' (no source). The key combines the external calendar id + its display name so
+  // two different "primary" calendars (id="") from different accounts don't collapse into one.
+  const evExternalKey = useCallback((ev: CalendarEvent): string => {
+    const source = (ev.source || '').toLowerCase();
+    const name = ev.sourceCalendarName || '';
+    const id = ev.sourceExternalCalendarId || '';
+    if ((!source || source === 'internal') && !name) return '';
+    return `${id}||${name}`;
+  }, []);
+
+  // Distinct external calendars that currently have synced events — powers the "external calendar"
+  // filter, shown only when at least one such calendar is present.
+  const externalCalendarOptions = useMemo(() => {
+    const map = new Map<string, { key: string; name: string; source: string }>();
+    for (const ev of events) {
+      const key = evExternalKey(ev);
+      if (!key) continue;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          name: ev.sourceCalendarName || (isRTL ? 'יומן חיצוני' : 'External calendar'),
+          source: (ev.source || '').toLowerCase(),
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [events, evExternalKey, isRTL]);
+
+  // Calendars whose last provider sync failed — surfaced as a warning banner so the user knows
+  // externally-created events may be stale (mirrors the web app's sync-error indicator).
+  const syncErrorCalendars = useMemo(
+    () => calendars.filter(c => !!(c.lastSyncError && c.lastSyncError.trim())),
+    [calendars],
+  );
+
+  // Apply the "external calendar" filter before recurrence expansion (mirrors the web).
+  const sourceFilteredEvents = useMemo(() => (
+    externalCalFilter === 'all' ? events : events.filter(e => evExternalKey(e) === externalCalFilter)
+  ), [events, externalCalFilter, evExternalKey]);
 
   // Recurring events are materialized into occurrences within the range relevant to the current view:
   // the visible month grid for the month view, or a wide window (−1..+6 months) for the list.
@@ -231,8 +326,8 @@ export default function CalendarScreen() {
       rangeStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       rangeEnd = new Date(now.getFullYear(), now.getMonth() + 6, 0);
     }
-    return expandEvents(events, rangeStart, rangeEnd);
-  }, [events, viewMode, monthCursor]);
+    return expandEvents(sourceFilteredEvents, rangeStart, rangeEnd);
+  }, [sourceFilteredEvents, viewMode, monthCursor]);
 
   const filteredEvents = useMemo(() => {
     const today = toLocalDateStr(new Date());
@@ -353,9 +448,9 @@ export default function CalendarScreen() {
     setFormStartDate(now);
     setFormEndDate(now);
     setFormStartTime('09:00');
-    setFormEndTime('10:00');
+    setFormEndTime(addMinutesToTime('09:00', calPrefs.defaultDuration));
     setFormAllDay(false);
-    setFormCalendarId(calendars[0]?.id || '');
+    setFormCalendarId(calPrefs.defaultCalendarId || calendars[0]?.id || '');
     setFormConnectionId(connections[0]?.id || '');
     setFormAttendees([]);
     setFormAttendeeInput('');
@@ -363,13 +458,17 @@ export default function CalendarScreen() {
     setFormLinkedEntityName('');
     setFormLinkedEntityType('');
     setFormLinkedEntityId('');
-    setFormReminderEnabled(true);
-    setFormReminderMinutes(15);
+    setFormReminderEnabled(calPrefs.notifyBeforeEvent);
+    setFormReminderMinutes(calPrefs.notifyBeforeMinutes);
     setFormShared(true);
     setFormColor('auto');
+    setFormStatus('confirmed');
     setFormRecurrence('none');
     setFormRecurrenceUntil(null);
-    setFormLinkedUsers([]);
+    // Pre-assign the creator to the new event (editable) when the pref is on — mirrors the web.
+    const meId = user?.userId || user?.uID || '';
+    const meName = user?.name || (user as any)?.fullname || (user as any)?.displayName || '';
+    setFormLinkedUsers(calPrefs.defaultAssignSelf !== false && meId ? [{ id: meId, name: meName }] : []);
     setModalVisible(true);
   };
 
@@ -412,6 +511,7 @@ export default function CalendarScreen() {
     setFormReminderMinutes(event.reminderMinutesBefore ?? 15);
     setFormShared(event.shared !== false);
     setFormColor(event.color || 'auto');
+    setFormStatus(event.status || 'confirmed');
     setFormRecurrence(event.recurrence || 'none');
     setFormRecurrenceUntil(parseLocalDate(event.recurrenceUntil));
     setFormLinkedUsers(
@@ -521,6 +621,7 @@ export default function CalendarScreen() {
         reminderMinutesBefore: formReminderMinutes,
         pushReminderEnabled: formReminderEnabled,
         shared: formShared,
+        status: formStatus,
       };
 
       if (editingEvent) {
@@ -566,19 +667,39 @@ export default function CalendarScreen() {
   const renderEventCard = (event: CalendarEvent) => {
     const isRecurring = !!event.recurrence && event.recurrence !== 'none';
     const linkedUserNames = (event.linkedEntities || []).filter(l => l.type === 'user').map(l => l.name);
+    const status = (event.status || 'confirmed').toLowerCase();
+    const cancelled = status === 'cancelled';
+    const tentative = status === 'tentative';
+    const isMultiDay = !!event.endDate && event.endDate !== event.startDate;
+    // All-day / multi-day events show a date (range) instead of a time; timed events show the time.
+    const whenText = event.allDay || isMultiDay
+      ? (isMultiDay ? `${formatDisplayDate(event.startDate)} – ${formatDisplayDate(event.endDate)}` : formatDisplayDate(event.startDate))
+      : `${formatDisplayDate(event.startDate)} ${formatTime(event.startTime)}${event.endTime ? ` - ${formatTime(event.endTime)}` : ''}`;
     return (
-    <Card key={`${event.id}-${event.startDate}`} style={[styles.eventCard, { backgroundColor: theme.custom.cardBackground, borderStartWidth: 4, borderStartColor: getEventColor(event) }]} onPress={() => openEditModal(event)}>
+    <Card key={`${event.id}-${event.startDate}`} style={[styles.eventCard, { backgroundColor: theme.custom.cardBackground, borderStartWidth: 4, borderStartColor: getEventColor(event), opacity: cancelled ? 0.55 : 1 }]} onPress={() => openEditModal(event)}>
       <Card.Content>
         <View style={styles.eventHeader}>
           <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
               {isRecurring && <MaterialCommunityIcons name="repeat-variant" size={16} color={getEventColor(event)} />}
-              <Text style={[styles.eventTitle, { color: theme.colors.onSurface, flexShrink: 1 }]}>{event.title}</Text>
+              <Text style={[styles.eventTitle, { color: theme.colors.onSurface, flexShrink: 1, textDecorationLine: cancelled ? 'line-through' : 'none' }]}>{event.title}</Text>
+              {(event.allDay || isMultiDay) && (
+                <View style={[styles.tagChip, { backgroundColor: `${getEventColor(event)}22` }]}>
+                  <Text style={[styles.tagChipText, { color: getEventColor(event) }]}>{isRTL ? (isMultiDay ? 'רב-יומי' : 'יום שלם') : (isMultiDay ? 'Multi-day' : 'All-day')}</Text>
+                </View>
+              )}
+              {tentative && (
+                <View style={[styles.tagChip, { backgroundColor: '#f59e0b22' }]}>
+                  <Text style={[styles.tagChipText, { color: '#b45309' }]}>{statusLabel('tentative', isRTL)}</Text>
+                </View>
+              )}
+              {cancelled && (
+                <View style={[styles.tagChip, { backgroundColor: '#ef444422' }]}>
+                  <Text style={[styles.tagChipText, { color: '#b91c1c' }]}>{statusLabel('cancelled', isRTL)}</Text>
+                </View>
+              )}
             </View>
-            <Text style={[styles.eventDate, { color: theme.colors.onSurfaceVariant }]}>
-              {formatDisplayDate(event.startDate)} {formatTime(event.startTime)}
-              {event.endTime ? ` - ${formatTime(event.endTime)}` : ''}
-            </Text>
+            <Text style={[styles.eventDate, { color: theme.colors.onSurfaceVariant }]}>{whenText}</Text>
           </View>
           <IconButton icon="delete-outline" size={20} iconColor="#ef4444" onPress={() => handleDelete(event)} />
         </View>
@@ -617,6 +738,35 @@ export default function CalendarScreen() {
     return c ? `${c.provider === 'google' ? 'Google' : 'Microsoft'} — ${c.email}` : '';
   };
 
+  // Is this event synced FROM an external calendar (vs created locally)?
+  const isExternalEvent = (ev?: CalendarEvent | null): boolean => !!ev && (
+    ['google', 'microsoft'].includes((ev.source || '').toLowerCase()) || !!ev.sourceCalendarName || !!ev.sourceExternalCalendarId
+  );
+
+  // For a synced external event, resolve which CONNECTION (account) it belongs to. The event doesn't
+  // store connectionId itself — derive it from the host calendar's linked externals, matching on the
+  // event's sourceExternalCalendarId. Falls back to the provider name.
+  const getEventExternalConnLabel = (ev: CalendarEvent): string => {
+    const cal = calendars.find(c => c.id === ev.calendarId);
+    let connectionId = '';
+    if (cal) {
+      const calType = (cal.type || 'internal').toLowerCase();
+      if (calType !== 'internal' && cal.connectionId) {
+        connectionId = cal.connectionId;
+      } else {
+        const linked = cal.linkedExternalCalendars || [];
+        const match = linked.find(l => (l.externalCalendarId || '') === (ev.sourceExternalCalendarId || ''));
+        connectionId = match?.connectionId || (linked.length === 1 ? linked[0].connectionId : '');
+      }
+    }
+    const conn = connections.find(c => c.id === connectionId);
+    if (conn) return `${conn.provider === 'google' ? 'Google' : 'Microsoft'} — ${conn.email}`;
+    const s = (ev.source || '').toLowerCase();
+    if (s === 'google') return 'Google';
+    if (s === 'microsoft') return 'Microsoft';
+    return '';
+  };
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -636,8 +786,47 @@ export default function CalendarScreen() {
           onPress={() => setViewMode(m => (m === 'month' ? 'list' : 'month'))}
           iconColor={theme.colors.onSurface}
         />
-        <IconButton icon="refresh" onPress={() => { setRefreshing(true); loadData(); }} iconColor={theme.colors.onSurface} />
+        <IconButton icon="refresh" onPress={() => { setRefreshing(true); loadData(true); }} iconColor={theme.colors.onSurface} />
       </View>
+
+      {/* External-calendar filter — only when there are external calendars with synced events. */}
+      {externalCalendarOptions.length > 0 && (
+        <View style={[styles.extFilterRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant }]}>
+          <MaterialCommunityIcons name="calendar-sync-outline" size={16} color={theme.colors.onSurfaceVariant} style={{ marginHorizontal: 6 }} />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingRight: 8 }}>
+            {[{ key: 'all', name: isRTL ? 'הכול' : 'All', source: '' }, ...externalCalendarOptions].map(opt => (
+              <Chip
+                key={opt.key}
+                selected={externalCalFilter === opt.key}
+                onPress={() => setExternalCalFilter(opt.key)}
+                compact
+                style={[{ backgroundColor: isDark ? theme.colors.surfaceVariant : '#f3f4f6' }, externalCalFilter === opt.key && styles.filterChipActive]}
+                textStyle={[{ fontSize: 12, color: theme.colors.onSurfaceVariant }, externalCalFilter === opt.key && styles.filterChipTextActive]}
+              >
+                {(opt.source === 'google' ? '🔴 ' : opt.source === 'microsoft' ? '🔵 ' : '')}{opt.name}
+              </Chip>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Sync-error banner — tap to see the provider error for each failing calendar. */}
+      {syncErrorCalendars.length > 0 && (
+        <Pressable
+          onPress={() => Alert.alert(
+            isRTL ? 'שגיאת סנכרון יומן' : 'Calendar sync error',
+            syncErrorCalendars.map(c => `• ${c.name || (isRTL ? 'יומן' : 'Calendar')}: ${c.lastSyncError}`).join('\n\n'),
+          )}
+          style={[styles.syncErrorBanner, { backgroundColor: isDark ? '#7f1d1d' : '#fef2f2', borderColor: isDark ? '#b91c1c' : '#fecaca' }]}
+        >
+          <MaterialCommunityIcons name="alert-circle-outline" size={18} color={isDark ? '#fecaca' : '#b91c1c'} />
+          <Text style={[styles.syncErrorText, { color: isDark ? '#fecaca' : '#b91c1c' }]} numberOfLines={1}>
+            {isRTL
+              ? `בעיית סנכרון ב-${syncErrorCalendars.length} יומנים — הקש לפרטים`
+              : `Sync issue on ${syncErrorCalendars.length} calendar(s) — tap for details`}
+          </Text>
+        </Pressable>
+      )}
 
       {viewMode === 'month' ? (
         <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 90 }}>
@@ -806,8 +995,27 @@ export default function CalendarScreen() {
               </Menu>
             )}
 
-            {/* Connection picker */}
-            {connections.length > 0 && (
+            {/* Connection: an event synced FROM an external calendar shows READ-ONLY provenance
+                (which account + which external calendar). Local events keep the editable picker. */}
+            {isExternalEvent(editingEvent) ? (
+              <View style={[styles.externalSource, { backgroundColor: isDark ? theme.colors.surfaceVariant : '#f8fafc', borderColor: theme.colors.outlineVariant }]}>
+                <Text style={[styles.externalSourceLabel, { color: theme.colors.onSurfaceVariant, textAlign }]}>
+                  {isRTL ? 'מקור חיצוני' : 'External source'}
+                </Text>
+                <View style={[styles.externalSourceRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <MaterialCommunityIcons name="link-variant" size={16} color={theme.colors.onSurfaceVariant} />
+                  <Text style={[styles.externalSourceText, { color: theme.colors.onSurface }]}>
+                    {isRTL ? 'חיבור: ' : 'Connection: '}{getEventExternalConnLabel(editingEvent!) || '—'}
+                  </Text>
+                </View>
+                <View style={[styles.externalSourceRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <MaterialCommunityIcons name="calendar-outline" size={16} color={theme.colors.onSurfaceVariant} />
+                  <Text style={[styles.externalSourceText, { color: theme.colors.onSurface }]}>
+                    {isRTL ? 'יומן חיצוני: ' : 'External calendar: '}{editingEvent?.sourceCalendarName || '—'}
+                  </Text>
+                </View>
+              </View>
+            ) : connections.length > 0 ? (
               <Menu
                 visible={showConnectionMenu}
                 onDismiss={() => setShowConnectionMenu(false)}
@@ -840,7 +1048,7 @@ export default function CalendarScreen() {
                   />
                 ))}
               </Menu>
-            )}
+            ) : null}
 
             {/* Start Date */}
             <Pressable onPress={() => setShowStartDatePicker(true)}>
@@ -998,6 +1206,33 @@ export default function CalendarScreen() {
                 </View>
               </Pressable>
             )}
+
+            {/* Event status */}
+            <Menu
+              visible={showStatusMenu}
+              onDismiss={() => setShowStatusMenu(false)}
+              anchor={
+                <Pressable onPress={() => setShowStatusMenu(true)}>
+                  <View pointerEvents="none">
+                    <TextInput
+                      label={isRTL ? 'סטטוס' : 'Status'}
+                      value={statusLabel(formStatus, isRTL)}
+                      mode="outlined"
+                      editable={false}
+                      style={[styles.formInput, { textAlign }]}
+                      outlineColor={theme.colors.outline}
+                      activeOutlineColor={BRAND_COLOR}
+                      left={<TextInput.Icon icon="flag-outline" />}
+                      right={<TextInput.Icon icon="chevron-down" />}
+                    />
+                  </View>
+                </Pressable>
+              }
+            >
+              {STATUS_KEYS.map(k => (
+                <Menu.Item key={k} title={statusLabel(k, isRTL)} onPress={() => { setFormStatus(k); setShowStatusMenu(false); }} />
+              ))}
+            </Menu>
 
             {/* Location */}
             <TextInput
@@ -1314,6 +1549,23 @@ const styles = StyleSheet.create({
   },
   filterChipActive: { backgroundColor: BRAND_COLOR },
   filterChipTextActive: { color: 'white' },
+  extFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  externalSource: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    gap: 6,
+  },
+  externalSourceLabel: { fontSize: 12, fontWeight: '700', marginBottom: 2 },
+  externalSourceRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  externalSourceText: { fontSize: 13, flexShrink: 1 },
   list: { flex: 1 },
   monthNav: {
     flexDirection: 'row',
@@ -1357,6 +1609,18 @@ const styles = StyleSheet.create({
   eventCard: { marginBottom: 10, borderRadius: 12, elevation: 1 },
   eventHeader: { flexDirection: 'row', alignItems: 'flex-start' },
   eventTitle: { fontSize: 16, fontWeight: '600' },
+  tagChip: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
+  tagChipText: { fontSize: 10, fontWeight: '700' },
+  syncErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: '#fecaca',
+  },
+  syncErrorText: { fontSize: 12, fontWeight: '600', flex: 1 },
   eventDate: { fontSize: 13, marginTop: 2 },
   eventDetail: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 },
   eventDetailText: { fontSize: 12 },

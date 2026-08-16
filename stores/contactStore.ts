@@ -260,10 +260,16 @@ export const useContactStore = create<ContactState>((set, get) => ({
 
   createContact: async (organization, contact, userId, userName) => {
     const result = await contactsApi.create(organization, contact, userId, userName);
+    // CreateNewContact returns a FirestoreResponse { Success, Message, Data } — the saved record
+    // (incl. the resolved owner) is in Data. Merge it, and fall back to the creator so the new row
+    // shows its owner immediately, even if the backend response is sparse.
+    const data = (result && (result.Data || result.data)) || {};
     const newContact = {
       ...contact,
-      ...(result || {}),
-      id: result?.id || contact.phoneNumber || contactId(contact),
+      ...data,
+      ownerId: (contact as any).ownerId || data.ownerId || userId || '',
+      ownerName: (contact as any).ownerName || data.ownerName || userName || '',
+      id: data.id || contact.phoneNumber || contactId(contact),
     } as Contact;
     await upsertMany(CONTACTS_TABLE, [newContact], mapContactRow);
     set((state) => ({ contacts: [newContact, ...state.contacts] }));

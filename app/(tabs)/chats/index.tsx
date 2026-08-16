@@ -169,6 +169,14 @@ export default function ChatsListScreen() {
   const [bulkOwners, setBulkOwners] = useState<any[]>([]);
   const [loadingBulkOwners, setLoadingBulkOwners] = useState(false);
 
+  // Per-row quick actions (swipe → "…") — mirrors the web sidebar right-click menu.
+  const [rowActionChat, setRowActionChat] = useState<Chat | null>(null);
+  const [rowActionKind, setRowActionKind] = useState<null | 'menu' | 'owner' | 'status' | 'category' | 'tags'>(null);
+  const [rowActionBusy, setRowActionBusy] = useState(false);
+  const [rowOwners, setRowOwners] = useState<any[]>([]);
+  const [rowCategories, setRowCategories] = useState<string[]>([]);
+  const [rowTagInput, setRowTagInput] = useState('');
+
   const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
   const currentUserId = user?.uID || user?.userId || '';
   const userIsAdmin = user?.SecurityRole === 'Admin';
@@ -258,9 +266,18 @@ export default function ChatsListScreen() {
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeViewId, setActiveViewId] = useState<string>('__all__');
   // View management (per-org, local): manual order + hidden tabs, plus the settings sheet.
+  // Mirrors the web Sidebar: tab order and hidden views are a purely client-side preference
+  // (localStorage on the web → AsyncStorage here), keyed by organization. Only the saved-view
+  // definitions themselves live on the server.
   const [showViewsSettings, setShowViewsSettings] = useState(false);
   const [viewOrder, setViewOrder] = useState<string[]>([]);
   const [hiddenViewIds, setHiddenViewIds] = useState<string[]>([]);
+  const [viewPrefsLoaded, setViewPrefsLoaded] = useState(false);
+
+  // Save-view modal (create a new view from the current filters)
+  const [showSaveViewModal, setShowSaveViewModal] = useState(false);
+  const [newViewName, setNewViewName] = useState('');
+  const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
 
   // Advanced filters
   const [groupFilter, setGroupFilter] = useState<string[]>([]);
@@ -299,6 +316,69 @@ export default function ChatsListScreen() {
       }
     }).catch(() => {});
   }, [user?.organization, user?.uID, user?.userId]);
+
+  // Per-org AsyncStorage keys for the local view preferences (order + hidden tabs).
+  const org = user?.organization || '';
+  const viewOrderKey = `chats_view_order_${org}`;
+  const hiddenViewsKey = `chats_hidden_views_${org}`;
+
+  // Restore the saved order / hidden set for this org. `viewPrefsLoaded` guards the persist
+  // effects below so we don't overwrite storage with the empty initial state before load.
+  useEffect(() => {
+    if (!org) return;
+    let cancelled = false;
+    setViewPrefsLoaded(false);
+    (async () => {
+      try {
+        const [orderRaw, hiddenRaw] = await Promise.all([
+          AsyncStorage.getItem(viewOrderKey),
+          AsyncStorage.getItem(hiddenViewsKey),
+        ]);
+        if (cancelled) return;
+        setViewOrder(orderRaw ? JSON.parse(orderRaw) : []);
+        setHiddenViewIds(hiddenRaw ? JSON.parse(hiddenRaw) : []);
+      } catch {
+        if (!cancelled) { setViewOrder([]); setHiddenViewIds([]); }
+      } finally {
+        if (!cancelled) setViewPrefsLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [org]);
+
+  const persistViewOrder = useCallback((next: string[]) => {
+    setViewOrder(next);
+    AsyncStorage.setItem(viewOrderKey, JSON.stringify(next)).catch(() => {});
+  }, [viewOrderKey]);
+
+  const persistHiddenViews = useCallback((next: string[]) => {
+    setHiddenViewIds(next);
+    AsyncStorage.setItem(hiddenViewsKey, JSON.stringify(next)).catch(() => {});
+  }, [hiddenViewsKey]);
+
+  // Swap a tab one slot up (-1) or down (+1) in the persisted order. Mirrors the web ▲/▼ arrows.
+  const moveViewTab = useCallback((tabId: string, direction: -1 | 1) => {
+    setViewOrder((prev) => {
+      const ids = [...prev];
+      const idx = ids.indexOf(tabId);
+      if (idx === -1) return prev;
+      const swap = idx + direction;
+      if (swap < 0 || swap >= ids.length) return prev;
+      [ids[idx], ids[swap]] = [ids[swap], ids[idx]];
+      AsyncStorage.setItem(viewOrderKey, JSON.stringify(ids)).catch(() => {});
+      return ids;
+    });
+  }, [viewOrderKey]);
+
+  // Hide/show a tab. Built-in tabs and shared (organization) views can only be hidden, never
+  // deleted — hiding is a local preference so it never affects other users.
+  const toggleHideView = useCallback((viewId: string) => {
+    setHiddenViewIds((prev) => {
+      const next = prev.includes(viewId) ? prev.filter((id) => id !== viewId) : [...prev, viewId];
+      AsyncStorage.setItem(hiddenViewsKey, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, [hiddenViewsKey]);
 
   // Load contact groups and lead stages.
   // Building the contact→lead-stage map pulls EVERY lead in the org and is only used for the small
@@ -497,6 +577,76 @@ export default function ChatsListScreen() {
       if (activeViewId === viewId) clearAllFilters();
     } catch {}
   }, [user, activeViewId, clearAllFilters]);
+
+  // The full tab set (built-in + the saved views this user is allowed to see), before ordering
+  // or hiding. Shared views are visible to everyone; personal views only to their owner.
+  const allViewTabs = useMemo<ViewTab[]>(() => {
+    const builtins: ViewTab[] = BUILT_IN_VIEWS.map((b) => ({
+      id: b.id,
+      label: t(b.labelKey, b.fallback),
+      kind: 'builtin',
+      shared: false,
+      deletable: false,
+    }));
+    const saved: ViewTab[] = savedViews
+      .filter((v) => {
+        const vis = v.Visibility || 'personal';
+        if (vis === 'shared') return true;
+        return (v.UserId || '') === currentUserId;
+      })
+      .map((v) => {
+        const shared = (v.Visibility || 'personal') === 'shared';
+        return {
+          id: v.id,
+          label: v.Name,
+          kind: 'saved' as const,
+          view: v,
+          shared,
+          // Only a PERSONAL view you own can be deleted. Shared (organization) views can only
+          // be hidden locally — deleting them would affect the whole org.
+          deletable: !shared && (v.UserId || '') === currentUserId,
+        };
+      });
+    return [...builtins, ...saved];
+  }, [savedViews, currentUserId, t]);
+
+  // Once prefs are loaded, append any tab IDs that aren't in the persisted order yet (newly
+  // created views, or first run). We never remove IDs — a view that disappears just drops out
+  // of the render map below, but its slot is remembered if it ever comes back.
+  useEffect(() => {
+    if (!viewPrefsLoaded || !org) return;
+    const known = new Set(viewOrder);
+    const missing = allViewTabs.map((tb) => tb.id).filter((id) => !known.has(id));
+    if (missing.length > 0) persistViewOrder([...viewOrder, ...missing]);
+  }, [viewPrefsLoaded, org, allViewTabs, viewOrder, persistViewOrder]);
+
+  // Ordered tabs for the settings sheet (includes hidden ones so they can be restored)...
+  const orderedViewTabs = useMemo<ViewTab[]>(() => {
+    if (viewOrder.length === 0) return allViewTabs;
+    const byId = new Map(allViewTabs.map((tb) => [tb.id, tb]));
+    const ordered = viewOrder.map((id) => byId.get(id)).filter(Boolean) as ViewTab[];
+    const known = new Set(viewOrder);
+    const extras = allViewTabs.filter((tb) => !known.has(tb.id));
+    return [...ordered, ...extras];
+  }, [allViewTabs, viewOrder]);
+
+  // ...and the subset actually shown as tabs above the list (hidden tabs removed).
+  const visibleViewTabs = useMemo<ViewTab[]>(
+    () => orderedViewTabs.filter((tb) => !hiddenViewIds.includes(tb.id)),
+    [orderedViewTabs, hiddenViewIds],
+  );
+
+  // Apply a tab by its id (built-in tabs map to a store filter; saved views restore their filters).
+  const applyViewTab = useCallback((tab: ViewTab) => {
+    if (tab.kind === 'saved' && tab.view) { loadSavedView(tab.view); return; }
+    switch (tab.id) {
+      case '__all__': clearAllFilters(); break;
+      case '__mine__': setActiveViewId('__mine__'); setFilter('myChats'); break;
+      case '__unassigned__': setActiveViewId('__unassigned__'); setFilter('unassigned'); break;
+      case '__unread__': setActiveViewId('__unread__'); setFilter('unread'); break;
+      default: break;
+    }
+  }, [loadSavedView, clearAllFilters, setFilter]);
 
   useEffect(() => {
     if (user?.organization) {
@@ -703,6 +853,8 @@ export default function ChatsListScreen() {
     } else if (filter === 'myChats') {
       const userId = user?.uID || user?.userId;
       result = result.filter((c) => c.ownerId === userId);
+    } else if (filter === 'unassigned') {
+      result = result.filter((c) => !c.ownerId);
     } else if (filter === 'internal') {
       result = result.filter((c) => (c as any).usersWithUnreadInternalMessages?.includes(user?.uID || user?.userId));
     }
@@ -903,6 +1055,122 @@ export default function ChatsListScreen() {
     [user?.organization, selectedPhones, addOrUpdateChat, exitSelection],
   );
 
+  // ---- Per-row quick actions (swipe → "…") ----
+  const openRowActions = useCallback((chat: Chat) => {
+    swipeableRefs.get(chat.phoneNumber)?.close();
+    setRowActionChat(chat);
+    setRowActionKind('menu');
+  }, [swipeableRefs]);
+
+  const closeRowActions = useCallback(() => {
+    setRowActionChat(null);
+    setRowActionKind(null);
+    setRowTagInput('');
+  }, []);
+
+  const rowTakeOwnership = useCallback(async () => {
+    if (!user?.organization || !rowActionChat) return;
+    const myId = user.uID || user.userId || '';
+    const myName = user.fullname || user.name || 'system';
+    setRowActionBusy(true);
+    try {
+      await contactsApi.updateOwner(user.organization, rowActionChat.phoneNumber, myId, myName);
+      addOrUpdateChat({ phoneNumber: rowActionChat.phoneNumber, ownerId: myId, ownerName: myName } as any);
+      Alert.alert('✅', isRTL ? 'לקחת בעלות על השיחה' : 'You took ownership');
+    } catch {
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'הפעולה נכשלה' : 'Action failed');
+    } finally {
+      setRowActionBusy(false);
+      closeRowActions();
+    }
+  }, [user, rowActionChat, addOrUpdateChat, isRTL, closeRowActions]);
+
+  const openRowOwner = useCallback(async () => {
+    setRowActionKind('owner');
+    if (!user?.organization) return;
+    try {
+      const users = await usersApi.getAll(user.organization);
+      setRowOwners(Array.isArray(users) ? users : []);
+    } catch {
+      setRowOwners([]);
+    }
+  }, [user?.organization]);
+
+  const rowAssignOwner = useCallback(async (ownerId: string, ownerName: string) => {
+    if (!user?.organization || !rowActionChat) return;
+    setRowActionBusy(true);
+    try {
+      await contactsApi.updateOwner(user.organization, rowActionChat.phoneNumber, ownerId, user.fullname || 'system');
+      addOrUpdateChat({ phoneNumber: rowActionChat.phoneNumber, ownerId, ownerName } as any);
+      Alert.alert('✅', isRTL ? `הבעלות שויכה ל-${ownerName}` : `Assigned to ${ownerName}`);
+    } catch {
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'שיוך הבעלות נכשל' : 'Failed to assign owner');
+    } finally {
+      setRowActionBusy(false);
+      closeRowActions();
+    }
+  }, [user, rowActionChat, addOrUpdateChat, isRTL, closeRowActions]);
+
+  const rowSetStatus = useCallback(async (status: string) => {
+    if (!user?.organization || !rowActionChat) return;
+    setRowActionBusy(true);
+    try {
+      await chatsApi.updateConversationStatus(user.organization, rowActionChat.phoneNumber, status, user.uID || user.userId);
+      addOrUpdateChat({ phoneNumber: rowActionChat.phoneNumber, status, lastConversationStatus: status } as any);
+    } finally {
+      setRowActionBusy(false);
+      closeRowActions();
+    }
+  }, [user, rowActionChat, addOrUpdateChat, closeRowActions]);
+
+  const openRowCategory = useCallback(async () => {
+    setRowActionKind('category');
+    if (!user?.organization) return;
+    try {
+      const cats = await chatsApi.getConversationCategories(user.organization);
+      setRowCategories(Array.isArray(cats) ? cats : []);
+    } catch {
+      // Fall back to categories derived from the loaded chats.
+      setRowCategories(categories.filter((c) => c !== 'all'));
+    }
+  }, [user?.organization, categories]);
+
+  const rowSetCategory = useCallback(async (category: string) => {
+    if (!user?.organization || !rowActionChat) return;
+    setRowActionBusy(true);
+    try {
+      await chatsApi.updateConversationCategory(user.organization, rowActionChat.phoneNumber, category);
+      addOrUpdateChat({ phoneNumber: rowActionChat.phoneNumber, category, lastConversationCategory: category } as any);
+    } finally {
+      setRowActionBusy(false);
+      closeRowActions();
+    }
+  }, [user, rowActionChat, addOrUpdateChat, closeRowActions]);
+
+  const rowCurrentTags = useMemo(() => {
+    const raw = rowActionChat?.tags || rowActionChat?.keys;
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw === 'string' && raw) return raw.split(',').map((s) => s.trim()).filter(Boolean);
+    return [] as string[];
+  }, [rowActionChat]);
+
+  const rowSaveTags = useCallback(async (nextTags: string[]) => {
+    if (!user?.organization || !rowActionChat) return;
+    setRowActionBusy(true);
+    try {
+      await contactsApi.update(
+        user.organization,
+        { phoneNumber: rowActionChat.phoneNumber, keys: nextTags } as any,
+        user.uID || user.userId,
+        user.fullname,
+      );
+      addOrUpdateChat({ phoneNumber: rowActionChat.phoneNumber, tags: nextTags, keys: nextTags } as any);
+      setRowActionChat((prev) => (prev ? ({ ...prev, tags: nextTags, keys: nextTags } as Chat) : prev));
+    } finally {
+      setRowActionBusy(false);
+    }
+  }, [user, rowActionChat, addOrUpdateChat]);
+
   const allSelected = displayedChats.length > 0 && selectedPhones.length === displayedChats.length;
   const toggleSelectAll = useCallback(() => {
     setSelectedPhones((prev) =>
@@ -924,6 +1192,13 @@ export default function ChatsListScreen() {
       const displayCaseStages = caseInfoArr.length > 0
         ? caseInfoArr.slice(0, 2)
         : (item.caseStageName ? [{ stageName: item.caseStageName, stageColor: item.caseStageColor || '#0891b2', stageId: '' }] : []);
+
+      // Owner badge (mirrors the web sidebar): show the human owner's name, or an
+      // "unassigned" indicator when the chat has no human owner (empty / AI-owned).
+      const ownerNameRaw = ((item as any).ownerName || (item as any).OwnerName || '').toString().trim();
+      const ownerIdLc = ((item as any).ownerId || (item as any).OwnerId || '').toString().trim().toLowerCase();
+      const isUnassigned = !ownerNameRaw && (!ownerIdLc || ownerIdLc === 'gambot' || ownerIdLc === 'gambot-ai');
+      const ownerNameShort = ownerNameRaw.length > 18 ? ownerNameRaw.slice(0, 17).trimEnd() + '…' : ownerNameRaw;
 
       const chatNumberId = (item as any).lastFromNumberId || (item as any).wabaPhoneNumberId || '';
       const chatNumberIds = new Set<string>();
@@ -1043,9 +1318,25 @@ export default function ChatsListScreen() {
               </Text>
             </View>
 
-            {/* Badges row: status, lead stage, case stage, CTWA */}
-            {(getChatConversationStatus(item) !== 'unknown' || displayLeadStage || displayCaseStages.length > 0 || item.isCTWA) && (
+            {/* Badges row: owner, status, lead stage, case stage, CTWA */}
+            {(!!ownerNameRaw || isUnassigned || getChatConversationStatus(item) !== 'unknown' || displayLeadStage || displayCaseStages.length > 0 || item.isCTWA) && (
               <View style={[styles.badgesRow, { flexDirection }]}>
+                {!!ownerNameRaw && (
+                  <View style={[styles.badge, { backgroundColor: withAlpha('#2e6155', 0.12) }]}>
+                    <MaterialCommunityIcons name="account" size={10} color="#2e6155" style={{ marginEnd: 2 }} />
+                    <Text style={[styles.badgeText, { color: '#2e6155' }]} numberOfLines={1}>
+                      {ownerNameShort}
+                    </Text>
+                  </View>
+                )}
+                {isUnassigned && (
+                  <View style={[styles.badge, { backgroundColor: '#fef3c7', borderWidth: 1, borderColor: '#f59e0b' }]}>
+                    <MaterialCommunityIcons name="account-outline" size={10} color="#b45309" style={{ marginEnd: 2 }} />
+                    <Text style={[styles.badgeText, { color: '#b45309' }]} numberOfLines={1}>
+                      {t('sidebar.unassigned', 'לא משויך')}
+                    </Text>
+                  </View>
+                )}
                 {(() => {
                   const convStatus = getChatConversationStatus(item);
                   if (convStatus === 'unknown') return null;
@@ -1136,13 +1427,22 @@ export default function ChatsListScreen() {
             else swipeableRefs.delete(item.phoneNumber);
           }}
           renderRightActions={() => (
-            <Pressable
-              onPress={() => handleSingleMarkUnread(item)}
-              style={[styles.swipeUnreadBtn, { backgroundColor: theme.colors.primary }]}
-            >
-              <MaterialCommunityIcons name="email-mark-as-unread" size={22} color="#FFF" />
-              <Text style={styles.swipeUnreadLabel}>{t('chats.markUnread', 'לא נקרא')}</Text>
-            </Pressable>
+            <View style={{ flexDirection: 'row' }}>
+              <Pressable
+                onPress={() => handleSingleMarkUnread(item)}
+                style={[styles.swipeUnreadBtn, { backgroundColor: theme.colors.primary }]}
+              >
+                <MaterialCommunityIcons name="email-mark-as-unread" size={22} color="#FFF" />
+                <Text style={styles.swipeUnreadLabel}>{t('chats.markUnread', 'לא נקרא')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => openRowActions(item)}
+                style={[styles.swipeUnreadBtn, { backgroundColor: '#475569' }]}
+              >
+                <MaterialCommunityIcons name="dots-horizontal" size={22} color="#FFF" />
+                <Text style={styles.swipeUnreadLabel}>{t('common.more', 'עוד')}</Text>
+              </Pressable>
+            </View>
           )}
           overshootRight={false}
           friction={2}
@@ -1151,7 +1451,7 @@ export default function ChatsListScreen() {
         </Swipeable>
       );
     },
-    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, swipeableRefs, currentUserId],
+    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, openRowActions, swipeableRefs, currentUserId],
   );
 
   const renderEmpty = useCallback(
@@ -1253,60 +1553,46 @@ export default function ChatsListScreen() {
         </Animated.View>
       )}
 
-      {/* Saved Views Tabs */}
+      {/* Saved Views Tabs — order & visibility mirror the web Sidebar (user-configurable, per-org) */}
       <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection }]}>
-          <Pressable
-            onPress={clearAllFilters}
-            style={[styles.viewTab, activeViewId === '__all__' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-          >
-            <Text style={[styles.viewTabText, { color: activeViewId === '__all__' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
-              {t('sidebar.allConversations', 'הכל')}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => { setActiveViewId('__mine__'); setFilter('myChats'); }}
-            style={[styles.viewTab, activeViewId === '__mine__' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-          >
-            <Text style={[styles.viewTabText, { color: activeViewId === '__mine__' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
-              {t('sidebar.myConversations', 'שלי')}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => { setActiveViewId('__unread__'); setFilter('unread'); }}
-            style={[styles.viewTab, activeViewId === '__unread__' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-          >
-            <Text style={[styles.viewTabText, { color: activeViewId === '__unread__' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
-              {t('sidebar.unread', 'לא נקרא')}
-            </Text>
-          </Pressable>
-          {savedViews.filter((v) => {
-            const vis = v.Visibility || 'personal';
-            if (vis === 'shared') return true;
-            return (v.UserId || '') === (user?.uID || user?.userId || '');
-          }).map((view) => (
-            <Pressable
-              key={view.id}
-              onPress={() => loadSavedView(view)}
-              onLongPress={() => {
-                Alert.alert(
-                  view.Name,
-                  t('sidebar.deleteViewConfirm', 'למחוק תצוגה זו?'),
-                  [
-                    { text: t('common.cancel'), style: 'cancel' },
-                    { text: t('common.delete', 'מחק'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
-                  ],
-                );
-              }}
-              style={[styles.viewTab, activeViewId === view.id && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-            >
-              <Text style={[styles.viewTabText, { color: activeViewId === view.id ? theme.colors.primary : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
-                {(view.Visibility === 'shared' ? '👥 ' : '') + view.Name}
-              </Text>
-            </Pressable>
-          ))}
+          {visibleViewTabs.map((tab) => {
+            const active = activeViewId === tab.id;
+            return (
+              <Pressable
+                key={tab.id}
+                onPress={() => applyViewTab(tab)}
+                onLongPress={() => {
+                  const options: any[] = [{ text: t('common.cancel'), style: 'cancel' }];
+                  options.push({
+                    text: t('sidebar.hideView', 'הסתר תצוגה'),
+                    onPress: () => toggleHideView(tab.id),
+                  });
+                  if (tab.deletable) {
+                    options.push({
+                      text: t('common.delete', 'מחק'),
+                      style: 'destructive',
+                      onPress: () => deleteSavedView(tab.id),
+                    });
+                  }
+                  Alert.alert(tab.label, t('sidebar.viewActions', 'פעולות תצוגה'), options);
+                }}
+                style={[styles.viewTab, active && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+              >
+                <Text
+                  style={[styles.viewTabText, { color: active ? theme.colors.primary : theme.colors.onSurfaceVariant }]}
+                  numberOfLines={1}
+                >
+                  {(tab.shared ? '👥 ' : '') + tab.label}
+                </Text>
+              </Pressable>
+            );
+          })}
           <Pressable onPress={() => setShowSaveViewModal(true)} style={styles.viewTab}>
             <MaterialCommunityIcons name="plus" size={18} color={theme.colors.primary} />
+          </Pressable>
+          <Pressable onPress={() => setShowViewsSettings(true)} style={styles.viewTab}>
+            <MaterialCommunityIcons name="cog-outline" size={18} color={theme.colors.onSurfaceVariant} />
           </Pressable>
         </ScrollView>
       </View>
@@ -1839,6 +2125,95 @@ export default function ChatsListScreen() {
           </View>
         </Modal>
 
+        {/* Views Settings — reorder, hide/show, and delete (personal only) */}
+        <Modal
+          visible={showViewsSettings}
+          onDismiss={() => setShowViewsSettings(false)}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 4, fontWeight: '700', textAlign }}>
+            {t('sidebar.manageViews', 'ניהול תצוגות')}
+          </Text>
+          <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, fontSize: 12, textAlign }}>
+            {t('sidebar.manageViewsHint', 'שנה סדר, הסתר או הצג תצוגות. תצוגות ארגון ניתן רק להסתיר.')}
+          </Text>
+          <ScrollView style={{ maxHeight: 420 }}>
+            {orderedViewTabs.map((tab, idx) => {
+              const hidden = hiddenViewIds.includes(tab.id);
+              return (
+                <View
+                  key={tab.id}
+                  style={[
+                    { flexDirection, alignItems: 'center', paddingVertical: 8, gap: 4 },
+                    idx > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.outline },
+                  ]}
+                >
+                  <View style={{ flexDirection: 'column' }}>
+                    <IconButton
+                      icon="chevron-up"
+                      size={20}
+                      disabled={idx === 0}
+                      onPress={() => moveViewTab(tab.id, -1)}
+                      style={{ margin: 0, height: 22 }}
+                    />
+                    <IconButton
+                      icon="chevron-down"
+                      size={20}
+                      disabled={idx === orderedViewTabs.length - 1}
+                      onPress={() => moveViewTab(tab.id, 1)}
+                      style={{ margin: 0, height: 22 }}
+                    />
+                  </View>
+                  <Text
+                    style={{
+                      flex: 1,
+                      color: hidden ? theme.colors.onSurfaceVariant : theme.colors.onSurface,
+                      textAlign,
+                      opacity: hidden ? 0.5 : 1,
+                    }}
+                    numberOfLines={1}
+                  >
+                    {(tab.shared ? '👥 ' : '') + tab.label}
+                    {tab.kind === 'builtin' || tab.shared
+                      ? `  ·  ${t('sidebar.organizationView', 'ארגון')}`
+                      : ''}
+                  </Text>
+                  <IconButton
+                    icon={hidden ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    iconColor={hidden ? theme.colors.onSurfaceVariant : theme.colors.primary}
+                    onPress={() => toggleHideView(tab.id)}
+                    style={{ margin: 0 }}
+                  />
+                  {tab.deletable && (
+                    <IconButton
+                      icon="trash-can-outline"
+                      size={20}
+                      iconColor={theme.colors.error}
+                      onPress={() => {
+                        Alert.alert(
+                          tab.label,
+                          t('sidebar.deleteViewConfirm', 'למחוק תצוגה זו?'),
+                          [
+                            { text: t('common.cancel'), style: 'cancel' },
+                            { text: t('common.delete', 'מחק'), style: 'destructive', onPress: () => deleteSavedView(tab.id) },
+                          ],
+                        );
+                      }}
+                      style={{ margin: 0 }}
+                    />
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 12 }}>
+            <Button mode="contained" onPress={() => setShowViewsSettings(false)}>
+              {t('common.done', 'סיום')}
+            </Button>
+          </View>
+        </Modal>
+
         {/* Bulk: Assign Owner */}
         <Modal
           visible={showBulkOwnerModal}
@@ -1911,6 +2286,188 @@ export default function ChatsListScreen() {
               </Pressable>
             );
           })}
+        </Modal>
+
+        {/* Per-row quick actions (swipe → "…") */}
+        <Modal
+          visible={!!rowActionChat && rowActionKind === 'menu'}
+          onDismiss={closeRowActions}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 4, fontWeight: '700', textAlign }} numberOfLines={1}>
+            {rowActionChat?.contactName || rowActionChat?.phoneNumber}
+          </Text>
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, textAlign }}>
+            {rowActionChat?.phoneNumber}
+          </Text>
+          {[
+            { icon: 'account-check-outline', label: isRTL ? 'קח בעלות' : 'Take ownership', onPress: rowTakeOwnership },
+            { icon: 'account-switch-outline', label: isRTL ? 'שייך בעלים' : 'Assign owner', onPress: openRowOwner },
+            { icon: 'label-outline', label: isRTL ? 'עריכת תגיות' : 'Edit tags', onPress: () => setRowActionKind('tags') },
+            { icon: 'circle-outline', label: isRTL ? 'עריכת סטטוס' : 'Edit status', onPress: () => setRowActionKind('status') },
+            { icon: 'tag-outline', label: isRTL ? 'עריכת קטגוריה' : 'Edit category', onPress: openRowCategory },
+          ].map((a) => (
+            <Pressable
+              key={a.label}
+              onPress={a.onPress}
+              disabled={rowActionBusy}
+              style={({ pressed }) => [
+                { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 14, borderRadius: 8 },
+                pressed && { backgroundColor: theme.colors.surfaceVariant },
+              ]}
+            >
+              <MaterialCommunityIcons name={a.icon as any} size={22} color="#2e6155" />
+              <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, flex: 1, textAlign }}>{a.label}</Text>
+            </Pressable>
+          ))}
+          {rowActionBusy && <ActivityIndicator style={{ marginTop: 8 }} color={theme.colors.primary} />}
+        </Modal>
+
+        {/* Row: assign owner */}
+        <Modal
+          visible={!!rowActionChat && rowActionKind === 'owner'}
+          onDismiss={closeRowActions}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '70%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {t('sidebar.assignOwner', 'שיוך נציג')}
+          </Text>
+          <ScrollView style={{ maxHeight: 360 }}>
+            {rowOwners.map((owner) => {
+              const ownerId = owner.uID || owner.userId || owner.id || '';
+              const ownerName = owner.UserName || owner.fullname || owner.displayName || owner.email || ownerId;
+              return (
+                <Pressable
+                  key={ownerId}
+                  onPress={() => rowAssignOwner(ownerId, ownerName)}
+                  disabled={rowActionBusy}
+                  style={({ pressed }) => [
+                    { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 12, borderRadius: 8 },
+                    pressed && { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                >
+                  <Avatar.Text size={36} label={getInitials(ownerName)} style={{ backgroundColor: theme.colors.primaryContainer }} labelStyle={{ fontSize: 14, color: theme.colors.primary }} />
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', flex: 1, textAlign }}>{ownerName}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </Modal>
+
+        {/* Row: status */}
+        <Modal
+          visible={!!rowActionChat && rowActionKind === 'status'}
+          onDismiss={closeRowActions}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {t('chats.status', 'סטטוס')}
+          </Text>
+          {BULK_STATUS_OPTIONS.map((status) => {
+            const normalized = normalizeConversationStatus(status);
+            const colors = conversationStatusColors(normalized);
+            return (
+              <Pressable
+                key={status}
+                onPress={() => rowSetStatus(status)}
+                disabled={rowActionBusy}
+                style={({ pressed }) => [
+                  { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 12, borderRadius: 8 },
+                  pressed && { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+              >
+                <View style={[styles.badge, { backgroundColor: colors.bg }]}>
+                  <Text style={[styles.badgeText, { color: colors.fg }]}>{conversationStatusLabel(normalized, t)}</Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </Modal>
+
+        {/* Row: category */}
+        <Modal
+          visible={!!rowActionChat && rowActionKind === 'category'}
+          onDismiss={closeRowActions}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '70%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {t('chats.category', 'קטגוריה')}
+          </Text>
+          <ScrollView style={{ maxHeight: 360 }}>
+            <Pressable
+              onPress={() => rowSetCategory('')}
+              disabled={rowActionBusy}
+              style={({ pressed }) => [{ paddingVertical: 12, paddingHorizontal: 8, borderRadius: 8 }, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+            >
+              <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>{isRTL ? 'ללא קטגוריה' : 'No category'}</Text>
+            </Pressable>
+            {rowCategories.map((cat) => (
+              <Pressable
+                key={cat}
+                onPress={() => rowSetCategory(cat)}
+                disabled={rowActionBusy}
+                style={({ pressed }) => [{ paddingVertical: 12, paddingHorizontal: 8, borderRadius: 8 }, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+              >
+                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, textAlign }}>{cat}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </Modal>
+
+        {/* Row: tags */}
+        <Modal
+          visible={!!rowActionChat && rowActionKind === 'tags'}
+          onDismiss={closeRowActions}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {isRTL ? 'עריכת תגיות' : 'Edit tags'}
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+            {rowCurrentTags.length === 0 ? (
+              <Text style={{ color: theme.colors.onSurfaceVariant }}>{isRTL ? 'אין תגיות' : 'No tags'}</Text>
+            ) : (
+              rowCurrentTags.map((tag) => (
+                <Chip
+                  key={tag}
+                  onClose={() => rowSaveTags(rowCurrentTags.filter((x) => x !== tag))}
+                  disabled={rowActionBusy}
+                  compact
+                >
+                  {tag}
+                </Chip>
+              ))
+            )}
+          </View>
+          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8 }}>
+            <PaperInput
+              mode="outlined"
+              dense
+              value={rowTagInput}
+              onChangeText={setRowTagInput}
+              placeholder={isRTL ? 'תגית חדשה…' : 'New tag…'}
+              style={{ flex: 1 }}
+              onSubmitEditing={() => {
+                const v = rowTagInput.trim();
+                if (v && !rowCurrentTags.includes(v)) rowSaveTags([...rowCurrentTags, v]);
+                setRowTagInput('');
+              }}
+            />
+            <Button
+              mode="contained"
+              disabled={rowActionBusy || !rowTagInput.trim()}
+              onPress={() => {
+                const v = rowTagInput.trim();
+                if (v && !rowCurrentTags.includes(v)) rowSaveTags([...rowCurrentTags, v]);
+                setRowTagInput('');
+              }}
+            >
+              {isRTL ? 'הוסף' : 'Add'}
+            </Button>
+          </View>
+          <Button mode="text" onPress={closeRowActions} style={{ marginTop: 12 }}>
+            {isRTL ? 'סגור' : 'Close'}
+          </Button>
         </Modal>
       </Portal>
     </View>

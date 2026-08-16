@@ -2,6 +2,7 @@ export default {
   common: {
     save: 'שמור',
     cancel: 'ביטול',
+    done: 'סיום',
     searchContact: 'חפש איש קשר...',
     delete: 'מחק',
     edit: 'ערוך',
@@ -90,6 +91,7 @@ export default {
   sidebar: {
     allConversations: 'הכל',
     myConversations: 'שלי',
+    unassigned: 'לא משויך',
     unread: 'לא נקרא',
     saveCurrentView: 'שמור תצוגה נוכחית',
     viewName: 'שם התצוגה',
@@ -97,6 +99,11 @@ export default {
     everyone: 'לכולם',
     deleteViewConfirm: 'למחוק תצוגה זו?',
     viewSaved: 'התצוגה נשמרה בהצלחה',
+    manageViews: 'ניהול תצוגות',
+    manageViewsHint: 'שנה סדר, הסתר או הצג תצוגות. תצוגות ארגון ניתן רק להסתיר.',
+    hideView: 'הסתר תצוגה',
+    viewActions: 'פעולות תצוגה',
+    organizationView: 'ארגון',
   },
   chats: {
     title: 'צ\'אטים',
@@ -104,6 +111,7 @@ export default {
     newChat: 'שיחה חדשה',
     typeMessage: 'הקלד הודעה...',
     send: 'שלח',
+    forward: 'העבר',
     noChats: 'אין שיחות',
     noMessages: 'אין הודעות',
     starredMessages: 'הודעות מסומנות',

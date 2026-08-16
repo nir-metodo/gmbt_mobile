@@ -98,6 +98,15 @@ export const chatsApi = {
     return data;
   },
 
+  // Fetch a message's media server-side (base64) so it can be forwarded/re-uploaded to new
+  // recipients. Mirrors the web ForwardMessageModal, which uses this to bypass storage CORS.
+  async downloadMediaForForward(
+    url: string,
+  ): Promise<{ success: boolean; base64?: string; fileName?: string; contentType?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.DOWNLOAD_MEDIA_FOR_FORWARD, { url });
+    return response.data || { success: false };
+  },
+
   async sendInternalMessage(
     organization: string,
     phoneNumber: string,

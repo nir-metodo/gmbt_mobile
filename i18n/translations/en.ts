@@ -2,6 +2,7 @@ export default {
   common: {
     save: 'Save',
     cancel: 'Cancel',
+    done: 'Done',
     searchContact: 'Search contact...',
     delete: 'Delete',
     edit: 'Edit',
@@ -90,6 +91,7 @@ export default {
   sidebar: {
     allConversations: 'All',
     myConversations: 'Mine',
+    unassigned: 'Unassigned',
     unread: 'Unread',
     saveCurrentView: 'Save current view',
     viewName: 'View name',
@@ -97,6 +99,11 @@ export default {
     everyone: 'Everyone',
     deleteViewConfirm: 'Delete this view?',
     viewSaved: 'View saved successfully',
+    manageViews: 'Manage views',
+    manageViewsHint: 'Reorder, hide or show views. Organization views can only be hidden.',
+    hideView: 'Hide view',
+    viewActions: 'View actions',
+    organizationView: 'Org',
   },
   chats: {
     title: 'Chats',
@@ -104,6 +111,7 @@ export default {
     newChat: 'New Chat',
     typeMessage: 'Type a message...',
     send: 'Send',
+    forward: 'Forward',
     noChats: 'No chats',
     noMessages: 'No messages',
     starredMessages: 'Starred Messages',
