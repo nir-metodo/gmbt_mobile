@@ -112,6 +112,8 @@ export default {
     typeMessage: 'הקלד הודעה...',
     send: 'שלח',
     forward: 'העבר',
+    copyLink: 'העתק קישור',
+    copyLinks: 'העתק קישורים',
     noChats: 'אין שיחות',
     noMessages: 'אין הודעות',
     starredMessages: 'הודעות מסומנות',

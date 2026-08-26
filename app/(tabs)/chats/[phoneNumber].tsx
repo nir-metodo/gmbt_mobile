@@ -2310,6 +2310,20 @@ export default function ChatConversationScreen() {
     setSelectedMessage(null);
   }, [selectedMessage]);
 
+  // Links contained in the selected message's text (http/https or www.).
+  const selectedMessageUrls = useMemo(() => {
+    const msgText = (selectedMessage?.text || selectedMessage?.body || '') as string;
+    if (!msgText) return [] as string[];
+    const matches = msgText.match(/(https?:\/\/[^\s<>]+|www\.[^\s<>]+)/gi) || [];
+    return matches.map((u) => u.replace(/[.,;:!?)\]}>"']+$/, '').trim()).filter(Boolean);
+  }, [selectedMessage]);
+
+  const handleCopyLink = useCallback(async () => {
+    if (selectedMessageUrls.length === 0) return;
+    await Clipboard.setStringAsync(selectedMessageUrls.join('\n'));
+    setSelectedMessage(null);
+  }, [selectedMessageUrls]);
+
   const handleReply = useCallback(() => {
     if (!selectedMessage) return;
     setReplyToMessage(selectedMessage);
@@ -4052,6 +4066,35 @@ export default function ChatConversationScreen() {
                   {t('chats.copy', 'Copy')}
                 </Text>
               </Pressable>
+
+              {selectedMessageUrls.length > 0 && (
+                <Pressable
+                  onPress={handleCopyLink}
+                  style={({ pressed }) => [
+                    styles.actionItem,
+                    pressed && {
+                      backgroundColor: theme.colors.surfaceVariant,
+                    },
+                  ]}
+                >
+                  <MaterialCommunityIcons
+                    name="link-variant"
+                    size={22}
+                    color={theme.colors.onSurface}
+                  />
+                  <Text
+                    variant="bodyLarge"
+                    style={{
+                      marginStart: 16,
+                      color: theme.colors.onSurface,
+                    }}
+                  >
+                    {selectedMessageUrls.length > 1
+                      ? t('chats.copyLinks', 'העתק קישורים')
+                      : t('chats.copyLink', 'העתק קישור')}
+                  </Text>
+                </Pressable>
+              )}
 
               <Pressable
                 onPress={handleReply}

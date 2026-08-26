@@ -112,6 +112,8 @@ export default {
     typeMessage: 'Type a message...',
     send: 'Send',
     forward: 'Forward',
+    copyLink: 'Copy link',
+    copyLinks: 'Copy links',
     noChats: 'No chats',
     noMessages: 'No messages',
     starredMessages: 'Starred Messages',
