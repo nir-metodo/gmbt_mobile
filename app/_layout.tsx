@@ -36,6 +36,10 @@ export default function RootLayout() {
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const user = useAuthStore((s) => s.user);
   const themeSetting = useSettingsStore((s) => s.theme);
+  // True once the persisted Call2Chat preference has been read from device storage. The native
+  // receiver must only be armed after this, otherwise the launch race (auth resolves before
+  // settings finish loading) configures it with the flag still defaulting to false.
+  const settingsInitialized = useSettingsStore((s) => s.settingsInitialized);
   const segments = useSegments();
   const navigationState = useRootNavigationState();
 
@@ -119,10 +123,17 @@ export default function RootLayout() {
         pushNotificationService.registerPushToken(user.organization, userId);
       }
     }).catch(() => {});
-
-    // Push the freshly-authenticated org/token down to the Android call-event receiver.
-    syncDeviceCallEventsConfig().catch(() => {});
   }, [user?.organization, user?.uID, user?.userId]);
+
+  // Arm the Android device-call receiver (Call2Chat) once BOTH the authenticated org AND the
+  // persisted enable-flag are available. Gating on settingsInitialized fixes the "works only
+  // after toggling off/on in a new session" bug: previously this synced on login alone, which
+  // could run during the launch race with reportDeviceCallEventsEnabled still defaulting to
+  // false — leaving the receiver disabled until the user re-toggled it (which forced a re-sync).
+  useEffect(() => {
+    if (!user?.organization || !settingsInitialized) return;
+    syncDeviceCallEventsConfig().catch(() => {});
+  }, [user?.organization, user?.uID, user?.userId, settingsInitialized]);
 
   // Play sound when a push notification arrives while app is in foreground
   useEffect(() => {

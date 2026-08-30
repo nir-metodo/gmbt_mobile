@@ -103,11 +103,12 @@ interface SavedView {
   UserId?: string;
 }
 
-// Built-in views mirror the web Sidebar Contacts. The mobile app is VIEW-ONLY for views:
-// it shows everything created on the web (built-ins + saved), and lets the user hide,
-// reorder, or delete (own views only) — but never create new views here.
+// Built-in views mirror the web Sidebar exactly (same IDs + order): הכל / לטיפול / שלי /
+// לא משויך / לא נקרא. The mobile app lets the user create, hide, reorder, or delete (own
+// views only), and — for admins — persist the order org-wide ("שמור לארגון") like the web.
 const BUILT_IN_VIEWS: { id: string; labelKey: string; fallback: string }[] = [
   { id: '__all__', labelKey: 'sidebar.allConversations', fallback: 'הכל' },
+  { id: '__toHandle__', labelKey: 'sidebar.toHandle', fallback: 'לטיפול' },
   { id: '__mine__', labelKey: 'sidebar.myConversations', fallback: 'שלי' },
   { id: '__unassigned__', labelKey: 'sidebar.unassigned', fallback: 'לא משויך' },
   { id: '__unread__', labelKey: 'sidebar.unread', fallback: 'לא נקרא' },
@@ -168,6 +169,17 @@ export default function ChatsListScreen() {
   const [showBulkStatusModal, setShowBulkStatusModal] = useState(false);
   const [bulkOwners, setBulkOwners] = useState<any[]>([]);
   const [loadingBulkOwners, setLoadingBulkOwners] = useState(false);
+  // Bulk send message (free text OR approved template) + extra bulk actions (category, mark read).
+  const [showBulkSendModal, setShowBulkSendModal] = useState(false);
+  const [bulkSendMode, setBulkSendMode] = useState<'text' | 'template'>('text');
+  const [bulkText, setBulkText] = useState('');
+  const [bulkTemplates, setBulkTemplates] = useState<any[]>([]);
+  const [bulkTemplateId, setBulkTemplateId] = useState('');
+  const [loadingBulkTemplates, setLoadingBulkTemplates] = useState(false);
+  const [bulkSendProgress, setBulkSendProgress] = useState<{ done: number; total: number } | null>(null);
+  const [showBulkCategoryModal, setShowBulkCategoryModal] = useState(false);
+  const [bulkCategories, setBulkCategories] = useState<string[]>([]);
+  const [showBulkMoreMenu, setShowBulkMoreMenu] = useState(false);
 
   // Per-row quick actions (swipe → "…") — mirrors the web sidebar right-click menu.
   const [rowActionChat, setRowActionChat] = useState<Chat | null>(null);
@@ -273,6 +285,18 @@ export default function ChatsListScreen() {
   const [viewOrder, setViewOrder] = useState<string[]>([]);
   const [hiddenViewIds, setHiddenViewIds] = useState<string[]>([]);
   const [viewPrefsLoaded, setViewPrefsLoaded] = useState(false);
+  // Org-wide view configuration (set by an admin on the web / here) — mirrors the web Sidebar:
+  //  • sidebarViewOrder (shared) → the default tab ORDER every user sees
+  //  • sidebarOrgDefault         → the default LANDING tab (fallback: __toHandle__, like web)
+  // A user who reorders locally gets a PERSONAL override (hasPersonalOrder) that wins over the org
+  // order until they reset it. Persisted org order can be saved by admins via "שמור לארגון".
+  const [orgViewOrder, setOrgViewOrder] = useState<string[]>([]);
+  const [orgViewOrderDocId, setOrgViewOrderDocId] = useState<string>('');
+  const [orgDefaultViewId, setOrgDefaultViewId] = useState<string>('');
+  const [hasPersonalOrder, setHasPersonalOrder] = useState(false);
+  const [savingOrgOrder, setSavingOrgOrder] = useState(false);
+  const [orgConfigLoaded, setOrgConfigLoaded] = useState(false);
+  const orgDefaultAppliedRef = useRef(false);
 
   // Save-view modal (create a new view from the current filters)
   const [showSaveViewModal, setShowSaveViewModal] = useState(false);
@@ -290,6 +314,12 @@ export default function ChatsListScreen() {
   const [numberFilter, setNumberFilter] = useState<string>('');
   const [numberMenuVisible, setNumberMenuVisible] = useState(false);
   const [numberSearchQuery, setNumberSearchQuery] = useState('');
+
+  // Time filter (סינון לפי זמן) — mirrors the web Sidebar "filter by time" section.
+  // '' = off | 'active7' / 'active30' = last message within N days | 'inactive7' / 'inactive30'
+  // = no activity for more than N days.
+  const [activityFilter, setActivityFilter] = useState<string>('');
+  const [activityMenuVisible, setActivityMenuVisible] = useState(false);
 
   // Case stage filter
   const [caseStages, setCaseStages] = useState<{ id: string; name: string; color?: string }[]>([]);
@@ -321,6 +351,7 @@ export default function ChatsListScreen() {
   const org = user?.organization || '';
   const viewOrderKey = `chats_view_order_${org}`;
   const hiddenViewsKey = `chats_hidden_views_${org}`;
+  const personalOrderKey = `chats_view_order_personal_${org}`;
 
   // Restore the saved order / hidden set for this org. `viewPrefsLoaded` guards the persist
   // effects below so we don't overwrite storage with the empty initial state before load.
@@ -330,15 +361,17 @@ export default function ChatsListScreen() {
     setViewPrefsLoaded(false);
     (async () => {
       try {
-        const [orderRaw, hiddenRaw] = await Promise.all([
+        const [orderRaw, hiddenRaw, personalRaw] = await Promise.all([
           AsyncStorage.getItem(viewOrderKey),
           AsyncStorage.getItem(hiddenViewsKey),
+          AsyncStorage.getItem(personalOrderKey),
         ]);
         if (cancelled) return;
         setViewOrder(orderRaw ? JSON.parse(orderRaw) : []);
         setHiddenViewIds(hiddenRaw ? JSON.parse(hiddenRaw) : []);
+        setHasPersonalOrder(personalRaw === 'true');
       } catch {
-        if (!cancelled) { setViewOrder([]); setHiddenViewIds([]); }
+        if (!cancelled) { setViewOrder([]); setHiddenViewIds([]); setHasPersonalOrder(false); }
       } finally {
         if (!cancelled) setViewPrefsLoaded(true);
       }
@@ -346,29 +379,109 @@ export default function ChatsListScreen() {
     return () => { cancelled = true; };
   }, [org]);
 
+  // Load the org-wide view ORDER (shared) and DEFAULT landing view configured on the web, so the
+  // app shows the organization's default views exactly as an admin defined them.
+  useEffect(() => {
+    if (!org) return;
+    let cancelled = false;
+    setOrgConfigLoaded(false);
+    const uid = user?.uID || user?.userId;
+    // Org default view order (a single shared doc under viewType 'sidebarViewOrder').
+    const pOrder = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarViewOrder' })
+      .then((res) => {
+        if (cancelled) return;
+        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
+        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
+        const order = shared?.ViewData?.order || shared?.viewData?.order;
+        if (Array.isArray(order)) setOrgViewOrder(order);
+        if (shared?.id) setOrgViewOrderDocId(shared.id);
+      }).catch(() => {});
+    // Org default landing view.
+    const pDefault = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarOrgDefault' })
+      .then((res) => {
+        if (cancelled) return;
+        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
+        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
+        const def = shared?.ViewData?.defaultViewId || shared?.viewData?.defaultViewId;
+        if (def) setOrgDefaultViewId(def);
+      }).catch(() => {});
+    Promise.allSettled([pOrder, pDefault]).then(() => { if (!cancelled) setOrgConfigLoaded(true); });
+    return () => { cancelled = true; };
+  }, [org, user?.uID, user?.userId]);
+
+  // Always holds the latest fully-ordered tab id list (built-ins + saved). Lets moveViewTab /
+  // saveOrgViewOrder reorder against the real displayed order without a forward reference.
+  const orderedIdsRef = useRef<string[]>([]);
+
   const persistViewOrder = useCallback((next: string[]) => {
     setViewOrder(next);
     AsyncStorage.setItem(viewOrderKey, JSON.stringify(next)).catch(() => {});
   }, [viewOrderKey]);
+
+  const markPersonalOrder = useCallback(() => {
+    setHasPersonalOrder(true);
+    AsyncStorage.setItem(personalOrderKey, 'true').catch(() => {});
+  }, [personalOrderKey]);
+
+  // Reset back to the organization's default order (drops the personal override).
+  const resetToOrgViewOrder = useCallback(() => {
+    setHasPersonalOrder(false);
+    AsyncStorage.removeItem(personalOrderKey).catch(() => {});
+  }, [personalOrderKey]);
 
   const persistHiddenViews = useCallback((next: string[]) => {
     setHiddenViewIds(next);
     AsyncStorage.setItem(hiddenViewsKey, JSON.stringify(next)).catch(() => {});
   }, [hiddenViewsKey]);
 
-  // Swap a tab one slot up (-1) or down (+1) in the persisted order. Mirrors the web ▲/▼ arrows.
+  // Swap a tab one slot up (-1) or down (+1). Mirrors the web ▲/▼ arrows. Reordering creates a
+  // PERSONAL override that wins over the org default order until the user resets it. We reorder
+  // against the currently displayed order (effective org/personal order + any extras), not the
+  // raw personal cache, so the first drag behaves intuitively even on the org default order.
   const moveViewTab = useCallback((tabId: string, direction: -1 | 1) => {
-    setViewOrder((prev) => {
-      const ids = [...prev];
-      const idx = ids.indexOf(tabId);
-      if (idx === -1) return prev;
-      const swap = idx + direction;
-      if (swap < 0 || swap >= ids.length) return prev;
-      [ids[idx], ids[swap]] = [ids[swap], ids[idx]];
-      AsyncStorage.setItem(viewOrderKey, JSON.stringify(ids)).catch(() => {});
-      return ids;
-    });
-  }, [viewOrderKey]);
+    const base = (orderedIdsRef.current && orderedIdsRef.current.length)
+      ? [...orderedIdsRef.current]
+      : [...viewOrder];
+    const idx = base.indexOf(tabId);
+    if (idx === -1) return;
+    const swap = idx + direction;
+    if (swap < 0 || swap >= base.length) return;
+    [base[idx], base[swap]] = [base[swap], base[idx]];
+    persistViewOrder(base);
+    markPersonalOrder();
+  }, [viewOrder, persistViewOrder, markPersonalOrder]);
+
+  // Admin: persist the current tab order org-wide ("שמור לארגון") — every user then sees this
+  // order by default (unless they set a personal one). Uses the same UserViews doc as the web.
+  const saveOrgViewOrder = useCallback(async () => {
+    if (!user?.organization || !userIsAdmin) return;
+    const order = (orderedIdsRef.current && orderedIdsRef.current.length)
+      ? [...orderedIdsRef.current]
+      : [...viewOrder];
+    if (order.length === 0) return;
+    setSavingOrgOrder(true);
+    try {
+      const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
+        organization: user.organization,
+        userId: user.uID || user.userId,
+        viewType: 'sidebarViewOrder',
+        name: 'orgViewOrder',
+        isPinned: true,
+        viewData: { order },
+        visibility: 'shared',
+        ...(orgViewOrderDocId ? { existingId: orgViewOrderDocId } : {}),
+      });
+      if (res.data?.Data?.id) setOrgViewOrderDocId(res.data.Data.id);
+      setOrgViewOrder(order);
+      // The admin just defined the org order — drop their personal override so they see it too.
+      resetToOrgViewOrder();
+      Alert.alert('✅', isRTL ? 'סדר התצוגות נשמר לכל הארגון' : 'View order saved for the whole organization');
+    } catch {
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'שמירת הסדר נכשלה' : 'Failed to save order');
+    } finally {
+      setSavingOrgOrder(false);
+    }
+  }, [user, userIsAdmin, viewOrder, orgViewOrderDocId, resetToOrgViewOrder, isRTL]);
 
   // Hide/show a tab. Built-in tabs and shared (organization) views can only be hidden, never
   // deleted — hiding is a local preference so it never affects other users.
@@ -504,6 +617,7 @@ export default function ChatsListScreen() {
     setGroupFilter(filters.contactGroup || []);
     setLeadStageFilter(filters.leadStage || []);
     setCaseStageFilter(filters.caseStage || []);
+    setActivityFilter(filters.activityFilter || '');
     if (viewData.searchTerm) {
       setSearchInput(viewData.searchTerm);
     }
@@ -518,6 +632,7 @@ export default function ChatsListScreen() {
     setLeadStageFilter([]);
     setCaseStageFilter([]);
     setNumberFilter('');
+    setActivityFilter('');
     setSearchInput('');
     setDebouncedSearch('');
     storeSetSearchQuery('');
@@ -536,6 +651,7 @@ export default function ChatsListScreen() {
           contactGroup: groupFilter,
           leadStage: leadStageFilter,
           caseStage: caseStageFilter,
+          activityFilter,
         },
         searchTerm: searchInput,
       };
@@ -563,7 +679,7 @@ export default function ChatsListScreen() {
     setShowSaveViewModal(false);
     setNewViewName('');
     setSaveViewVisibility('personal');
-  }, [newViewName, user, filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, searchInput, userIsAdmin, saveViewVisibility]);
+  }, [newViewName, user, filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, activityFilter, searchInput, userIsAdmin, saveViewVisibility]);
 
   const deleteSavedView = useCallback(async (viewId: string) => {
     if (!user?.organization) return;
@@ -620,15 +736,28 @@ export default function ChatsListScreen() {
     if (missing.length > 0) persistViewOrder([...viewOrder, ...missing]);
   }, [viewPrefsLoaded, org, allViewTabs, viewOrder, persistViewOrder]);
 
+  // Effective order precedence (mirrors the web Sidebar): a PERSONAL reorder wins, else the
+  // org-wide default order, else the natural (built-in + appended) order.
+  const effectiveOrder = useMemo<string[]>(() => {
+    if (hasPersonalOrder && viewOrder.length) return viewOrder;
+    if (orgViewOrder.length) return orgViewOrder;
+    return viewOrder;
+  }, [hasPersonalOrder, viewOrder, orgViewOrder]);
+
   // Ordered tabs for the settings sheet (includes hidden ones so they can be restored)...
   const orderedViewTabs = useMemo<ViewTab[]>(() => {
-    if (viewOrder.length === 0) return allViewTabs;
+    if (effectiveOrder.length === 0) return allViewTabs;
     const byId = new Map(allViewTabs.map((tb) => [tb.id, tb]));
-    const ordered = viewOrder.map((id) => byId.get(id)).filter(Boolean) as ViewTab[];
-    const known = new Set(viewOrder);
+    const ordered = effectiveOrder.map((id) => byId.get(id)).filter(Boolean) as ViewTab[];
+    const known = new Set(effectiveOrder);
     const extras = allViewTabs.filter((tb) => !known.has(tb.id));
     return [...ordered, ...extras];
-  }, [allViewTabs, viewOrder]);
+  }, [allViewTabs, effectiveOrder]);
+
+  // Keep the ref in sync so moveViewTab / saveOrgViewOrder reorder against the real displayed order.
+  useEffect(() => {
+    orderedIdsRef.current = orderedViewTabs.map((tb) => tb.id);
+  }, [orderedViewTabs]);
 
   // ...and the subset actually shown as tabs above the list (hidden tabs removed).
   const visibleViewTabs = useMemo<ViewTab[]>(
@@ -636,11 +765,29 @@ export default function ChatsListScreen() {
     [orderedViewTabs, hiddenViewIds],
   );
 
+  // Apply the organization's DEFAULT landing view once, after views + org config have loaded —
+  // mirrors the web precedence: org default → fallback __toHandle__. We only do this on first
+  // load (guarded by a ref) so it never fights the user's own tab selection afterwards.
+  useEffect(() => {
+    if (!viewPrefsLoaded || !orgConfigLoaded || orgDefaultAppliedRef.current) return;
+    // Wait until saved views are available if an org default points at one.
+    const wantId = orgDefaultViewId || '__toHandle__';
+    const target = visibleViewTabs.find((tb) => tb.id === wantId)
+      || visibleViewTabs.find((tb) => tb.id === '__toHandle__')
+      || visibleViewTabs.find((tb) => tb.id === '__all__');
+    // If the org default is a saved view that hasn't loaded yet, defer (don't consume the guard).
+    if (orgDefaultViewId && !target) return;
+    orgDefaultAppliedRef.current = true;
+    if (target && target.id !== '__all__') applyViewTab(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewPrefsLoaded, orgConfigLoaded, orgDefaultViewId, visibleViewTabs]);
+
   // Apply a tab by its id (built-in tabs map to a store filter; saved views restore their filters).
   const applyViewTab = useCallback((tab: ViewTab) => {
     if (tab.kind === 'saved' && tab.view) { loadSavedView(tab.view); return; }
     switch (tab.id) {
       case '__all__': clearAllFilters(); break;
+      case '__toHandle__': setActiveViewId('__toHandle__'); setFilter('toHandle'); break;
       case '__mine__': setActiveViewId('__mine__'); setFilter('myChats'); break;
       case '__unassigned__': setActiveViewId('__unassigned__'); setFilter('unassigned'); break;
       case '__unread__': setActiveViewId('__unread__'); setFilter('unread'); break;
@@ -850,6 +997,11 @@ export default function ChatsListScreen() {
       result = result.filter((c) => isChatOpen(c));
     } else if (filter === 'closed') {
       result = result.filter((c) => isChatClosed(c));
+    } else if (filter === 'toHandle') {
+      // Mirrors the web "לטיפול" built-in: conversations that are mine OR not assigned to a
+      // human (unassigned / bot-owned) — i.e. everything that still needs a human to handle it.
+      const userId = user?.uID || user?.userId;
+      result = result.filter((c) => c.ownerId === userId || !c.ownerId);
     } else if (filter === 'myChats') {
       const userId = user?.uID || user?.userId;
       result = result.filter((c) => c.ownerId === userId);
@@ -899,6 +1051,24 @@ export default function ChatsListScreen() {
       });
     }
 
+    if (activityFilter) {
+      const now = Date.now();
+      const DAY = 86400000;
+      result = result.filter((c) => {
+        const ms = chatActivityMs(c);
+        // A chat with no valid last-activity timestamp counts as inactive.
+        if (!ms) return activityFilter.startsWith('inactive');
+        const ageDays = (now - ms) / DAY;
+        switch (activityFilter) {
+          case 'active7': return ageDays <= 7;
+          case 'active30': return ageDays <= 30;
+          case 'inactive7': return ageDays > 7;
+          case 'inactive30': return ageDays > 30;
+          default: return true;
+        }
+      });
+    }
+
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.trim().toLowerCase();
       result = result.filter(
@@ -916,7 +1086,7 @@ export default function ChatsListScreen() {
     // "list re-sorts wrong after entering a chat and coming back" report. Sorting the (already
     // filtered) copy here makes the displayed order correct no matter what.
     return [...result].sort((a, b) => chatActivityMs(b) - chatActivityMs(a));
-  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, user, contactLeadMap, contactCaseMap, leadStages]);
+  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages]);
 
   // When searching, show all results; otherwise paginate for smooth scrolling
   const displayedChats = useMemo(() => {
@@ -926,6 +1096,26 @@ export default function ChatsListScreen() {
 
   const hasMoreChats = !debouncedSearch.trim() && displayLimit < filteredChats.length;
 
+  // Any non-default filter active → surfaces the "נקה סינון" (clear) chip, mirroring the web panel.
+  const hasActiveFilters =
+    filter !== 'all' ||
+    categoryFilter !== 'all' ||
+    ownerFilter !== 'all' ||
+    groupFilter.length > 0 ||
+    leadStageFilter.length > 0 ||
+    caseStageFilter.length > 0 ||
+    !!numberFilter ||
+    !!activityFilter ||
+    !!debouncedSearch.trim();
+
+  const ACTIVITY_OPTIONS: { id: string; label: string }[] = [
+    { id: 'active7', label: t('sidebar.active7', 'פעיל ב-7 ימים') },
+    { id: 'active30', label: t('sidebar.active30', 'פעיל ב-30 יום') },
+    { id: 'inactive7', label: t('sidebar.inactive7', 'לא פעיל מעל 7 ימים') },
+    { id: 'inactive30', label: t('sidebar.inactive30', 'לא פעיל מעל 30 יום') },
+  ];
+  const activityLabel = ACTIVITY_OPTIONS.find((o) => o.id === activityFilter)?.label;
+
   const onEndReachedChats = useCallback(() => {
     if (!hasMoreChats) return;
     setDisplayLimit((prev) => prev + CHATS_PAGE_SIZE);
@@ -934,7 +1124,7 @@ export default function ChatsListScreen() {
   // Reset display limit when filters change
   useEffect(() => {
     setDisplayLimit(CHATS_PAGE_SIZE);
-  }, [filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, numberFilter]);
+  }, [filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter]);
 
   const onRefresh = useCallback(async () => {
     await refreshChatsFull(true);
@@ -1054,6 +1244,131 @@ export default function ChatsListScreen() {
     },
     [user?.organization, selectedPhones, addOrUpdateChat, exitSelection],
   );
+
+  // ---- Bulk: resolve the WABA number to send FROM ----
+  // Prefer the number the list is currently filtered on, else the first number available to this
+  // user, else the user's default WABA number (single-number orgs). Returns display + PhoneNumberId.
+  const resolveBulkFromNumber = useCallback((): { from: string; fromNumberId: string } => {
+    if (numberFilter) {
+      const m = availableNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === numberFilter);
+      if (m) return { from: m.DisplayNumber || m.displayNumber || m.Label || m.label || (user as any)?.wabaNumber || '', fromNumberId: numberFilter };
+    }
+    const first = availableNumbers[0];
+    if (first) return {
+      from: first.DisplayNumber || first.displayNumber || first.Label || first.label || (user as any)?.wabaNumber || '',
+      fromNumberId: first.PhoneNumberId || first.phoneNumberId || '',
+    };
+    return { from: (user as any)?.wabaNumber || '', fromNumberId: '' };
+  }, [numberFilter, availableNumbers, user]);
+
+  // ---- Bulk: open send modal (loads approved templates lazily) ----
+  const openBulkSend = useCallback(async () => {
+    setShowBulkMoreMenu(false);
+    setShowBulkSendModal(true);
+    if (!user?.organization || bulkTemplates.length > 0) return;
+    setLoadingBulkTemplates(true);
+    try {
+      const tpls = await chatsApi.getTemplates(user.organization);
+      setBulkTemplates(Array.isArray(tpls) ? tpls : []);
+    } catch {
+      setBulkTemplates([]);
+    } finally {
+      setLoadingBulkTemplates(false);
+    }
+  }, [user?.organization, bulkTemplates.length]);
+
+  const closeBulkSend = useCallback(() => {
+    setShowBulkSendModal(false);
+    setBulkText('');
+    setBulkTemplateId('');
+    setBulkSendProgress(null);
+  }, []);
+
+  // ---- Bulk: send a message (free text or template) to every selected chat, sequentially ----
+  const handleBulkSend = useCallback(async () => {
+    if (!user?.organization || selectedPhones.length === 0) return;
+    if (bulkSendMode === 'text' && !bulkText.trim()) return;
+    if (bulkSendMode === 'template' && !bulkTemplateId) return;
+    const { from, fromNumberId } = resolveBulkFromNumber();
+    const senderName = user.fullname || (user as any).name || 'system';
+    const uid = user.uID || user.userId;
+    setBulkBusy(true);
+    let ok = 0;
+    let failed = 0;
+    setBulkSendProgress({ done: 0, total: selectedPhones.length });
+    try {
+      for (let i = 0; i < selectedPhones.length; i++) {
+        const phone = selectedPhones[i];
+        try {
+          if (bulkSendMode === 'template') {
+            await chatsApi.sendTemplateMessage(user.organization, phone, bulkTemplateId, uid, [], fromNumberId || undefined);
+          } else {
+            await chatsApi.sendMessage(user.organization, phone, bulkText.trim(), senderName, uid, undefined, from, (user as any)?.email || '', fromNumberId || undefined);
+          }
+          ok++;
+        } catch {
+          failed++;
+        }
+        setBulkSendProgress({ done: i + 1, total: selectedPhones.length });
+      }
+      Alert.alert(
+        '✅',
+        isRTL
+          ? `נשלחו ${ok} הודעות${failed ? `, ${failed} נכשלו (ייתכן מחוץ לחלון 24 שעות)` : ''}`
+          : `Sent ${ok}${failed ? `, ${failed} failed (may be outside the 24h window)` : ''}`,
+      );
+    } finally {
+      setBulkBusy(false);
+      closeBulkSend();
+      exitSelection();
+    }
+  }, [user, selectedPhones, bulkSendMode, bulkText, bulkTemplateId, resolveBulkFromNumber, isRTL, closeBulkSend, exitSelection]);
+
+  // ---- Bulk: update conversation category ----
+  const openBulkCategory = useCallback(async () => {
+    setShowBulkMoreMenu(false);
+    setShowBulkCategoryModal(true);
+    if (!user?.organization) return;
+    try {
+      const cats = await chatsApi.getConversationCategories(user.organization);
+      setBulkCategories(Array.isArray(cats) && cats.length > 0 ? cats : categories.filter((c) => c !== 'all'));
+    } catch {
+      setBulkCategories(categories.filter((c) => c !== 'all'));
+    }
+  }, [user?.organization, categories]);
+
+  const handleBulkCategory = useCallback(async (category: string) => {
+    if (!user?.organization || selectedPhones.length === 0) return;
+    setBulkBusy(true);
+    try {
+      for (const phone of selectedPhones) {
+        await chatsApi.updateConversationCategory(user.organization, phone, category);
+        addOrUpdateChat({ phoneNumber: phone, category, lastConversationCategory: category } as any);
+      }
+    } finally {
+      setBulkBusy(false);
+      setShowBulkCategoryModal(false);
+      exitSelection();
+    }
+  }, [user?.organization, selectedPhones, addOrUpdateChat, exitSelection]);
+
+  // ---- Bulk: mark as read ----
+  const handleBulkMarkRead = useCallback(async () => {
+    setShowBulkMoreMenu(false);
+    if (!user?.organization || selectedPhones.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const uid = user.uID || user.userId;
+      const uname = user.fullname || (user as any).name || '';
+      for (const phone of selectedPhones) {
+        await chatsApi.markAsRead(user.organization, phone, uid, uname);
+        addOrUpdateChat({ phoneNumber: phone, unreadCount: 0, isRead: true } as any);
+      }
+    } finally {
+      setBulkBusy(false);
+      exitSelection();
+    }
+  }, [user, selectedPhones, addOrUpdateChat, exitSelection]);
 
   // ---- Per-row quick actions (swipe → "…") ----
   const openRowActions = useCallback((chat: Chat) => {
@@ -1612,6 +1927,17 @@ export default function ChatsListScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
         >
+          {hasActiveFilters && (
+            <Chip
+              icon="filter-remove-outline"
+              onPress={clearAllFilters}
+              compact
+              style={[styles.filterChip, { backgroundColor: theme.colors.errorContainer }]}
+              textStyle={[styles.filterChipText, { color: theme.colors.error, fontWeight: '600' }]}
+            >
+              {t('sidebar.clearFilters', 'נקה סינון')}
+            </Chip>
+          )}
           {FILTER_OPTIONS.map((f) => (
             <Chip
               key={f}
@@ -1833,6 +2159,44 @@ export default function ChatsListScreen() {
             </Menu>
           )}
 
+          <Menu
+            visible={activityMenuVisible}
+            onDismiss={() => setActivityMenuVisible(false)}
+            anchor={
+              <Chip
+                icon="clock-outline"
+                onPress={() => setActivityMenuVisible(true)}
+                compact
+                style={[
+                  styles.filterChip,
+                  activityFilter
+                    ? { backgroundColor: theme.colors.primaryContainer }
+                    : { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+                textStyle={[
+                  styles.filterChipText,
+                  activityFilter && { color: theme.colors.primary, fontWeight: '600' },
+                ]}
+              >
+                {activityFilter ? activityLabel : t('sidebar.filterByTime', 'סינון לפי זמן')}
+              </Chip>
+            }
+          >
+            <Menu.Item
+              title={t('common.all', 'הכל')}
+              onPress={() => { setActivityFilter(''); setActivityMenuVisible(false); }}
+              leadingIcon={!activityFilter ? 'check' : undefined}
+            />
+            {ACTIVITY_OPTIONS.map((o) => (
+              <Menu.Item
+                key={o.id}
+                title={o.label}
+                onPress={() => { setActivityFilter(o.id); setActivityMenuVisible(false); }}
+                leadingIcon={activityFilter === o.id ? 'check' : undefined}
+              />
+            ))}
+          </Menu>
+
           {availableNumbers.length > 1 && (
             <Menu
               visible={numberMenuVisible}
@@ -1978,7 +2342,7 @@ export default function ChatsListScreen() {
         />
       )}
 
-      {/* Bulk action bar (multi-select mode) */}
+      {/* Bulk action bar (multi-select mode) — mirrors the web sidebar bulk toolbar */}
       {selectionMode && selectedPhones.length > 0 && (
         <View
           style={[
@@ -1986,9 +2350,9 @@ export default function ChatsListScreen() {
             { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 8, borderTopColor: theme.colors.outlineVariant },
           ]}
         >
-          <Pressable style={styles.bulkBtn} onPress={handleBulkMarkUnread} disabled={bulkBusy}>
-            <MaterialCommunityIcons name="email-mark-as-unread" size={22} color={theme.colors.primary} />
-            <Text style={[styles.bulkBtnLabel, { color: theme.colors.onSurface }]}>{t('chats.markUnread', 'לא נקרא')}</Text>
+          <Pressable style={styles.bulkBtn} onPress={openBulkSend} disabled={bulkBusy}>
+            <MaterialCommunityIcons name="send" size={22} color={theme.colors.primary} />
+            <Text style={[styles.bulkBtnLabel, { color: theme.colors.onSurface }]}>{t('sidebar.sendMessage', 'שלח הודעה')}</Text>
           </Pressable>
           <Pressable style={styles.bulkBtn} onPress={openBulkOwner} disabled={bulkBusy}>
             <MaterialCommunityIcons name="account-switch-outline" size={22} color={theme.colors.primary} />
@@ -1998,6 +2362,20 @@ export default function ChatsListScreen() {
             <MaterialCommunityIcons name="swap-horizontal" size={22} color={theme.colors.primary} />
             <Text style={[styles.bulkBtnLabel, { color: theme.colors.onSurface }]}>{t('chats.status', 'סטטוס')}</Text>
           </Pressable>
+          <Menu
+            visible={showBulkMoreMenu}
+            onDismiss={() => setShowBulkMoreMenu(false)}
+            anchor={
+              <Pressable style={styles.bulkBtn} onPress={() => setShowBulkMoreMenu(true)} disabled={bulkBusy}>
+                <MaterialCommunityIcons name="dots-horizontal" size={22} color={theme.colors.primary} />
+                <Text style={[styles.bulkBtnLabel, { color: theme.colors.onSurface }]}>{t('common.more', 'עוד')}</Text>
+              </Pressable>
+            }
+          >
+            <Menu.Item leadingIcon="tag-outline" onPress={openBulkCategory} title={t('chats.category', 'קטגוריה')} />
+            <Menu.Item leadingIcon="email-check-outline" onPress={handleBulkMarkRead} title={t('chats.markRead', 'סמן כנקרא')} />
+            <Menu.Item leadingIcon="email-mark-as-unread" onPress={() => { setShowBulkMoreMenu(false); handleBulkMarkUnread(); }} title={t('chats.markUnread', 'סמן כלא נקרא')} />
+          </Menu>
           {bulkBusy && <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginStart: 8 }} />}
         </View>
       )}
@@ -2207,7 +2585,31 @@ export default function ChatsListScreen() {
               );
             })}
           </ScrollView>
-          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 12 }}>
+          {/* Personal override indicator + reset to the org default order */}
+          {hasPersonalOrder && (
+            <View style={{ flexDirection, alignItems: 'center', marginTop: 8, gap: 6 }}>
+              <MaterialCommunityIcons name="account-cog-outline" size={16} color={theme.colors.onSurfaceVariant} />
+              <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, flex: 1, textAlign }}>
+                {t('sidebar.personalOrderActive', 'הסדר שלך גובר על סדר הארגון')}
+              </Text>
+              <Button mode="text" compact onPress={resetToOrgViewOrder}>
+                {t('sidebar.resetToOrgOrder', 'אפס לסדר הארגון')}
+              </Button>
+            </View>
+          )}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, gap: 8 }}>
+            {userIsAdmin ? (
+              <Button
+                mode="outlined"
+                icon="office-building-outline"
+                loading={savingOrgOrder}
+                disabled={savingOrgOrder}
+                onPress={saveOrgViewOrder}
+                style={{ flex: 1 }}
+              >
+                {t('sidebar.saveForOrg', 'שמור לארגון')}
+              </Button>
+            ) : <View style={{ flex: 1 }} />}
             <Button mode="contained" onPress={() => setShowViewsSettings(false)}>
               {t('common.done', 'סיום')}
             </Button>
@@ -2286,6 +2688,136 @@ export default function ChatsListScreen() {
               </Pressable>
             );
           })}
+        </Modal>
+
+        {/* Bulk: Send message (free text or approved template) */}
+        <Modal
+          visible={showBulkSendModal}
+          onDismiss={closeBulkSend}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 4, fontWeight: '700', textAlign }}>
+            {t('sidebar.sendMessage', 'שלח הודעה')} ({selectedPhones.length})
+          </Text>
+          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, marginBottom: 12, textAlign }}>
+            {bulkSendMode === 'text'
+              ? t('sidebar.bulkTextHint', 'טקסט חופשי נשלח רק לשיחות בתוך חלון 24 השעות.')
+              : t('sidebar.bulkTemplateHint', 'תבנית מאושרת נשלחת גם מחוץ לחלון 24 השעות.')}
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+            <Chip
+              selected={bulkSendMode === 'text'}
+              onPress={() => setBulkSendMode('text')}
+              compact
+              style={{ backgroundColor: bulkSendMode === 'text' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+            >
+              {t('sidebar.freeText', 'טקסט חופשי')}
+            </Chip>
+            <Chip
+              selected={bulkSendMode === 'template'}
+              onPress={() => setBulkSendMode('template')}
+              compact
+              style={{ backgroundColor: bulkSendMode === 'template' ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+            >
+              {t('sidebar.template', 'תבנית')}
+            </Chip>
+          </View>
+
+          {bulkSendMode === 'text' ? (
+            <PaperInput
+              mode="outlined"
+              multiline
+              numberOfLines={4}
+              value={bulkText}
+              onChangeText={setBulkText}
+              placeholder={t('sidebar.messageText', 'תוכן ההודעה…')}
+              style={{ marginBottom: 12, maxHeight: 160 }}
+            />
+          ) : (
+            <ScrollView style={{ maxHeight: 260, marginBottom: 12 }}>
+              {loadingBulkTemplates ? (
+                <ActivityIndicator style={{ marginVertical: 20 }} color={theme.colors.primary} />
+              ) : bulkTemplates.length === 0 ? (
+                <Text style={{ color: theme.colors.onSurfaceVariant, textAlign, paddingVertical: 12 }}>
+                  {t('sidebar.noTemplates', 'אין תבניות מאושרות')}
+                </Text>
+              ) : (
+                bulkTemplates.map((tpl) => {
+                  const id = tpl.id || tpl.Id || tpl.templateId || tpl.name || tpl.Name;
+                  const name = tpl.friendlyName || tpl.FriendlyName || tpl.name || tpl.Name || id;
+                  const selected = bulkTemplateId === id;
+                  return (
+                    <Pressable
+                      key={id}
+                      onPress={() => setBulkTemplateId(id)}
+                      style={({ pressed }) => [
+                        { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 10, borderRadius: 8 },
+                        selected && { backgroundColor: theme.colors.primaryContainer },
+                        pressed && { backgroundColor: theme.colors.surfaceVariant },
+                      ]}
+                    >
+                      <MaterialCommunityIcons
+                        name={selected ? 'radiobox-marked' : 'radiobox-blank'}
+                        size={20}
+                        color={selected ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                      />
+                      <Text style={{ color: theme.colors.onSurface, flex: 1, textAlign }} numberOfLines={2}>{name}</Text>
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+          )}
+
+          {bulkSendProgress && (
+            <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, marginBottom: 8, textAlign }}>
+              {t('sidebar.sending', 'שולח')} {bulkSendProgress.done}/{bulkSendProgress.total}…
+            </Text>
+          )}
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+            <Button mode="outlined" onPress={closeBulkSend} disabled={bulkBusy}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              mode="contained"
+              icon="send"
+              loading={bulkBusy}
+              disabled={bulkBusy || (bulkSendMode === 'text' ? !bulkText.trim() : !bulkTemplateId)}
+              onPress={handleBulkSend}
+            >
+              {t('sidebar.send', 'שלח')}
+            </Button>
+          </View>
+        </Modal>
+
+        {/* Bulk: Update category */}
+        <Modal
+          visible={showBulkCategoryModal}
+          onDismiss={() => setShowBulkCategoryModal(false)}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '70%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {t('chats.category', 'קטגוריה')} ({selectedPhones.length})
+          </Text>
+          <ScrollView style={{ maxHeight: 360 }}>
+            <Pressable
+              onPress={() => handleBulkCategory('')}
+              disabled={bulkBusy}
+              style={({ pressed }) => [{ paddingVertical: 12, paddingHorizontal: 8, borderRadius: 8 }, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+            >
+              <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>{isRTL ? 'ללא קטגוריה' : 'No category'}</Text>
+            </Pressable>
+            {bulkCategories.map((cat) => (
+              <Pressable
+                key={cat}
+                onPress={() => handleBulkCategory(cat)}
+                disabled={bulkBusy}
+                style={({ pressed }) => [{ paddingVertical: 12, paddingHorizontal: 8, borderRadius: 8 }, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+              >
+                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, textAlign }}>{cat}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
         </Modal>
 
         {/* Per-row quick actions (swipe → "…") */}
