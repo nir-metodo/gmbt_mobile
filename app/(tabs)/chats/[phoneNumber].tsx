@@ -873,7 +873,10 @@ export default function ChatConversationScreen() {
     }
     if (stagesRes.status === 'fulfilled') {
       const raw = stagesRes.value.data;
-      const stages = raw?.stages || raw?.Data?.stages || raw?.Stages || [];
+      // GetPipelineSettings returns the stages under pipelines[0].stages (same as web + the chat-list
+      // screen + leadsApi.getPipelineSettings). Omitting that path left pipelineStages empty, so the
+      // lead-stage dropdown had no options to pick from ("שלבי לידים לבחירה" didn't show).
+      const stages = raw?.pipelines?.[0]?.stages || raw?.stages || raw?.Data?.stages || raw?.Stages || [];
       setPipelineStages(Array.isArray(stages) ? stages : []);
     }
     if (casesRes.status === 'fulfilled') {
@@ -882,7 +885,8 @@ export default function ChatConversationScreen() {
     }
     if (caseSettingsRes.status === 'fulfilled') {
       const raw = caseSettingsRes.value.data;
-      const stages = raw?.stages || raw?.Data?.stages || raw?.Stages || [];
+      // Same shape as the pipeline settings: case stages live under pipelines[0].stages.
+      const stages = raw?.pipelines?.[0]?.stages || raw?.stages || raw?.Data?.stages || raw?.Stages || [];
       setCaseStages(Array.isArray(stages) ? stages : []);
     }
   }, [user?.organization, phoneNumber]);
@@ -908,9 +912,13 @@ export default function ChatConversationScreen() {
     if (!user?.organization || !activeLead) return;
     const stageId = stage.id || stage.Id;
     const stageName = stage.name || stage.Name || stage.stageName;
+    const stageColor = stage.color || stage.Color || '';
     if (activeLead.stageId === stageId) return;
     const movedAtIso = new Date().toISOString();
     setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName, modifiedOn: movedAtIso, updatedOn: movedAtIso } : l)));
+    // Push the new stage into the chats store so the list badge updates immediately when the user
+    // goes back — without this the lead-stage change only showed up after re-opening the app.
+    addOrUpdateChat({ phoneNumber: phoneNumber as string, leadStageName: stageName, ...(stageColor ? { leadStageColor: stageColor } : {}) } as any);
     pushLocalTimeline('leadstage', isRTL ? `שלב הליד עודכן ל: ${stageName}` : `Lead stage → ${stageName}`);
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
@@ -918,15 +926,18 @@ export default function ChatConversationScreen() {
       });
       setTimeout(refreshTimeline, 1200);
     } catch { }
-  }, [user?.organization, activeLead, pushLocalTimeline, refreshTimeline, isRTL]);
+  }, [user?.organization, activeLead, phoneNumber, addOrUpdateChat, pushLocalTimeline, refreshTimeline, isRTL]);
 
   const handleMoveCaseStage = useCallback(async (stage: any) => {
     setShowCaseStageMenu(false);
     if (!user?.organization || !activeCase) return;
     const stageId = stage.id || stage.Id;
     const stageName = stage.name || stage.Name || stage.stageName;
+    const stageColor = stage.color || stage.Color || '';
     if (activeCase.stageId === stageId) return;
     setContactCases((prev) => prev.map((c) => (c.id === activeCase.id ? { ...c, stageId, stageName } : c)));
+    // Reflect the case-stage change in the chats list badge immediately (same reason as leads above).
+    addOrUpdateChat({ phoneNumber: phoneNumber as string, caseStageName: stageName, ...(stageColor ? { caseStageColor: stageColor } : {}) } as any);
     pushLocalTimeline('casestage', isRTL ? `שלב הפנייה עודכן ל: ${stageName}` : `Case stage → ${stageName}`);
     try {
       await axiosInstance.post(ENDPOINTS.UPDATE_CASE, {
@@ -934,7 +945,7 @@ export default function ChatConversationScreen() {
       });
       setTimeout(refreshTimeline, 1200);
     } catch { }
-  }, [user?.organization, activeCase, pushLocalTimeline, refreshTimeline, isRTL]);
+  }, [user?.organization, activeCase, phoneNumber, addOrUpdateChat, pushLocalTimeline, refreshTimeline, isRTL]);
 
   const openLeadRecord = useCallback(() => {
     if (!activeLead?.id) return;

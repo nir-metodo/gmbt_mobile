@@ -183,11 +183,15 @@ export default function ChatsListScreen() {
 
   // Per-row quick actions (swipe → "…") — mirrors the web sidebar right-click menu.
   const [rowActionChat, setRowActionChat] = useState<Chat | null>(null);
-  const [rowActionKind, setRowActionKind] = useState<null | 'menu' | 'owner' | 'status' | 'category' | 'tags'>(null);
+  const [rowActionKind, setRowActionKind] = useState<null | 'menu' | 'owner' | 'status' | 'category' | 'tags' | 'leadStage'>(null);
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [rowOwners, setRowOwners] = useState<any[]>([]);
   const [rowCategories, setRowCategories] = useState<string[]>([]);
   const [rowTagInput, setRowTagInput] = useState('');
+  // Row lead-stage action: the contact's active lead (fetched on open) + a stage list fallback for
+  // the rare case the list-level `leadStages` hasn't loaded yet.
+  const [rowLead, setRowLead] = useState<any>(null);
+  const [rowLeadStages, setRowLeadStages] = useState<any[]>([]);
 
   const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
   const currentUserId = user?.uID || user?.userId || '';
@@ -1381,6 +1385,7 @@ export default function ChatsListScreen() {
     setRowActionChat(null);
     setRowActionKind(null);
     setRowTagInput('');
+    setRowLead(null);
   }, []);
 
   const rowTakeOwnership = useCallback(async () => {
@@ -1462,6 +1467,68 @@ export default function ChatsListScreen() {
     }
   }, [user, rowActionChat, addOrUpdateChat, closeRowActions]);
 
+  // Open the lead-stage picker for a row: fetch the contact's ACTIVE lead (same "skip won/lost"
+  // rule as the chat screen) so we have its id for MoveLeadStage, and make sure we have a stage
+  // list to choose from (fall back to fetching pipeline settings if the list-level one is empty).
+  const openRowLeadStage = useCallback(async () => {
+    setRowActionKind('leadStage');
+    setRowLead(null);
+    if (!user?.organization || !rowActionChat) return;
+    setRowActionBusy(true);
+    try {
+      const digits = String(rowActionChat.phoneNumber).replace(/\D/g, '');
+      const [leadsRes] = await Promise.allSettled([
+        axiosInstance.post(ENDPOINTS.GET_LEADS_BY_CONTACT, { organization: user.organization, contactPhone: digits, phoneNumber: digits }),
+      ]);
+      if (leadsRes.status === 'fulfilled') {
+        const raw = leadsRes.value.data;
+        const leads = Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
+        const list = Array.isArray(leads) ? leads : [];
+        const active = list.find((l: any) => {
+          const s = (l.stageId || l.StageId || '').toString().toLowerCase();
+          return s !== 'won' && s !== 'lost' && s !== 'closed_won' && s !== 'closed_lost';
+        }) || list[0] || null;
+        setRowLead(active);
+      }
+      // Ensure stage options exist even if the deferred list-level load hasn't finished.
+      if (leadStages.length === 0 && rowLeadStages.length === 0) {
+        try {
+          const res = await axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, { organization: user.organization });
+          const raw = res.data;
+          const stages = raw?.stages || raw?.Data?.stages || raw?.pipelines?.[0]?.stages || [];
+          const stageArr = Array.isArray(stages) ? stages : [];
+          setRowLeadStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color })));
+        } catch { /* leave empty — modal shows a friendly message */ }
+      }
+    } finally {
+      setRowActionBusy(false);
+    }
+  }, [user?.organization, rowActionChat, leadStages.length, rowLeadStages.length]);
+
+  const rowSetLeadStage = useCallback(async (stage: any) => {
+    if (!user?.organization || !rowLead) return;
+    const stageId = stage.id || stage.Id;
+    const stageName = stage.name || stage.Name || stage.stageName;
+    if ((rowLead.stageId || rowLead.StageId) === stageId) { closeRowActions(); return; }
+    setRowActionBusy(true);
+    try {
+      await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
+        organization: user.organization, leadId: rowLead.id || rowLead.Id, stageId, stageName,
+      });
+      // Reflect the new stage in the row badge immediately.
+      const digits = String(rowActionChat?.phoneNumber || '').replace(/\D/g, '');
+      if (digits) {
+        setContactLeadMap((prev: any) => ({
+          ...prev,
+          [digits]: { stageName, stageColor: stage.color || prev?.[digits]?.stageColor || '#7c3aed', stageId },
+        }));
+      }
+    } finally {
+      setRowActionBusy(false);
+      closeRowActions();
+    }
+  }, [user?.organization, rowLead, rowActionChat, closeRowActions]);
+
   const rowCurrentTags = useMemo(() => {
     const raw = rowActionChat?.tags || rowActionChat?.keys;
     if (Array.isArray(raw)) return raw;
@@ -1504,9 +1571,16 @@ export default function ChatsListScreen() {
       const displayLeadStage = item.leadStageName || leadInfo?.stageName || '';
       const displayLeadColor = item.leadStageColor || leadInfo?.stageColor || '#7c3aed';
       const caseInfoArr = contactCaseMap[phoneNorm] || [];
-      const displayCaseStages = caseInfoArr.length > 0
-        ? caseInfoArr.slice(0, 2)
-        : (item.caseStageName ? [{ stageName: item.caseStageName, stageColor: item.caseStageColor || '#0891b2', stageId: '' }] : []);
+      // contactCaseMap is built once on mount, so a case-stage change made in the chat detail wouldn't
+      // show here until the app was reopened. When the store carries a fresh item.caseStageName (set by
+      // the detail screen's handleMoveCaseStage) prefer it, and append any *other* mapped cases so a
+      // multi-case contact still shows its remaining pending cases.
+      const displayCaseStages = item.caseStageName
+        ? [
+            { stageName: item.caseStageName, stageColor: item.caseStageColor || '#0891b2', stageId: '' },
+            ...caseInfoArr.filter((c) => c.stageName !== item.caseStageName).slice(0, 1),
+          ]
+        : caseInfoArr.slice(0, 2);
 
       // Owner badge (mirrors the web sidebar): show the human owner's name, or an
       // "unassigned" indicator when the chat has no human owner (empty / AI-owned).
@@ -2838,6 +2912,7 @@ export default function ChatsListScreen() {
             { icon: 'label-outline', label: isRTL ? 'עריכת תגיות' : 'Edit tags', onPress: () => setRowActionKind('tags') },
             { icon: 'circle-outline', label: isRTL ? 'עריכת סטטוס' : 'Edit status', onPress: () => setRowActionKind('status') },
             { icon: 'tag-outline', label: isRTL ? 'עריכת קטגוריה' : 'Edit category', onPress: openRowCategory },
+            { icon: 'account-star-outline', label: isRTL ? 'עדכן שלב ליד' : 'Update lead stage', onPress: openRowLeadStage },
           ].map((a) => (
             <Pressable
               key={a.label}
@@ -2944,6 +3019,48 @@ export default function ChatsListScreen() {
               </Pressable>
             ))}
           </ScrollView>
+        </Modal>
+
+        {/* Row: lead stage */}
+        <Modal
+          visible={!!rowActionChat && rowActionKind === 'leadStage'}
+          onDismiss={closeRowActions}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '70%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {isRTL ? 'עדכן שלב ליד' : 'Update lead stage'}
+          </Text>
+          {rowActionBusy && !rowLead ? (
+            <ActivityIndicator style={{ marginVertical: 24 }} color={theme.colors.primary} />
+          ) : !rowLead ? (
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, paddingVertical: 16, textAlign }}>
+              {isRTL ? 'אין ליד פעיל לאיש קשר זה' : 'No active lead for this contact'}
+            </Text>
+          ) : (
+            <ScrollView style={{ maxHeight: 360 }}>
+              {(rowLeadStages.length ? rowLeadStages : leadStages).map((stage: any) => {
+                const stageId = stage.id || stage.Id;
+                const stageName = stage.name || stage.Name || stage.stageName;
+                const isCurrent = (rowLead.stageId || rowLead.StageId) === stageId;
+                return (
+                  <Pressable
+                    key={stageId || stageName}
+                    onPress={() => rowSetLeadStage(stage)}
+                    disabled={rowActionBusy}
+                    style={({ pressed }) => [
+                      { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 12, borderRadius: 8 },
+                      pressed && { backgroundColor: theme.colors.surfaceVariant },
+                    ]}
+                  >
+                    <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: stage.color || '#7c3aed' }} />
+                    <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, fontWeight: isCurrent ? '700' : '400', flex: 1, textAlign }}>{stageName}</Text>
+                    {isCurrent && <MaterialCommunityIcons name="check" size={20} color="#2e6155" />}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
+          {rowActionBusy && rowLead && <ActivityIndicator style={{ marginTop: 8 }} color={theme.colors.primary} />}
         </Modal>
 
         {/* Row: tags */}
