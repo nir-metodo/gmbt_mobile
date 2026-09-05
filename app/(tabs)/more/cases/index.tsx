@@ -114,6 +114,25 @@ function isCaseSlaBreached(c: any): boolean {
   return (due - Date.now()) <= 0;
 }
 
+// Per-case SLA level for the list/detail badge: 'breach' (already over), 'warn' (due within the
+// next hour) or null. Reuses isCaseSlaBreached for the breach decision so it stays in sync.
+function caseSlaLevel(c: any): 'breach' | 'warn' | null {
+  if (!c || c.resolvedAt) return null;
+  if (c.slaPaused === true || c.slaPaused === 'true') return null;
+  if (isCaseSlaBreached(c)) return 'breach';
+  const parse = (v: any) => { const ms = parseTs(v); return ms || null; };
+  const hasFR = !!c.firstResponseAt;
+  const stageDue = parse(c.stageDueAt);
+  const respDue = parse(c.slaResponseDueAt);
+  const resnDue = parse(c.slaResolutionDueAt);
+  // Nearest upcoming deadline across the active due dates.
+  const dues = [stageDue, (!hasFR ? respDue : null), resnDue].filter((d): d is number => !!d && d > Date.now());
+  if (dues.length === 0) return null;
+  const soonest = Math.min(...dues);
+  const minsLeft = (soonest - Date.now()) / 60000;
+  return minsLeft <= 60 ? 'warn' : null;
+}
+
 interface SavedView {
   id: string;
   Name: string;
@@ -657,6 +676,19 @@ export default function CasesListScreen() {
               >
                 {item.subject || item.title}
               </Text>
+              {(() => {
+                const lvl = caseSlaLevel(item);
+                if (!lvl) return null;
+                const c = lvl === 'breach' ? '#ef4444' : '#f59e0b';
+                return (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: `${c}22`, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, marginEnd: 4 }}>
+                    <MaterialCommunityIcons name="clock-alert-outline" size={12} color={c} style={{ marginEnd: 2 }} />
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: c }}>
+                      {lvl === 'breach' ? t('cases.slaBreach', 'חריגת SLA') : t('cases.slaDueSoon', 'קרוב לחריגה')}
+                    </Text>
+                  </View>
+                );
+              })()}
               <Chip
                 compact
                 textStyle={[styles.statusChipText, { color: statusColor }]}

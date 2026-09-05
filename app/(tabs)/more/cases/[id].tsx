@@ -892,6 +892,49 @@ export default function CaseDetailScreen() {
           </View>
         ) : null}
 
+        {/* Live per-case SLA status — breach (red) / due-soon (amber) / on-track (green). Reads the
+            breach flags + due dates the backend stamps on the case, mirroring the web case form. */}
+        {(() => {
+          const c: any = caseData;
+          if (!c || c.resolvedAt) return null;
+          if (c.slaPaused === true || c.slaPaused === 'true') return null;
+          const toMs = (v: any) => { if (!v) return null; const d = new Date(v?.seconds ? v.seconds * 1000 : v); const ms = d.getTime(); return isNaN(ms) ? null : ms; };
+          const hasFR = !!c.firstResponseAt;
+          const respDue = toMs(c.slaResponseDueAt);
+          const resnDue = toMs(c.slaResolutionDueAt);
+          const stageDue = toMs(c.stageDueAt);
+          const breached = c.stageSlaBreached === true || c.slaResponseBreached === true || c.slaResolutionBreached === true
+            || [(!hasFR ? respDue : null), resnDue, stageDue].some((d) => d && d - Date.now() <= 0);
+          // The active/nearest deadline that's still in the future.
+          const upcoming = [(!hasFR ? respDue : null), resnDue, stageDue].filter((d): d is number => !!d && d > Date.now());
+          const soonest = upcoming.length ? Math.min(...upcoming) : null;
+          const warn = !breached && soonest != null && (soonest - Date.now()) <= 60 * 60000;
+          const hasAnyDue = respDue || resnDue || stageDue;
+          if (!hasAnyDue && !breached) return null;
+          const color = breached ? '#ef4444' : warn ? '#f59e0b' : '#10b981';
+          const label = breached
+            ? t('cases.slaBreach', 'חריגת SLA')
+            : warn
+              ? t('cases.slaDueSoon', 'קרוב לחריגה')
+              : t('cases.slaOnTrack', 'עומד ב-SLA');
+          const which = c.slaResponseBreached === true || (!hasFR && respDue && respDue - Date.now() <= 0)
+            ? t('cases.response', 'תגובה')
+            : c.slaResolutionBreached === true || (resnDue && resnDue - Date.now() <= 0)
+              ? t('cases.resolution', 'פתרון')
+              : (c.stageSlaBreached === true || (stageDue && stageDue - Date.now() <= 0))
+                ? t('cases.slaStage', 'שלב')
+                : '';
+          return (
+            <View style={[styles.slaBadge, { backgroundColor: `${color}18`, borderColor: color }]}>
+              <MaterialCommunityIcons name={breached ? 'clock-alert' : warn ? 'clock-alert-outline' : 'clock-check-outline'} size={18} color={color} />
+              <Text variant="labelMedium" style={{ color, fontWeight: '700' }}>
+                {label}{which ? ` · ${which}` : ''}
+                {soonest != null ? ` · ${isRTL ? 'עד' : 'due'} ${formatDate(new Date(soonest).toISOString())}` : ''}
+              </Text>
+            </View>
+          );
+        })()}
+
         {/* Priority & Status banner */}
         <View
           style={[

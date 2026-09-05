@@ -216,6 +216,8 @@ export default function LeadDetailScreen() {
   const [catalogEnabled, setCatalogEnabled] = useState(false);
   const [syncCatalogToValue, setSyncCatalogToValue] = useState(false);
   const [catalogItems, setCatalogItems] = useState<any[]>([]);
+  // Whether the org enabled the in-form "Create Quote" action (sales-funnel setting; web parity).
+  const [enableQuoteFromLeadForm, setEnableQuoteFromLeadForm] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
 
   // Payment / clearing state
@@ -279,6 +281,9 @@ export default function LeadDetailScreen() {
           setSyncCatalogToValue(!!res.syncCatalogToValue);
           leadsApi.getCatalogItems(organization).then(setCatalogItems).catch(() => {});
         }
+        // Mirror the web lead form: the in-form "Create Quote" action only shows when the org
+        // enabled it in the sales-funnel (pipeline) settings.
+        setEnableQuoteFromLeadForm(!!res.enableQuoteFromLeadForm);
       })
       .catch(() => {});
   }, [organization]);
@@ -1142,22 +1147,24 @@ export default function LeadDetailScreen() {
               bg="#F3E5F5"
               onPress={() => setNoteModalVisible(true)}
             />
-            <ActionButton
-              icon="file-document-outline"
-              label={t('quotes.quoteShort', 'הצעה')}
-              color="#2196F3"
-              bg="#E3F2FD"
-              onPress={() => router.push({
-                pathname: '/(tabs)/more/quotes/[id]',
-                params: {
-                  id: 'new',
-                  prefillContactName: lead?.contactName || '',
-                  prefillContactPhone: lead?.contactPhone || lead?.phoneNumber || '',
-                  prefillTitle: lead?.title || '',
-                  prefillLeadId: lead?.id || '',
-                },
-              })}
-            />
+            {enableQuoteFromLeadForm && (
+              <ActionButton
+                icon="file-document-outline"
+                label={t('quotes.quoteShort', 'הצעה')}
+                color="#2196F3"
+                bg="#E3F2FD"
+                onPress={() => router.push({
+                  pathname: '/(tabs)/more/quotes/[id]',
+                  params: {
+                    id: 'new',
+                    prefillContactName: lead?.contactName || '',
+                    prefillContactPhone: lead?.contactPhone || lead?.phoneNumber || '',
+                    prefillTitle: lead?.title || '',
+                    prefillLeadId: lead?.id || '',
+                  },
+                })}
+              />
+            )}
             {clearingEnabled ? (
               <ActionButton
                 icon="credit-card-outline"

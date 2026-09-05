@@ -396,6 +396,10 @@ export default {
     contactPhone: 'Contact Phone',
     casesWithTasks: 'Cases with tasks',
     slaBreaches: 'SLA Breaches',
+    slaBreach: 'SLA breached',
+    slaDueSoon: 'Due soon',
+    slaOnTrack: 'On track',
+    slaStage: 'Stage',
   },
   quotes: {
     title: 'Quotes',

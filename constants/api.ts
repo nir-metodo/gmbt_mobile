@@ -94,6 +94,8 @@ export const ENDPOINTS = {
   // Cases
   GET_CASES: '/api/Webhooks/GetCasesPaginated',
   GET_CASE_SETTINGS: '/api/Webhooks/GetCaseSettings',
+  // Org working hours — used by the chat SLA "waiting" clock (business-hours-aware).
+  GET_WORKING_HOURS: '/api/Webhooks/GetWorkingHours',
   CREATE_CASE: '/api/Webhooks/CreateCase',
   UPDATE_CASE: '/api/Webhooks/UpdateCase',
   DELETE_CASE: '/api/Webhooks/DeleteCase',

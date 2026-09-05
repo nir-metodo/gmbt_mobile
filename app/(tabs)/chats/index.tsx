@@ -44,6 +44,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { formatChatTime, getInitials, withAlpha } from '../../../utils/formatters';
+import { getConversationWaiting, formatWaiting, resolveBusinessHours, MessageSlaConfig } from '../../../utils/messageSla';
 import {
   getChatConversationStatus,
   isChatClosed,
@@ -334,6 +335,10 @@ export default function ChatsListScreen() {
   // Lead/case stage map for chat list badges
   const [contactLeadMap, setContactLeadMap] = useState<Record<string, { stageName: string; stageColor: string; stageId: string }>>({});
 
+  // Chat (message-response) SLA config — powers the "waiting" warn/breach badge on the inbox rows.
+  // Sourced from CaseSettings.sla.messageResponse + org working hours (business-hours-aware clock).
+  const [messageSla, setMessageSla] = useState<MessageSlaConfig | null>(null);
+
   // Load saved views
   useEffect(() => {
     if (!user?.organization) return;
@@ -555,6 +560,18 @@ export default function ChatsListScreen() {
     axiosInstance.post(ENDPOINTS.GET_CASE_SETTINGS, { organization: user.organization })
       .then((res) => {
         const raw = res.data;
+        // Chat (message-response) SLA config lives in CaseSettings.sla.messageResponse. Resolve its
+        // business-hours clock against the org working hours so after-hours waiting doesn't breach.
+        const mr = raw?.sla?.messageResponse;
+        if (mr) {
+          axiosInstance.post(ENDPOINTS.GET_WORKING_HOURS, { organization: user.organization })
+            .then((whRes) => {
+              const orgWH = whRes.data?.Data?.workingHours || whRes.data?.workingHours || null;
+              const chatBh = mr.businessHours || raw?.sla?.businessHours;
+              setMessageSla({ ...mr, businessHours: resolveBusinessHours(chatBh, orgWH) } as MessageSlaConfig);
+            })
+            .catch(() => setMessageSla({ ...mr, businessHours: resolveBusinessHours(mr.businessHours || raw?.sla?.businessHours, null) } as MessageSlaConfig));
+        }
         const stages = raw?.stages || raw?.Data?.stages || raw?.pipelines?.[0]?.stages || [];
         const stageArr = Array.isArray(stages) ? stages : [];
         if (stageArr.length === 0) return;
@@ -1589,6 +1606,10 @@ export default function ChatsListScreen() {
       const isUnassigned = !ownerNameRaw && (!ownerIdLc || ownerIdLc === 'gambot' || ownerIdLc === 'gambot-ai');
       const ownerNameShort = ownerNameRaw.length > 18 ? ownerNameRaw.slice(0, 17).trimEnd() + '…' : ownerNameRaw;
 
+      // Chat SLA "waiting" state — customer's last message not yet answered past the warn/breach
+      // threshold. null = within SLA (no badge). Mirrors the web inbox pill.
+      const slaWaiting = getConversationWaiting(item, messageSla);
+
       const chatNumberId = (item as any).lastFromNumberId || (item as any).wabaPhoneNumberId || '';
       const chatNumberIds = new Set<string>();
       if (chatNumberId) chatNumberIds.add(chatNumberId);
@@ -1707,9 +1728,22 @@ export default function ChatsListScreen() {
               </Text>
             </View>
 
-            {/* Badges row: owner, status, lead stage, case stage, CTWA */}
-            {(!!ownerNameRaw || isUnassigned || getChatConversationStatus(item) !== 'unknown' || displayLeadStage || displayCaseStages.length > 0 || item.isCTWA) && (
+            {/* Badges row: SLA waiting, owner, status, lead stage, case stage, CTWA */}
+            {(!!slaWaiting || !!ownerNameRaw || isUnassigned || getChatConversationStatus(item) !== 'unknown' || displayLeadStage || displayCaseStages.length > 0 || item.isCTWA) && (
               <View style={[styles.badgesRow, { flexDirection }]}>
+                {!!slaWaiting && (
+                  <View style={[styles.badge, { backgroundColor: slaWaiting.level === 'breach' ? withAlpha('#ef4444', 0.14) : withAlpha('#f59e0b', 0.16) }]}>
+                    <MaterialCommunityIcons
+                      name="clock-alert-outline"
+                      size={10}
+                      color={slaWaiting.level === 'breach' ? '#ef4444' : '#b45309'}
+                      style={{ marginEnd: 2 }}
+                    />
+                    <Text style={[styles.badgeText, { color: slaWaiting.level === 'breach' ? '#ef4444' : '#b45309' }]} numberOfLines={1}>
+                      {formatWaiting(slaWaiting.minutes, isRTL)}
+                    </Text>
+                  </View>
+                )}
                 {!!ownerNameRaw && (
                   <View style={[styles.badge, { backgroundColor: withAlpha('#2e6155', 0.12) }]}>
                     <MaterialCommunityIcons name="account" size={10} color="#2e6155" style={{ marginEnd: 2 }} />
@@ -1840,7 +1874,7 @@ export default function ChatsListScreen() {
         </Swipeable>
       );
     },
-    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, openRowActions, swipeableRefs, currentUserId],
+    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, openRowActions, swipeableRefs, currentUserId, messageSla],
   );
 
   const renderEmpty = useCallback(

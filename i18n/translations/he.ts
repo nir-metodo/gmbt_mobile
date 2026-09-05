@@ -398,6 +398,10 @@ export default {
     contactPhone: 'טלפון איש קשר',
     casesWithTasks: 'פניות עם משימות',
     slaBreaches: 'חריגות SLA',
+    slaBreach: 'חריגת SLA',
+    slaDueSoon: 'קרוב לחריגה',
+    slaOnTrack: 'עומד ב-SLA',
+    slaStage: 'שלב',
   },
   quotes: {
     title: 'הצעות מחיר',

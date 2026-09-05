@@ -144,7 +144,7 @@ export const leadsApi = {
     return response.data;
   },
 
-  async getPipelineSettings(organization: string): Promise<{ stages: LeadStage[]; enableProductCatalog?: boolean; syncCatalogToValue?: boolean }> {
+  async getPipelineSettings(organization: string): Promise<{ stages: LeadStage[]; enableProductCatalog?: boolean; syncCatalogToValue?: boolean; enableQuoteFromLeadForm?: boolean }> {
     const response = await axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, {
       organization,
     });
@@ -157,6 +157,8 @@ export const leadsApi = {
       stages: stages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
       enableProductCatalog: !!raw?.enableProductCatalog,
       syncCatalogToValue: !!raw?.syncCatalogToValue,
+      // Controls whether the "Create Quote" action shows inside the lead form (web parity).
+      enableQuoteFromLeadForm: !!raw?.enableQuoteFromLeadForm,
     };
   },
 
