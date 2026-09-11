@@ -272,8 +272,9 @@ export default function ChatsListScreen() {
   // conversations and upserts them, so returning to the list always reflects the current state
   // without waiting on a manual pull-to-refresh — and without the heavy full-collection read.
   const refreshChatsIncremental = useCallback(() => {
-    if (!user?.organization) return;
-    refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
+    if (!user?.organization) return Promise.resolve();
+    // Return the promise so callers can snap the list to the top AFTER the new rows land.
+    return refreshRecentChats(user.organization, currentUserId, chatsDV || 'all');
   }, [user?.organization, refreshRecentChats, currentUserId, chatsDV]);
 
   // How long the full list may sit untouched before an entry triggers a fresh FULL resync.
@@ -854,12 +855,12 @@ export default function ChatsListScreen() {
         // in-and-out switches, the cheap incremental refresh is enough and avoids a full read.
         const stale = Date.now() - lastFullLoadRef.current > FULL_RESYNC_STALE_MS;
         if (stale) {
-          refreshChatsFull(true);
+          refreshChatsFull(true).then(() => scrollChatsToTop(false));
         } else {
-          refreshChatsIncremental();
+          Promise.resolve(refreshChatsIncremental()).then(() => scrollChatsToTop(false));
         }
         // Returning to the app should land the user on the newest chats, not the stale offset
-        // they left the list at.
+        // they left the list at — snap now for responsiveness, and again once the refresh lands.
         InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
       }
     });
@@ -881,17 +882,21 @@ export default function ChatsListScreen() {
           setSearchInput('');
           setDebouncedSearch('');
           setSearchVisible(false);
-          refreshChatsFull(true);
+          refreshChatsFull(true).then(() => scrollChatsToTop(false));
         } else if (Date.now() - lastFullLoadRef.current > FULL_RESYNC_STALE_MS) {
           // List has gone stale → full resync with the visible refresh spinner.
-          refreshChatsFull(true);
+          refreshChatsFull(true).then(() => scrollChatsToTop(false));
         } else if (!fullLoadInFlightRef.current) {
           // Recently loaded but the user is re-entering the tab — do a cheap incremental catch-up
           // so any conversation that changed elsewhere (web/other agent) shows up without a manual
           // pull-to-refresh. Skipped while a full load is already running to avoid a double fetch.
-          refreshChatsIncremental();
+          Promise.resolve(refreshChatsIncremental()).then(() => scrollChatsToTop(false));
         }
       }
+      // Snap to the top immediately for a snappy feel, and again AFTER the refresh resolves (above)
+      // so freshly-fetched conversations that land at the top are actually in view — otherwise the
+      // pre-load snap scrolls the STALE list and new rows appear above the viewport (the "always
+      // shows the list as it was last time / have to scroll up" bug).
       InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
     }, [user?.organization, refreshChatsFull, refreshChatsIncremental, scrollChatsToTop])
   );
@@ -1149,7 +1154,11 @@ export default function ChatsListScreen() {
 
   const onRefresh = useCallback(async () => {
     await refreshChatsFull(true);
-  }, [refreshChatsFull]);
+    // Once the fresh list has landed, snap to the top so newly-arrived conversations are visible
+    // without the user having to scroll up (the list otherwise stays anchored at the old offset,
+    // showing the previous state at the top — the reported "I have to scroll up after refresh" bug).
+    scrollChatsToTop(true);
+  }, [refreshChatsFull, scrollChatsToTop]);
 
   const openChat = useCallback(
     (chat: Chat) => {

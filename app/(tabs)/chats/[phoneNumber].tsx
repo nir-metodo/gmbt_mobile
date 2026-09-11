@@ -2284,9 +2284,18 @@ export default function ChatConversationScreen() {
         user?.uID || user?.userId || '',
         sendFromNumberId,
       );
-    } catch {
+    } catch (err: any) {
       updateMessageStatus(tempId, 'failed');
-      Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההקלטה נכשלה'));
+      // Surface the ACTUAL reason (closed 24h window, file too large, network, backend rejection)
+      // instead of a generic "failed" — the previous silent/generic alert is exactly why voice
+      // failures felt like "sometimes it doesn't send, unclear why".
+      const reason =
+        err?.response?.data?.Message ||
+        err?.response?.data?.message ||
+        err?.message ||
+        t('chats.sendFailed', 'שליחת ההקלטה נכשלה');
+      console.error('[handleVoiceMessage] send failed:', err?.response?.status, err?.response?.data || err?.message);
+      Alert.alert(t('common.error'), reason);
     }
   }, [user?.organization, user?.uID, user?.userId, phoneNumber, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus, scrollToNewest]);
 

@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Dimensions } from 'react-native';
+import { View, StyleSheet, ScrollView, Dimensions, Pressable } from 'react-native';
 import { Appbar, Surface, Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -90,9 +90,14 @@ export default function MoreScreen() {
             style={[styles.card, { backgroundColor: theme.colors.surface }]}
             elevation={1}
           >
-            <View
-              style={styles.cardTouchable}
-              onTouchEnd={() => router.push(item.route as any)}
+            {/* Pressable (not a raw View + onTouchEnd) so a SCROLL gesture never fires navigation.
+                onTouchEnd fired on any finger-lift — including while scrolling — which threw the
+                user into whatever card they released over. Pressable cancels the press once the
+                ScrollView claims the gesture, and its small movement tolerance keeps real taps working. */}
+            <Pressable
+              style={({ pressed }) => [styles.cardTouchable, pressed && styles.cardPressed]}
+              onPress={() => router.push(item.route as any)}
+              android_ripple={{ color: item.color + '22', borderless: false }}
             >
               <View style={[styles.iconCircle, { backgroundColor: item.color + '15' }]}>
                 <MaterialCommunityIcons
@@ -108,7 +113,7 @@ export default function MoreScreen() {
               >
                 {t(item.labelKey)}
               </Text>
-            </View>
+            </Pressable>
           </Surface>
         ))}
       </ScrollView>
@@ -140,6 +145,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 20,
     paddingHorizontal: 8,
+  },
+  cardPressed: {
+    opacity: 0.6,
   },
   iconCircle: {
     width: 56,
