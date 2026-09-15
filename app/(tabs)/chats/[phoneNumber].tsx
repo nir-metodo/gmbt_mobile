@@ -350,6 +350,9 @@ export default function ChatConversationScreen() {
   const flatListRef = useRef<FlatList<ListItem>>(null);
   const scrollBtnRef = useRef<ScrollToBottomHandle>(null);
   const chatInputRef = useRef<ChatInputRef>(null);
+  // "Generate AI Response" composer feature — ON by default (opt-out via org GetChatAiSettings).
+  const [aiReplyEnabled, setAiReplyEnabled] = useState(true);
+  const [isGeneratingAiReply, setIsGeneratingAiReply] = useState(false);
   const wsRef = useRef<WebSocketService | null>(null);
   // Timestamp of the last messages fetch for this chat. Used to throttle the
   // AppState->active reload so foregrounding the app doesn't trigger a redundant
@@ -523,6 +526,58 @@ export default function ChatConversationScreen() {
       ? chat.contactName
       : '';
   const contactName = storeContactName || resolvedContactName || phoneNumber || '';
+
+  // Read the org's "Generate AI Response" setting (fail-open: keep the feature ON on any error).
+  useEffect(() => {
+    const org = user?.organization;
+    if (!org) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axiosInstance.post(ENDPOINTS.GET_CHAT_AI_SETTINGS, { organization: org });
+        if (!cancelled && res.data?.Success && res.data?.Data) {
+          setAiReplyEnabled(res.data.Data.generateAiResponseEnabled ?? true);
+        }
+      } catch {
+        /* fail-open: keep default (feature ON) */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.organization]);
+
+  // Generate a draft reply from the conversation and drop it into the composer for edit/send.
+  const handleGenerateAiReply = useCallback(async () => {
+    if (!user?.organization || !phoneNumber || isGeneratingAiReply) return;
+    setIsGeneratingAiReply(true);
+    try {
+      const res = await axiosInstance.post(
+        ENDPOINTS.GENERATE_CHAT_REPLY,
+        {
+          organization: user.organization,
+          contactId: phoneNumber,
+          contactName,
+          userId: user.uID || user.userId,
+        },
+        { timeout: 95000 },
+      );
+      const reply = res.data?.reply;
+      if (res.data?.Success && reply) {
+        chatInputRef.current?.insertText(reply);
+      } else {
+        Alert.alert(
+          t('common.error', 'שגיאה'),
+          res.data?.Message || (isRTL ? 'לא הצלחתי לנסח תשובה. נסה שוב.' : 'Could not generate a reply. Try again.'),
+        );
+      }
+    } catch {
+      Alert.alert(
+        t('common.error', 'שגיאה'),
+        isRTL ? 'שגיאה בניסוח התשובה. נסה שוב.' : 'Error generating reply. Try again.',
+      );
+    } finally {
+      setIsGeneratingAiReply(false);
+    }
+  }, [user?.organization, user?.uID, user?.userId, phoneNumber, contactName, isGeneratingAiReply, isRTL, t]);
 
   useEffect(() => {
     // Only resolve when we don't already have a real (non-phone) name.
@@ -3394,6 +3449,9 @@ export default function ChatConversationScreen() {
               activeWabaNumber={activeWabaNumber}
               wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
               onChangeWabaNumber={setActiveWabaNumber}
+              aiReplyEnabled={aiReplyEnabled}
+              isGeneratingAiReply={isGeneratingAiReply}
+              onGenerateAiReply={handleGenerateAiReply}
             />
           </>
         )}

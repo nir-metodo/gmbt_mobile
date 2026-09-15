@@ -86,6 +86,10 @@ export const ENDPOINTS = {
   // WhatsApp Numbers
   GET_WHATSAPP_NUMBERS: '/api/Webhooks/GetWhatsAppNumbers',
 
+  // Generate AI Response (chat composer)
+  GET_CHAT_AI_SETTINGS: '/api/Webhooks/GetChatAiSettings',
+  GENERATE_CHAT_REPLY: '/api/Webhooks/GenerateChatReply',
+
   // Contacts pagination
   GET_CONTACTS_PAGINATED: '/api/Webhooks/GetAllContactsByOrg_Pagination_ByModifiedOn',
   DELETE_CONTACT_BY_ID: '/api/Webhooks/DeleteContactById',

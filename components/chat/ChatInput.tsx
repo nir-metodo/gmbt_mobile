@@ -14,6 +14,7 @@ import {
   Platform,
   Alert,
   Animated,
+  ActivityIndicator,
 } from 'react-native';
 
 import { Text } from 'react-native-paper';
@@ -61,6 +62,11 @@ interface ChatInputProps {
   activeWabaNumber?: string | null;
   wabaNumbers?: WabaNumberInfo[];
   onChangeWabaNumber?: (num: string) => void;
+  // "Generate AI Response" — drafts a reply from the conversation into the composer (parent handles
+  // the API call + inserts the text via the ref). Button shows only when the org feature is enabled.
+  aiReplyEnabled?: boolean;
+  isGeneratingAiReply?: boolean;
+  onGenerateAiReply?: () => void;
 }
 
 function formatRecordingTime(seconds: number): string {
@@ -86,6 +92,9 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   activeWabaNumber,
   wabaNumbers,
   onChangeWabaNumber,
+  aiReplyEnabled,
+  isGeneratingAiReply,
+  onGenerateAiReply,
 }, ref) => {
   const [text, setText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -449,6 +458,23 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               ]}
               textAlignVertical="center"
             />
+
+            {/* ✨ Generate AI Response — drafts a reply from the conversation into the composer */}
+            {aiReplyEnabled && onGenerateAiReply && (
+              <Pressable
+                onPress={onGenerateAiReply}
+                disabled={isGeneratingAiReply || disabled}
+                hitSlop={4}
+                accessibilityLabel={isRTL ? 'נסח תשובה עם AI' : 'Generate AI reply'}
+                style={({ pressed }) => [styles.iconBtn, pressed && !isGeneratingAiReply && { opacity: 0.6 }]}
+              >
+                {isGeneratingAiReply ? (
+                  <ActivityIndicator size="small" color="#8b5cf6" />
+                ) : (
+                  <MaterialCommunityIcons name="auto-fix" size={20} color="#8b5cf6" />
+                )}
+              </Pressable>
+            )}
 
             {onQuickMessagePress && !hasText && (
               <Pressable
