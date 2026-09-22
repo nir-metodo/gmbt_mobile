@@ -88,6 +88,97 @@ function chatActivityMs(c: Chat): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WABA template variable helpers (bulk send). Mirrors the web BulkSendMessageModal
+// + the single-chat quick-send logic so bulk template sends auto-populate {{n}}
+// variables from each recipient's contact/user/org fields (auto-mapping = the
+// default), let the user fill any "open" (free-text) variables once for the whole
+// batch, and preview the resolved message before sending.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface TemplateVarMap { index: number; entity: string; field: string; label?: string; }
+
+// Build a full template variable-query entry matching the web SendTemplateMessage
+// payload. Backend maps variables by `index` + `bodyVarIndex`; minimal entries cause
+// unresolved {{n}} placeholders and Meta rejects the send. Keep identical across paths.
+function buildBulkTemplateVarEntry(bodyVarIndex: number, value: string, queryIndex: number, label?: string) {
+  return {
+    index: queryIndex,
+    bodyVarIndex,
+    Variable: `dynamic_var${bodyVarIndex}`,
+    variableLabel: label || `{{${bodyVarIndex}}}`,
+    dataSource1: 'data_source1_HardCoded',
+    dataSource2: '',
+    conditionOperator: '',
+    parameters_hardCoded_Text: value,
+    field1: [],
+    field2: [],
+    table1: '',
+    table2: '',
+    retrieveFields: [],
+  };
+}
+
+function parseTemplateVarMapping(json?: string): TemplateVarMap[] {
+  try {
+    const arr = JSON.parse(json || '[]');
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((m: any) => ({ index: Number(m.index), entity: m.entity || 'open', field: m.field || '', label: m.label || '' }))
+      .filter((m: TemplateVarMap) => !Number.isNaN(m.index));
+  } catch {
+    return [];
+  }
+}
+
+function getTemplateBodyText(tpl: any): string {
+  const body = (tpl?.components || []).find((c: any) => c?.type === 'BODY');
+  return body?.text || '';
+}
+
+function getTemplateVarIndices(tpl: any): number[] {
+  const text = getTemplateBodyText(tpl);
+  const matches = text.match(/\{\{(\d+)\}\}/g);
+  if (!matches) return [];
+  return [...new Set(matches.map((m: string) => parseInt(m.replace(/\{\{|\}\}/g, ''), 10)))].sort((a, b) => a - b);
+}
+
+// Resolve a single {{n}} value for one recipient from the auto-mapping. Handles the
+// client-resolvable entities (contact / user / org); server-side entities
+// (lead/case/quote…) can't be resolved per-recipient on the client in bulk, so they
+// fall through to the manual value the user typed (or empty).
+function resolveBulkTemplateVar(entity: string, field: string, chat: Chat | undefined, user: any): string {
+  if (!entity || entity === 'open') return '';
+
+  if (entity === 'contact') {
+    const fullName = chat?.contactName || '';
+    if (field === 'name' || field === 'fullName' || field === '') return fullName || (chat?.phoneNumber || '');
+    if (field === 'firstName') return fullName.split(' ')[0] || '';
+    if (field === 'lastName') return fullName.split(' ').slice(1).join(' ') || '';
+    if (field === 'phone' || field === 'phoneNumber') return chat?.phoneNumber || '';
+    if (field === 'email') return (chat as any)?.email || '';
+    return (chat as any)?.[field] || '';
+  }
+
+  if (entity === 'user') {
+    if (field === 'name' || field === 'displayName' || field === '') return user?.fullname || (user as any)?.name || user?.displayName || '';
+    if (field === 'email') return (user as any)?.email || '';
+    if (field === 'phone') return (user as any)?.phone || '';
+    if (field === 'role') return (user as any)?.role || (user as any)?.SecurityRole || '';
+    return '';
+  }
+
+  if (entity === 'org') {
+    if (field === 'name' || field === '') return user?.organization || '';
+    if (field === 'phone') return (user as any)?.orgPhone || '';
+    if (field === 'email') return (user as any)?.orgEmail || '';
+    if (field === 'website') return (user as any)?.orgWebsite || '';
+    return '';
+  }
+
+  return '';
+}
+
 const BULK_STATUS_OPTIONS = ['Open', 'In Process', 'Closed'] as const;
 
 // Order matters — chips render left-to-right (RTL-aware) in this order, and the Category dropdown
@@ -177,6 +268,9 @@ export default function ChatsListScreen() {
   const [bulkTemplates, setBulkTemplates] = useState<any[]>([]);
   const [bulkTemplateId, setBulkTemplateId] = useState('');
   const [loadingBulkTemplates, setLoadingBulkTemplates] = useState(false);
+  // Manual values for "open" (free-text) template variables — applied to ALL recipients.
+  // Auto-mapped variables (contact/user/org) resolve per-recipient at send time.
+  const [bulkTemplateVarValues, setBulkTemplateVarValues] = useState<Record<number, string>>({});
   const [bulkSendProgress, setBulkSendProgress] = useState<{ done: number; total: number } | null>(null);
   const [showBulkCategoryModal, setShowBulkCategoryModal] = useState(false);
   const [bulkCategories, setBulkCategories] = useState<string[]>([]);
@@ -196,6 +290,14 @@ export default function ChatsListScreen() {
 
   const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
   const currentUserId = user?.uID || user?.userId || '';
+  // Saved Views are keyed by the SAME identity the web uses. The web (Login.js) sets
+  // userId = userCredential.Uid || uID and always calls GetUserViews/SaveUserView with
+  // currentUser.userId, so views are stored under that UserId. Mobile's `userId` field
+  // mirrors that exact value — so for VIEWS we must prefer `userId` over `uID`. Using
+  // `uID` (as the rest of the chats code does) queries a different owner id whenever the
+  // Firebase Auth UID differs from the Firestore-doc uID, which is why personal views
+  // created on the web did not show up in the app.
+  const viewsUserId = user?.userId || user?.uID || '';
   const userIsAdmin = user?.SecurityRole === 'Admin';
 
   const [searchInput, setSearchInput] = useState('');
@@ -345,7 +447,7 @@ export default function ChatsListScreen() {
     if (!user?.organization) return;
     axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, {
       organization: user.organization,
-      userId: user.uID || user.userId,
+      userId: viewsUserId,
       viewType: 'sidebar',
     }).then((res) => {
       const data = res.data;
@@ -355,7 +457,7 @@ export default function ChatsListScreen() {
         setSavedViews(data);
       }
     }).catch(() => {});
-  }, [user?.organization, user?.uID, user?.userId]);
+  }, [user?.organization, viewsUserId]);
 
   // Per-org AsyncStorage keys for the local view preferences (order + hidden tabs).
   const org = user?.organization || '';
@@ -395,7 +497,7 @@ export default function ChatsListScreen() {
     if (!org) return;
     let cancelled = false;
     setOrgConfigLoaded(false);
-    const uid = user?.uID || user?.userId;
+    const uid = viewsUserId;
     // Org default view order (a single shared doc under viewType 'sidebarViewOrder').
     const pOrder = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarViewOrder' })
       .then((res) => {
@@ -417,7 +519,7 @@ export default function ChatsListScreen() {
       }).catch(() => {});
     Promise.allSettled([pOrder, pDefault]).then(() => { if (!cancelled) setOrgConfigLoaded(true); });
     return () => { cancelled = true; };
-  }, [org, user?.uID, user?.userId]);
+  }, [org, viewsUserId]);
 
   // Always holds the latest fully-ordered tab id list (built-ins + saved). Lets moveViewTab /
   // saveOrgViewOrder reorder against the real displayed order without a forward reference.
@@ -473,7 +575,7 @@ export default function ChatsListScreen() {
     try {
       const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
         organization: user.organization,
-        userId: user.uID || user.userId,
+        userId: viewsUserId,
         viewType: 'sidebarViewOrder',
         name: 'orgViewOrder',
         isPinned: true,
@@ -679,7 +781,7 @@ export default function ChatsListScreen() {
       };
       const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
         organization: user.organization,
-        userId: user.uID || user.userId,
+        userId: viewsUserId,
         viewType: 'sidebar',
         name: newViewName.trim(),
         isPinned: false,
@@ -693,7 +795,7 @@ export default function ChatsListScreen() {
           ViewData: viewData,
           IsPinned: false,
           Visibility: userIsAdmin ? saveViewVisibility : 'personal',
-          UserId: user.uID || user.userId,
+          UserId: viewsUserId,
         };
         setSavedViews((prev) => [...prev, newView]);
       }
@@ -708,7 +810,7 @@ export default function ChatsListScreen() {
     try {
       await axiosInstance.post(ENDPOINTS.DELETE_USER_VIEW, {
         organization: user.organization,
-        userId: user.uID || user.userId,
+        userId: viewsUserId,
         viewId,
       });
       setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
@@ -730,7 +832,7 @@ export default function ChatsListScreen() {
       .filter((v) => {
         const vis = v.Visibility || 'personal';
         if (vis === 'shared') return true;
-        return (v.UserId || '') === currentUserId;
+        return (v.UserId || '') === viewsUserId;
       })
       .map((v) => {
         const shared = (v.Visibility || 'personal') === 'shared';
@@ -742,11 +844,11 @@ export default function ChatsListScreen() {
           shared,
           // Only a PERSONAL view you own can be deleted. Shared (organization) views can only
           // be hidden locally — deleting them would affect the whole org.
-          deletable: !shared && (v.UserId || '') === currentUserId,
+          deletable: !shared && (v.UserId || '') === viewsUserId,
         };
       });
     return [...builtins, ...saved];
-  }, [savedViews, currentUserId, t]);
+  }, [savedViews, viewsUserId, t]);
 
   // Once prefs are loaded, append any tab IDs that aren't in the persisted order yet (newly
   // created views, or first run). We never remove IDs — a view that disappears just drops out
@@ -1291,6 +1393,76 @@ export default function ChatsListScreen() {
     return { from: (user as any)?.wabaNumber || '', fromNumberId: '' };
   }, [numberFilter, availableNumbers, user]);
 
+  // ---- Bulk template: derived selection (template object, variables, auto-mapping, preview) ----
+  const selectedBulkTemplate = useMemo(
+    () => bulkTemplates.find((tpl) => (tpl.id || tpl.Id || tpl.templateId || tpl.name || tpl.Name) === bulkTemplateId),
+    [bulkTemplates, bulkTemplateId],
+  );
+
+  const bulkTemplateVarIndices = useMemo(
+    () => (selectedBulkTemplate ? getTemplateVarIndices(selectedBulkTemplate) : []),
+    [selectedBulkTemplate],
+  );
+
+  const bulkTemplateMapping = useMemo(
+    () => (selectedBulkTemplate ? parseTemplateVarMapping(selectedBulkTemplate.variableMappingJson) : []),
+    [selectedBulkTemplate],
+  );
+
+  // The variables the user must fill by hand: entity "open" or not mapped at all.
+  // Everything else is auto-resolved per recipient from contact/user/org fields.
+  const bulkOpenVarIndices = useMemo(
+    () => bulkTemplateVarIndices.filter((idx) => {
+      const m = bulkTemplateMapping.find((e) => e.index === idx);
+      return !m || m.entity === 'open';
+    }),
+    [bulkTemplateVarIndices, bulkTemplateMapping],
+  );
+
+  // First selected recipient → its Chat, used to render a realistic preview.
+  const bulkPreviewChat = useMemo(
+    () => chats.find((c) => c.phoneNumber === selectedPhones[0]),
+    [chats, selectedPhones],
+  );
+
+  // Resolve a variable for a specific recipient: auto-mapping first, then the manual
+  // "open" value (shared across recipients) as fallback.
+  const resolveBulkVarValue = useCallback(
+    (idx: number, chat: Chat | undefined): string => {
+      const m = bulkTemplateMapping.find((e) => e.index === idx);
+      const entity = m?.entity || 'open';
+      const field = m?.field || '';
+      if (!m || entity === 'open') return bulkTemplateVarValues[idx] || '';
+      return resolveBulkTemplateVar(entity, field, chat, user) || bulkTemplateVarValues[idx] || '';
+    },
+    [bulkTemplateMapping, bulkTemplateVarValues, user],
+  );
+
+  // Live preview body for the first recipient (raw {{n}} replaced with resolved values).
+  const bulkPreviewBody = useMemo(() => {
+    if (!selectedBulkTemplate) return '';
+    let text = getTemplateBodyText(selectedBulkTemplate);
+    bulkTemplateVarIndices.forEach((idx) => {
+      const val = resolveBulkVarValue(idx, bulkPreviewChat);
+      if (val) text = text.replace(new RegExp(`\\{\\{${idx}\\}\\}`, 'g'), val);
+    });
+    return text;
+  }, [selectedBulkTemplate, bulkTemplateVarIndices, resolveBulkVarValue, bulkPreviewChat]);
+
+  // Human-readable hint for an auto-mapped variable (shown next to the {{n}} in the UI).
+  const bulkVarSourceHint = useCallback(
+    (idx: number): string => {
+      const m = bulkTemplateMapping.find((e) => e.index === idx);
+      if (!m || m.entity === 'open') return '';
+      const entityLabels: Record<string, string> = isRTL
+        ? { contact: 'איש קשר', user: 'נציג', org: 'ארגון', lead: 'ליד', case: 'פנייה', quote: 'הצעה', order: 'הזמנה' }
+        : { contact: 'Contact', user: 'User', org: 'Org', lead: 'Lead', case: 'Case', quote: 'Quote', order: 'Order' };
+      const ent = entityLabels[m.entity] || m.entity;
+      return m.field ? `${ent} · ${m.field}` : ent;
+    },
+    [bulkTemplateMapping, isRTL],
+  );
+
   // ---- Bulk: open send modal (loads approved templates lazily) ----
   const openBulkSend = useCallback(async () => {
     setShowBulkMoreMenu(false);
@@ -1311,6 +1483,7 @@ export default function ChatsListScreen() {
     setShowBulkSendModal(false);
     setBulkText('');
     setBulkTemplateId('');
+    setBulkTemplateVarValues({});
     setBulkSendProgress(null);
   }, []);
 
@@ -1326,12 +1499,20 @@ export default function ChatsListScreen() {
     let ok = 0;
     let failed = 0;
     setBulkSendProgress({ done: 0, total: selectedPhones.length });
+    // Precompute phone→Chat lookup so each recipient's {{n}} variables can be
+    // auto-resolved from that contact's own fields (name, phone, …).
+    const chatByPhone = new Map(chats.map((c) => [c.phoneNumber, c] as const));
     try {
       for (let i = 0; i < selectedPhones.length; i++) {
         const phone = selectedPhones[i];
         try {
           if (bulkSendMode === 'template') {
-            await chatsApi.sendTemplateMessage(user.organization, phone, bulkTemplateId, uid, [], fromNumberId || undefined);
+            // Build a per-recipient variable query: auto-mapped vars resolve from THIS
+            // contact; "open" vars use the value the user typed once for the batch.
+            const templateVariableQuery = bulkTemplateVarIndices.map((idx, qi) =>
+              buildBulkTemplateVarEntry(idx, resolveBulkVarValue(idx, chatByPhone.get(phone)), qi + 1),
+            );
+            await chatsApi.sendTemplateMessage(user.organization, phone, bulkTemplateId, uid, templateVariableQuery, fromNumberId || undefined);
           } else {
             await chatsApi.sendMessage(user.organization, phone, bulkText.trim(), senderName, uid, undefined, from, (user as any)?.email || '', fromNumberId || undefined);
           }
@@ -1352,7 +1533,7 @@ export default function ChatsListScreen() {
       closeBulkSend();
       exitSelection();
     }
-  }, [user, selectedPhones, bulkSendMode, bulkText, bulkTemplateId, resolveBulkFromNumber, isRTL, closeBulkSend, exitSelection]);
+  }, [user, selectedPhones, bulkSendMode, bulkText, bulkTemplateId, bulkTemplateVarIndices, resolveBulkVarValue, chats, resolveBulkFromNumber, isRTL, closeBulkSend, exitSelection]);
 
   // ---- Bulk: update conversation category ----
   const openBulkCategory = useCallback(async () => {
@@ -2851,7 +3032,7 @@ export default function ChatsListScreen() {
               style={{ marginBottom: 12, maxHeight: 160 }}
             />
           ) : (
-            <ScrollView style={{ maxHeight: 260, marginBottom: 12 }}>
+            <ScrollView style={{ maxHeight: 420, marginBottom: 12 }} keyboardShouldPersistTaps="handled">
               {loadingBulkTemplates ? (
                 <ActivityIndicator style={{ marginVertical: 20 }} color={theme.colors.primary} />
               ) : bulkTemplates.length === 0 ? (
@@ -2866,7 +3047,7 @@ export default function ChatsListScreen() {
                   return (
                     <Pressable
                       key={id}
-                      onPress={() => setBulkTemplateId(id)}
+                      onPress={() => { setBulkTemplateId(id); setBulkTemplateVarValues({}); }}
                       style={({ pressed }) => [
                         { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 10, borderRadius: 8 },
                         selected && { backgroundColor: theme.colors.primaryContainer },
@@ -2882,6 +3063,78 @@ export default function ChatsListScreen() {
                     </Pressable>
                   );
                 })
+              )}
+
+              {/* Variable population + live preview — mirrors the web quick-send:
+                  auto-mapped vars fill from each contact, "open" vars are typed once. */}
+              {selectedBulkTemplate && bulkTemplateVarIndices.length > 0 && (
+                <View style={{ marginTop: 8 }}>
+                  <Divider style={{ marginBottom: 12 }} />
+
+                  {bulkOpenVarIndices.length > 0 && (
+                    <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, marginBottom: 8, textAlign }}>
+                      {isRTL ? 'מלא את המשתנים החופשיים (חלים על כל הנמענים):' : 'Fill the free-text variables (applied to all recipients):'}
+                    </Text>
+                  )}
+
+                  {bulkTemplateVarIndices.map((idx) => {
+                    const hint = bulkVarSourceHint(idx);
+                    const isOpen = bulkOpenVarIndices.includes(idx);
+                    if (!isOpen) {
+                      // Auto-mapped: show read-only info so the user understands it's filled per-contact.
+                      return (
+                        <View key={idx} style={{ flexDirection, alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                          <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: theme.colors.surfaceVariant }}>
+                            <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, fontWeight: '700' }}>{`{{${idx}}}`}</Text>
+                          </View>
+                          <MaterialCommunityIcons name="auto-fix" size={16} color={theme.colors.primary} />
+                          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, flex: 1, textAlign }} numberOfLines={1}>
+                            {isRTL ? `אוטומטי · ${hint}` : `Auto · ${hint}`}
+                          </Text>
+                        </View>
+                      );
+                    }
+                    return (
+                      <View key={idx} style={{ marginBottom: 10 }}>
+                        <PaperInput
+                          mode="outlined"
+                          dense
+                          label={`{{${idx}}}`}
+                          value={bulkTemplateVarValues[idx] ?? ''}
+                          onChangeText={(v) => setBulkTemplateVarValues((prev) => ({ ...prev, [idx]: v }))}
+                          placeholder={isRTL ? 'הזן ערך…' : 'Enter value…'}
+                        />
+                      </View>
+                    );
+                  })}
+
+                  {/* WhatsApp-style live preview (rendered for the first selected recipient). */}
+                  {!!bulkPreviewBody && (
+                    <View style={{ marginTop: 4 }}>
+                      <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 11, marginBottom: 6, textAlign }}>
+                        {isRTL
+                          ? `תצוגה מקדימה${bulkPreviewChat?.contactName ? ` · ${bulkPreviewChat.contactName}` : ''}`
+                          : `Preview${bulkPreviewChat?.contactName ? ` · ${bulkPreviewChat.contactName}` : ''}`}
+                      </Text>
+                      <View
+                        style={{
+                          alignSelf: isRTL ? 'flex-start' : 'flex-end',
+                          maxWidth: '90%',
+                          backgroundColor: '#DCF8C6',
+                          borderRadius: 12,
+                          borderTopRightRadius: isRTL ? 12 : 2,
+                          borderTopLeftRadius: isRTL ? 2 : 12,
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                        }}
+                      >
+                        <Text style={{ color: '#111', fontSize: 14, textAlign, writingDirection: isRTL ? 'rtl' : 'ltr' }}>
+                          {bulkPreviewBody}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
               )}
             </ScrollView>
           )}
