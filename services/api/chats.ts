@@ -382,6 +382,40 @@ export const chatsApi = {
     return Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
   },
 
+  // Create a quick message straight from the chat (mirrors web Settings → Quick Messages).
+  async createQuickMessage(
+    organization: string,
+    shortcut: string,
+    messageText: string,
+    createdById?: string,
+    createdByName?: string,
+  ): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.CREATE_QUICK_MESSAGE, {
+      organizationName: organization,
+      createdById: createdById || '',
+      createdByName: createdByName || '',
+      shortcut,
+      messageText,
+    });
+    return response.data;
+  },
+
+  // Update an existing quick message.
+  async updateQuickMessage(
+    organization: string,
+    messageId: string,
+    shortcut: string,
+    messageText: string,
+  ): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_QUICK_MESSAGE, {
+      organizationName: organization,
+      messageId,
+      shortcut,
+      messageText,
+    });
+    return response.data;
+  },
+
   async sendTemplateMessage(
     organization: string,
     phoneNumber: string,

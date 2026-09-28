@@ -456,6 +456,12 @@ export default function ChatConversationScreen() {
   // / slash → inline quick messages
   const [quickSlashFilter, setQuickSlashFilter] = useState('');
   const [showInlineQuickMessages, setShowInlineQuickMessages] = useState(false);
+  // In-chat quick-message editor (create / edit without going to Settings)
+  const [showQuickMsgEditor, setShowQuickMsgEditor] = useState(false);
+  const [editingQuickMsg, setEditingQuickMsg] = useState<any>(null);
+  const [quickMsgShortcut, setQuickMsgShortcut] = useState('');
+  const [quickMsgText, setQuickMsgText] = useState('');
+  const [savingQuickMsg, setSavingQuickMsg] = useState(false);
 
   // Timeline entries
   const [timelineEntries, setTimelineEntries] = useState<any[]>([]);
@@ -1513,6 +1519,17 @@ export default function ChatConversationScreen() {
     templates.filter(t => t.showInQuickSend),
   [templates]);
 
+  // Quick-tab results: with no search term we show only the ⚡ quick-send templates; the moment the
+  // user searches we expand across ALL approved templates so any template can be found & sent here.
+  const quickTemplateResults = useMemo(() => {
+    const q = quickTemplateSearch.trim().toLowerCase();
+    if (!q) return quickTemplates;
+    return templates.filter(t =>
+      (t.friendlyName || '').toLowerCase().includes(q) ||
+      (t.usageType || '').toLowerCase().includes(q) ||
+      (t.name || '').toLowerCase().includes(q));
+  }, [quickTemplateSearch, quickTemplates, templates]);
+
   const handleQuickTemplateSend = useCallback((template: Template) => {
     let mapping: Array<{index: number; entity: string; field: string}> = [];
     try { mapping = JSON.parse(template.variableMappingJson || '[]'); } catch {}
@@ -2141,6 +2158,66 @@ export default function ChatConversationScreen() {
       setIsLoadingQuickMessages(false);
     }
   }, [user?.organization]);
+
+  // Refresh the quick-messages list (used after the in-chat editor saves).
+  const reloadQuickMessages = useCallback(async () => {
+    if (!user?.organization) return;
+    try {
+      const data = await chatsApi.getQuickMessages(user.organization);
+      setQuickMessages(data);
+    } catch { /* keep existing list on failure */ }
+  }, [user?.organization]);
+
+  // Open the in-chat quick-message editor. Pass a message to edit it, or nothing to create a new one.
+  const openQuickMsgEditor = useCallback((msg: any = null) => {
+    setEditingQuickMsg(msg);
+    setQuickMsgShortcut(msg?.shortcut || msg?.title || '');
+    setQuickMsgText(msg?.messageText || msg?.text || msg?.message || msg?.body || '');
+    setShowInlineQuickMessages(false); // close the '/' picker while the editor is open
+    setShowQuickMsgEditor(true);
+  }, []);
+
+  const closeQuickMsgEditor = useCallback(() => {
+    setShowQuickMsgEditor(false);
+    setEditingQuickMsg(null);
+    setQuickMsgShortcut('');
+    setQuickMsgText('');
+  }, []);
+
+  // Create or update a quick message straight from the chat (mirrors Settings → Quick Messages).
+  const handleSaveQuickMsg = useCallback(async () => {
+    const shortcut = quickMsgShortcut.trim();
+    const messageText = quickMsgText.trim();
+    if (!shortcut || !messageText) {
+      Alert.alert(
+        t('common.error', 'Error'),
+        isRTL ? 'יש למלא קיצור וגם טקסט הודעה' : 'Please fill in both shortcut and message text',
+      );
+      return;
+    }
+    if (!user?.organization) return;
+    setSavingQuickMsg(true);
+    try {
+      if (editingQuickMsg) {
+        await chatsApi.updateQuickMessage(user.organization, editingQuickMsg.messageId || editingQuickMsg.id, shortcut, messageText);
+      } else {
+        await chatsApi.createQuickMessage(
+          user.organization,
+          shortcut,
+          messageText,
+          user?.uID || user?.userId || '',
+          user?.fullname || (user as any)?.displayName || '',
+        );
+      }
+      await reloadQuickMessages();
+      closeQuickMsgEditor();
+    } catch (err: any) {
+      console.error('[handleSaveQuickMsg] failed:', err?.response?.status, err?.response?.data || err?.message);
+      Alert.alert(t('common.error', 'Error'), isRTL ? 'שמירת ההודעה המהירה נכשלה' : 'Failed to save quick message');
+    } finally {
+      setSavingQuickMsg(false);
+    }
+  }, [quickMsgShortcut, quickMsgText, editingQuickMsg, user?.organization, user?.uID, user?.userId, user?.fullname, reloadQuickMessages, closeQuickMsgEditor, isRTL, t]);
 
   const handleSelectQuickMessage = useCallback((msg: QuickMessage) => {
     setShowQuickMessages(false);
@@ -3514,28 +3591,25 @@ export default function ChatConversationScreen() {
                   <View style={[styles.templateSearchWrap, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', borderColor: theme.colors.outline, marginHorizontal: 12, marginBottom: 6 }]}>
                     <MaterialCommunityIcons name="magnify" size={18} color={theme.colors.onSurfaceVariant} />
                     <TextInput
-                      placeholder={isRTL ? 'חפש לפי שם ידידותי...' : 'Search by friendly name...'}
+                      placeholder={isRTL ? 'חפש בכל התבניות לפי שם או סוג...' : 'Search all templates by name or type...'}
                       placeholderTextColor={theme.colors.onSurfaceVariant}
                       style={[styles.templateSearchInput, { color: theme.colors.onSurface }]}
                       value={quickTemplateSearch}
                       onChangeText={setQuickTemplateSearch}
                     />
                   </View>
-                  {quickTemplates.length === 0 ? (
+                  {quickTemplateResults.length === 0 ? (
                     <View style={[styles.emptyTemplates, { minHeight: 100 }]}>
                       <MaterialCommunityIcons name="lightning-bolt-outline" size={36} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.35 }} />
                       <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
-                        {isRTL ? 'אין תבניות מהירות.\nסמן ⚡ בהגדרות תבניות.' : 'No Quick templates.\nMark ⚡ in template settings.'}
+                        {quickTemplateSearch.trim()
+                          ? (isRTL ? 'לא נמצאו תבניות תואמות.' : 'No matching templates.')
+                          : (isRTL ? 'אין תבניות מהירות.\nסמן ⚡ בהגדרות תבניות, או חפש כאן כדי למצוא כל תבנית.' : 'No Quick templates.\nMark ⚡ in settings, or search here to find any template.')}
                       </Text>
                     </View>
                   ) : (
                     <FlatList
-                      data={quickTemplateSearch.trim()
-                        ? quickTemplates.filter(t =>
-                            (t.friendlyName || '').toLowerCase().includes(quickTemplateSearch.toLowerCase()) ||
-                            (t.usageType || '').toLowerCase().includes(quickTemplateSearch.toLowerCase()) ||
-                            (t.name || '').toLowerCase().includes(quickTemplateSearch.toLowerCase()))
-                        : quickTemplates}
+                      data={quickTemplateResults}
                       keyExtractor={(item, i) => item.id || item.templateId || `q-${i}`}
                       style={{ maxHeight: 380 }}
                       renderItem={({ item }) => {
@@ -4703,42 +4777,134 @@ export default function ChatConversationScreen() {
               <ScrollView keyboardShouldPersistTaps="handled">
                 {isLoadingQuickMessages ? (
                   <ActivityIndicator size="small" style={{ padding: 12 }} />
-                ) : isEmpty ? (
-                  <View style={{ paddingHorizontal: 14, paddingVertical: 16, alignItems: 'center', gap: 4 }}>
-                    <MaterialCommunityIcons name="lightning-bolt-outline" size={22} color={theme.colors.onSurfaceVariant} />
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
-                      {noneDefined
-                        ? t('chats.noQuickMessages', 'אין הודעות מהירות מוגדרות')
-                        : (isRTL ? 'לא נמצאו הודעות מהירות תואמות' : 'No matching quick messages')}
-                    </Text>
-                    {noneDefined && (
-                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', opacity: 0.8 }}>
-                        {isRTL ? 'ניתן להגדיר הודעות מהירות בהגדרות' : 'You can define quick messages in settings'}
+                ) : (
+                  <>
+                    {isEmpty ? (
+                      <View style={{ paddingHorizontal: 14, paddingVertical: 16, alignItems: 'center', gap: 4 }}>
+                        <MaterialCommunityIcons name="lightning-bolt-outline" size={22} color={theme.colors.onSurfaceVariant} />
+                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+                          {noneDefined
+                            ? t('chats.noQuickMessages', 'אין הודעות מהירות מוגדרות')
+                            : (isRTL ? 'לא נמצאו הודעות מהירות תואמות' : 'No matching quick messages')}
+                        </Text>
+                      </View>
+                    ) : filtered.map((qm: any, idx: number) => (
+                      <View
+                        key={qm.id || qm.messageId || idx}
+                        style={[styles.mentionItem, { alignItems: 'center' }]}
+                      >
+                        <Pressable
+                          onPress={() => {
+                            handleSelectQuickMessage(qm);
+                            setShowInlineQuickMessages(false);
+                            setQuickSlashFilter('');
+                          }}
+                          style={({ pressed }) => [{ flex: 1, flexDirection: 'row', alignItems: 'center' }, pressed && { opacity: 0.6 }]}
+                        >
+                          <Text variant="bodySmall" style={{ color: '#FF9800', fontWeight: '700', minWidth: 60 }} numberOfLines={1}>
+                            /{qm.shortcut || qm.title || qm.name || ''}
+                          </Text>
+                          <Text variant="bodySmall" style={{ color: theme.colors.onSurface, flex: 1, marginStart: 8 }} numberOfLines={1}>
+                            {qm.messageText || qm.text || qm.message || qm.body || ''}
+                          </Text>
+                        </Pressable>
+                        {/* Edit this quick message (does not insert it) */}
+                        <Pressable
+                          onPress={() => openQuickMsgEditor(qm)}
+                          hitSlop={8}
+                          style={({ pressed }) => [{ padding: 4, marginStart: 8 }, pressed && { opacity: 0.5 }]}
+                        >
+                          <MaterialCommunityIcons name="pencil-outline" size={18} color={theme.colors.onSurfaceVariant} />
+                        </Pressable>
+                      </View>
+                    ))}
+                    {/* Last row: create a new quick message straight from the chat (no need to open Settings) */}
+                    <Pressable
+                      onPress={() => openQuickMsgEditor(null)}
+                      style={({ pressed }) => [styles.mentionItem, { alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.outline }, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+                    >
+                      <MaterialCommunityIcons name="plus-circle-outline" size={18} color={theme.colors.primary} />
+                      <Text variant="bodySmall" style={{ color: theme.colors.primary, fontWeight: '700', marginStart: 8 }}>
+                        {isRTL ? 'הוספת הודעה מהירה חדשה' : 'Add new quick message'}
                       </Text>
-                    )}
-                  </View>
-                ) : filtered.map((qm: any, idx: number) => (
-                  <Pressable
-                    key={qm.id || idx}
-                    onPress={() => {
-                      handleSelectQuickMessage(qm);
-                      setShowInlineQuickMessages(false);
-                      setQuickSlashFilter('');
-                    }}
-                    style={({ pressed }) => [styles.mentionItem, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
-                  >
-                    <Text variant="bodySmall" style={{ color: '#FF9800', fontWeight: '700', minWidth: 60 }} numberOfLines={1}>
-                      /{qm.shortcut || qm.title || qm.name || ''}
-                    </Text>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurface, flex: 1, marginStart: 8 }} numberOfLines={1}>
-                      {qm.messageText || qm.text || qm.message || qm.body || ''}
-                    </Text>
-                  </Pressable>
-                ))}
+                    </Pressable>
+                  </>
+                )}
               </ScrollView>
             </View>
           );
         })()}
+
+        {/* In-chat quick-message editor (create / edit — mirrors Settings → Quick Messages) */}
+        <Modal
+          visible={showQuickMsgEditor}
+          transparent
+          animationType="fade"
+          onRequestClose={closeQuickMsgEditor}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={{ flex: 1 }}
+          >
+            <Pressable
+              onPress={closeQuickMsgEditor}
+              style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', padding: 16 }}
+            >
+              <Pressable
+                onPress={() => {}}
+                style={{ width: '100%', maxWidth: 460, backgroundColor: theme.colors.surface, borderRadius: 14, padding: 20, gap: 14 }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                    {editingQuickMsg
+                      ? (isRTL ? 'עריכת הודעה מהירה' : 'Edit quick message')
+                      : (isRTL ? 'הוספת הודעה מהירה' : 'Add quick message')}
+                  </Text>
+                  <Pressable onPress={closeQuickMsgEditor} hitSlop={8}>
+                    <MaterialCommunityIcons name="close" size={20} color={theme.colors.onSurfaceVariant} />
+                  </Pressable>
+                </View>
+
+                <View style={{ gap: 6 }}>
+                  <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {isRTL ? 'קיצור (ללא /)' : 'Shortcut (without /)'}
+                  </Text>
+                  <TextInput
+                    value={quickMsgShortcut}
+                    onChangeText={setQuickMsgShortcut}
+                    placeholder={isRTL ? 'לדוגמה: תודה, שלום, מעקב' : 'e.g. thanks, hello, followup'}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}
+                  />
+                </View>
+
+                <View style={{ gap: 6 }}>
+                  <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {isRTL ? 'טקסט ההודעה' : 'Message text'}
+                  </Text>
+                  <TextInput
+                    value={quickMsgText}
+                    onChangeText={setQuickMsgText}
+                    placeholder={isRTL ? 'הכנס את טקסט ההודעה המלאה...' : 'Enter the full message text...'}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    multiline
+                    numberOfLines={4}
+                    style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: theme.colors.onSurface, minHeight: 96, textAlignVertical: 'top', textAlign: isRTL ? 'right' : 'left' }}
+                  />
+                </View>
+
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
+                  <Button mode="text" onPress={closeQuickMsgEditor} disabled={savingQuickMsg} textColor={theme.colors.onSurfaceVariant}>
+                    {isRTL ? 'ביטול' : 'Cancel'}
+                  </Button>
+                  <Button mode="contained" onPress={handleSaveQuickMsg} loading={savingQuickMsg} disabled={savingQuickMsg}>
+                    {editingQuickMsg ? (isRTL ? 'עדכן' : 'Update') : (isRTL ? 'צור' : 'Create')}
+                  </Button>
+                </View>
+              </Pressable>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Modal>
 
         {/* @mention picker — visibility is driven solely by showMentionPicker (set when an
             @mention is being composed). We always render a state (list / loading / empty) so the

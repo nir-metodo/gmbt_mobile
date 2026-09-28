@@ -170,6 +170,8 @@ export const ENDPOINTS = {
 
   // Quick Messages
   GET_QUICK_MESSAGES: '/api/Webhooks/GetQuickMessages',
+  CREATE_QUICK_MESSAGE: '/api/Webhooks/CreateQuickMessage',
+  UPDATE_QUICK_MESSAGE: '/api/Webhooks/UpdateQuickMessage',
   GET_SCHEDULED_MESSAGES: '/api/Webhooks/GetScheduledMessages',
 
   // Dashboard
