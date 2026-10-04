@@ -152,6 +152,11 @@ export default function CalendarScreen() {
   // Month the grid is showing + the day the user tapped (drives the day-agenda below the grid).
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [selectedDay, setSelectedDay] = useState<string>(() => toLocalDateStr(new Date()));
+  // Measured width of the month grid. Day cells get a whole-pixel width (floor(width / 7)) instead of
+  // a "14.2857%" string: on some devices (screen width / pixel density) 7 percentage cells add up to
+  // slightly MORE than the row, so the 7th cell wrapped and every week became 6 days long.
+  const [gridWidth, setGridWidth] = useState(0);
+  const dayCellWidth = gridWidth > 0 ? Math.floor((gridWidth - 12) / 7) : undefined;
 
   // Filter
   const [dateFilter, setDateFilter] = useState<'upcoming' | 'today' | 'week' | 'all'>('upcoming');
@@ -843,14 +848,20 @@ export default function CalendarScreen() {
           {/* Weekday headers */}
           <View style={[styles.weekRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             {weekdayLabels.map((w, i) => (
-              <View key={i} style={styles.weekdayCell}>
+              <View key={i} style={[styles.weekdayCell, dayCellWidth ? { flex: 0, width: dayCellWidth } : null]}>
                 <Text style={[styles.weekdayText, { color: theme.colors.onSurfaceVariant }]}>{w}</Text>
               </View>
             ))}
           </View>
 
           {/* Day grid */}
-          <View style={[styles.grid, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <View
+            style={[styles.grid, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+            onLayout={(e) => {
+              const w = Math.floor(e.nativeEvent.layout.width);
+              if (w !== gridWidth) setGridWidth(w);
+            }}
+          >
             {monthGrid.map((cell) => {
               const dayEvents = eventsByDate[cell.dateStr] || [];
               const isToday = cell.dateStr === todayStr;
@@ -861,6 +872,7 @@ export default function CalendarScreen() {
                   onPress={() => setSelectedDay(cell.dateStr)}
                   style={[
                     styles.dayCell,
+                    dayCellWidth ? { width: dayCellWidth, aspectRatio: 1 } : null,
                     { borderColor: theme.colors.outlineVariant },
                     isSelected && { backgroundColor: `${BRAND_COLOR}22`, borderColor: BRAND_COLOR },
                   ]}
@@ -1580,7 +1592,8 @@ const styles = StyleSheet.create({
   weekdayText: { fontSize: 12, fontWeight: '600' },
   grid: { flexWrap: 'wrap', paddingHorizontal: 6 },
   dayCell: {
-    width: `${100 / 7}%`,
+    // Fallback until the grid is measured — deliberately a bit under 1/7 so 7 cells always fit.
+    width: '14.2%',
     aspectRatio: 1,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',

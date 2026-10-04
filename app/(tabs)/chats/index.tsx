@@ -17,6 +17,7 @@ import {
   AppState,
   TextInput,
   InteractionManager,
+  I18nManager,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -53,6 +54,14 @@ import {
   conversationStatusColors,
   normalizeConversationStatus,
 } from '../../../utils/conversationStatus';
+import {
+  WebViewFilters,
+  normalizeWebFilters,
+  hasWebFilterConstraints,
+  buildWebFilterPredicate,
+  decodeOverridesMap,
+  isBotOwnedChat,
+} from '../../../utils/webViewFilters';
 import WebSocketService from '../../../services/websocket';
 import { notificationSound } from '../../../services/notificationSound';
 import { getDataVisibility, hasPermission, getLandingRoute } from '../../../constants/permissions';
@@ -223,6 +232,11 @@ export default function ChatsListScreen() {
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
+  // The app forces NATIVE RTL (I18nManager.forceRTL), where a plain 'row' already flows right→left and
+  // a horizontal ScrollView starts at the right edge. useRTL's 'row-reverse' on top of that flips the
+  // tab/chip rows back to left→right, so the first tabs (הכל / לטיפול) ended up off-screen and the
+  // visible order was reversed vs. the web. Use 'row' whenever the layout is already natively RTL.
+  const scrollRowDirection = I18nManager.isRTL ? 'row' : flexDirection;
   const { t, i18n } = useTranslation();
   const lang = i18n.language as 'en' | 'he';
 
@@ -384,6 +398,7 @@ export default function ChatsListScreen() {
 
   // Saved Views (view-only on mobile — created on the web)
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [savedViewsLoaded, setSavedViewsLoaded] = useState(false);
   const [activeViewId, setActiveViewId] = useState<string>('__all__');
   // View management (per-org, local): manual order + hidden tabs, plus the settings sheet.
   // Mirrors the web Sidebar: tab order and hidden views are a purely client-side preference
@@ -395,7 +410,7 @@ export default function ChatsListScreen() {
   const [viewPrefsLoaded, setViewPrefsLoaded] = useState(false);
   // Org-wide view configuration (set by an admin on the web / here) — mirrors the web Sidebar:
   //  • sidebarViewOrder (shared) → the default tab ORDER every user sees
-  //  • sidebarOrgDefault         → the default LANDING tab (fallback: __toHandle__, like web)
+  //  • sidebarOrgDefault         → the default LANDING tab (fallback: __all__, like web)
   // A user who reorders locally gets a PERSONAL override (hasPersonalOrder) that wins over the org
   // order until they reset it. Persisted org order can be saved by admins via "שמור לארגון".
   const [orgViewOrder, setOrgViewOrder] = useState<string[]>([]);
@@ -405,6 +420,14 @@ export default function ChatsListScreen() {
   const [savingOrgOrder, setSavingOrgOrder] = useState(false);
   const [orgConfigLoaded, setOrgConfigLoaded] = useState(false);
   const orgDefaultAppliedRef = useRef(false);
+  // Web-format filters of the active saved view / overridden built-in view (see utils/webViewFilters).
+  // Applied on top of the simple chip filters so web-created views behave exactly like on the web.
+  const [viewFilters, setViewFilters] = useState<WebViewFilters | null>(null);
+  // Org-wide admin config from the web: overrides of the built-in views + org-hidden views
+  // (each user can still re-show an org-hidden view just for themselves — kept per device).
+  const [orgViewOverrides, setOrgViewOverrides] = useState<Record<string, any>>({});
+  const [orgHiddenViewIds, setOrgHiddenViewIds] = useState<string[]>([]);
+  const [orgViewShownForMe, setOrgViewShownForMe] = useState<string[]>([]);
 
   // Save-view modal (create a new view from the current filters)
   const [showSaveViewModal, setShowSaveViewModal] = useState(false);
@@ -456,7 +479,7 @@ export default function ChatsListScreen() {
       } else if (Array.isArray(data)) {
         setSavedViews(data);
       }
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => setSavedViewsLoaded(true));
   }, [user?.organization, viewsUserId]);
 
   // Per-org AsyncStorage keys for the local view preferences (order + hidden tabs).
@@ -464,6 +487,7 @@ export default function ChatsListScreen() {
   const viewOrderKey = `chats_view_order_${org}`;
   const hiddenViewsKey = `chats_hidden_views_${org}`;
   const personalOrderKey = `chats_view_order_personal_${org}`;
+  const orgShownViewsKey = `chats_org_shown_views_${org}`;
 
   // Restore the saved order / hidden set for this org. `viewPrefsLoaded` guards the persist
   // effects below so we don't overwrite storage with the empty initial state before load.
@@ -473,15 +497,17 @@ export default function ChatsListScreen() {
     setViewPrefsLoaded(false);
     (async () => {
       try {
-        const [orderRaw, hiddenRaw, personalRaw] = await Promise.all([
+        const [orderRaw, hiddenRaw, personalRaw, shownRaw] = await Promise.all([
           AsyncStorage.getItem(viewOrderKey),
           AsyncStorage.getItem(hiddenViewsKey),
           AsyncStorage.getItem(personalOrderKey),
+          AsyncStorage.getItem(orgShownViewsKey),
         ]);
         if (cancelled) return;
         setViewOrder(orderRaw ? JSON.parse(orderRaw) : []);
         setHiddenViewIds(hiddenRaw ? JSON.parse(hiddenRaw) : []);
         setHasPersonalOrder(personalRaw === 'true');
+        setOrgViewShownForMe(shownRaw ? JSON.parse(shownRaw) : []);
       } catch {
         if (!cancelled) { setViewOrder([]); setHiddenViewIds([]); setHasPersonalOrder(false); }
       } finally {
@@ -517,7 +543,26 @@ export default function ChatsListScreen() {
         const def = shared?.ViewData?.defaultViewId || shared?.viewData?.defaultViewId;
         if (def) setOrgDefaultViewId(def);
       }).catch(() => {});
-    Promise.allSettled([pOrder, pDefault]).then(() => { if (!cancelled) setOrgConfigLoaded(true); });
+    // Admin overrides of the built-in views (e.g. "שלי" = mine OR unassigned) — keys are encoded
+    // ("builtin_mine") because Firestore rejects "__x__" field names; decode back to "__mine__".
+    const pOverrides = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarBuiltInOverrides' })
+      .then((res) => {
+        if (cancelled) return;
+        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
+        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
+        const overrides = shared?.ViewData?.overrides || shared?.viewData?.overrides;
+        if (overrides && typeof overrides === 'object') setOrgViewOverrides(decodeOverridesMap(overrides));
+      }).catch(() => {});
+    // Views the admin hid for the whole organization.
+    const pHidden = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarOrgHiddenViews' })
+      .then((res) => {
+        if (cancelled) return;
+        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
+        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
+        const hidden = shared?.ViewData?.hiddenViews || shared?.viewData?.hiddenViews;
+        if (Array.isArray(hidden)) setOrgHiddenViewIds(hidden);
+      }).catch(() => {});
+    Promise.allSettled([pOrder, pDefault, pOverrides, pHidden]).then(() => { if (!cancelled) setOrgConfigLoaded(true); });
     return () => { cancelled = true; };
   }, [org, viewsUserId]);
 
@@ -598,12 +643,22 @@ export default function ChatsListScreen() {
   // Hide/show a tab. Built-in tabs and shared (organization) views can only be hidden, never
   // deleted — hiding is a local preference so it never affects other users.
   const toggleHideView = useCallback((viewId: string) => {
+    // A view the admin hid org-wide is shown/hidden for ME via a per-device override (like the web's
+    // orgViewShownForMe) — it never changes what other users see.
+    if (orgHiddenViewIds.includes(viewId) && !hiddenViewIds.includes(viewId)) {
+      setOrgViewShownForMe((prev) => {
+        const next = prev.includes(viewId) ? prev.filter((id) => id !== viewId) : [...prev, viewId];
+        AsyncStorage.setItem(orgShownViewsKey, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+      return;
+    }
     setHiddenViewIds((prev) => {
       const next = prev.includes(viewId) ? prev.filter((id) => id !== viewId) : [...prev, viewId];
       AsyncStorage.setItem(hiddenViewsKey, JSON.stringify(next)).catch(() => {});
       return next;
     });
-  }, [hiddenViewsKey]);
+  }, [hiddenViewsKey, orgShownViewsKey, orgHiddenViewIds, hiddenViewIds]);
 
   // Load contact groups and lead stages.
   // Building the contact→lead-stage map pulls EVERY lead in the org and is only used for the small
@@ -732,22 +787,33 @@ export default function ChatsListScreen() {
   }, [wabaNumbersList, user?.assignedWhatsAppNumbers]);
 
   const loadSavedView = useCallback((view: SavedView) => {
-    const viewData = view.ViewData || {};
-    const filters = viewData.filters || {};
+    // A user action: the late org-default landing must never overwrite it afterwards.
+    orgDefaultAppliedRef.current = true;
+    const viewData = view.ViewData || (view as any).viewData || {};
+    // The web saves filters as arrays / OR-buckets (owner[], category[], status[], alsoInclude…).
+    // Feeding those into the single-value chip state left e.g. categoryFilter=[] (!== 'all') — a
+    // permanently "active" filter that also matched nothing. Evaluate the view with the web's own
+    // semantics instead and reset the simple chips.
+    const webFilters = normalizeWebFilters(viewData.filters);
     setActiveViewId(view.id);
-    setFilter(filters.myConversations ? 'myChats' : filters.unread ? 'unread' : filters.openConversations ? 'open' : 'all');
-    setCategoryFilter(filters.category || 'all');
-    setOwnerFilter(filters.owner || 'all');
-    setGroupFilter(filters.contactGroup || []);
-    setLeadStageFilter(filters.leadStage || []);
-    setCaseStageFilter(filters.caseStage || []);
-    setActivityFilter(filters.activityFilter || '');
-    if (viewData.searchTerm) {
-      setSearchInput(viewData.searchTerm);
-    }
+    setFilter('all');
+    setCategoryFilter('all');
+    setOwnerFilter('all');
+    setGroupFilter([]);
+    setLeadStageFilter([]);
+    setCaseStageFilter([]);
+    setNumberFilter('');
+    setActivityFilter('');
+    setViewFilters(hasWebFilterConstraints(webFilters) ? webFilters : null);
+    const term = viewData.searchTerm || '';
+    setSearchInput(term);
+    if (!term) setDebouncedSearch('');
   }, [setFilter, setCategoryFilter, setOwnerFilter]);
 
   const clearAllFilters = useCallback(() => {
+    // A user action: the late org-default landing must never re-apply a view after this.
+    orgDefaultAppliedRef.current = true;
+    setViewFilters(null);
     setActiveViewId('__all__');
     setFilter('all');
     setCategoryFilter('all');
@@ -765,17 +831,27 @@ export default function ChatsListScreen() {
   const saveCurrentView = useCallback(async () => {
     if (!newViewName.trim() || !user?.organization) return;
     try {
+      // Saved in the SAME shape the web uses (arrays, uID owner tokens) so the view works on both.
+      const ownerId = ownerFilter !== 'all'
+        ? (chats.find((c) => c.ownerName === ownerFilter)?.ownerId || ownerFilter)
+        : '';
+      const base = viewFilters || normalizeWebFilters({});
       const viewData = {
         filters: {
-          myConversations: filter === 'myChats',
-          unread: filter === 'unread',
-          openConversations: filter === 'open',
-          category: categoryFilter !== 'all' ? categoryFilter : '',
-          owner: ownerFilter !== 'all' ? ownerFilter : '',
-          contactGroup: groupFilter,
-          leadStage: leadStageFilter,
-          caseStage: caseStageFilter,
-          activityFilter,
+          ...base,
+          myConversations: base.myConversations || filter === 'myChats' || filter === 'toHandle',
+          alsoInclude: filter === 'toHandle' ? ['unassigned', 'botOwned'] : base.alsoInclude,
+          unassigned: base.unassigned || filter === 'unassigned',
+          unread: base.unread || filter === 'unread',
+          internalMessages: base.internalMessages || filter === 'internal',
+          notReviewedByHuman: base.notReviewedByHuman || filter === 'notReviewedByHuman',
+          status: filter === 'open' ? ['Open', 'In Process'] : filter === 'closed' ? ['Closed'] : base.status,
+          category: categoryFilter !== 'all' ? [categoryFilter] : base.category,
+          owner: ownerId ? [ownerId] : base.owner,
+          contactGroup: groupFilter.length ? groupFilter : base.contactGroup,
+          leadStage: leadStageFilter.length ? leadStageFilter : base.leadStage,
+          caseStage: caseStageFilter.length ? caseStageFilter : base.caseStage,
+          activityFilter: activityFilter || base.activityFilter,
         },
         searchTerm: searchInput,
       };
@@ -803,7 +879,7 @@ export default function ChatsListScreen() {
     setShowSaveViewModal(false);
     setNewViewName('');
     setSaveViewVisibility('personal');
-  }, [newViewName, user, filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, activityFilter, searchInput, userIsAdmin, saveViewVisibility]);
+  }, [newViewName, user, chats, viewFilters, filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, activityFilter, searchInput, userIsAdmin, saveViewVisibility, viewsUserId]);
 
   const deleteSavedView = useCallback(async (viewId: string) => {
     if (!user?.organization) return;
@@ -830,12 +906,13 @@ export default function ChatsListScreen() {
     }));
     const saved: ViewTab[] = savedViews
       .filter((v) => {
-        const vis = v.Visibility || 'personal';
-        if (vis === 'shared') return true;
+        const vis = v.Visibility || (v as any).visibility || 'personal';
+        // 'selected' views are already scoped server-side to their audience (GetUserViews).
+        if (vis === 'shared' || vis === 'selected') return true;
         return (v.UserId || '') === viewsUserId;
       })
       .map((v) => {
-        const shared = (v.Visibility || 'personal') === 'shared';
+        const shared = ['shared', 'selected'].includes(v.Visibility || (v as any).visibility || 'personal');
         return {
           id: v.id,
           label: v.Name,
@@ -884,40 +961,57 @@ export default function ChatsListScreen() {
   }, [orderedViewTabs]);
 
   // ...and the subset actually shown as tabs above the list (hidden tabs removed).
+  // A view is hidden when the user hid it, or the admin hid it org-wide and the user hasn't
+  // chosen to show it for themselves (same rule as the web's isViewHidden).
+  const isViewHidden = useCallback(
+    (id: string) =>
+      hiddenViewIds.includes(id) || (orgHiddenViewIds.includes(id) && !orgViewShownForMe.includes(id)),
+    [hiddenViewIds, orgHiddenViewIds, orgViewShownForMe],
+  );
   const visibleViewTabs = useMemo<ViewTab[]>(
-    () => orderedViewTabs.filter((tb) => !hiddenViewIds.includes(tb.id)),
-    [orderedViewTabs, hiddenViewIds],
+    () => orderedViewTabs.filter((tb) => !isViewHidden(tb.id)),
+    [orderedViewTabs, isViewHidden],
   );
 
   // Apply the organization's DEFAULT landing view once, after views + org config have loaded —
-  // mirrors the web precedence: org default → fallback __toHandle__. We only do this on first
+  // mirrors the web precedence: org default → pinned saved view → __all__. We only do this on first
   // load (guarded by a ref) so it never fights the user's own tab selection afterwards.
   useEffect(() => {
-    if (!viewPrefsLoaded || !orgConfigLoaded || orgDefaultAppliedRef.current) return;
-    // Wait until saved views are available if an org default points at one.
-    const wantId = orgDefaultViewId || '__toHandle__';
+    if (!viewPrefsLoaded || !orgConfigLoaded || !savedViewsLoaded || orgDefaultAppliedRef.current) return;
+    // Same precedence as the web Sidebar: org default → legacy "pinned" shared saved view → "הכל".
+    const pinnedSaved = savedViews.find((v) => v.IsPinned === true);
+    const wantId = orgDefaultViewId || pinnedSaved?.id || '__all__';
     const target = visibleViewTabs.find((tb) => tb.id === wantId)
-      || visibleViewTabs.find((tb) => tb.id === '__toHandle__')
       || visibleViewTabs.find((tb) => tb.id === '__all__');
     // If the org default is a saved view that hasn't loaded yet, defer (don't consume the guard).
     if (orgDefaultViewId && !target) return;
     orgDefaultAppliedRef.current = true;
     if (target && target.id !== '__all__') applyViewTab(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewPrefsLoaded, orgConfigLoaded, orgDefaultViewId, visibleViewTabs]);
+  }, [viewPrefsLoaded, orgConfigLoaded, savedViewsLoaded, orgDefaultViewId, visibleViewTabs, savedViews]);
 
   // Apply a tab by its id (built-in tabs map to a store filter; saved views restore their filters).
   const applyViewTab = useCallback((tab: ViewTab) => {
     if (tab.kind === 'saved' && tab.view) { loadSavedView(tab.view); return; }
+    if (tab.id === '__all__') { clearAllFilters(); return; }
+    // Start from a clean slate (also marks the org-default landing as consumed), like the web.
+    clearAllFilters();
+    // Built-in view the admin customized on the web → apply the org-wide override (for everyone).
+    const override = orgViewOverrides[tab.id];
+    if (override) {
+      const f = normalizeWebFilters(override);
+      setActiveViewId(tab.id);
+      setViewFilters(hasWebFilterConstraints(f) ? f : null);
+      return;
+    }
     switch (tab.id) {
-      case '__all__': clearAllFilters(); break;
       case '__toHandle__': setActiveViewId('__toHandle__'); setFilter('toHandle'); break;
       case '__mine__': setActiveViewId('__mine__'); setFilter('myChats'); break;
       case '__unassigned__': setActiveViewId('__unassigned__'); setFilter('unassigned'); break;
       case '__unread__': setActiveViewId('__unread__'); setFilter('unread'); break;
       default: break;
     }
-  }, [loadSavedView, clearAllFilters, setFilter]);
+  }, [loadSavedView, clearAllFilters, setFilter, orgViewOverrides]);
 
   useEffect(() => {
     if (user?.organization) {
@@ -1129,7 +1223,7 @@ export default function ChatsListScreen() {
       // Mirrors the web "לטיפול" built-in: conversations that are mine OR not assigned to a
       // human (unassigned / bot-owned) — i.e. everything that still needs a human to handle it.
       const userId = user?.uID || user?.userId;
-      result = result.filter((c) => c.ownerId === userId || !c.ownerId);
+      result = result.filter((c) => c.ownerId === userId || !c.ownerId || isBotOwnedChat(c));
     } else if (filter === 'myChats') {
       const userId = user?.uID || user?.userId;
       result = result.filter((c) => c.ownerId === userId);
@@ -1137,6 +1231,16 @@ export default function ChatsListScreen() {
       result = result.filter((c) => !c.ownerId);
     } else if (filter === 'internal') {
       result = result.filter((c) => (c as any).usersWithUnreadInternalMessages?.includes(user?.uID || user?.userId));
+    }
+
+    // Active saved view / overridden built-in view (web-format filters, web semantics).
+    if (viewFilters) {
+      const viewPredicate = buildWebFilterPredicate(viewFilters, {
+        meId: user?.uID || user?.userId || '',
+        contactLeadMap,
+        contactCaseMap,
+      });
+      if (viewPredicate) result = result.filter(viewPredicate);
     }
 
     if (categoryFilter !== 'all') {
@@ -1214,7 +1318,7 @@ export default function ChatsListScreen() {
     // "list re-sorts wrong after entering a chat and coming back" report. Sorting the (already
     // filtered) copy here makes the displayed order correct no matter what.
     return [...result].sort((a, b) => chatActivityMs(b) - chatActivityMs(a));
-  }, [chats, filter, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages]);
+  }, [chats, filter, viewFilters, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages]);
 
   // When searching, show all results; otherwise paginate for smooth scrolling
   const displayedChats = useMemo(() => {
@@ -1226,6 +1330,7 @@ export default function ChatsListScreen() {
 
   // Any non-default filter active → surfaces the "נקה סינון" (clear) chip, mirroring the web panel.
   const hasActiveFilters =
+    !!viewFilters ||
     filter !== 'all' ||
     categoryFilter !== 'all' ||
     ownerFilter !== 'all' ||
@@ -2168,7 +2273,7 @@ export default function ChatsListScreen() {
 
       {/* Saved Views Tabs — order & visibility mirror the web Sidebar (user-configurable, per-org) */}
       <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection: scrollRowDirection }]}>
           {visibleViewTabs.map((tab) => {
             const active = activeViewId === tab.id;
             return (
@@ -2223,7 +2328,7 @@ export default function ChatsListScreen() {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
+          contentContainerStyle={[styles.filtersScroll, { flexDirection: scrollRowDirection }]}
         >
           {hasActiveFilters && (
             <Chip
@@ -2240,7 +2345,7 @@ export default function ChatsListScreen() {
             <Chip
               key={f}
               selected={filter === f}
-              onPress={() => { setFilter(f); setActiveViewId(''); }}
+              onPress={() => { orgDefaultAppliedRef.current = true; setViewFilters(null); setFilter(f); setActiveViewId(''); }}
               showSelectedOverlay
               compact
               style={[
@@ -2815,7 +2920,7 @@ export default function ChatsListScreen() {
           </Text>
           <ScrollView style={{ maxHeight: 420 }}>
             {orderedViewTabs.map((tab, idx) => {
-              const hidden = hiddenViewIds.includes(tab.id);
+              const hidden = isViewHidden(tab.id);
               return (
                 <View
                   key={tab.id}

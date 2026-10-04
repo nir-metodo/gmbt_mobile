@@ -26,8 +26,25 @@ import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRTL } from '../../hooks/useRTL';
 import type { WabaNumberInfo } from '../../types';
 
+// A "/" quick-message trigger is a '/' at the start of the text or right after whitespace, located BEFORE
+// the caret, with no newline between it and the caret. Anything typed after it (up to the caret) is the
+// search query. URLs ("https://…") never match because their '/' follows ':' or another '/'.
+// Returns null when the caret is not inside such a token.
+export function findSlashContext(text: string, caret: number): { slashIndex: number; query: string } | null {
+  const before = text.slice(0, Math.max(0, Math.min(caret, text.length)));
+  const idx = before.lastIndexOf('/');
+  if (idx === -1) return null;
+  if (idx > 0 && !/\s/.test(before[idx - 1])) return null;
+  const query = before.slice(idx + 1);
+  if (query.includes('\n')) return null;
+  return { slashIndex: idx, query };
+}
+
 export interface ChatInputRef {
   insertText: (text: string) => void;
+  // Insert a quick message at the caret. If the caret is inside a "/token", that token is replaced
+  // (text before and after it is preserved); otherwise the message is inserted at the caret.
+  insertQuickMessage: (text: string) => void;
   // Replace only the trailing "@query" being composed with "@name " — preserves any text the
   // user already typed before the mention (insertText would wipe the whole composer).
   insertMention: (name: string) => void;
@@ -59,6 +76,9 @@ interface ChatInputProps {
   replyTo?: ReplyPreview | null;
   onCancelReply?: () => void;
   onTextChange?: (text: string) => void;
+  // Fires when the "/query" being typed at the caret changes: the query string, or null when the caret is
+  // no longer inside a "/token" (so the quick-messages picker should be hidden).
+  onSlashQueryChange?: (query: string | null) => void;
   activeWabaNumber?: string | null;
   wabaNumbers?: WabaNumberInfo[];
   onChangeWabaNumber?: (num: string) => void;
@@ -89,6 +109,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   replyTo,
   onCancelReply,
   onTextChange,
+  onSlashQueryChange,
   activeWabaNumber,
   wabaNumbers,
   onChangeWabaNumber,
@@ -97,6 +118,15 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   onGenerateAiReply,
 }, ref) => {
   const [text, setText] = useState('');
+  // Caret tracking (for the "/" trigger anywhere in the text). `forcedSelection` is only set briefly after a
+  // programmatic insert so the caret lands right after the inserted text instead of at the end.
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const [forcedSelection, setForcedSelection] = useState<{ start: number; end: number } | undefined>(undefined);
+  const textRef = useRef('');
+  const selectionRef = useRef({ start: 0, end: 0 });
+  const lastSlashQueryRef = useRef<string | null>(null);
+  textRef.current = text;
+  selectionRef.current = selection;
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingStartMs, setRecordingStartMs] = useState(0);
@@ -122,6 +152,22 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
     insertText: (t: string) => {
       setText(t);
       setTimeout(() => inputRef.current?.focus(), 50);
+    },
+    insertQuickMessage: (insert: string) => {
+      const cur = textRef.current;
+      const caret = Math.min(selectionRef.current.start, cur.length);
+      const ctx = findSlashContext(cur, caret);
+      const start = ctx ? ctx.slashIndex : caret;
+      let next = cur.slice(0, start) + insert + cur.slice(caret);
+      let newCaret = start + insert.length;
+      if (next.length > 4096) {
+        next = next.slice(0, 4096);
+        newCaret = Math.min(newCaret, 4096);
+      }
+      setText(next);
+      setForcedSelection({ start: newCaret, end: newCaret });
+      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(() => setForcedSelection(undefined), 200);
     },
     insertMention: (name: string) => {
       setText((prev) => {
@@ -150,6 +196,17 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   }, [isRecording, pulseAnim]);
 
   const hasText = text.trim().length > 0;
+
+  // Report the "/query" under the caret (null when none). Deduped so a picker the user closed stays closed
+  // until the query actually changes.
+  useEffect(() => {
+    if (!onSlashQueryChange) return;
+    const ctx = findSlashContext(text, selection.start);
+    const q = ctx ? ctx.query : null;
+    if (q === lastSlashQueryRef.current) return;
+    lastSlashQueryRef.current = q;
+    onSlashQueryChange(q);
+  }, [text, selection.start, onSlashQueryChange]);
 
   const handleChangeText = useCallback((val: string) => {
     setText(val);
@@ -441,6 +498,8 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               ref={inputRef}
               value={text}
               onChangeText={handleChangeText}
+              onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
+              selection={forcedSelection}
               placeholder={isInternalNote ? (isRTL ? 'הקלד @ לאזכורים...' : 'Type @ to mention...') : (isRTL ? 'הקלד @ לאזכורים, / להודעות מהירות...' : 'Type @ to mention, / for quick messages...')}
               placeholderTextColor={theme.dark ? '#8696a0' : '#667781'}
               multiline

@@ -2223,7 +2223,8 @@ export default function ChatConversationScreen() {
     setShowQuickMessages(false);
     const text = (msg as any).messageText || (msg as any).text || (msg as any).message || (msg as any).body || '';
     if (text) {
-      chatInputRef.current?.insertText(text);
+      // Replaces only the "/token" at the caret (or inserts at the caret) — keeps the text around it.
+      chatInputRef.current?.insertQuickMessage(text);
     }
   }, []);
 
@@ -2517,28 +2518,28 @@ export default function ChatConversationScreen() {
     }
   }, [user?.organization, selectedMessage, phoneNumber, t, updateMessage]);
 
-  // text change: detect / for quick messages, @ for mentions/internal note
-  const handleTextChange = useCallback((text: string) => {
-    // / at start → inline quick messages
-    if (text.startsWith('/')) {
-      const filter = text.slice(1);
-      setQuickSlashFilter(filter);
-      setShowInlineQuickMessages(true);
-      setShowMentionPicker(false);
-      if (quickMessages.length === 0 && !isLoadingQuickMessages && user?.organization) {
-        setIsLoadingQuickMessages(true);
-        chatsApi.getQuickMessages(user.organization)
-          .then(setQuickMessages)
-          .catch(() => {})
-          .finally(() => setIsLoadingQuickMessages(false));
-      }
-      return;
-    }
-    if (showInlineQuickMessages) {
+  // "/" quick messages: ChatInput reports the "/query" under the caret (anywhere in the text, not only at the
+  // start) or null once the caret leaves the token / the user keeps writing — then the picker disappears.
+  const handleSlashQueryChange = useCallback((query: string | null) => {
+    if (query === null) {
       setShowInlineQuickMessages(false);
       setQuickSlashFilter('');
+      return;
     }
+    setQuickSlashFilter(query);
+    setShowInlineQuickMessages(true);
+    setShowMentionPicker(false);
+    if (quickMessages.length === 0 && !isLoadingQuickMessages && user?.organization) {
+      setIsLoadingQuickMessages(true);
+      chatsApi.getQuickMessages(user.organization)
+        .then(setQuickMessages)
+        .catch(() => {})
+        .finally(() => setIsLoadingQuickMessages(false));
+    }
+  }, [quickMessages.length, isLoadingQuickMessages, user?.organization]);
 
+  // text change: detect @ for mentions/internal note
+  const handleTextChange = useCallback((text: string) => {
     // @ mention → auto-switch to internal note + show picker
     const atIdx = text.lastIndexOf('@');
     if (atIdx >= 0 && (atIdx === 0 || /\s/.test(text[atIdx - 1]))) {
@@ -2559,7 +2560,7 @@ export default function ChatConversationScreen() {
     // Drop internal-note mode once the agent is no longer composing an @mention and none are
     // attached, so the next plain message routes to the customer (and the picker stays hidden).
     if (isInternalNote && mentionedUsers.length === 0) setIsInternalNote(false);
-  }, [isInternalNote, mentionedUsers.length, showInlineQuickMessages, showMentionPicker, orgUsers.length, orgUsersLoading, loadOrgUsers, quickMessages.length, isLoadingQuickMessages, user?.organization]);
+  }, [isInternalNote, mentionedUsers.length, showMentionPicker, orgUsers.length, orgUsersLoading, loadOrgUsers, user?.organization]);
 
   const getMentionUserName = (u: any) =>
     u.UserName || u.FullName || u.userName || u.fullname || u.name || u.Email || u.email || '';
@@ -3523,6 +3524,7 @@ export default function ChatConversationScreen() {
               } : null}
               onCancelReply={() => setReplyToMessage(null)}
               onTextChange={handleTextChange}
+              onSlashQueryChange={handleSlashQueryChange}
               activeWabaNumber={activeWabaNumber}
               wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
               onChangeWabaNumber={setActiveWabaNumber}
@@ -4327,24 +4329,40 @@ export default function ChatConversationScreen() {
               ) : (
                 <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
                   {quickMessages.map((qm: any, idx: number) => (
-                    <Pressable
-                      key={qm.id || idx}
-                      onPress={() => handleSelectQuickMessage(qm)}
-                      style={({ pressed }) => [
-                        styles.templateItem,
-                        pressed && { backgroundColor: theme.colors.surfaceVariant },
-                      ]}
-                    >
-                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }} numberOfLines={1}>
-                        {qm.title || qm.name || qm.shortcut || ''}
-                      </Text>
-                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }} numberOfLines={2}>
-                        {qm.text || qm.message || qm.body || ''}
-                      </Text>
-                    </Pressable>
+                    <View key={qm.id || qm.messageId || idx} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Pressable
+                        onPress={() => handleSelectQuickMessage(qm)}
+                        style={({ pressed }) => [
+                          styles.templateItem,
+                          { flex: 1 },
+                          pressed && { backgroundColor: theme.colors.surfaceVariant },
+                        ]}
+                      >
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }} numberOfLines={1}>
+                          {qm.shortcut || qm.title || qm.name || ''}
+                        </Text>
+                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }} numberOfLines={2}>
+                          {qm.messageText || qm.text || qm.message || qm.body || ''}
+                        </Text>
+                      </Pressable>
+                      <IconButton
+                        icon="pencil-outline"
+                        size={18}
+                        onPress={() => { setShowQuickMessages(false); openQuickMsgEditor(qm); }}
+                      />
+                    </View>
                   ))}
                 </ScrollView>
               )}
+              <Pressable
+                onPress={() => { setShowQuickMessages(false); openQuickMsgEditor(null); }}
+                style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, gap: 8 }, pressed && { backgroundColor: theme.colors.surfaceVariant }]}
+              >
+                <MaterialCommunityIcons name="plus-circle-outline" size={20} color={theme.colors.primary} />
+                <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '700' }}>
+                  {isRTL ? 'הוספת הודעה מהירה חדשה' : 'Add new quick message'}
+                </Text>
+              </Pressable>
             </View>
           </View>
         </Modal>
@@ -4752,17 +4770,20 @@ export default function ChatConversationScreen() {
 
         {/* / inline quick messages */}
         {showInlineQuickMessages && (() => {
+          const slashNeedle = quickSlashFilter.trim().toLowerCase();
           const filtered = quickMessages.filter((qm: any) => {
-            if (!quickSlashFilter) return true;
-            const needle = quickSlashFilter.toLowerCase();
+            if (!slashNeedle) return true;
             const sc = (qm.shortcut || qm.title || qm.name || '').toLowerCase();
             const content = (qm.messageText || qm.text || qm.message || qm.body || '').toLowerCase();
-            return sc.includes(needle) || content.includes(needle);
+            return sc.includes(slashNeedle) || content.includes(slashNeedle);
           });
-          // Always render the picker (even with zero results) so the user gets visible feedback
-          // instead of a silent nothing — either "no quick messages defined" or "no match".
           const isEmpty = filtered.length === 0 && !isLoadingQuickMessages;
           const noneDefined = quickMessages.length === 0;
+          // Same rule as web: keep the picker while the text after '/' still looks like a shortcut search
+          // (empty, or one short word). Once the user keeps writing a real message after the '/' and nothing
+          // matches, the options disappear instead of hanging around.
+          const looksLikeShortcut = slashNeedle.length === 0 || (!/\s/.test(slashNeedle) && slashNeedle.length <= 20);
+          if (isEmpty && !looksLikeShortcut) return null;
           return (
             <View style={[styles.mentionPicker, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline, maxHeight: 220, bottom: inputBarHeight + (Platform.OS === 'ios' ? keyboardHeight : 0), zIndex: 1000 }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.outline }}>
