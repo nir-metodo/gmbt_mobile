@@ -414,7 +414,7 @@ export default function ForwardMessageSheet({ visible, sourceMessage, onClose }:
 
   const ensureMediaFile = useCallback(async () => {
     if (mediaFileRef.current) return mediaFileRef.current;
-    const d = await chatsApi.downloadMediaForForward(content.mediaUrl);
+    const d = await chatsApi.downloadMediaForForward(content.mediaUrl, org);
     if (!d?.success || !d.base64) throw new Error('media download failed');
     const FileSystem = require('expo-file-system');
     const name = d.fileName || content.fileName || `forwarded_${Date.now()}`;

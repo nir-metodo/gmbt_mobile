@@ -34,7 +34,11 @@ async function ensureDirectories(): Promise<void> {
 }
 
 async function hashUrl(url: string): Promise<string> {
-  return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.MD5, url);
+  // The media bucket is private, so the API returns short-lived signed URLs whose query string
+  // (X-Goog-Date / X-Goog-Signature…) changes on every response. Key the cache on the stable
+  // object URL only, otherwise every refresh would re-download the same file.
+  const stable = url.includes('X-Goog-Signature=') ? url.split('?')[0] : url;
+  return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.MD5, stable);
 }
 
 function getExtensionFromUrl(url: string, fallbackType: MediaType): string {

@@ -102,8 +102,9 @@ export const chatsApi = {
   // recipients. Mirrors the web ForwardMessageModal, which uses this to bypass storage CORS.
   async downloadMediaForForward(
     url: string,
+    org?: string,
   ): Promise<{ success: boolean; base64?: string; fileName?: string; contentType?: string }> {
-    const response = await axiosInstance.post(ENDPOINTS.DOWNLOAD_MEDIA_FOR_FORWARD, { url });
+    const response = await axiosInstance.post(ENDPOINTS.DOWNLOAD_MEDIA_FOR_FORWARD, { url, org });
     return response.data || { success: false };
   },
 
