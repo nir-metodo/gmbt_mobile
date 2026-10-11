@@ -35,6 +35,20 @@ export interface Invoice {
   updatedAt?: string;
   viewCount?: number;
   lastViewedAt?: string;
+  contactId?: string;
+  /** Unpaid balance of an issued tax invoice (backend-computed). */
+  balanceDue?: number;
+  paidAmount?: number;
+  creditedAmount?: number;
+  allocationNumber?: string;
+}
+
+export interface OpenInvoicesSummary {
+  count: number;
+  total: number;
+  overdueCount: number;
+  overdueTotal: number;
+  dueSoonCount: number;
 }
 
 export const DOCUMENT_TYPES = [
@@ -81,18 +95,70 @@ export const invoicesApi = {
   },
 
   async create(organization: string, invoice: Partial<Invoice>, userId?: string, userName?: string): Promise<any> {
+    // The backend (and the web app) expects the document under `invoiceData`.
     const response = await axiosInstance.post(ENDPOINTS.CREATE_INVOICE, {
       organization,
-      ...invoice,
+      invoiceData: invoice,
       userId: userId ?? '',
       userName: userName ?? '',
     });
     return response.data;
   },
 
-  async update(organization: string, invoiceId: string, invoice: Partial<Invoice>): Promise<any> {
-    const response = await axiosInstance.post(ENDPOINTS.UPDATE_INVOICE, { organization, invoiceId, ...invoice });
+  async update(organization: string, invoiceId: string, invoice: Partial<Invoice>, userId?: string, userName?: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_INVOICE, {
+      organization,
+      invoiceId,
+      invoiceData: invoice,
+      userId: userId ?? '',
+      userName: userName ?? '',
+    });
     return response.data;
+  },
+
+  /** Issue (finalize + lock) a draft. Returns { Success, Message, notConnected?, allocation? }. */
+  async issue(organization: string, invoiceId: string, userId?: string, userName?: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.ISSUE_INVOICE, {
+      organization,
+      invoiceId,
+      userId: userId ?? '',
+      userName: userName ?? '',
+    });
+    return response.data;
+  },
+
+  /** Derive another document (e.g. a receipt for the open balance) from an issued invoice. Returns { success, message: newInvoiceId }. */
+  async createDocumentFrom(
+    organization: string,
+    sourceInvoiceId: string,
+    targetType: string,
+    partialAmount = 0,
+    userId?: string,
+    userName?: string,
+  ): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.CREATE_DOCUMENT_FROM_INVOICE, {
+      organization,
+      sourceInvoiceId,
+      targetType,
+      partialAmount,
+      userId: userId ?? '',
+      userName: userName ?? '',
+    });
+    return response.data;
+  },
+
+  /** Open (unpaid issued) documents: count / total / overdue — same endpoint the web list header uses. */
+  async getOpenSummary(organization: string): Promise<OpenInvoicesSummary | null> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_OPEN_INVOICES_SUMMARY, { organization });
+    const d = response.data;
+    if (!d || typeof d !== 'object') return null;
+    return {
+      count: Number(d.count ?? d.Count ?? 0),
+      total: Number(d.total ?? d.Total ?? 0),
+      overdueCount: Number(d.overdueCount ?? d.OverdueCount ?? 0),
+      overdueTotal: Number(d.overdueTotal ?? d.OverdueTotal ?? 0),
+      dueSoonCount: Number(d.dueSoonCount ?? d.DueSoonCount ?? 0),
+    };
   },
 
   async delete(organization: string, invoiceId: string): Promise<any> {

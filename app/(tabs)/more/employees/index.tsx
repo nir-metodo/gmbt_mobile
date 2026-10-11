@@ -23,6 +23,7 @@ import {
   Modal,
   Dialog,
   IconButton,
+  Searchbar,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -656,6 +657,12 @@ function ManageTab({ org }: { org: string }) {
   const activeEmployees = employees.filter(e => !isTerminated(e));
   const clockedInCount  = employees.filter(e => e.isClockedIn).length;
   const totalTodayHours = employees.reduce((s, e) => s + (e.todayHours || 0), 0);
+  // Name search — only worth the screen space once the team is big enough to need it.
+  const [empQuery, setEmpQuery] = useState('');
+  const showEmpSearch = activeEmployees.length > 8;
+  const visibleEmployees = showEmpSearch && empQuery.trim()
+    ? activeEmployees.filter(e => (e.name || '').toLowerCase().includes(empQuery.trim().toLowerCase()))
+    : activeEmployees;
 
   if (loading) return (
     <View style={[s.center, { flex: 1 }]}>
@@ -688,8 +695,18 @@ function ManageTab({ org }: { org: string }) {
         </Surface>
       </View>
 
+      {showEmpSearch && (
+        <Searchbar
+          placeholder={t('common.search')}
+          value={empQuery}
+          onChangeText={setEmpQuery}
+          style={{ marginHorizontal: 12, marginTop: 4, height: 40, borderRadius: 20, backgroundColor: theme.colors.surfaceVariant, elevation: 0 }}
+          inputStyle={{ fontSize: 14, minHeight: 0, textAlign: isRTL ? 'right' : 'left' }}
+        />
+      )}
       <FlatList
-        data={activeEmployees}
+        data={visibleEmployees}
+        keyboardShouldPersistTaps="handled"
         keyExtractor={(e) => e.id}
         contentContainerStyle={{ padding: 12, paddingBottom: 48 }}
         refreshControl={
@@ -1266,7 +1283,7 @@ export default function EmployeesScreen() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const org = user?.organization || '';
-  const userId = user?.id || user?.userId || '';
+  const userId = (user as any)?.id || user?.userId || '';
   const admin = isAdmin(user);
 
   const [tab, setTab] = useState<'my' | 'manage' | 'report'>('my');

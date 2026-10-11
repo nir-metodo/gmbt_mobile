@@ -46,6 +46,9 @@ import type { Case } from '../../../../types';
 import { useContactLookup } from '../../../../hooks/useContactLookup';
 import ContactLookupField from '../../../../components/ContactLookupField';
 import { DynamicFieldsSectionForm, type DynamicSection } from '../../../../components/DynamicFieldsSection';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { EmptyState } from '../../../../components/EmptyState';
 
 const STATUS_FILTERS = ['all', 'open', 'in_progress', 'resolved', 'closed'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
@@ -142,6 +145,36 @@ interface SavedView {
   UserId?: string;
 }
 
+function ViewRow({ icon, label, active, onPress, onDelete, badge, color, disabled, theme }: {
+  icon: string; label: string; active: boolean; onPress: () => void; onDelete?: () => void;
+  badge?: number; color?: string; disabled?: boolean; theme: any;
+}) {
+  const c = color || theme.colors.primary;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 10 },
+        { backgroundColor: active ? withAlpha(c, 0.12) : pressed ? theme.colors.surfaceVariant : 'transparent' },
+      ]}
+    >
+      <MaterialCommunityIcons name={icon as any} size={20} color={active ? c : theme.colors.onSurfaceVariant} />
+      <Text variant="bodyMedium" numberOfLines={1} style={{ flex: 1, color: active ? c : theme.colors.onSurface, fontWeight: active ? '700' : '400' }}>{label}</Text>
+      {badge ? (
+        <View style={{ backgroundColor: c, borderRadius: 9, minWidth: 18, paddingHorizontal: 5, paddingVertical: 1, alignItems: 'center' }}>
+          <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{badge}</Text>
+        </View>
+      ) : null}
+      {onDelete ? (
+        <Pressable onPress={onDelete} hitSlop={8}>
+          <MaterialCommunityIcons name="trash-can-outline" size={18} color={theme.colors.onSurfaceVariant} />
+        </Pressable>
+      ) : null}
+    </Pressable>
+  );
+}
+
 export default function CasesListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -150,7 +183,7 @@ export default function CasesListScreen() {
   const { t } = useTranslation();
 
   const user = useAuthStore((s) => s.user);
-  const userIsAdmin = user?.SecurityRole === 'admin' || user?.SecurityRole === 'Admin';
+  const userIsAdmin = String(user?.SecurityRole || '').toLowerCase() === 'admin';
   const routeParams = useLocalSearchParams<{ view?: string }>();
 
   // "SLA breaches" fixed view — activated by the digest push (params.view === 'sla') or its tab.
@@ -189,6 +222,7 @@ export default function CasesListScreen() {
   const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
 
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
+  const [viewsVisible, setViewsVisible] = useState(false);
   const [statusPickerCase, setStatusPickerCase] = useState<Case | null>(null);
 
   // ── Sort state (persisted; default = created on, newest first) ────────────────
@@ -232,6 +266,7 @@ export default function CasesListScreen() {
   const [taskFilterLoading, setTaskFilterLoading] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
 
+  const viewActive = activeViewId !== '__all' || !!taskQuickFilter || slaOnly || filterMine;
   const searchAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -763,30 +798,16 @@ export default function CasesListScreen() {
 
   const renderEmpty = useCallback(() => {
     if (loading) return null;
-
+    const filtering = statusFilter !== 'all' || !!debouncedSearch.trim() || viewActive;
     return (
-      <View style={styles.emptyContainer}>
-        <MaterialCommunityIcons
-          name="briefcase-outline"
-          size={72}
-          color={theme.colors.onSurfaceVariant}
-          style={{ opacity: 0.3 }}
-        />
-        <Text
-          variant="titleMedium"
-          style={[styles.emptyTitle, { color: theme.colors.onSurface }]}
-        >
-          {t('cases.noCases')}
-        </Text>
-        <Text
-          variant="bodyMedium"
-          style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}
-        >
-          {t('cases.noCases')}
-        </Text>
-      </View>
+      <EmptyState
+        icon="briefcase-outline"
+        title={filtering ? t('common.noResults') : t('cases.noCases')}
+        actionLabel={filtering ? undefined : t('cases.addCase')}
+        onAction={filtering ? undefined : () => router.push('/more/cases/new')}
+      />
     );
-  }, [loading, theme, t]);
+  }, [loading, t, statusFilter, debouncedSearch, viewActive, router]);
 
   if (loading && cases.length === 0) {
     return (
@@ -851,246 +872,45 @@ export default function CasesListScreen() {
               color={theme.custom.headerText}
             />
           </Pressable>
-          <Pressable
-            onPress={toggleSearch}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name={searchVisible ? 'close' : 'magnify'}
-              size={24}
-              color={theme.custom.headerText}
+        </View>
+      </View>
+
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('cases.searchPlaceholder')}
+        sortOptions={viewMode === 'list' ? [
+          { key: 'createdOn', label: t('leads.sortCreated', 'נוצר ב') },
+          { key: 'modifiedOn', label: t('leads.sortUpdated', 'עודכן ב') },
+          { key: 'subject', label: t('leads.name', 'שם') },
+          { key: 'priority', label: t('tasks.priority', 'עדיפות') },
+          { key: 'status', label: t('cases.status', 'סטטוס') },
+        ] : undefined}
+        sortKey={sortKey}
+        sortDir={sortDir}
+        onSort={(key) => {
+          if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+          else { setSortKey(key as SortKey); setSortDir(['createdOn', 'modifiedOn', 'priority'].includes(key) ? 'desc' : 'asc'); }
+        }}
+        trailing={
+          <View>
+            <IconButton
+              icon="bookmark-multiple-outline"
+              size={22}
+              iconColor={viewActive ? theme.colors.primary : theme.colors.onSurfaceVariant}
+              onPress={() => setViewsVisible(true)}
             />
-          </Pressable>
-        </View>
-      </View>
+            {viewActive ? <View style={{ position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.primary }} /> : null}
+          </View>
+        }
+      />
 
-      {/* Search bar */}
-      {searchVisible && (
-        <Animated.View
-          style={[
-            styles.searchWrap,
-            {
-              height: searchHeightInterp,
-              opacity: searchAnim,
-              backgroundColor: theme.custom.headerBackground,
-            },
-          ]}
-        >
-          <Searchbar
-            placeholder={t('cases.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            returnKeyType="search"
-            style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
-          />
-        </Animated.View>
-      )}
-
-      {/* Saved Views Tabs */}
-      <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.viewsScroll, { flexDirection }]}>
-          {(() => {
-            // "All" is only active when no task quick-filter is applied; while a task filter is
-            // active it shows an X so it's an obvious one-tap way back to every case.
-            const allActive = activeViewId === '__all' && !taskQuickFilter;
-            return (
-              <Pressable
-                onPress={clearAllFilters}
-                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, allActive && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-              >
-                {taskQuickFilter && (
-                  <MaterialCommunityIcons name="close-circle" size={14} color={theme.colors.primary} />
-                )}
-                <Text style={[styles.viewTabText, { color: allActive ? theme.colors.primary : (taskQuickFilter ? theme.colors.primary : theme.colors.onSurfaceVariant) }]}>
-                  {t('common.all')}
-                </Text>
-              </Pressable>
-            );
-          })()}
-          <Pressable
-            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setTaskQuickFilter(null); setSlaOnly(false); }}
-            style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-          >
-            <Text style={[styles.viewTabText, { color: activeViewId === '__mine' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
-              {t('leads.viewMine', 'שלי')}
-            </Text>
-          </Pressable>
-          {(() => {
-            const slaCount = cases.filter(isCaseSlaBreached).length;
-            const active = slaOnly;
-            const color = '#ef4444';
-            return (
-              <Pressable
-                onPress={() => {
-                  if (slaOnly) { setSlaOnly(false); setActiveViewId('__all'); }
-                  else { setSlaOnly(true); setActiveViewId('__sla'); setTaskQuickFilter(null); setFilterMine(false); fetchAllCases(); }
-                }}
-                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, active && { borderBottomColor: color, borderBottomWidth: 2 }]}
-              >
-                <MaterialCommunityIcons name="alert-decagram-outline" size={14} color={active ? color : theme.colors.onSurfaceVariant} />
-                <Text style={[styles.viewTabText, { color: active ? color : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
-                  {t('cases.slaBreaches', 'חריגות SLA')}
-                </Text>
-                {slaCount > 0 && (
-                  <View style={{ backgroundColor: color, borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
-                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{slaCount}</Text>
-                  </View>
-                )}
-              </Pressable>
-            );
-          })()}
-          {([
-            { type: 'today' as TaskQuickFilter, icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
-            { type: 'upcoming' as TaskQuickFilter, icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
-            { type: 'overdue' as TaskQuickFilter, icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
-            { type: 'withTasks' as TaskQuickFilter, icon: 'clipboard-clock-outline', label: t('cases.casesWithTasks', 'פניות עם משימות'), color: '#2e6155' },
-          ]).map(({ type, icon, label, color }) => {
-            const isActive = taskQuickFilter === type;
-            const count = taskFilterSets[type].size;
-            return (
-              <Pressable
-                key={type}
-                onPress={() => applyTaskFilter(type)}
-                disabled={taskFilterLoading}
-                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, isActive && { borderBottomColor: color, borderBottomWidth: 2 }]}
-              >
-                <MaterialCommunityIcons name={icon as any} size={14} color={isActive ? color : theme.colors.onSurfaceVariant} />
-                <Text style={[styles.viewTabText, { color: isActive ? color : theme.colors.onSurfaceVariant, maxWidth: 160 }]} numberOfLines={1}>
-                  {label}
-                </Text>
-                {count > 0 && (
-                  <View style={{ backgroundColor: color, borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
-                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{count}</Text>
-                  </View>
-                )}
-              </Pressable>
-            );
-          })}
-          {savedViews.filter((v) => {
-            const vis = v.Visibility || 'personal';
-            if (vis === 'shared') return true;
-            return (v.UserId || '') === (user?.uID || user?.userId || '');
-          }).map((view) => (
-            <Pressable
-              key={view.id}
-              onPress={() => loadSavedView(view)}
-              onLongPress={() => {
-                Alert.alert(
-                  view.Name,
-                  t('sidebar.deleteViewConfirm', 'Delete this view?'),
-                  [
-                    { text: t('common.cancel'), style: 'cancel' },
-                    { text: t('common.delete', 'Delete'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
-                  ],
-                );
-              }}
-              style={[styles.viewTab, activeViewId === view.id && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-            >
-              <Text style={[styles.viewTabText, { color: activeViewId === view.id ? theme.colors.primary : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
-                {(view.Visibility === 'shared' ? '👥 ' : '') + view.Name}
-              </Text>
-            </Pressable>
-          ))}
-          <Pressable onPress={() => setShowSaveViewModal(true)} style={styles.viewTab}>
-            <MaterialCommunityIcons name="plus" size={18} color={theme.colors.primary} />
-          </Pressable>
-        </ScrollView>
-      </View>
-
-      {/* Filter chips */}
-      <View
-        style={[
-          styles.filtersRow,
-          { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline },
-        ]}
-      >
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
-        >
-          {/* Mine quick filter */}
-          <Chip
-            selected={filterMine}
-            onPress={() => setFilterMine((v) => !v)}
-            showSelectedOverlay
-            compact
-            icon="account"
-            style={[
-              styles.filterChip,
-              filterMine
-                ? { backgroundColor: theme.colors.primaryContainer }
-                : { backgroundColor: theme.colors.surfaceVariant },
-            ]}
-            textStyle={[
-              styles.filterChipText,
-              filterMine && { color: theme.colors.primary, fontWeight: '600' },
-            ]}
-          >
-            {t('leads.viewMine', 'שלי')}
-          </Chip>
-          {STATUS_FILTERS.map((f) => (
-            <Chip
-              key={f}
-              selected={statusFilter === f}
-              onPress={() => setStatusFilter(f)}
-              showSelectedOverlay
-              compact
-              style={[
-                styles.filterChip,
-                statusFilter === f
-                  ? { backgroundColor: theme.colors.primaryContainer }
-                  : { backgroundColor: theme.colors.surfaceVariant },
-              ]}
-              textStyle={[
-                styles.filterChipText,
-                statusFilter === f && { color: theme.colors.primary, fontWeight: '600' },
-              ]}
-            >
-              {f === 'all'
-                ? t('common.all')
-                : f.charAt(0).toUpperCase() + f.slice(1).replace(/_/g, ' ')}
-            </Chip>
-          ))}
-        </ScrollView>
-      </View>
-
-      {/* Sort bar */}
-      {viewMode === 'list' && (
-        <View style={{ flexDirection, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6, flexDirection }}>
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('leads.sortBy', 'מיין לפי:')}</Text>
-            {([
-              { key: 'createdOn' as SortKey, label: t('leads.sortCreated', 'נוצר ב'), icon: 'calendar-plus' },
-              { key: 'modifiedOn' as SortKey, label: t('leads.sortUpdated', 'עודכן ב'), icon: 'calendar-edit' },
-              { key: 'subject' as SortKey, label: t('leads.name', 'שם'), icon: 'sort-alphabetical-variant' },
-              { key: 'priority' as SortKey, label: t('tasks.priority', 'עדיפות'), icon: 'flag' },
-              { key: 'status' as SortKey, label: t('cases.status', 'סטטוס'), icon: 'view-column' },
-            ] as const).map((opt) => (
-              <Pressable
-                key={opt.key}
-                onPress={() => {
-                  if (sortKey === opt.key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-                  else { setSortKey(opt.key); setSortDir(['createdOn', 'modifiedOn', 'priority'].includes(opt.key) ? 'desc' : 'asc'); }
-                }}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortKey === opt.key ? withAlpha(theme.colors.primary, 0.1) : 'transparent' }}
-              >
-                <MaterialCommunityIcons name={opt.icon as any} size={14} color={sortKey === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant} />
-                <Text style={{ fontSize: 11, color: sortKey === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant, fontWeight: sortKey === opt.key ? '600' : '400' }}>
-                  {opt.label}
-                </Text>
-                {sortKey === opt.key && (
-                  <MaterialCommunityIcons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={theme.colors.primary} />
-                )}
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
-      )}
+      <StatusFilterBar
+        allLabel={t('common.all')}
+        options={STATUS_FILTERS.filter((f) => f !== 'all').map((st) => ({ key: st, label: t(`cases.status_${st}`, { defaultValue: st.charAt(0).toUpperCase() + st.slice(1).replace(/_/g, ' ') }), color: getStatusColor(st) }))}
+        value={statusFilter}
+        onChange={(k) => setStatusFilter(k as StatusFilter)}
+      />
 
       {/* Error banner */}
       {error ? (
@@ -1214,6 +1034,57 @@ export default function CasesListScreen() {
         color="#FFFFFF"
         label={t('cases.addCase')}
       />
+
+      <Portal>
+        <Modal
+          visible={viewsVisible}
+          onDismiss={() => setViewsVisible(false)}
+          contentContainerStyle={[styles.statusPickerModal, { backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12, textAlign }}>
+            {t('cases.views', 'תצוגות')}
+          </Text>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <ViewRow icon="format-list-bulleted" label={t('common.all')} active={!viewActive}
+              onPress={() => { clearAllFilters(); setViewsVisible(false); }} theme={theme} />
+            <ViewRow icon="account" label={t('leads.viewMine', 'שלי')} active={activeViewId === '__mine'}
+              onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setTaskQuickFilter(null); setSlaOnly(false); setViewsVisible(false); }} theme={theme} />
+            <ViewRow icon="alert-decagram-outline" color="#ef4444" label={t('cases.slaBreaches', 'חריגות SLA')} active={slaOnly}
+              badge={cases.filter(isCaseSlaBreached).length}
+              onPress={() => {
+                if (slaOnly) { setSlaOnly(false); setActiveViewId('__all'); }
+                else { setSlaOnly(true); setActiveViewId('__sla'); setTaskQuickFilter(null); setFilterMine(false); fetchAllCases(); }
+                setViewsVisible(false);
+              }} theme={theme} />
+            {([
+              { type: 'today' as TaskQuickFilter, icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
+              { type: 'upcoming' as TaskQuickFilter, icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
+              { type: 'overdue' as TaskQuickFilter, icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
+              { type: 'withTasks' as TaskQuickFilter, icon: 'clipboard-clock-outline', label: t('cases.casesWithTasks', 'פניות עם משימות'), color: '#2e6155' },
+            ]).map(({ type, icon, label, color }) => (
+              <ViewRow key={type} icon={icon} color={color} label={label} active={taskQuickFilter === type}
+                badge={taskFilterSets[type].size} disabled={taskFilterLoading}
+                onPress={() => { applyTaskFilter(type); setViewsVisible(false); }} theme={theme} />
+            ))}
+            {savedViews.filter((v) => {
+              const vis = v.Visibility || 'personal';
+              if (vis === 'shared') return true;
+              return (v.UserId || '') === (user?.uID || user?.userId || '');
+            }).map((view) => (
+              <ViewRow key={view.id} icon={view.Visibility === 'shared' ? 'account-group-outline' : 'bookmark-outline'} label={view.Name}
+                active={activeViewId === view.id}
+                onPress={() => { loadSavedView(view); setViewsVisible(false); }}
+                onDelete={() => Alert.alert(view.Name, t('sidebar.deleteViewConfirm', 'Delete this view?'), [
+                  { text: t('common.cancel'), style: 'cancel' },
+                  { text: t('common.delete', 'Delete'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
+                ])} theme={theme} />
+            ))}
+          </ScrollView>
+          <Button mode="text" icon="plus" onPress={() => { setViewsVisible(false); setShowSaveViewModal(true); }} style={{ marginTop: 8 }}>
+            {t('cases.saveView', 'שמור תצוגה נוכחית')}
+          </Button>
+        </Modal>
+      </Portal>
 
       <Portal>
         <Modal

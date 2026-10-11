@@ -312,6 +312,9 @@ export const ENDPOINTS = {
   UPDATE_INVOICE: '/api/Webhooks/UpdateInvoice',
   DELETE_INVOICE: '/api/Webhooks/DeleteInvoiceDraft',
   GET_INVOICE_BRANDING: '/api/Webhooks/GetInvoiceBranding',
+  GET_OPEN_INVOICES_SUMMARY: '/api/Webhooks/GetOpenInvoicesSummary',
+  ISSUE_INVOICE: '/api/Webhooks/IssueInvoice',
+  CREATE_DOCUMENT_FROM_INVOICE: '/api/Webhooks/CreateDocumentFromInvoice',
 
   // Calendar Events
   GET_CALENDAR_EVENTS: '/api/Webhooks/GetCalendarEvents',

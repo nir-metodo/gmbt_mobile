@@ -11,6 +11,7 @@ import {
   Platform,
   Alert,
   TouchableOpacity,
+  TextInput as RNTextInput,
 } from 'react-native';
 import {
   Text,
@@ -53,9 +54,26 @@ import ContactLookupField from '../../../components/ContactLookupField';
 import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
 
 const BRAND_COLOR = '#2e6155';
-// Agenda-style views, matching the web tasks screen: פעיל / באיחור / היום / הושלמו / הכל.
-const TASK_VIEWS = ['active', 'overdue', 'today', 'completed', 'all'] as const;
+// Status filter: open work (default), finished, or everything. Today / Overdue / Upcoming are
+// shown as grouped sections inside the list, so they don't need their own chips.
+const TASK_VIEWS = ['active', 'completed', 'all'] as const;
 type TaskView = (typeof TASK_VIEWS)[number];
+// "Mine" (assigned to or created by me — same rule as the web "My Tasks" view) vs. the whole team.
+type TaskScope = 'mine' | 'all';
+
+type TaskGroup = 'overdue' | 'today' | 'upcoming' | 'noDate' | 'done';
+const GROUP_ORDER: TaskGroup[] = ['overdue', 'today', 'upcoming', 'noDate', 'done'];
+const GROUP_COLORS: Record<TaskGroup, string> = {
+  overdue: '#d32f2f',
+  today: '#2e6155',
+  upcoming: '#1976d2',
+  noDate: '#757575',
+  done: '#4CAF50',
+};
+
+type ListRow =
+  | { kind: 'header'; key: string; group: TaskGroup; count: number }
+  | { kind: 'task'; key: string; task: Task };
 
 const PRIORITY_COLORS: Record<string, string> = {
   low: '#4CAF50',
@@ -96,6 +114,31 @@ function isDueToday(task: Task): boolean {
   );
 }
 
+function getTaskGroup(task: Task): TaskGroup {
+  if (!isActiveTask(task)) return 'done';
+  if (!task.dueDate) return 'noDate';
+  if (isOverdue(task)) return 'overdue';
+  if (isDueToday(task)) return 'today';
+  return 'upcoming';
+}
+
+// Quick-add default due date: end of today, so a task typed in the morning is "Today" all day
+// and only turns "Overdue" once the day is over.
+function endOfToday(): Date {
+  const d = new Date();
+  d.setHours(23, 59, 0, 0);
+  return d;
+}
+
+const parseTs = (v: any): number => {
+  if (!v) return 0;
+  if (typeof v === 'number') return v;
+  if (v._seconds) return v._seconds * 1000;
+  if (v.seconds) return v.seconds * 1000;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+};
+
 function getRelatedName(task: Task): string {
   if (task.relatedTo?.entityName) return task.relatedTo.entityName;
   if ((task as any).relatedContactName) return (task as any).relatedContactName;
@@ -123,11 +166,10 @@ export default function TasksMoreScreen() {
   const [searchVisible, setSearchVisible] = useState(false);
   const [viewFilter, setViewFilter] = useState<TaskView>('active');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
-  // Default sort is by due date (earliest first) — the most useful agenda order. The user's
-  // preferred sort is persisted (localStorage-style) and restored on next open.
-  const [taskSortKey, setTaskSortKey] = useState<'priority' | 'createdOn' | 'dueDate' | 'reminderDate'>('dueDate');
-  const [taskSortDir, setTaskSortDir] = useState<'asc' | 'desc'>('asc');
-  const sortPrefLoadedRef = useRef(false);
+  // "Mine" by default (like the web My Tasks view); the choice is remembered between visits.
+  const [scope, setScope] = useState<TaskScope>('mine');
+  const [quickTitle, setQuickTitle] = useState('');
+  const [quickAdding, setQuickAdding] = useState(false);
   const [priorityMenuVisible, setPriorityMenuVisible] = useState(false);
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -175,32 +217,17 @@ export default function TasksMoreScreen() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Restore the saved sort preference once on mount (default = due date, ascending).
+  // Restore the saved Mine/All choice once on mount.
   useEffect(() => {
-    (async () => {
-      try {
-        const [savedKey, savedDir] = await Promise.all([
-          AsyncStorage.getItem('tasks_sort_key'),
-          AsyncStorage.getItem('tasks_sort_dir'),
-        ]);
-        if (savedKey === 'priority' || savedKey === 'createdOn' || savedKey === 'dueDate' || savedKey === 'reminderDate') {
-          setTaskSortKey(savedKey);
-        }
-        if (savedDir === 'asc' || savedDir === 'desc') setTaskSortDir(savedDir);
-      } catch {
-        /* keep defaults */
-      } finally {
-        sortPrefLoadedRef.current = true;
-      }
-    })();
+    AsyncStorage.getItem('tasks_scope')
+      .then((saved) => { if (saved === 'mine' || saved === 'all') setScope(saved); })
+      .catch(() => {});
   }, []);
 
-  // Persist the sort preference whenever the user changes it (skip the initial restore).
-  useEffect(() => {
-    if (!sortPrefLoadedRef.current) return;
-    AsyncStorage.setItem('tasks_sort_key', taskSortKey).catch(() => {});
-    AsyncStorage.setItem('tasks_sort_dir', taskSortDir).catch(() => {});
-  }, [taskSortKey, taskSortDir]);
+  const changeScope = useCallback((next: TaskScope) => {
+    setScope(next);
+    AsyncStorage.setItem('tasks_scope', next).catch(() => {});
+  }, []);
 
   const fetchTasks = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
@@ -258,18 +285,25 @@ export default function TasksMoreScreen() {
     setRefreshing(false);
   }, [fetchTasks]);
 
+  const myId = user?.uID || user?.userId || '';
+  // Users limited to their own data (DataVisibility = own) only ever receive their tasks, so the
+  // Mine/All switch would be a dead control for them.
+  const showScope = tasksDV !== 'own';
+  const effectiveScope: TaskScope = showScope ? scope : 'mine';
+
+  // Tasks in the chosen scope (Mine = assigned to me or created by me, same as the web).
+  const scopedTasks = useMemo(() => {
+    const list = Array.isArray(tasks) ? tasks : [];
+    if (effectiveScope === 'all' || !myId) return list;
+    return list.filter((tk) => tk.assignedToId === myId || tk.createdById === myId);
+  }, [tasks, effectiveScope, myId]);
+
   const filteredTasks = useMemo(() => {
-    let result = Array.isArray(tasks) ? tasks : [];
+    let result = scopedTasks;
 
     switch (viewFilter) {
       case 'active':
         result = result.filter(isActiveTask);
-        break;
-      case 'overdue':
-        result = result.filter(isOverdue);
-        break;
-      case 'today':
-        result = result.filter(isDueToday);
         break;
       case 'completed':
         result = result.filter((t) => t.status === 'completed');
@@ -290,63 +324,64 @@ export default function TasksMoreScreen() {
           t.title?.toLowerCase().includes(q) ||
           t.description?.toLowerCase().includes(q) ||
           t.assignedToName?.toLowerCase().includes(q) ||
-          (t as any).contactName?.toLowerCase().includes(q) ||
-          (t as any).relatedEntityName?.toLowerCase().includes(q),
+          getRelatedName(t).toLowerCase().includes(q),
       );
     }
 
-    return result.sort((a, b) => {
-      if (a.status === 'completed' && b.status !== 'completed') return 1;
-      if (a.status !== 'completed' && b.status === 'completed') return -1;
-
-      const parseTs = (v: any): number => {
-        if (!v) return 0;
-        if (typeof v === 'number') return v;
-        if (v._seconds) return v._seconds * 1000;
-        if (v.seconds) return v.seconds * 1000;
-        const d = new Date(v);
-        return isNaN(d.getTime()) ? 0 : d.getTime();
-      };
-
-      let aVal: number, bVal: number;
-      if (taskSortKey === 'createdOn') {
-        aVal = parseTs(a.createdOn || (a as any).CreatedOn);
-        bVal = parseTs(b.createdOn || (b as any).CreatedOn);
-      } else if (taskSortKey === 'dueDate') {
-        aVal = parseTs(a.dueDate);
-        bVal = parseTs(b.dueDate);
-      } else if (taskSortKey === 'reminderDate') {
-        aVal = parseTs(a.reminderDate || (a as any).reminderDateUTC);
-        bVal = parseTs(b.reminderDate || (b as any).reminderDateUTC);
+    // Grouped agenda order: Overdue → Today → Upcoming → No date → Done. Inside a group the
+    // soonest due date comes first (no-date: newest first; done: most recently finished first),
+    // with priority as the tie-breaker.
+    const priorityOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+    return [...result].sort((a, b) => {
+      const ga = GROUP_ORDER.indexOf(getTaskGroup(a));
+      const gb = GROUP_ORDER.indexOf(getTaskGroup(b));
+      if (ga !== gb) return ga - gb;
+      const group = GROUP_ORDER[ga];
+      if (group === 'noDate') {
+        const d = parseTs(b.createdOn || (b as any).CreatedOn) - parseTs(a.createdOn || (a as any).CreatedOn);
+        if (d !== 0) return d;
+      } else if (group === 'done') {
+        const d = parseTs(b.completedDate || b.modifiedOn) - parseTs(a.completedDate || a.modifiedOn);
+        if (d !== 0) return d;
       } else {
-        const priorityOrder: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
-        aVal = priorityOrder[a.priority] ?? 2;
-        bVal = priorityOrder[b.priority] ?? 2;
+        const d = parseTs(a.dueDate) - parseTs(b.dueDate);
+        if (d !== 0) return d;
       }
-      if (aVal < bVal) return taskSortDir === 'asc' ? -1 : 1;
-      if (aVal > bVal) return taskSortDir === 'asc' ? 1 : -1;
-      return 0;
+      return (priorityOrder[a.priority] ?? 2) - (priorityOrder[b.priority] ?? 2);
     });
-  }, [tasks, viewFilter, priorityFilter, debouncedSearch, taskSortKey, taskSortDir]);
+  }, [scopedTasks, viewFilter, priorityFilter, debouncedSearch]);
 
-  // Live counts per view, computed over the full task set (independent of the active
-  // view/priority/search) so the numbers stay stable — mirrors the web stat chips.
-  const viewCounts = useMemo(() => {
-    const list = Array.isArray(tasks) ? tasks : [];
-    return {
-      active: list.filter(isActiveTask).length,
-      overdue: list.filter(isOverdue).length,
-      today: list.filter(isDueToday).length,
-      completed: list.filter((t) => t.status === 'completed').length,
-      all: list.length,
-    } as Record<TaskView, number>;
-  }, [tasks]);
+  // Counts per status chip, over the scoped set (independent of status/priority/search) so the
+  // numbers stay stable while filtering.
+  const viewCounts = useMemo(() => ({
+    active: scopedTasks.filter(isActiveTask).length,
+    completed: scopedTasks.filter((t) => t.status === 'completed').length,
+    all: scopedTasks.length,
+  }) as Record<TaskView, number>, [scopedTasks]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visibleTasks, hasMore: tasksHasMore, loadMore: tasksLoadMore, loadAll: tasksLoadAll, count: tasksCount } = useWindowedList(filteredTasks, {
     pageSize: 30,
-    resetKey: `${viewFilter}|${priorityFilter}|${debouncedSearch}|${taskSortKey}|${taskSortDir}`,
+    resetKey: `${viewFilter}|${priorityFilter}|${debouncedSearch}|${effectiveScope}`,
   });
+
+  // Flat rows with a section header in front of each group (counts cover the whole filtered
+  // list, not just the loaded page).
+  const listRows = useMemo<ListRow[]>(() => {
+    const totals: Record<TaskGroup, number> = { overdue: 0, today: 0, upcoming: 0, noDate: 0, done: 0 };
+    filteredTasks.forEach((tk) => { totals[getTaskGroup(tk)] += 1; });
+    const rows: ListRow[] = [];
+    let current: TaskGroup | null = null;
+    visibleTasks.forEach((tk, i) => {
+      const g = getTaskGroup(tk);
+      if (g !== current) {
+        current = g;
+        rows.push({ kind: 'header', key: `h_${g}`, group: g, count: totals[g] });
+      }
+      rows.push({ kind: 'task', key: tk.id || tk.taskId || `task_${i}`, task: tk });
+    });
+    return rows;
+  }, [visibleTasks, filteredTasks]);
 
   const resetForm = useCallback(() => {
     // Default due date + reminder to "now" so the user only nudges it to the nearest convenient
@@ -467,20 +502,62 @@ export default function TasksMoreScreen() {
     [router],
   );
 
+  // One tap on the circle completes a task; tapping a finished task's check re-opens it.
   const handleCompleteTask = useCallback(async (task: Task) => {
     const taskId = (task as any).taskId || task.id;
-    setTasks((prev) => prev.map((t) => t.id === task.id ? { ...t, status: 'completed' as const } : t));
+    const reopen = task.status === 'completed';
+    setTasks((prev) => prev.map((t) => t.id === task.id ? { ...t, status: reopen ? 'open' as const : 'completed' as const } : t));
     try {
-      await tasksApi.complete(
-        user?.organization || '',
-        taskId,
-        user?.uID || user?.userId || '',
-        user?.fullname || '',
-      );
+      if (reopen) {
+        await tasksApi.update(
+          user?.organization || '',
+          { id: task.id, taskId, status: 'open' } as any,
+          user?.uID || user?.userId || '',
+          user?.fullname || '',
+        );
+      } else {
+        await tasksApi.complete(
+          user?.organization || '',
+          taskId,
+          user?.uID || user?.userId || '',
+          user?.fullname || '',
+        );
+      }
     } catch {
       setTasks((prev) => prev.map((t) => t.id === task.id ? { ...t, status: task.status } : t));
     }
   }, [user]);
+
+  // Quick add: type a title + Enter. Defaults: due today (end of day), assigned to me, medium.
+  const handleQuickAdd = useCallback(async () => {
+    const title = quickTitle.trim();
+    if (!title || !user?.organization || quickAdding) return;
+    const meId = user?.uID || user?.userId || '';
+    const meName = user?.fullname || (user as any)?.name || '';
+    setQuickAdding(true);
+    setQuickTitle('');
+    try {
+      await tasksApi.create(user.organization, {
+        title,
+        status: 'open',
+        priority: 'medium',
+        taskType: 'general',
+        dueDate: endOfToday().toISOString(),
+        assignedToId: meId,
+        assignedToName: meName,
+        assignedTo: meName || undefined,
+      } as any, meId, meName);
+      // Make sure the new task is visible even if the user was looking at "Done" or searching.
+      setViewFilter('active');
+      setSearchQuery('');
+      await fetchTasks();
+    } catch (err: any) {
+      setQuickTitle(title);
+      setError(err.message || t('errors.generic'));
+    } finally {
+      setQuickAdding(false);
+    }
+  }, [quickTitle, quickAdding, user, fetchTasks, t]);
 
   // ── Bulk selection + common bulk actions ─────────────────────────
   const [selectionMode, setSelectionMode] = useState(false);
@@ -590,24 +667,26 @@ export default function TasksMoreScreen() {
                 color={isChecked ? BRAND_COLOR : theme.colors.onSurfaceVariant}
               />
             </Pressable>
-          ) : !completed && !cancelled ? (
+          ) : !cancelled ? (
             <Pressable
               onPress={() => handleCompleteTask(item)}
               hitSlop={8}
               style={styles.completeBtn}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: completed }}
             >
               <MaterialCommunityIcons
-                name="checkbox-blank-circle-outline"
+                name={completed ? 'check-circle' : 'checkbox-blank-circle-outline'}
                 size={26}
-                color={theme.colors.onSurfaceVariant}
+                color={completed ? STATUS_COLORS.completed : theme.colors.onSurfaceVariant}
               />
             </Pressable>
           ) : (
             <View style={styles.completeBtn}>
               <MaterialCommunityIcons
-                name="check-circle"
+                name="close-circle-outline"
                 size={26}
-                color={STATUS_COLORS.completed}
+                color={STATUS_COLORS.cancelled}
               />
             </View>
           )}
@@ -625,13 +704,17 @@ export default function TasksMoreScreen() {
               >
                 {item.title}
               </Text>
-              <Chip
-                compact
-                textStyle={[styles.statusChipText, { color: statusColor }]}
-                style={[styles.statusChip, { backgroundColor: `${statusColor}18` }]}
-              >
-                {item.status ? t(`tasks.${item.status}`) : ''}
-              </Chip>
+              {/* Plain "open" / "completed" are already obvious from the section + the check circle;
+                  only the unusual states get a chip. */}
+              {item.status && item.status !== 'open' && item.status !== 'completed' ? (
+                <Chip
+                  compact
+                  textStyle={[styles.statusChipText, { color: statusColor }]}
+                  style={[styles.statusChip, { backgroundColor: `${statusColor}18` }]}
+                >
+                  {t(`tasks.${item.status}`)}
+                </Chip>
+              ) : null}
             </View>
 
             {item.description ? (
@@ -714,23 +797,48 @@ export default function TasksMoreScreen() {
 
   const renderEmpty = useCallback(() => {
     if (loading) return null;
+    const searching = debouncedSearch.trim() !== '';
+    // Open-tasks view with nothing left (but tasks exist) = the good kind of empty.
+    const allDone = !searching && viewFilter === 'active' && priorityFilter === 'all' && scopedTasks.length > 0;
     return (
       <View style={styles.emptyContainer}>
         <MaterialCommunityIcons
-          name="checkbox-marked-circle-outline"
+          name={searching ? 'magnify' : allDone ? 'check-all' : 'checkbox-marked-circle-outline'}
           size={72}
-          color={theme.colors.onSurfaceVariant}
-          style={{ opacity: 0.3 }}
+          color={allDone ? STATUS_COLORS.completed : theme.colors.onSurfaceVariant}
+          style={{ opacity: allDone ? 0.7 : 0.3 }}
         />
         <Text
           variant="titleMedium"
           style={[styles.emptyTitle, { color: theme.colors.onSurface }]}
         >
-          {t('tasks.noTasks')}
+          {searching ? t('common.noResults') : allDone ? t('tasks.allDone') : t('tasks.noTasks')}
         </Text>
+        {!searching && !allDone ? (
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+            {t('tasks.emptyHint')}
+          </Text>
+        ) : null}
       </View>
     );
-  }, [loading, theme, t]);
+  }, [loading, theme, t, debouncedSearch, viewFilter, priorityFilter, scopedTasks.length]);
+
+  const renderRow = useCallback(
+    ({ item }: { item: ListRow }) => {
+      if (item.kind === 'header') {
+        const color = GROUP_COLORS[item.group];
+        return (
+          <View style={[styles.sectionHeader, { flexDirection }]}>
+            <View style={[styles.sectionDot, { backgroundColor: color }]} />
+            <Text style={[styles.sectionTitle, { color }]}>{t(`tasks.group_${item.group}`)}</Text>
+            <Text style={[styles.sectionCount, { color: theme.colors.onSurfaceVariant }]}>{item.count}</Text>
+          </View>
+        );
+      }
+      return renderTaskCard({ item: item.task });
+    },
+    [renderTaskCard, flexDirection, t, theme],
+  );
 
   if (loading && tasks.length === 0) {
     return (
@@ -743,7 +851,6 @@ export default function TasksMoreScreen() {
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
       <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
         <Appbar.Content title={t('tasks.title')} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 18 }} />
         <Appbar.Action
           icon={selectionMode ? 'close' : 'checkbox-multiple-marked-outline'}
@@ -772,6 +879,36 @@ export default function TasksMoreScreen() {
         </View>
       )}
 
+      {/* Quick add: type a title and press Enter — due today, assigned to me. */}
+      {!selectionMode && (
+        <View
+          style={[
+            styles.quickAddRow,
+            { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant, flexDirection },
+          ]}
+        >
+          <MaterialCommunityIcons name="plus-circle-outline" size={22} color={BRAND_COLOR} />
+          <RNTextInput
+            value={quickTitle}
+            onChangeText={setQuickTitle}
+            onSubmitEditing={handleQuickAdd}
+            placeholder={t('tasks.quickAddPlaceholder')}
+            placeholderTextColor={theme.colors.onSurfaceVariant}
+            returnKeyType="done"
+            blurOnSubmit={false}
+            editable={!quickAdding}
+            style={[styles.quickAddInput, { color: theme.colors.onSurface, textAlign }]}
+          />
+          {quickAdding ? (
+            <ActivityIndicator size={18} color={BRAND_COLOR} />
+          ) : quickTitle.trim() ? (
+            <Pressable onPress={handleQuickAdd} hitSlop={8}>
+              <MaterialCommunityIcons name="arrow-up-circle" size={26} color={BRAND_COLOR} />
+            </Pressable>
+          ) : null}
+        </View>
+      )}
+
       <View
         style={[
           styles.filtersRow,
@@ -783,18 +920,35 @@ export default function TasksMoreScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
         >
+          {showScope && (
+            <>
+              {(['mine', 'all'] as TaskScope[]).map((s) => {
+                const selected = effectiveScope === s;
+                return (
+                  <Chip
+                    key={s}
+                    selected={selected}
+                    onPress={() => changeScope(s)}
+                    showSelectedOverlay
+                    compact
+                    icon={s === 'mine' ? 'account' : 'account-group'}
+                    style={[
+                      styles.filterChip,
+                      { backgroundColor: selected ? theme.colors.primaryContainer : theme.colors.surfaceVariant },
+                    ]}
+                    textStyle={[styles.filterChipText, selected && { color: theme.colors.primary, fontWeight: '600' }]}
+                  >
+                    {t(s === 'mine' ? 'tasks.scopeMine' : 'tasks.scopeAll')}
+                  </Chip>
+                );
+              })}
+              <View style={[styles.chipDivider, { backgroundColor: theme.colors.outlineVariant }]} />
+            </>
+          )}
+
           {TASK_VIEWS.map((v) => {
             const selected = viewFilter === v;
-            const count = viewCounts[v];
-            const overdueAccent = v === 'overdue' && count > 0;
-            const label =
-              v === 'all'
-                ? t('common.all')
-                : v === 'active'
-                  ? t('tasks.active', 'פעיל')
-                  : v === 'today'
-                    ? t('tasks.today', 'היום')
-                    : t(`tasks.${v}`);
+            const label = v === 'all' ? t('common.all') : v === 'active' ? t('tasks.active', 'פעיל') : t('tasks.completed');
             return (
               <Chip
                 key={v}
@@ -804,17 +958,11 @@ export default function TasksMoreScreen() {
                 compact
                 style={[
                   styles.filterChip,
-                  selected
-                    ? { backgroundColor: overdueAccent ? '#fde7e7' : theme.colors.primaryContainer }
-                    : { backgroundColor: theme.colors.surfaceVariant },
+                  { backgroundColor: selected ? theme.colors.primaryContainer : theme.colors.surfaceVariant },
                 ]}
-                textStyle={[
-                  styles.filterChipText,
-                  selected && { color: overdueAccent ? '#d32f2f' : theme.colors.primary, fontWeight: '600' },
-                  !selected && overdueAccent && { color: '#d32f2f' },
-                ]}
+                textStyle={[styles.filterChipText, selected && { color: theme.colors.primary, fontWeight: '600' }]}
               >
-                {`${label} (${count})`}
+                {`${label} (${viewCounts[v]})`}
               </Chip>
             );
           })}
@@ -877,38 +1025,11 @@ export default function TasksMoreScreen() {
         </Pressable>
       ) : null}
 
-      {/* Sort bar */}
-      <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, alignItems: 'center' }}>
-        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('tasks.sortBy', 'מיין:')}</Text>
-        {([
-          { key: 'priority' as const, label: t('tasks.priority', 'עדיפות'), icon: 'flag' },
-          { key: 'createdOn' as const, label: t('tasks.created', 'נוצר'), icon: 'calendar-plus' },
-          { key: 'dueDate' as const, label: t('tasks.dueDate', 'תאריך יעד'), icon: 'calendar-clock' },
-          { key: 'reminderDate' as const, label: t('tasks.reminder', 'תזכורת'), icon: 'bell-outline' },
-        ]).map((opt) => (
-          <Pressable
-            key={opt.key}
-            onPress={() => {
-              if (taskSortKey === opt.key) setTaskSortDir((d) => d === 'asc' ? 'desc' : 'asc');
-              else { setTaskSortKey(opt.key); setTaskSortDir(opt.key === 'priority' ? 'asc' : 'desc'); }
-            }}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: taskSortKey === opt.key ? '#e8f5e9' : 'transparent' }}
-          >
-            <MaterialCommunityIcons name={opt.icon as any} size={14} color={taskSortKey === opt.key ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
-            <Text style={{ fontSize: 11, color: taskSortKey === opt.key ? BRAND_COLOR : theme.colors.onSurfaceVariant, fontWeight: taskSortKey === opt.key ? '600' : '400' }}>
-              {opt.label}
-            </Text>
-            {taskSortKey === opt.key && (
-              <MaterialCommunityIcons name={taskSortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={BRAND_COLOR} />
-            )}
-          </Pressable>
-        ))}
-      </View>
-
       <FlatList
-        data={visibleTasks}
-        renderItem={renderTaskCard}
-        keyExtractor={(item, index) => item.id || item.taskId || `task_${index}`}
+        data={listRows}
+        renderItem={renderRow}
+        keyExtractor={(item) => item.key}
+        keyboardShouldPersistTaps="handled"
         ListEmptyComponent={renderEmpty}
         ListFooterComponent={
           <ListPaginationFooter
@@ -942,9 +1063,10 @@ export default function TasksMoreScreen() {
         <FAB
           icon="plus"
           onPress={() => { resetForm(); setCreateModalVisible(true); }}
-          style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
+          style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
           color="#FFFFFF"
-          label={t('tasks.addTask')}
+          size="small"
+          accessibilityLabel={t('tasks.addTask')}
         />
       )}
 
@@ -1419,6 +1541,19 @@ const styles = StyleSheet.create({
     gap: 8,
     alignItems: 'center',
   },
+  chipDivider: { width: 1, height: 20, marginHorizontal: 2 },
+  quickAddRow: {
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  quickAddInput: { flex: 1, fontSize: 15, paddingVertical: 10 },
+  sectionHeader: { alignItems: 'center', gap: 8, paddingHorizontal: 4, paddingTop: 10, paddingBottom: 2 },
+  sectionDot: { width: 8, height: 8, borderRadius: 4 },
+  sectionTitle: { fontSize: 13, fontWeight: '700' },
+  sectionCount: { fontSize: 12 },
   filterChip: { height: 32 },
   filterChipText: { fontSize: 13 },
   listContent: { padding: 14, paddingBottom: 100 },

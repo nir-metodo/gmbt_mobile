@@ -8,6 +8,7 @@ import {
   Pressable,
   Alert,
   TouchableOpacity,
+  BackHandler,
 } from 'react-native';
 import {
   Text,
@@ -29,7 +30,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
-import { ordersApi, Order, DEFAULT_ORDER_STATUSES, OrderStatusConfig } from '../../../../services/api/orders';
+import { ordersApi, Order, DEFAULT_ORDER_STATUSES, OrderStatusConfig, normalizeOrderStatus } from '../../../../services/api/orders';
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { quotesApi } from '../../../../services/api/quotes';
@@ -46,6 +47,13 @@ import type { Contact } from '../../../../types';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../../components/NoteAttachmentRow';
 import AddTaskSheet from '../../../../components/AddTaskSheet';
 import { appCache } from '../../../../services/cache';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useDirtyTracker } from '../../../../hooks/useDirtyTracker';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { HeaderMenu } from '../../../../components/HeaderMenu';
+import { StickySaveBar } from '../../../../components/StickySaveBar';
+import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
+import { CollapsibleSection } from '../../../../components/CollapsibleSection';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -114,6 +122,7 @@ export default function OrderDetailScreen() {
   const { t, i18n } = useTranslation();
   const lang = i18n.language as 'en' | 'he';
   const user = useAuthStore((s) => s.user);
+  const insets = useSafeAreaInsets();
 
   const isNew = id === 'new';
 
@@ -129,9 +138,7 @@ export default function OrderDetailScreen() {
   const [noteText, setNoteText] = useState('');
   const [noteAttachment, setNoteAttachment] = useState<NoteAttachment | null>(null);
   const [savingNote, setSavingNote] = useState(false);
-  const [statusMenuVisible, setStatusMenuVisible] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
-  const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
   const [addTaskVisible, setAddTaskVisible] = useState(false);
 
   // ── Create mode state ─────────────────────────────────────────────
@@ -149,7 +156,6 @@ export default function OrderDetailScreen() {
   const [formNotes, setFormNotes] = useState('');
   const [dynamicData, setDynamicData] = useState<Record<string, any>>({});
   const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState(false); // edit-existing-order mode (reuses the create form)
 
   // ── Org-configured statuses (unified with web settings) ───────────
   const [orgStatuses, setOrgStatuses] = useState<OrderStatusConfig[]>(DEFAULT_ORDER_STATUSES);
@@ -187,7 +193,41 @@ export default function OrderDetailScreen() {
     [formItems, formDiscount, formTax],
   );
 
-  // ── Fetch (view mode) ─────────────────────────────────────────────
+  // ── Dirty tracking: the save bar only appears when something changed ──
+  const formSnapshot = JSON.stringify([
+    formCustomerName, formCustomerPhone, formCustomerEmail, formShippingAddress, formOrderNumber,
+    formPaymentMethod, formIsPaid, formItems, formDiscount, formTax, formNotes, dynamicData,
+    selectedContact?.id || selectedContact?.contactId || '',
+  ]);
+  const { dirty, markClean } = useDirtyTracker(formSnapshot);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  // Fill the editable form from a saved order (existing orders are always edited in place).
+  const loadOrderIntoForm = useCallback((o: Order) => {
+    setFormCustomerName(o.customerName || '');
+    setFormCustomerPhone(o.customerPhone || '');
+    setFormCustomerEmail(o.customerEmail || '');
+    setFormShippingAddress(o.shippingAddress || '');
+    setFormOrderNumber(o.orderNumber || '');
+    setFormStatus(o.status || 'pending');
+    setFormPaymentMethod(o.paymentMethod || '');
+    setFormIsPaid(!!(o as any).isPaid);
+    setFormNotes(o.notes || '');
+    setFormItems((o.items || []).map((it: any) => ({
+      name: it.productName || it.name || '',
+      sku: it.sku || '',
+      quantity: Number(it.quantity) || 1,
+      price: Number(it.price) || 0,
+    })));
+    setFormDiscount(String((o as any).discount ?? 0));
+    setFormTax(String((o as any).tax ?? 0));
+    setDynamicData({ ...((o as any).customFields || {}) });
+    const cid = (o as any).contactId;
+    setSelectedContact(cid ? ({ id: cid, fullName: o.customerName, phoneNumber: o.customerPhone } as any) : null);
+  }, []);
+
+  // ── Fetch ─────────────────────────────────────────────────────────
   const fetchOrder = useCallback(async () => {
     if (!user?.organization || !id || isNew) { setLoading(false); return; }
     try {
@@ -195,16 +235,68 @@ export default function OrderDetailScreen() {
       const data = await ordersApi.getById(user.organization, id);
       setOrder(data);
       cacheEntity('orders', data);
+      // Never clobber edits the user is in the middle of.
+      if (data && !dirtyRef.current) { loadOrderIntoForm(data); markClean(); }
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, id, isNew, t]);
+  }, [user?.organization, id, isNew, t, loadOrderIntoForm, markClean]);
 
   useEffect(() => {
     fetchOrder();
   }, [fetchOrder]);
+
+  // Cached order → show the filled form instantly while the refresh runs.
+  useEffect(() => {
+    if (cachedOrder) { loadOrderIntoForm(cachedOrder); markClean(); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const discardChanges = useCallback(() => {
+    if (order) { loadOrderIntoForm(order); markClean(); }
+  }, [order, loadOrderIntoForm, markClean]);
+
+  // Statuses in the org's configured order; "next" skips the terminal off-ramps.
+  const sortedStatuses = useMemo(
+    () => [...orgStatuses].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [orgStatuses],
+  );
+  const nextStatus = useMemo(() => {
+    if (!order) return null;
+    const flow = sortedStatuses.filter((s) => s.id !== 'cancelled' && s.id !== 'refunded');
+    const idx = flow.findIndex((s) => s.id === normalizeOrderStatus(order.status));
+    return idx >= 0 && idx < flow.length - 1 ? flow[idx + 1] : null;
+  }, [order, sortedStatuses]);
+
+  // ── Leaving the screen never silently drops edits ─────────────────
+  const hasUnsaved = isNew
+    ? !!(formCustomerName.trim() || formCustomerPhone.trim() || formItems.length > 0)
+    : dirty;
+  const leaveScreen = useCallback(() => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/more/orders');
+  }, [router]);
+  const handleBack = useCallback(() => {
+    if (!hasUnsaved) { leaveScreen(); return; }
+    Alert.alert(
+      t('docs.unsavedTitle', 'שינויים שלא נשמרו'),
+      t('docs.unsavedMessage', 'לצאת בלי לשמור את השינויים?'),
+      [
+        { text: t('docs.keepEditing', 'המשך עריכה'), style: 'cancel' },
+        { text: t('docs.exitWithoutSaving', 'צא בלי לשמור'), style: 'destructive', onPress: leaveScreen },
+      ],
+    );
+  }, [hasUnsaved, leaveScreen, t]);
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!hasUnsaved) return false;
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [hasUnsaved, handleBack]);
 
   useEffect(() => {
     if (user?.organization) {
@@ -286,24 +378,26 @@ export default function OrderDetailScreen() {
   const updateItem = (idx: number, field: keyof FormItem, value: string | number) =>
     setFormItems((prev) => prev.map((it, i) => (i === idx ? { ...it, [field]: value } : it)));
 
-  // ── Status update (view mode) ─────────────────────────────────────
+  // ── Status update: one tap, optimistic, rolled back on failure ────
   const handleUpdateStatus = useCallback(async (newStatus: string) => {
-    if (!user?.organization || !id) return;
-    setStatusMenuVisible(false);
+    if (!user?.organization || !id || !order || order.status === newStatus) return;
+    const prevStatus = order.status;
     setUpdatingStatus(true);
+    setOrder((prev) => (prev ? { ...prev, status: newStatus } : prev));
     try {
-      await ordersApi.updateStatus(user.organization, id, newStatus);
-      setOrder((prev) => prev ? { ...prev, status: newStatus } : prev);
+      await ordersApi.updateStatus(user.organization, id, newStatus, user.uID || user.userId, user.fullname);
+      appCache.invalidate(`orders_${user.organization}`);
+      fetchOrder(); // refresh the activity timeline
     } catch (err: any) {
+      setOrder((prev) => (prev ? { ...prev, status: prevStatus } : prev));
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
     } finally {
       setUpdatingStatus(false);
     }
-  }, [user?.organization, id, t]);
+  }, [user?.organization, user?.uID, user?.userId, user?.fullname, id, order, t, fetchOrder]);
 
   // ── Delete order (view mode) ──────────────────────────────────────
   const handleDelete = useCallback(() => {
-    setHeaderMenuVisible(false);
     if (!user?.organization || !id) return;
     Alert.alert(
       t('common.delete'),
@@ -345,37 +439,11 @@ export default function OrderDetailScreen() {
     }
   }, [user?.organization, id, noteText, user?.uID, user?.userId, user?.fullname, fetchOrder, t]);
 
-  // ── Enter edit mode: prefill the create form from the loaded order ──
-  const enterEditMode = useCallback(() => {
-    if (!order) return;
-    setHeaderMenuVisible(false);
-    setFormCustomerName(order.customerName || '');
-    setFormCustomerPhone(order.customerPhone || '');
-    setFormCustomerEmail(order.customerEmail || '');
-    setFormShippingAddress(order.shippingAddress || '');
-    setFormOrderNumber(order.orderNumber || '');
-    setFormStatus(order.status || 'pending');
-    setFormPaymentMethod(order.paymentMethod || '');
-    setFormIsPaid(!!(order as any).isPaid);
-    setFormNotes(order.notes || '');
-    setFormItems((order.items || []).map((it: any) => ({
-      name: it.productName || it.name || '',
-      sku: it.sku || '',
-      quantity: Number(it.quantity) || 1,
-      price: Number(it.price) || 0,
-    })));
-    setFormDiscount(String((order as any).discount ?? 0));
-    setFormTax(String((order as any).tax ?? 0));
-    setDynamicData({ ...((order as any).customFields || {}) });
-    if ((order as any).contactId) setSelectedContact({ id: (order as any).contactId, fullName: order.customerName, phoneNumber: order.customerPhone } as any);
-    setEditing(true);
-  }, [order]);
-
-  // ── Create or update order ─────────────────────────────────────────
+  // ── Create a new order, or save changes to an existing one ─────────
   const handleCreate = useCallback(async () => {
     if (!user?.organization) return;
     if (!formCustomerName.trim() && !formCustomerPhone.trim()) {
-      Alert.alert(t('common.error'), 'יש להזין שם לקוח או טלפון');
+      Alert.alert(t('common.error'), t('orders.customerRequired', 'יש להזין שם לקוח או טלפון'));
       return;
     }
     setCreating(true);
@@ -386,7 +454,8 @@ export default function OrderDetailScreen() {
         customerEmail: formCustomerEmail.trim(),
         contactId: selectedContact?.id || selectedContact?.contactId || undefined,
         shippingAddress: formShippingAddress.trim(),
-        status: formStatus,
+        // Status of an existing order is changed with its own one-tap action; keep what is on the server.
+        status: isNew ? formStatus : (order?.status || 'pending'),
         paymentMethod: formPaymentMethod.trim(),
         isPaid: formIsPaid,
         orderNumber: formOrderNumber.trim(),
@@ -397,7 +466,7 @@ export default function OrderDetailScreen() {
           quantity: it.quantity,
           price: it.price,
         })) as any,
-        currency: 'ILS',
+        currency: order?.currency || 'ILS',
         subtotal: totals.subtotal,
         discount: parseFloat(formDiscount) || 0,
         tax: parseFloat(formTax) || 0,
@@ -405,31 +474,24 @@ export default function OrderDetailScreen() {
         dynamicData,
       } as any;
 
-      if (editing && id && !isNew) {
+      if (!isNew && id) {
         await ordersApi.update(user.organization, id, payload, user.uID || user.userId, user.fullname);
         appCache.invalidate(`orders_${user.organization}`);
-        setEditing(false);
+        markClean();
         await fetchOrder();
-        Alert.alert(t('common.success', 'הצלחה'), t('orders.updateSuccess', 'ההזמנה עודכנה'));
         return;
       }
 
       const result = await ordersApi.create(user.organization, payload, user.uID || user.userId, user.fullname);
       const newId = result?.order?.id || result?.id || result?.orderId;
       appCache.invalidate(`orders_${user.organization}`);
-      Alert.alert('✓ הזמנה נוצרה', 'ההזמנה נוצרה בהצלחה', [
-        {
-          text: 'אישור',
-          onPress: () => {
-            if (newId) {
-              router.replace({ pathname: '/(tabs)/more/orders/[id]', params: { id: newId } });
-            } else {
-              if (router.canGoBack()) router.back();
-              else router.replace('/(tabs)/more/orders');
-            }
-          },
-        },
-      ]);
+      if (newId) {
+        router.replace({ pathname: '/(tabs)/more/orders/[id]', params: { id: newId } });
+      } else if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(tabs)/more/orders');
+      }
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
     } finally {
@@ -439,7 +501,7 @@ export default function OrderDetailScreen() {
     user, formCustomerName, formCustomerPhone, formCustomerEmail, formShippingAddress,
     formStatus, formPaymentMethod, formIsPaid, formOrderNumber, formNotes,
     formItems, formDiscount, formTax, totals, router, t, dynamicData, selectedContact,
-    editing, id, isNew, fetchOrder,
+    order, id, isNew, fetchOrder, markClean,
   ]);
 
   // ══ Loading / Error screens ═══════════════════════════════════════
@@ -466,22 +528,49 @@ export default function OrderDetailScreen() {
   }
 
   // ══ CREATE / EDIT MODE ════════════════════════════════════════════
-  if (isNew || editing) {
+  if (isNew || order) {
     return (
       <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-        <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-          <Appbar.BackAction onPress={() => { if (editing) setEditing(false); else router.back(); }} color="#FFF" />
-          <Appbar.Content title={editing ? t('orders.editOrder', 'עריכת הזמנה') : 'הזמנה חדשה'} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }} />
-          <Appbar.Action
-            icon="content-save-outline"
-            color="#FFF"
-            onPress={handleCreate}
-            disabled={creating}
-          />
-        </Appbar.Header>
+        <ScreenHeader
+          title={isNew
+            ? t('orders.newOrder', 'הזמנה חדשה')
+            : (order?.orderNumber ? `${t('orders.order')} #${order.orderNumber}` : t('orders.orderDetails'))}
+          onBack={handleBack}
+          actions={!isNew ? (
+            <HeaderMenu
+              items={[
+                { key: 'note', title: t('orders.addNote'), icon: 'note-plus-outline', onPress: () => setNoteModalVisible(true) },
+                { key: 'task', title: t('tasks.addTask', 'הוסף משימה'), icon: 'clipboard-check-outline', onPress: () => setAddTaskVisible(true) },
+                { key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true, dividerBefore: true },
+              ]}
+            />
+          ) : null}
+        />
 
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
-          <ScrollView contentContainerStyle={styles.createScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <ScrollView contentContainerStyle={[styles.createScroll, { paddingBottom: 120 + insets.bottom }]} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+
+            {/* ── סטטוס: לחיצה אחת ── */}
+            {!isNew && order ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statusPills}>
+                {sortedStatuses.map((s) => {
+                  const selected = normalizeOrderStatus(order.status) === s.id;
+                  const c = statusColorFor(s.id);
+                  return (
+                    <Pressable
+                      key={s.id}
+                      onPress={() => handleUpdateStatus(s.id)}
+                      disabled={updatingStatus}
+                      style={[styles.statusPill, { borderColor: c, backgroundColor: selected ? c : 'transparent' }]}
+                    >
+                      <Text style={{ color: selected ? '#FFF' : c, fontWeight: '700', fontSize: 13 }}>
+                        {statusLabelFor(s.id)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            ) : null}
 
             {/* ── פרטי לקוח ── */}
             <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
@@ -557,9 +646,6 @@ export default function OrderDetailScreen() {
               <TextInput label="טלפון" value={formCustomerPhone} onChangeText={setFormCustomerPhone}
                 mode="outlined" keyboardType="phone-pad" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
                 right={<TextInput.Icon icon="phone-outline" />} />
-              <TextInput label="אימייל" value={formCustomerEmail} onChangeText={setFormCustomerEmail}
-                mode="outlined" keyboardType="email-address" autoCapitalize="none" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="email-outline" />} />
               <TextInput label="כתובת משלוח" value={formShippingAddress} onChangeText={setFormShippingAddress}
                 mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
                 right={<TextInput.Icon icon="map-marker-outline" />} />
@@ -572,10 +658,8 @@ export default function OrderDetailScreen() {
               </Text>
               <Divider style={{ marginBottom: 14 }} />
 
-              <TextInput label='מספר הזמנה (אופציונלי)' value={formOrderNumber} onChangeText={setFormOrderNumber}
-                mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="pound" />} />
-
+              {isNew ? (
+                <>
               <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}>סטטוס</Text>
               <Menu
                 visible={createStatusMenuVisible}
@@ -602,10 +686,8 @@ export default function OrderDetailScreen() {
                   />
                 ))}
               </Menu>
-
-              <TextInput label="שיטת תשלום" value={formPaymentMethod} onChangeText={setFormPaymentMethod}
-                mode="outlined" style={[styles.formInput, { textAlign, marginTop: 14 }]} activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="credit-card-outline" />} />
+                </>
+              ) : null}
 
               <View style={[styles.switchRow, { flexDirection }]}>
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>הזמנה שולמה ✓</Text>
@@ -702,6 +784,36 @@ export default function OrderDetailScreen() {
               )}
             </View>
 
+            {/* ── הערות ── */}
+            <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
+              <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
+                📝 הערות
+              </Text>
+              <Divider style={{ marginBottom: 14 }} />
+              <TextInput label="הערות פנימיות..." value={formNotes} onChangeText={setFormNotes}
+                mode="outlined" multiline numberOfLines={3} style={[styles.formInput, { textAlign }]}
+                activeOutlineColor={BRAND_COLOR} />
+            </View>
+
+            {/* ── עוד אפשרויות ── */}
+            <CollapsibleSection hint={t('orders.moreHint', 'אימייל, מספר הזמנה, אמצעי תשלום ושדות נוספים')}>
+              <TextInput label="אימייל" value={formCustomerEmail} onChangeText={setFormCustomerEmail}
+                mode="outlined" keyboardType="email-address" autoCapitalize="none" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
+                right={<TextInput.Icon icon="email-outline" />} />
+              <TextInput label='מספר הזמנה (אופציונלי)' value={formOrderNumber} onChangeText={setFormOrderNumber}
+                mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
+                right={<TextInput.Icon icon="pound" />} />
+
+              <TextInput label="שיטת תשלום" value={formPaymentMethod} onChangeText={setFormPaymentMethod}
+                mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
+                right={<TextInput.Icon icon="credit-card-outline" />} />
+
+              {!isNew && order?.source ? (
+                <InfoRow icon="store-outline" label={t('orders.source')} value={order.source} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
+              ) : null}
+              {!isNew && order?.createdAt ? (
+                <InfoRow icon="calendar-plus" label={t('orders.createdAt')} value={formatDate(order.createdAt)} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
+              ) : null}
             {/* ── שדות דינמיים ── */}
             {orderFormSections.length > 0 && (
               <DynamicFieldsSectionForm
@@ -717,31 +829,92 @@ export default function OrderDetailScreen() {
               />
             )}
 
-            {/* ── הערות ── */}
-            <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-              <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
-                📝 הערות
-              </Text>
-              <Divider style={{ marginBottom: 14 }} />
-              <TextInput label="הערות פנימיות..." value={formNotes} onChangeText={setFormNotes}
-                mode="outlined" multiline numberOfLines={3} style={[styles.formInput, { textAlign }]}
-                activeOutlineColor={BRAND_COLOR} />
-            </View>
+              {!isNew && order ? (
+            <ExtraFieldsSectionView
+              data={order as Record<string, any>}
+              lang={lang}
+              excludeKeys={[
+                'customerName', 'customerPhone', 'customerEmail', 'shippingAddress',
+                'items', 'totalAmount', 'subtotal', 'tax', 'shipping', 'currency',
+                'source', 'paymentMethod', 'createdAt', 'notes', 'discount', 'isPaid', 'activity', 'customFields', 'contactId', 'status', 'dynamicData',
+                'orderNumber', 'orderStatus', 'name', 'phone', 'email',
+                ...getSectionFieldKeys(orderFormSections),
+              ]}
+            />
+              ) : null}
+            </CollapsibleSection>
 
-            {/* ── כפתור שמירה ── */}
-            <Button
-              mode="contained"
-              onPress={handleCreate}
-              loading={creating}
-              disabled={creating}
-              style={[styles.saveButton, { backgroundColor: BRAND_COLOR }]}
-              textColor="#FFF"
-              contentStyle={{ paddingVertical: 6 }}
-              icon="content-save-outline"
+            {!isNew && order ? (
+              <>
+            {/* Activity timeline (notes, status changes, etc.) */}
+            {(() => {
+              const activity = Array.isArray((order as any).activity) ? [...(order as any).activity] : [];
+              if (activity.length === 0) return null;
+              activity.sort((a: any, b: any) => {
+                const da = new Date(a.createdAt || a.CreatedAt || a.date || a.timestamp || 0).getTime();
+                const db = new Date(b.createdAt || b.CreatedAt || b.date || b.timestamp || 0).getTime();
+                return db - da;
+              });
+              return (
+                <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
+                  <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+                    {t('contacts.timeline', 'ציר זמן')}
+                  </Text>
+                  <Divider style={{ marginBottom: 12 }} />
+                  {activity.map((entry: any, idx: number) => {
+                    const msg = entry.message || entry.note || entry.text || entry.description || '';
+                    const who = entry.userName || entry.createdByName || entry.user || '';
+                    const when = entry.createdAt || entry.CreatedAt || entry.date || entry.timestamp || '';
+                    let whenLabel = '';
+                    if (when) {
+                      const d = new Date(when);
+                      if (!isNaN(d.getTime())) whenLabel = d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' });
+                    }
+                    return (
+                      <View key={idx} style={{ marginBottom: 12 }}>
+                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }}>
+                          {msg}
+                        </Text>
+                        {(who || whenLabel) ? (
+                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: isRTL ? 'right' : 'left' }}>
+                            {[who, whenLabel].filter(Boolean).join(' · ')}
+                          </Text>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+              );
+            })()}
+
+            {/* Add Note Action */}
+            <Pressable
+              onPress={() => setNoteModalVisible(true)}
+              style={[styles.addNoteButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}
             >
-              שמור הזמנה
-            </Button>
+              <MaterialCommunityIcons name="note-plus-outline" size={22} color={BRAND_COLOR} />
+              <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '600' }}>
+                {t('orders.addNote')}
+              </Text>
+            </Pressable>
+              </>
+            ) : null}
           </ScrollView>
+          <StickySaveBar
+            visible={isNew || dirty}
+            saving={creating}
+            onSave={handleCreate}
+            onDiscard={!isNew && dirty ? discardChanges : undefined}
+            saveLabel={isNew ? t('orders.saveOrder', 'שמור הזמנה') : undefined}
+          />
+          <PrimaryActionBar
+            visible={!isNew && !dirty && !!nextStatus}
+            label={nextStatus ? `${t('docs.markAs', 'סמן כ־')}${statusLabelFor(nextStatus.id)}` : ''}
+            icon="arrow-right-circle-outline"
+            color={nextStatus ? statusColorFor(nextStatus.id) : undefined}
+            loading={updatingStatus}
+            onPress={() => { if (nextStatus) handleUpdateStatus(nextStatus.id); }}
+          />
         </KeyboardAvoidingView>
 
         {/* ── Catalog Picker Modal ── */}
@@ -794,298 +967,6 @@ export default function OrderDetailScreen() {
             </ScrollView>
           </Modal>
         </Portal>
-      </View>
-    );
-  }
-
-  // ══ VIEW MODE ═════════════════════════════════════════════════════
-  const statusColor = order ? statusColorFor(order.status) : '#9E9E9E';
-
-  return (
-    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
-        <Appbar.Content
-          title={order?.orderNumber ? `${t('orders.order')} #${order.orderNumber}` : t('orders.orderDetails')}
-          titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }}
-        />
-        {order ? (
-          <Menu
-            visible={headerMenuVisible}
-            onDismiss={() => setHeaderMenuVisible(false)}
-            anchor={
-              <Appbar.Action icon="dots-vertical" color="#FFF" onPress={() => setHeaderMenuVisible(true)} />
-            }
-          >
-            <Menu.Item
-              onPress={enterEditMode}
-              title={t('common.edit', 'עריכה')}
-              leadingIcon="pencil-outline"
-            />
-            <Menu.Item
-              onPress={() => { setHeaderMenuVisible(false); setAddTaskVisible(true); }}
-              title={t('tasks.addTask', 'הוסף משימה')}
-              leadingIcon="clipboard-check-outline"
-            />
-            <Divider />
-            <Menu.Item
-              onPress={handleDelete}
-              title={t('common.delete')}
-              leadingIcon="delete-outline"
-              titleStyle={{ color: '#F44336' }}
-            />
-          </Menu>
-        ) : null}
-      </Appbar.Header>
-
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {order ? (
-          <>
-            {/* Status Card */}
-            <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-              <View style={[styles.statusRow, { flexDirection, justifyContent: 'space-between', alignItems: 'center' }]}>
-                <View>
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('orders.status')}</Text>
-                  <Chip
-                    style={[styles.statusChip, { backgroundColor: `${statusColor}15` }]}
-                    textStyle={{ color: statusColor, fontWeight: '700' }}
-                  >
-                    {statusLabelFor(order.status)}
-                  </Chip>
-                </View>
-
-                <Menu
-                  visible={statusMenuVisible}
-                  onDismiss={() => setStatusMenuVisible(false)}
-                  anchor={
-                    <Button
-                      mode="outlined"
-                      onPress={() => setStatusMenuVisible(true)}
-                      loading={updatingStatus}
-                      style={{ borderColor: BRAND_COLOR, borderRadius: 8 }}
-                      textColor={BRAND_COLOR}
-                      icon="swap-horizontal"
-                      compact
-                    >
-                      {t('orders.updateStatus')}
-                    </Button>
-                  }
-                >
-                  {orgStatuses.map((s) => (
-                    <Menu.Item
-                      key={s.id}
-                      title={statusLabelFor(s.id)}
-                      onPress={() => handleUpdateStatus(s.id)}
-                      leadingIcon={order.status === s.id ? 'check' : undefined}
-                    />
-                  ))}
-                </Menu>
-              </View>
-            </View>
-
-            {/* Customer Info */}
-            <Pressable
-              style={[styles.section, { backgroundColor: theme.colors.surface }]}
-              onPress={() => {
-                const navId = (order as any).contactId || order.customerPhone;
-                if (navId) {
-                  router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: navId } });
-                }
-              }}
-              disabled={!(order as any).contactId && !order.customerPhone}
-            >
-              <View style={[{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }]}>
-                <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, marginBottom: 0 }]}>
-                  {t('orders.customer')}
-                </Text>
-                {((order as any).contactId || order.customerPhone) ? (
-                  <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={18} color={theme.colors.primary} />
-                ) : null}
-              </View>
-              <Divider style={{ marginBottom: 12 }} />
-              {order.customerName ? (
-                <InfoRow icon="account-outline" label={t('orders.name')} value={order.customerName} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
-              ) : null}
-              {order.customerPhone ? (
-                <InfoRow icon="phone-outline" label={t('orders.phone')} value={order.customerPhone} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
-              ) : null}
-              {order.customerEmail ? (
-                <InfoRow icon="email-outline" label={t('orders.email')} value={order.customerEmail} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
-              ) : null}
-              {order.shippingAddress ? (
-                <InfoRow icon="map-marker-outline" label={t('orders.address')} value={order.shippingAddress} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
-              ) : null}
-            </Pressable>
-
-            {/* Order Items */}
-            {order.items && order.items.length > 0 ? (
-              <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-                <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-                  {t('orders.items')} ({order.items.length})
-                </Text>
-                <Divider style={{ marginBottom: 12 }} />
-                {order.items.map((item, idx) => (
-                  <View key={item.id || idx} style={[styles.itemRow, { borderBottomColor: theme.colors.outlineVariant }]}>
-                    <View style={{ flex: 1 }}>
-                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>{item.productName}</Text>
-                      {item.sku ? <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>SKU: {item.sku}</Text> : null}
-                    </View>
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>×{item.quantity}</Text>
-                      <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-                        {order.currency || '₪'}{Number(item.price).toFixed(2)}
-                      </Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-
-            {/* Totals */}
-            {order.totalAmount != null ? (
-              <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-                <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-                  {t('orders.summary')}
-                </Text>
-                <Divider style={{ marginBottom: 12 }} />
-                {order.subtotal != null ? (
-                  <View style={[styles.summaryRow, { flexDirection }]}>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('orders.subtotal')}</Text>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>
-                      {order.currency || '₪'}{Number(order.subtotal).toFixed(2)}
-                    </Text>
-                  </View>
-                ) : null}
-                {order.tax != null ? (
-                  <View style={[styles.summaryRow, { flexDirection }]}>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('orders.tax')}</Text>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>
-                      {order.currency || '₪'}{Number(order.tax).toFixed(2)}
-                    </Text>
-                  </View>
-                ) : null}
-                {order.shipping != null ? (
-                  <View style={[styles.summaryRow, { flexDirection }]}>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('orders.shipping')}</Text>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>
-                      {order.currency || '₪'}{Number(order.shipping).toFixed(2)}
-                    </Text>
-                  </View>
-                ) : null}
-                <Divider style={{ marginVertical: 8 }} />
-                <View style={[styles.summaryRow, { flexDirection }]}>
-                  <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>{t('orders.total')}</Text>
-                  <Text variant="titleSmall" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-                    {order.currency || '₪'}{Number(order.totalAmount).toFixed(2)}
-                  </Text>
-                </View>
-              </View>
-            ) : null}
-
-            {/* Additional Info */}
-            <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-              <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-                {t('orders.details')}
-              </Text>
-              <Divider style={{ marginBottom: 12 }} />
-              {order.source ? (
-                <InfoRow icon="store-outline" label={t('orders.source')} value={order.source} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
-              ) : null}
-              {order.paymentMethod ? (
-                <InfoRow icon="credit-card-outline" label={t('orders.payment')} value={order.paymentMethod} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
-              ) : null}
-              {order.createdAt ? (
-                <InfoRow icon="calendar-plus" label={t('orders.createdAt')} value={formatDate(order.createdAt)} flexDirection={flexDirection} textAlign={textAlign} theme={theme} />
-              ) : null}
-            </View>
-
-            {/* Dynamic custom fields — flatten customFields so values resolve by fieldKey */}
-            <DynamicFieldsSectionView
-              sections={orderFormSections}
-              data={{ ...(order as Record<string, any>), ...((order as any)?.customFields || {}) }}
-              lang={lang}
-              formLayout={orderFormLayout}
-            />
-
-            <ExtraFieldsSectionView
-              data={order as Record<string, any>}
-              lang={lang}
-              excludeKeys={[
-                'customerName', 'customerPhone', 'customerEmail', 'shippingAddress',
-                'items', 'totalAmount', 'subtotal', 'tax', 'shipping', 'currency',
-                'source', 'paymentMethod', 'createdAt', 'notes',
-                'orderNumber', 'orderStatus', 'name', 'phone', 'email',
-                ...getSectionFieldKeys(orderFormSections),
-              ]}
-            />
-
-            {/* Notes */}
-            {order.notes ? (
-              <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-                <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-                  {t('orders.notes')}
-                </Text>
-                <Divider style={{ marginBottom: 12 }} />
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }}>
-                  {order.notes}
-                </Text>
-              </View>
-            ) : null}
-
-            {/* Activity timeline (notes, status changes, etc.) */}
-            {(() => {
-              const activity = Array.isArray((order as any).activity) ? [...(order as any).activity] : [];
-              if (activity.length === 0) return null;
-              activity.sort((a: any, b: any) => {
-                const da = new Date(a.createdAt || a.CreatedAt || a.date || a.timestamp || 0).getTime();
-                const db = new Date(b.createdAt || b.CreatedAt || b.date || b.timestamp || 0).getTime();
-                return db - da;
-              });
-              return (
-                <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-                  <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-                    {t('contacts.timeline', 'ציר זמן')}
-                  </Text>
-                  <Divider style={{ marginBottom: 12 }} />
-                  {activity.map((entry: any, idx: number) => {
-                    const msg = entry.message || entry.note || entry.text || entry.description || '';
-                    const who = entry.userName || entry.createdByName || entry.user || '';
-                    const when = entry.createdAt || entry.CreatedAt || entry.date || entry.timestamp || '';
-                    let whenLabel = '';
-                    if (when) {
-                      const d = new Date(when);
-                      if (!isNaN(d.getTime())) whenLabel = d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' });
-                    }
-                    return (
-                      <View key={idx} style={{ marginBottom: 12 }}>
-                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }}>
-                          {msg}
-                        </Text>
-                        {(who || whenLabel) ? (
-                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: isRTL ? 'right' : 'left' }}>
-                            {[who, whenLabel].filter(Boolean).join(' · ')}
-                          </Text>
-                        ) : null}
-                      </View>
-                    );
-                  })}
-                </View>
-              );
-            })()}
-
-            {/* Add Note Action */}
-            <Pressable
-              onPress={() => setNoteModalVisible(true)}
-              style={[styles.addNoteButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}
-            >
-              <MaterialCommunityIcons name="note-plus-outline" size={22} color={BRAND_COLOR} />
-              <Text variant="bodyMedium" style={{ color: BRAND_COLOR, fontWeight: '600' }}>
-                {t('orders.addNote')}
-              </Text>
-            </Pressable>
-          </>
-        ) : null}
-      </ScrollView>
 
       {/* Note Modal */}
       <Portal>
@@ -1149,8 +1030,12 @@ export default function OrderDetailScreen() {
         }}
         defaultTitle={order?.customerName ? `${t('orders.order')} - ${order.customerName}` : undefined}
       />
-    </View>
-  );
+      </View>
+    );
+  }
+
+  // Not found / no organisation yet
+  return <View style={[styles.screen, { backgroundColor: theme.colors.background }]} />;
 }
 
 const styles = StyleSheet.create({
@@ -1170,7 +1055,8 @@ const styles = StyleSheet.create({
   sectionTitle: { fontWeight: '700', marginBottom: 8 },
   formInput: { marginBottom: 12 },
   statusRow: { gap: 12 },
-  statusChip: { marginTop: 6, alignSelf: 'flex-start' },
+  statusPills: { gap: 8, paddingVertical: 2 },
+  statusPill: { borderWidth: 1.5, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 7 },
   statusSelector: {
     borderWidth: 1,
     borderRadius: 8,

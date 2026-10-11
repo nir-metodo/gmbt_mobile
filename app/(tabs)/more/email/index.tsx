@@ -123,7 +123,7 @@ export default function EmailScreen() {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <IconButton icon="arrow-right" onPress={() => router.back()} />
+          <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} />
           <Text style={styles.headerTitle}>{isRTL ? 'שליחת מייל' : 'Send Email'}</Text>
           <View style={{ width: 48 }} />
         </View>
@@ -141,9 +141,9 @@ export default function EmailScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <IconButton icon="arrow-right" onPress={() => router.back()} />
+        <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} />
         <Text style={styles.headerTitle}>{isRTL ? 'שליחת מייל' : 'Send Email'}</Text>
-        <IconButton icon="send" iconColor={BRAND_COLOR} onPress={handleSend} disabled={sending} />
+        <IconButton icon="send" iconColor={BRAND_COLOR} onPress={handleSend} disabled={sending} loading={sending} accessibilityLabel={isRTL ? 'שלח מייל' : 'Send Email'} />
       </View>
 
       <ScrollView style={styles.form} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -242,21 +242,6 @@ export default function EmailScreen() {
           outlineColor={theme.colors.outline}
           activeOutlineColor={BRAND_COLOR}
         />
-
-        {/* Send button */}
-        <Button
-          mode="contained"
-          onPress={handleSend}
-          loading={sending}
-          disabled={sending}
-          buttonColor={BRAND_COLOR}
-          textColor="white"
-          icon="send"
-          style={styles.sendBtn}
-          contentStyle={{ flexDirection: isRTL ? 'row-reverse' : 'row' }}
-        >
-          {isRTL ? 'שלח מייל' : 'Send Email'}
-        </Button>
       </ScrollView>
     </View>
   );

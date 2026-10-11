@@ -10,6 +10,7 @@ import {
   Share,
   TouchableOpacity,
   FlatList,
+  BackHandler,
 } from 'react-native';
 import {
   Text,
@@ -44,6 +45,13 @@ import { formatDate, formatCurrency, getInitials } from '../../../../utils/forma
 import { placeSmartCall } from '../../../../utils/phoneCall';
 import { borderRadius } from '../../../../constants/theme';
 import type { Quote, QuoteItem, Contact, OrgUser } from '../../../../types';
+import { useDirtyTracker } from '../../../../hooks/useDirtyTracker';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { HeaderMenu } from '../../../../components/HeaderMenu';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { StickySaveBar } from '../../../../components/StickySaveBar';
+import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
+import { CollapsibleSection } from '../../../../components/CollapsibleSection';
 
 const STATUS_COLORS: Record<string, string> = {
   draft: '#9E9E9E',
@@ -163,8 +171,8 @@ export default function QuoteDetailScreen() {
   const [deleting, setDeleting] = useState(false);
   const [sending, setSending] = useState(false);
 
-  const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [statusSaving, setStatusSaving] = useState(false);
   const [formTitle, setFormTitle] = useState('');
   const [formContactName, setFormContactName] = useState('');
   const [formContactPhone, setFormContactPhone] = useState('');
@@ -184,6 +192,34 @@ export default function QuoteDetailScreen() {
   const [currencyMenuVisible, setCurrencyMenuVisible] = useState(false);
   const [statusMenuVisible, setStatusMenuVisible] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
+
+  // Dirty tracking: a single contextual Save bar appears only when something changed (no "Edit" mode).
+  // Status is saved on its own (one tap), so it is intentionally not part of the snapshot.
+  const formSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        t: formTitle,
+        cn: formContactName,
+        cp: formContactPhone,
+        ci: formContactId,
+        n: formNotes,
+        tr: formTerms,
+        d: formDate,
+        vu: formValidUntil,
+        di: formDiscount,
+        dt: formDiscountType,
+        tx: formTax,
+        cu: formCurrency,
+        sp: formSalespersonId || formSalesperson,
+        it: formItems
+          .filter((i) => (i.name || '').trim())
+          .map((i) => [i.name, i.description || '', i.quantity, i.unitPrice, i.discount || 0]),
+      }),
+    [formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formDiscount, formDiscountType, formTax, formCurrency, formSalesperson, formSalespersonId, formItems],
+  );
+  const { dirty, markClean } = useDirtyTracker(formSnapshot);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
 
   // Timeline (change history) — mirrors leads/cases so quote edits are documented & visible.
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
@@ -217,6 +253,16 @@ export default function QuoteDetailScreen() {
     const h = setTimeout(() => setDebouncedInventorySearch(inventorySearch), 200);
     return () => clearTimeout(h);
   }, [inventorySearch]);
+
+  // Put a quote from the server into state and (unless the user has unsaved edits) into the form.
+  const applyServerQuote = useCallback((q: Quote) => {
+    setQuote(q);
+    if (!dirtyRef.current) {
+      openEditModeWithQuote(q);
+      markClean();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchQuote = useCallback(async () => {
     if (!user?.organization || !id) return;
@@ -253,21 +299,21 @@ export default function QuoteDetailScreen() {
           leadId: prefillLeadId || undefined,
         };
         setQuote(newQuote);
-        setEditMode(true);
         openEditModeWithQuote(newQuote);
+        markClean();
         setLoading(false);
         return;
       }
       const result = await quotesApi.getById(user.organization, id);
       if (result) {
-        setQuote(result);
+        applyServerQuote(result);
         cacheEntity('quotes', result);
       } else {
         const allResult = await quotesApi.getAll(user.organization);
         const list = Array.isArray(allResult.data) ? allResult.data : [];
         const found = list.find((q) => q.id === id);
         if (found) {
-          setQuote(found);
+          applyServerQuote(found);
         } else {
           setError(t('common.noResults'));
         }
@@ -278,7 +324,7 @@ export default function QuoteDetailScreen() {
         const list = Array.isArray(allResult.data) ? allResult.data : [];
         const found = list.find((q) => q.id === id);
         if (found) {
-          setQuote(found);
+          applyServerQuote(found);
         } else {
           setError(err.message || t('errors.generic'));
         }
@@ -328,7 +374,7 @@ export default function QuoteDetailScreen() {
     setFormValidUntil(q.validUntil ? formatDate(q.validUntil, 'yyyy-MM-dd') : '');
     setFormDiscount(String(q.discount || 0));
     setFormDiscountType(q.discountType || 'fixed');
-    setFormTax(String(q.tax || 18));
+    setFormTax(String(q.tax ?? 18));
     setFormCurrency(q.currency || 'ILS');
     setFormStatus(q.status || 'draft');
     setFormSalesperson(q.salespersonName || '');
@@ -337,25 +383,57 @@ export default function QuoteDetailScreen() {
     setFormItems(q.items && q.items.length > 0 ? q.items.map((i) => ({ ...i })) : [createEmptyItem()]);
   }, []);
 
-  const openEditMode = useCallback(() => {
+  // Cached list item → fill the form instantly (the background refresh below only overwrites a clean form).
+  useEffect(() => {
+    if (cachedQuote) {
+      openEditModeWithQuote(cachedQuote);
+      markClean();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Throw away unsaved edits and restore the form from the saved quote.
+  const discardChanges = useCallback(() => {
     if (!quote) return;
     openEditModeWithQuote(quote);
-    setEditMode(true);
-  }, [quote, openEditModeWithQuote]);
+    setSelectedContact(null);
+    markClean();
+  }, [quote, openEditModeWithQuote, markClean]);
 
-  const closeEditMode = useCallback(() => {
-    if (id === 'new') {
-      if (prefillLeadId) {
-        router.replace({ pathname: '/(tabs)/leads/[id]', params: { id: prefillLeadId } });
-      } else if (router.canGoBack()) {
-        router.back();
-      } else {
-        router.replace('/(tabs)/more/quotes');
-      }
+  const leaveScreen = useCallback(() => {
+    if (id === 'new' && prefillLeadId) {
+      router.replace({ pathname: '/(tabs)/leads/[id]', params: { id: prefillLeadId } });
+    } else if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/more/quotes');
+    }
+  }, [id, router, prefillLeadId]);
+
+  // Back never silently drops edits: ask once, only when something actually changed.
+  const handleBack = useCallback(() => {
+    if (!dirty) {
+      leaveScreen();
       return;
     }
-    setEditMode(false);
-  }, [id, router, prefillLeadId]);
+    Alert.alert(
+      t('docs.unsavedTitle', 'שינויים שלא נשמרו'),
+      t('docs.unsavedMessage', 'לצאת בלי לשמור את השינויים?'),
+      [
+        { text: t('docs.keepEditing', 'המשך עריכה'), style: 'cancel' },
+        { text: t('docs.exitWithoutSaving', 'צא בלי לשמור'), style: 'destructive', onPress: leaveScreen },
+      ],
+    );
+  }, [dirty, leaveScreen, t]);
+
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [dirty, handleBack]);
 
   const calculatedTotals = useMemo(() => {
     const subtotal = formItems.reduce((sum, item) => {
@@ -596,7 +674,7 @@ export default function QuoteDetailScreen() {
         taxAmount: calculatedTotals.taxAmount,
         total: calculatedTotals.total,
         currency: formCurrency,
-        status: formStatus as Quote['status'],
+        status: (id === 'new' ? 'draft' : (quote?.status || 'draft')) as Quote['status'],
         salespersonName: formSalesperson.trim() || undefined,
       };
 
@@ -607,13 +685,8 @@ export default function QuoteDetailScreen() {
           user.uID || user.userId,
           user.fullname,
         );
-        if (prefillLeadId) {
-          router.replace({ pathname: '/(tabs)/leads/[id]', params: { id: prefillLeadId } });
-        } else if (router.canGoBack()) {
-          router.back();
-        } else {
-          router.replace('/(tabs)/more/quotes');
-        }
+        markClean();
+        leaveScreen();
       } else {
         await quotesApi.update(
           user.organization,
@@ -621,7 +694,8 @@ export default function QuoteDetailScreen() {
           user.uID || user.userId,
           user.fullname,
         );
-        setEditMode(false);
+        // Saved: the form is now the baseline, then pull the server-calculated values back in.
+        markClean();
         await fetchQuote();
         fetchQuoteTimeline();
       }
@@ -630,7 +704,30 @@ export default function QuoteDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [user, quote, id, formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formItems, calculatedTotals, formDiscount, formDiscountType, formTax, formCurrency, formStatus, formSalesperson, formSalespersonId, fetchQuote, fetchQuoteTimeline, router, t]);
+  }, [user, quote, id, formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formItems, calculatedTotals, formDiscount, formDiscountType, formTax, formCurrency, formSalesperson, formSalespersonId, fetchQuote, fetchQuoteTimeline, leaveScreen, markClean, t]);
+
+  // One-tap status change (chips / primary button). Saved immediately, rolled back on failure.
+  const handleChangeStatus = useCallback(async (newStatus: string) => {
+    if (!user?.organization || !quote || id === 'new' || newStatus === quote.status) return;
+    const prevStatus = quote.status;
+    setQuote((q) => (q ? { ...q, status: newStatus as Quote['status'] } : q));
+    setStatusSaving(true);
+    try {
+      await quotesApi.update(
+        user.organization,
+        { id: quote.id, status: newStatus as any },
+        user.uID || user.userId,
+        user.fullname,
+      );
+      cacheEntity('quotes', { ...quote, status: newStatus as Quote['status'] });
+      fetchQuoteTimeline();
+    } catch (err: any) {
+      setQuote((q) => (q ? { ...q, status: prevStatus } : q));
+      Alert.alert(t('common.error'), err.message || t('errors.generic'));
+    } finally {
+      setStatusSaving(false);
+    }
+  }, [user, quote, id, fetchQuoteTimeline, t]);
 
   const handleDelete = useCallback(() => {
     Alert.alert(
@@ -696,8 +793,8 @@ export default function QuoteDetailScreen() {
           user.fullname,
           user.uID || user.userId,
           undefined,
-          user.wabaNumber,
-          user.email,
+          user.wabaNumber || undefined,
+          user.email || undefined,
         );
       } else {
         const defRes = await chatsApi.getDefaultMessageTemplates(user.organization);
@@ -835,1352 +932,849 @@ export default function QuoteDetailScreen() {
     );
   }
 
-  const statusColor = getStatusColor(quote.status);
-  const statusIcon = STATUS_ICONS[quote.status] || 'file-document';
   const currSymbol = getCurrencySymbol(quote.currency);
+  const isNewQuote = id === 'new';
+  const editCurrSymbol = getCurrencySymbol(formCurrency);
+  const quotePhone = quote.contactPhone || quote.phoneNumber;
 
-  // ─── EDIT MODE ───
-  if (editMode) {
-    const editCurrSymbol = getCurrencySymbol(formCurrency);
-    return (
-      <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-        <View
-          style={[
-            styles.header,
-            { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 4 },
-          ]}
-        >
-          <View style={[styles.headerRow, { flexDirection }]}>
-            <IconButton
-              icon="close"
-              iconColor={theme.custom.headerText}
-              size={24}
-              onPress={closeEditMode}
-            />
-            <Text
-              variant="titleMedium"
-              numberOfLines={1}
-              style={[styles.headerTitleText, { flex: 1, textAlign }]}
-            >
-              {id === 'new' ? t('quotes.addQuote') : t('quotes.editQuote')}
-            </Text>
-            <Button
-              mode="text"
-              onPress={handleSave}
-              loading={saving}
-              disabled={!formTitle.trim() || saving}
-              textColor={theme.custom.headerText}
-              labelStyle={{ fontWeight: '700' }}
-            >
-              {t('common.save')}
-            </Button>
-          </View>
-        </View>
+  const handleCreateInvoice = () => {
+    router.push({
+      pathname: '/(tabs)/more/invoices/[id]',
+      params: {
+        id: 'new',
+        prefillContactName: quote.contactName || '',
+        prefillContactPhone: quote.contactPhone || '',
+        prefillRelatedQuoteId: quote.id || '',
+      },
+    });
+  };
 
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior="padding"
+  // ONE prominent "next step", chosen by the quote's status. Everything else is in the "..." menu.
+  let primaryAction: { label: string; icon: string; color: string; run: () => void; loading?: boolean } | null = null;
+  if (!isNewQuote) {
+    switch (quote.status) {
+      case 'draft':
+        primaryAction = { label: t('quotes.sendViaWhatsApp'), icon: 'whatsapp', color: '#25D366', run: handleSendWhatsApp, loading: sending };
+        break;
+      case 'sent':
+        primaryAction = { label: t('docs.markAccepted', 'סמן כאושרה'), icon: 'check-circle', color: STATUS_COLORS.accepted, run: () => handleChangeStatus('accepted'), loading: statusSaving };
+        break;
+      case 'accepted':
+      case 'paid':
+        primaryAction = { label: t('invoices.generateFromQuote', 'הפק חשבונית מהצעה'), icon: 'file-document-check-outline', color: '#0891b2', run: handleCreateInvoice };
+        break;
+      case 'awaiting_payment':
+        primaryAction = { label: t('docs.markPaid', 'סמן כשולם'), icon: 'cash-check', color: STATUS_COLORS.paid, run: () => handleChangeStatus('paid'), loading: statusSaving };
+        break;
+      default:
+        primaryAction = { label: t('docs.backToDraft', 'החזר לטיוטה'), icon: 'file-edit-outline', color: STATUS_COLORS.draft, run: () => handleChangeStatus('draft'), loading: statusSaving };
+    }
+  }
+
+  return (
+    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
+      <ScreenHeader
+        title={isNewQuote ? t('quotes.addQuote') : quote.title}
+        subtitle={!isNewQuote && quote.quoteNumber ? `#${quote.quoteNumber}` : undefined}
+        onBack={handleBack}
+        actions={
+          !isNewQuote ? (
+            <>
+              <IconButton icon="eye-outline" iconColor={theme.custom.headerText} size={22} onPress={() => setPreviewVisible(true)} />
+              <HeaderMenu
+                items={[
+                  { key: 'send', title: t('quotes.sendViaWhatsApp'), icon: 'whatsapp', onPress: handleSendWhatsApp, hidden: quote.status === 'draft' },
+                  { key: 'share', title: t('quotes.share'), icon: 'share-variant', onPress: handleShare },
+                  { key: 'link', title: t('docs.copyLink', 'העתק קישור'), icon: 'link-variant', onPress: handleCopyLink },
+                  { key: 'esign', title: t('quotes.sendForESignature'), icon: 'draw-pen', onPress: handleSendESignature },
+                  { key: 'invoice', title: t('invoices.generateFromQuote', 'הפק חשבונית מהצעה'), icon: 'file-document-check-outline', onPress: handleCreateInvoice },
+                  { key: 'call', title: t('common.call'), icon: 'phone', onPress: handleCall, hidden: !quotePhone, dividerBefore: true },
+                  { key: 'chat', title: t('quotes.openChat', 'פתח צ\'אט'), icon: 'whatsapp', onPress: handleWhatsAppChat, hidden: !quotePhone },
+                  { key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true, disabled: deleting, dividerBefore: true },
+                ]}
+              />
+            </>
+          ) : null
+        }
+      />
+
+      {/* One-tap status: tap a chip, it is saved immediately */}
+      {!isNewQuote ? (
+        <StatusFilterBar
+          options={ALL_STATUSES.map((s) => ({ key: s, label: t('quotes.' + s), color: getStatusColor(s) }))}
+          value={quote.status}
+          onChange={handleChangeStatus}
+        />
+      ) : null}
+
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior="padding"
+      >
+        <ScrollView
+          style={styles.body}
+          contentContainerStyle={[styles.editContent, { paddingBottom: 120 + insets.bottom }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          <ScrollView
-            style={styles.body}
-            contentContainerStyle={styles.editContent}
-            showsVerticalScrollIndicator={false}
+          {/* Basic Info */}
+          <View
+            style={[
+              styles.sectionCard,
+              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+            ]}
           >
-            {/* Basic Info */}
-            <View
-              style={[
-                styles.sectionCard,
-                { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-              ]}
-            >
-              <TextInput
-                label={t('quotes.quoteTitle')}
-                value={formTitle}
-                onChangeText={setFormTitle}
-                mode="outlined"
-                style={styles.formInput}
-                contentStyle={{ textAlign }}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
+            <TextInput
+              label={t('quotes.quoteTitle')}
+              value={formTitle}
+              onChangeText={setFormTitle}
+              mode="outlined"
+              style={styles.formInput}
+              contentStyle={{ textAlign }}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={theme.colors.primary}
+            />
 
-              {quote.quoteNumber && id !== 'new' ? (
-                <TextInput
-                  label={t('quotes.quoteNumber')}
-                  value={`#${quote.quoteNumber}`}
-                  mode="outlined"
-                  disabled
-                  style={[styles.formInput, { textAlign }]}
-                  outlineColor={theme.colors.outline}
-                  right={<TextInput.Icon icon="pound" />}
-                />
-              ) : null}
 
-              {/* Contact Picker */}
-              {selectedContact ? (
-                <Pressable
-                  onPress={openContactPicker}
-                  style={[styles.selectedContactCard, { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary }]}
-                >
-                  <View style={[styles.selectedContactRow, { flexDirection }]}>
-                    <View style={[styles.contactAvatarSm, { backgroundColor: theme.colors.primary }]}>
-                      <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
-                        {getInitials(selectedContact.fullName || selectedContact.name || '')}
-                      </Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '700', textAlign }}>
-                        {selectedContact.fullName || selectedContact.name}
-                      </Text>
-                      {(selectedContact.phoneNumber || (selectedContact as any).phone) ? (
-                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                          {selectedContact.phoneNumber || (selectedContact as any).phone}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <TouchableOpacity onPress={clearContact} hitSlop={8}>
-                      <MaterialCommunityIcons name="close-circle" size={20} color={theme.colors.primary} />
-                    </TouchableOpacity>
-                  </View>
-                </Pressable>
-              ) : (
-                <Pressable
-                  onPress={openContactPicker}
-                  style={[
-                    styles.pickerButton,
-                    { borderColor: theme.colors.outline, backgroundColor: theme.colors.surface },
-                  ]}
-                >
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('quotes.contact')}
-                  </Text>
-                  <View style={[styles.pickerValueRow, { flexDirection }]}>
-                    <MaterialCommunityIcons name="account-search" size={16} color={theme.colors.onSurfaceVariant} />
-                    <Text variant="bodyMedium" style={{ color: formContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, flex: 1, textAlign }}>
-                      {formContactName || t('quotes.searchContact')}
-                    </Text>
-                    <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.onSurfaceVariant} />
-                  </View>
-                </Pressable>
-              )}
-
-              <TextInput
-                label={t('quotes.contactPhone')}
-                value={formContactPhone}
-                onChangeText={setFormContactPhone}
-                mode="outlined"
-                style={styles.formInput}
-                contentStyle={{ textAlign }}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                keyboardType="phone-pad"
-                right={<TextInput.Icon icon="phone" />}
-              />
-
-              <View style={[styles.itemFieldsRow, { flexDirection }]}>
-                <TextInput
-                  label={t('quotes.date')}
-                  value={formDate}
-                  onChangeText={setFormDate}
-                  mode="outlined"
-                  placeholder="YYYY-MM-DD"
-                  style={[styles.formInput, { flex: 1, textAlign }]}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                  right={<TextInput.Icon icon="calendar" />}
-                />
-                <TextInput
-                  label={t('quotes.validUntil')}
-                  value={formValidUntil}
-                  onChangeText={setFormValidUntil}
-                  mode="outlined"
-                  placeholder="YYYY-MM-DD"
-                  style={[styles.formInput, { flex: 1, textAlign }]}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                  right={<TextInput.Icon icon="calendar-clock" />}
-                />
-              </View>
-
-              {/* Currency + Status row */}
-              <View style={[styles.itemFieldsRow, { flexDirection }]}>
-                <Menu
-                  visible={currencyMenuVisible}
-                  onDismiss={() => setCurrencyMenuVisible(false)}
-                  anchor={
-                    <Pressable
-                      onPress={() => setCurrencyMenuVisible(true)}
-                      style={[
-                        styles.pickerButton,
-                        { flex: 1, borderColor: theme.colors.outline, backgroundColor: theme.colors.surface },
-                      ]}
-                    >
-                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                        {t('quotes.currency')}
-                      </Text>
-                      <View style={[styles.pickerValueRow, { flexDirection }]}>
-                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                          {CURRENCIES.find((c) => c.code === formCurrency)?.label || formCurrency}
-                        </Text>
-                        <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.onSurfaceVariant} />
-                      </View>
-                    </Pressable>
-                  }
-                  contentStyle={{ backgroundColor: theme.colors.surface }}
-                >
-                  {CURRENCIES.map((c) => (
-                    <Menu.Item
-                      key={c.code}
-                      onPress={() => { setFormCurrency(c.code); setCurrencyMenuVisible(false); }}
-                      title={c.label}
-                      titleStyle={formCurrency === c.code ? { color: theme.colors.primary, fontWeight: '600' } : undefined}
-                    />
-                  ))}
-                </Menu>
-
-                <Menu
-                  visible={statusMenuVisible}
-                  onDismiss={() => setStatusMenuVisible(false)}
-                  anchor={
-                    <Pressable
-                      onPress={() => setStatusMenuVisible(true)}
-                      style={[
-                        styles.pickerButton,
-                        { flex: 1, borderColor: theme.colors.outline, backgroundColor: theme.colors.surface },
-                      ]}
-                    >
-                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                        {t('quotes.status')}
-                      </Text>
-                      <View style={[styles.pickerValueRow, { flexDirection }]}>
-                        <View style={[styles.statusDot, { backgroundColor: getStatusColor(formStatus) }]} />
-                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                          {t(`quotes.${formStatus}`)}
-                        </Text>
-                        <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.onSurfaceVariant} />
-                      </View>
-                    </Pressable>
-                  }
-                  contentStyle={{ backgroundColor: theme.colors.surface }}
-                >
-                  {ALL_STATUSES.map((s) => (
-                    <Menu.Item
-                      key={s}
-                      onPress={() => { setFormStatus(s); setStatusMenuVisible(false); }}
-                      title={t(`quotes.${s}`)}
-                      leadingIcon={() => <View style={[styles.statusDot, { backgroundColor: getStatusColor(s) }]} />}
-                      titleStyle={formStatus === s ? { color: theme.colors.primary, fontWeight: '600' } : undefined}
-                    />
-                  ))}
-                </Menu>
-              </View>
-
-              {/* Salesperson picker button */}
+            {/* Contact Picker */}
+            {selectedContact ? (
               <Pressable
-                onPress={handleOpenUserPicker}
+                onPress={openContactPicker}
+                style={[styles.selectedContactCard, { backgroundColor: theme.colors.primaryContainer, borderColor: theme.colors.primary }]}
+              >
+                <View style={[styles.selectedContactRow, { flexDirection }]}>
+                  <View style={[styles.contactAvatarSm, { backgroundColor: theme.colors.primary }]}>
+                    <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+                      {getInitials(selectedContact.fullName || selectedContact.name || '')}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '700', textAlign }}>
+                      {selectedContact.fullName || selectedContact.name}
+                    </Text>
+                    {(selectedContact.phoneNumber || (selectedContact as any).phone) ? (
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                        {selectedContact.phoneNumber || (selectedContact as any).phone}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <TouchableOpacity onPress={clearContact} hitSlop={8}>
+                    <MaterialCommunityIcons name="close-circle" size={20} color={theme.colors.primary} />
+                  </TouchableOpacity>
+                </View>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={openContactPicker}
                 style={[
                   styles.pickerButton,
                   { borderColor: theme.colors.outline, backgroundColor: theme.colors.surface },
                 ]}
               >
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('quotes.salesperson')}
+                  {t('quotes.contact')}
                 </Text>
                 <View style={[styles.pickerValueRow, { flexDirection }]}>
-                  {orgUsersLoading ? (
-                    <ActivityIndicator size={14} color={theme.colors.primary} />
-                  ) : (
-                    <>
-                      <MaterialCommunityIcons name="account-tie" size={16} color={theme.colors.onSurfaceVariant} />
-                      <Text variant="bodyMedium" style={{ color: formSalesperson ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontWeight: formSalesperson ? '600' : '400', flex: 1, textAlign }}>
-                        {formSalesperson || t('quotes.selectSalesperson')}
-                      </Text>
-                      <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.onSurfaceVariant} />
-                    </>
-                  )}
+                  <MaterialCommunityIcons name="account-search" size={16} color={theme.colors.onSurfaceVariant} />
+                  <Text variant="bodyMedium" style={{ color: formContactName ? theme.colors.onSurface : theme.colors.onSurfaceVariant, flex: 1, textAlign }}>
+                    {formContactName || t('quotes.searchContact')}
+                  </Text>
+                  <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.onSurfaceVariant} />
                 </View>
               </Pressable>
+            )}
+
+            <TextInput
+              label={t('quotes.contactPhone')}
+              value={formContactPhone}
+              onChangeText={setFormContactPhone}
+              mode="outlined"
+              style={styles.formInput}
+              contentStyle={{ textAlign }}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={theme.colors.primary}
+              keyboardType="phone-pad"
+              right={<TextInput.Icon icon="phone" />}
+            />
+          </View>
+
+          {/* Items */}
+          <View
+            style={[
+              styles.sectionCard,
+              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+            ]}
+          >
+            <View style={[styles.sectionTitleRow, { flexDirection }]}>
+              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                {t('quotes.items')}
+              </Text>
+              <View style={[{ flexDirection }, { alignItems: 'center' }]}>
+                <Button
+                  mode="text"
+                  compact
+                  icon="package-variant"
+                  onPress={openInventoryPicker}
+                  textColor={theme.colors.secondary}
+                  labelStyle={{ fontSize: 12 }}
+                >
+                  {t('quotes.fromCatalog') || 'מהקטלוג'}
+                </Button>
+                <IconButton
+                  icon="plus-circle"
+                  iconColor={theme.colors.primary}
+                  size={24}
+                  onPress={addItem}
+                />
+              </View>
             </View>
 
-            {/* Items */}
-            <View
-              style={[
-                styles.sectionCard,
-                { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-              ]}
-            >
-              <View style={[styles.sectionTitleRow, { flexDirection }]}>
-                <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-                  {t('quotes.items')}
-                </Text>
-                <View style={[{ flexDirection }, { alignItems: 'center' }]}>
-                  <Button
-                    mode="text"
-                    compact
-                    icon="package-variant"
-                    onPress={openInventoryPicker}
-                    textColor={theme.colors.secondary}
-                    labelStyle={{ fontSize: 12 }}
-                  >
-                    {t('quotes.fromCatalog') || 'מהקטלוג'}
-                  </Button>
-                  <IconButton
-                    icon="plus-circle"
-                    iconColor={theme.colors.primary}
-                    size={24}
-                    onPress={addItem}
-                  />
+            {formItems.map((item, index) => (
+              <View key={item.id || index}>
+                {index > 0 && <Divider style={{ marginVertical: 12, backgroundColor: theme.colors.outlineVariant }} />}
+                <View style={[styles.itemEditHeader, { flexDirection }]}>
+                  <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, fontWeight: '600' }}>
+                    {t('quotes.items')} #{index + 1}
+                  </Text>
+                  {formItems.length > 1 && (
+                    <IconButton
+                      icon="delete-outline"
+                      iconColor={theme.colors.error}
+                      size={20}
+                      onPress={() => removeItem(index)}
+                    />
+                  )}
                 </View>
-              </View>
-
-              {formItems.map((item, index) => (
-                <View key={item.id || index}>
-                  {index > 0 && <Divider style={{ marginVertical: 12, backgroundColor: theme.colors.outlineVariant }} />}
-                  <View style={[styles.itemEditHeader, { flexDirection }]}>
-                    <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, fontWeight: '600' }}>
-                      {t('quotes.items')} #{index + 1}
-                    </Text>
-                    {formItems.length > 1 && (
-                      <IconButton
-                        icon="delete-outline"
-                        iconColor={theme.colors.error}
-                        size={20}
-                        onPress={() => removeItem(index)}
-                      />
-                    )}
-                  </View>
+                <TextInput
+                  label={t('quotes.itemDescription')}
+                  value={item.name}
+                  onChangeText={(v) => updateItem(index, 'name', v)}
+                  mode="outlined"
+                  dense
+                  style={[styles.formInputDense, { textAlign }]}
+                  outlineColor={theme.colors.outline}
+                  activeOutlineColor={theme.colors.primary}
+                />
+                <View style={[styles.itemFieldsRow, { flexDirection }]}>
                   <TextInput
-                    label={t('quotes.itemDescription')}
-                    value={item.name}
-                    onChangeText={(v) => updateItem(index, 'name', v)}
+                    label={t('quotes.quantity')}
+                    value={String(item.quantity)}
+                    onChangeText={(v) => updateItem(index, 'quantity', parseInt(v) || 0)}
                     mode="outlined"
                     dense
-                    style={[styles.formInputDense, { textAlign }]}
+                    keyboardType="numeric"
+                    style={[styles.formInputDense, { flex: 1, textAlign }]}
                     outlineColor={theme.colors.outline}
                     activeOutlineColor={theme.colors.primary}
                   />
-                  <View style={[styles.itemFieldsRow, { flexDirection }]}>
-                    <TextInput
-                      label={t('quotes.quantity')}
-                      value={String(item.quantity)}
-                      onChangeText={(v) => updateItem(index, 'quantity', parseInt(v) || 0)}
-                      mode="outlined"
-                      dense
-                      keyboardType="numeric"
-                      style={[styles.formInputDense, { flex: 1, textAlign }]}
-                      outlineColor={theme.colors.outline}
-                      activeOutlineColor={theme.colors.primary}
-                    />
-                    <TextInput
-                      label={t('quotes.unitPrice')}
-                      value={String(item.unitPrice)}
-                      onChangeText={(v) => updateItem(index, 'unitPrice', parseFloat(v) || 0)}
-                      mode="outlined"
-                      dense
-                      keyboardType="numeric"
-                      style={[styles.formInputDense, { flex: 1, textAlign }]}
-                      outlineColor={theme.colors.outline}
-                      activeOutlineColor={theme.colors.primary}
-                    />
-                    <TextInput
-                      label={t('quotes.discount')}
-                      value={String(item.discount || 0)}
-                      onChangeText={(v) => updateItem(index, 'discount', parseFloat(v) || 0)}
-                      mode="outlined"
-                      dense
-                      keyboardType="numeric"
-                      style={[styles.formInputDense, { flex: 1, textAlign }]}
-                      outlineColor={theme.colors.outline}
-                      activeOutlineColor={theme.colors.primary}
-                    />
-                  </View>
-                  <Text
-                    variant="labelMedium"
-                    style={{ color: theme.colors.primary, fontWeight: '600', textAlign, marginTop: 4 }}
-                  >
-                    {t('quotes.total')}: {formatCurrency(
-                      Math.max(item.quantity * item.unitPrice - (item.discount || 0), 0),
-                      editCurrSymbol,
-                    )}
-                  </Text>
+                  <TextInput
+                    label={t('quotes.unitPrice')}
+                    value={String(item.unitPrice)}
+                    onChangeText={(v) => updateItem(index, 'unitPrice', parseFloat(v) || 0)}
+                    mode="outlined"
+                    dense
+                    keyboardType="numeric"
+                    style={[styles.formInputDense, { flex: 1, textAlign }]}
+                    outlineColor={theme.colors.outline}
+                    activeOutlineColor={theme.colors.primary}
+                  />
+                  <TextInput
+                    label={t('quotes.discount')}
+                    value={String(item.discount || 0)}
+                    onChangeText={(v) => updateItem(index, 'discount', parseFloat(v) || 0)}
+                    mode="outlined"
+                    dense
+                    keyboardType="numeric"
+                    style={[styles.formInputDense, { flex: 1, textAlign }]}
+                    outlineColor={theme.colors.outline}
+                    activeOutlineColor={theme.colors.primary}
+                  />
                 </View>
-              ))}
+                <Text
+                  variant="labelMedium"
+                  style={{ color: theme.colors.primary, fontWeight: '600', textAlign, marginTop: 4 }}
+                >
+                  {t('quotes.total')}: {formatCurrency(
+                    Math.max(item.quantity * item.unitPrice - (item.discount || 0), 0),
+                    editCurrSymbol,
+                  )}
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Financials */}
+          <View
+            style={[
+              styles.sectionCard,
+              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+            ]}
+          >
+            <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}>
+              {t('quotes.financialSummary')}
+            </Text>
+
+            <View style={[styles.itemFieldsRow, { flexDirection }]}>
+              <TextInput
+                label={formDiscountType === 'percent' ? t('quotes.discountPercent') : t('quotes.discountFixed')}
+                value={formDiscount}
+                onChangeText={setFormDiscount}
+                mode="outlined"
+                dense
+                keyboardType="numeric"
+                style={[styles.formInputDense, { flex: 1, textAlign }]}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={theme.colors.primary}
+              />
+              <TextInput
+                label={t('quotes.taxPercent')}
+                value={formTax}
+                onChangeText={setFormTax}
+                mode="outlined"
+                dense
+                keyboardType="numeric"
+                style={[styles.formInputDense, { flex: 1, textAlign }]}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={theme.colors.primary}
+              />
             </View>
 
-            {/* Financials */}
-            <View
-              style={[
-                styles.sectionCard,
-                { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+            <SegmentedButtons
+              value={formDiscountType}
+              onValueChange={(v) => setFormDiscountType(v as 'percent' | 'fixed')}
+              buttons={[
+                { value: 'percent', label: t('quotes.percent'), icon: 'percent' },
+                { value: 'fixed', label: t('quotes.fixed'), icon: 'cash' },
               ]}
-            >
-              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}>
-                {t('quotes.financialSummary')}
+              style={{ marginBottom: 12 }}
+            />
+
+            <Divider style={{ marginVertical: 8, backgroundColor: theme.colors.outlineVariant }} />
+
+            <View style={styles.summaryRow}>
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                {t('quotes.subtotal')}
               </Text>
-
-              <View style={[styles.itemFieldsRow, { flexDirection }]}>
-                <TextInput
-                  label={formDiscountType === 'percent' ? t('quotes.discountPercent') : t('quotes.discountFixed')}
-                  value={formDiscount}
-                  onChangeText={setFormDiscount}
-                  mode="outlined"
-                  dense
-                  keyboardType="numeric"
-                  style={[styles.formInputDense, { flex: 1, textAlign }]}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                />
-                <TextInput
-                  label={t('quotes.taxPercent')}
-                  value={formTax}
-                  onChangeText={setFormTax}
-                  mode="outlined"
-                  dense
-                  keyboardType="numeric"
-                  style={[styles.formInputDense, { flex: 1, textAlign }]}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                />
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
+                {formatCurrency(calculatedTotals.subtotal, editCurrSymbol)}
+              </Text>
+            </View>
+            {calculatedTotals.discountAmount > 0 && (
+              <View style={styles.summaryRow}>
+                <Text variant="bodyMedium" style={{ color: '#F44336' }}>
+                  {t('quotes.discount')} {formDiscountType === 'percent' ? `(${formDiscount}%)` : ''}
+                </Text>
+                <Text variant="bodyMedium" style={{ color: '#F44336' }}>
+                  -{formatCurrency(calculatedTotals.discountAmount, editCurrSymbol)}
+                </Text>
               </View>
-
-              <SegmentedButtons
-                value={formDiscountType}
-                onValueChange={(v) => setFormDiscountType(v as 'percent' | 'fixed')}
-                buttons={[
-                  { value: 'percent', label: t('quotes.percent'), icon: 'percent' },
-                  { value: 'fixed', label: t('quotes.fixed'), icon: 'cash' },
-                ]}
-                style={{ marginBottom: 12 }}
-              />
-
-              <Divider style={{ marginVertical: 8, backgroundColor: theme.colors.outlineVariant }} />
-
+            )}
+            {calculatedTotals.taxAmount > 0 && (
               <View style={styles.summaryRow}>
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('quotes.subtotal')}
+                  {t('quotes.tax')} ({formTax}%)
                 </Text>
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
-                  {formatCurrency(calculatedTotals.subtotal, editCurrSymbol)}
+                  {formatCurrency(calculatedTotals.taxAmount, editCurrSymbol)}
                 </Text>
               </View>
-              {calculatedTotals.discountAmount > 0 && (
-                <View style={styles.summaryRow}>
-                  <Text variant="bodyMedium" style={{ color: '#F44336' }}>
-                    {t('quotes.discount')} {formDiscountType === 'percent' ? `(${formDiscount}%)` : ''}
-                  </Text>
-                  <Text variant="bodyMedium" style={{ color: '#F44336' }}>
-                    -{formatCurrency(calculatedTotals.discountAmount, editCurrSymbol)}
-                  </Text>
-                </View>
-              )}
-              {calculatedTotals.taxAmount > 0 && (
-                <View style={styles.summaryRow}>
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('quotes.tax')} ({formTax}%)
-                  </Text>
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
-                    {formatCurrency(calculatedTotals.taxAmount, editCurrSymbol)}
-                  </Text>
-                </View>
-              )}
-              <Divider style={{ marginVertical: 8, backgroundColor: theme.colors.outlineVariant }} />
-              <View style={styles.summaryRow}>
-                <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-                  {t('quotes.total')}
-                </Text>
-                <Text variant="titleLarge" style={{ color: theme.colors.primary, fontWeight: '800' }}>
-                  {formatCurrency(calculatedTotals.total, editCurrSymbol)}
-                </Text>
-              </View>
+            )}
+            <Divider style={{ marginVertical: 8, backgroundColor: theme.colors.outlineVariant }} />
+            <View style={styles.summaryRow}>
+              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                {t('quotes.total')}
+              </Text>
+              <Text variant="titleLarge" style={{ color: theme.colors.primary, fontWeight: '800' }}>
+                {formatCurrency(calculatedTotals.total, editCurrSymbol)}
+              </Text>
+            </View>
+          </View>
+
+          {/* Rarely used fields live behind ONE collapsed row */}
+          <CollapsibleSection
+            hint={[t('quotes.date'), t('quotes.validUntil'), t('quotes.currency'), t('quotes.salesperson'), t('quotes.notes'), t('quotes.terms')].join(' · ')}
+          >
+            {quote.quoteNumber ? (
+              <TextInput
+                label={t('quotes.quoteNumber')}
+                value={`#${quote.quoteNumber}`}
+                mode="outlined"
+                disabled
+                style={[styles.formInput, { textAlign }]}
+                outlineColor={theme.colors.outline}
+                right={<TextInput.Icon icon="pound" />}
+              />
+            ) : null}
+            <View style={[styles.itemFieldsRow, { flexDirection }]}>
+              <TextInput
+                label={t('quotes.date')}
+                value={formDate}
+                onChangeText={setFormDate}
+                mode="outlined"
+                placeholder="YYYY-MM-DD"
+                style={[styles.formInput, { flex: 1, textAlign }]}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={theme.colors.primary}
+                right={<TextInput.Icon icon="calendar" />}
+              />
+              <TextInput
+                label={t('quotes.validUntil')}
+                value={formValidUntil}
+                onChangeText={setFormValidUntil}
+                mode="outlined"
+                placeholder="YYYY-MM-DD"
+                style={[styles.formInput, { flex: 1, textAlign }]}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={theme.colors.primary}
+                right={<TextInput.Icon icon="calendar-clock" />}
+              />
+            </View>
+            <View style={[styles.itemFieldsRow, { flexDirection }]}>
+              <Menu
+                visible={currencyMenuVisible}
+                onDismiss={() => setCurrencyMenuVisible(false)}
+                anchor={
+                  <Pressable
+                    onPress={() => setCurrencyMenuVisible(true)}
+                    style={[
+                      styles.pickerButton,
+                      { flex: 1, borderColor: theme.colors.outline, backgroundColor: theme.colors.surface },
+                    ]}
+                  >
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      {t('quotes.currency')}
+                    </Text>
+                    <View style={[styles.pickerValueRow, { flexDirection }]}>
+                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                        {CURRENCIES.find((c) => c.code === formCurrency)?.label || formCurrency}
+                      </Text>
+                      <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.onSurfaceVariant} />
+                    </View>
+                  </Pressable>
+                }
+                contentStyle={{ backgroundColor: theme.colors.surface }}
+              >
+                {CURRENCIES.map((c) => (
+                  <Menu.Item
+                    key={c.code}
+                    onPress={() => { setFormCurrency(c.code); setCurrencyMenuVisible(false); }}
+                    title={c.label}
+                    titleStyle={formCurrency === c.code ? { color: theme.colors.primary, fontWeight: '600' } : undefined}
+                  />
+                ))}
+              </Menu>
             </View>
 
-            {/* Notes + Terms */}
-            <View
+            {/* Salesperson picker button */}
+            <Pressable
+              onPress={handleOpenUserPicker}
               style={[
-                styles.sectionCard,
-                { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+                styles.pickerButton,
+                { borderColor: theme.colors.outline, backgroundColor: theme.colors.surface },
               ]}
             >
-              <TextInput
-                label={t('quotes.notes')}
-                value={formNotes}
-                onChangeText={setFormNotes}
-                mode="outlined"
-                multiline
-                numberOfLines={3}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-              <TextInput
-                label={t('quotes.terms')}
-                value={formTerms}
-                onChangeText={setFormTerms}
-                mode="outlined"
-                multiline
-                numberOfLines={3}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-            </View>
-
-            <View style={{ height: insets.bottom + 24 }} />
-          </ScrollView>
-        </KeyboardAvoidingView>
-
-        {/* Contact picker Modal */}
-        <Portal>
-          <Modal
-            visible={contactPickerVisible}
-            onDismiss={() => { setContactPickerVisible(false); setContactSearch(''); setContactResults([]); }}
-            contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
-          >
-            <View style={[styles.inventoryHeader, { flexDirection }]}>
-              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
-                {t('quotes.contact')}
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                {t('quotes.salesperson')}
               </Text>
-              <IconButton icon="close" size={20} onPress={() => { setContactPickerVisible(false); setContactSearch(''); setContactResults([]); }} />
-            </View>
-            <Searchbar
-              placeholder={t('quotes.searchContact')}
-              value={contactSearch}
-              onChangeText={handleContactSearch}
-              style={{ marginHorizontal: 12, marginBottom: 8 }}
-              autoFocus
-              loading={contactSearching}
+              <View style={[styles.pickerValueRow, { flexDirection }]}>
+                {orgUsersLoading ? (
+                  <ActivityIndicator size={14} color={theme.colors.primary} />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="account-tie" size={16} color={theme.colors.onSurfaceVariant} />
+                    <Text variant="bodyMedium" style={{ color: formSalesperson ? theme.colors.onSurface : theme.colors.onSurfaceVariant, fontWeight: formSalesperson ? '600' : '400', flex: 1, textAlign }}>
+                      {formSalesperson || t('quotes.selectSalesperson')}
+                    </Text>
+                    <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.onSurfaceVariant} />
+                  </>
+                )}
+              </View>
+            </Pressable>
+
+            <TextInput
+              label={t('quotes.notes')}
+              value={formNotes}
+              onChangeText={setFormNotes}
+              mode="outlined"
+              multiline
+              numberOfLines={3}
+              style={[styles.formInput, { textAlign }]}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={theme.colors.primary}
             />
+            <TextInput
+              label={t('quotes.terms')}
+              value={formTerms}
+              onChangeText={setFormTerms}
+              mode="outlined"
+              multiline
+              numberOfLines={3}
+              style={[styles.formInput, { textAlign }]}
+              outlineColor={theme.colors.outline}
+              activeOutlineColor={theme.colors.primary}
+            />
+
+            {quote.showShipping && quote.shipping && (quote.shipping.address || quote.shipping.city || quote.shipping.notes) ? (
+              <View style={[styles.infoBox, { backgroundColor: '#f0f9ff', borderColor: '#bae6fd' }]}>
+                <Text variant="titleSmall" style={{ color: '#0284c7', fontWeight: '700', textAlign }}>
+                  🚚 {t('quotes.shippingDetails', 'פרטי משלוח')}
+                </Text>
+                {(quote.shipping.address || quote.shipping.city) ? (
+                  <Text variant="bodyMedium" style={{ color: '#1f2937', textAlign }}>
+                    {[quote.shipping.address, quote.shipping.city].filter(Boolean).join(', ')}
+                    {quote.shipping.floor ? `\nקומה: ${quote.shipping.floor}` : ''}
+                    {quote.shipping.elevator ? ' (מעלית זמינה)' : ''}
+                  </Text>
+                ) : null}
+                {quote.shipping.notes ? (
+                  <Text variant="bodySmall" style={{ color: '#64748b', textAlign }}>{quote.shipping.notes}</Text>
+                ) : null}
+              </View>
+            ) : null}
+
+            {quote.showBankDetails && quote.bankDetails && (quote.bankDetails.bankName || quote.bankDetails.accountNumber) ? (
+              <View style={[styles.infoBox, { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }]}>
+                <Text variant="titleSmall" style={{ color: '#16a34a', fontWeight: '700', textAlign }}>
+                  🏦 {t('quotes.bankDetails', 'פרטי בנק לתשלום')}
+                </Text>
+                {[
+                  ['שם הבנק', quote.bankDetails.bankName],
+                  ['מספר סניף', quote.bankDetails.branchNumber],
+                  ['מספר חשבון', quote.bankDetails.accountNumber],
+                  ['על שם', quote.bankDetails.accountName],
+                ].filter(([, v]) => !!v).map(([label, value]) => (
+                  <View key={label as string} style={{ flexDirection, justifyContent: 'space-between' }}>
+                    <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>{label}:</Text>
+                    <Text variant="bodyMedium" style={{ color: '#1f2937' }}>{value as string}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </CollapsibleSection>
+
+          {/* Change history (existing quotes only) */}
+          {!isNewQuote ? (
+            <CollapsibleSection
+              icon="history"
+              title={t('docs.changeHistory', 'היסטוריית שינויים')}
+              hint={quote.sentAt ? `${t('quotes.sentDate')}: ${formatDate(quote.sentAt)}` : `${t('quotes.createdDate')}: ${formatDate(quote.createdOn || quote.createdAt || '')}`}
+            >
+              <View style={[styles.timestampRow, { flexDirection }]}>
+                <MaterialCommunityIcons name="clock-outline" size={14} color={theme.colors.onSurfaceVariant} />
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('quotes.createdDate')}:</Text>
+                <Text variant="labelSmall" style={{ color: theme.colors.onSurface }}>{formatDate(quote.createdOn || quote.createdAt || '')}</Text>
+              </View>
+              {quote.sentAt ? (
+                <View style={[styles.timestampRow, { flexDirection, marginBottom: 6 }]}>
+                  <MaterialCommunityIcons name="send-check" size={14} color="#2196F3" />
+                  <Text variant="labelSmall" style={{ color: '#2196F3' }}>{t('quotes.sentDate')}:</Text>
+                  <Text variant="labelSmall" style={{ color: '#2196F3' }}>{formatDate(quote.sentAt)}</Text>
+                </View>
+              ) : null}
+              {timelineLoading && timelineEvents.length === 0 ? (
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              ) : timelineEvents.length === 0 ? (
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                  {isRTL ? 'אין עדיין תיעוד שינויים' : 'No change history yet'}
+                </Text>
+              ) : (
+                timelineEvents.map((ev: any, idx: number) => {
+                  const type = (ev.TimelineType || ev.timelineType || ev.type || '').toLowerCase();
+                  const creator = ev.createdByName || ev.CreatedByName || '';
+                  const ts = ev.createdOn || ev.CreateDateTimeUTC || ev.timestamp || '';
+                  const note = ev.note || ev.Note || ev.notes || ev.description || '';
+                  let icon = 'circle-small';
+                  let color = theme.colors.primary;
+                  let label = isRTL ? 'עדכון' : 'Update';
+                  if (type === 'quote_created') { icon = 'file-plus-outline'; color = '#2e6155'; label = isRTL ? 'הצעה נוצרה' : 'Quote created'; }
+                  else if (type === 'quote_status_change') { icon = 'swap-horizontal'; color = '#8b5cf6'; label = isRTL ? 'סטטוס שונה' : 'Status changed'; }
+                  else if (type === 'quote_updated') { icon = 'pencil-outline'; color = '#d97706'; label = isRTL ? 'הצעה עודכנה' : 'Quote updated'; }
+                  else if (type === 'note') { icon = 'note-text-outline'; color = '#0891b2'; label = isRTL ? 'הערה' : 'Note'; }
+                  return (
+                    <View key={ev.TimelineId || ev.timelineId || idx} style={{ flexDirection, gap: 10, marginBottom: 12, alignItems: 'flex-start' }}>
+                      <MaterialCommunityIcons name={icon as any} size={18} color={color} style={{ marginTop: 2 }} />
+                      <View style={{ flex: 1 }}>
+                        <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign }}>
+                          {label}
+                        </Text>
+                        {note ? (
+                          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, writingDirection: isRTL ? 'rtl' : 'ltr' }}>
+                            {note}
+                          </Text>
+                        ) : null}
+                        <View style={{ flexDirection, gap: 6, marginTop: 2 }}>
+                          {creator && creator.toLowerCase() !== 'system' ? (
+                            <Text variant="labelSmall" style={{ color: theme.colors.primary }}>{creator}</Text>
+                          ) : null}
+                          {ts ? (
+                            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                              {formatDate(ts, 'dd/MM/yyyy HH:mm')}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </CollapsibleSection>
+          ) : null}
+        </ScrollView>
+
+        {/* Bottom: Save bar only when something changed, otherwise the ONE next-step button */}
+        <StickySaveBar
+          visible={dirty || isNewQuote}
+          saving={saving}
+          disabled={!formTitle.trim()}
+          onSave={handleSave}
+          onDiscard={!isNewQuote && dirty ? discardChanges : undefined}
+          saveLabel={isNewQuote ? t('docs.createQuote', 'צור הצעת מחיר') : undefined}
+        />
+        {!dirty && primaryAction ? (
+          <PrimaryActionBar
+            label={primaryAction.label}
+            icon={primaryAction.icon}
+            color={primaryAction.color}
+            loading={primaryAction.loading}
+            onPress={primaryAction.run}
+          />
+        ) : null}
+      </KeyboardAvoidingView>
+
+      {/* Contact picker Modal */}
+      <Portal>
+        <Modal
+          visible={contactPickerVisible}
+          onDismiss={() => { setContactPickerVisible(false); setContactSearch(''); setContactResults([]); }}
+          contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <View style={[styles.inventoryHeader, { flexDirection }]}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+              {t('quotes.contact')}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => { setContactPickerVisible(false); setContactSearch(''); setContactResults([]); }} />
+          </View>
+          <Searchbar
+            placeholder={t('quotes.searchContact')}
+            value={contactSearch}
+            onChangeText={handleContactSearch}
+            style={{ marginHorizontal: 12, marginBottom: 8 }}
+            autoFocus
+            loading={contactSearching}
+          />
+          <FlatList
+            data={contactResults}
+            keyExtractor={(item) => item.id || (item as any).contactId || String(Math.random())}
+            style={{ maxHeight: 380 }}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
+                onPress={() => handleSelectContact(item)}
+              >
+                <View style={[styles.contactAvatarSm, { backgroundColor: theme.colors.primaryContainer }]}>
+                  <Text style={{ color: theme.colors.primary, fontWeight: '700', fontSize: 12 }}>
+                    {getInitials(item.fullName || item.name || '')}
+                  </Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
+                    {item.fullName || item.name}
+                  </Text>
+                  {(item.phoneNumber || (item as any).phone) ? (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                      {item.phoneNumber || (item as any).phone}
+                    </Text>
+                  ) : null}
+                </View>
+              </TouchableOpacity>
+            )}
+            ListEmptyComponent={
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
+                {contactSearching ? t('common.loading', 'טוען...') : t('common.noResults')}
+              </Text>
+            }
+          />
+        </Modal>
+      </Portal>
+
+      {/* Salesperson picker Modal */}
+      <Portal>
+        <Modal
+          visible={userPickerVisible}
+          onDismiss={() => { setUserPickerVisible(false); setUserSearch(''); }}
+          contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <View style={[styles.inventoryHeader, { flexDirection }]}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+              {t('quotes.salesperson')}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => { setUserPickerVisible(false); setUserSearch(''); }} />
+          </View>
+          <Searchbar
+            placeholder={t('common.search')}
+            value={userSearch}
+            onChangeText={setUserSearch}
+            style={{ marginHorizontal: 12, marginBottom: 8 }}
+          />
+          {orgUsersLoading ? (
+            <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginVertical: 32 }} />
+          ) : (
             <FlatList
-              data={contactResults}
-              keyExtractor={(item) => item.id || (item as any).contactId || String(Math.random())}
+              data={filteredUsers}
+              keyExtractor={(item) => item.uID || item.userId || String(Math.random())}
               style={{ maxHeight: 380 }}
               keyboardShouldPersistTaps="handled"
+              ListHeaderComponent={
+                <TouchableOpacity
+                  style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
+                  onPress={() => { setFormSalesperson(''); setFormSalespersonId(''); setUserPickerVisible(false); setUserSearch(''); }}
+                >
+                  <MaterialCommunityIcons name="close-circle-outline" size={20} color={theme.colors.onSurfaceVariant} style={{ marginEnd: 8 }} />
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {t('common.none') || 'ללא'}
+                  </Text>
+                </TouchableOpacity>
+              }
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
-                  onPress={() => handleSelectContact(item)}
+                  onPress={() => {
+                    setFormSalesperson(item.userName || item.fullname || item.name || '');
+                    setFormSalespersonId(item.uID || item.userId || item.id || '');
+                    setUserPickerVisible(false);
+                    setUserSearch('');
+                  }}
                 >
                   <View style={[styles.contactAvatarSm, { backgroundColor: theme.colors.primaryContainer }]}>
                     <Text style={{ color: theme.colors.primary, fontWeight: '700', fontSize: 12 }}>
-                      {getInitials(item.fullName || item.name || '')}
+                      {getInitials(item.userName || item.fullname || item.name || '')}
                     </Text>
                   </View>
-                  <View style={{ flex: 1 }}>
-                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
-                      {item.fullName || item.name}
-                    </Text>
-                    {(item.phoneNumber || (item as any).phone) ? (
-                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                        {item.phoneNumber || (item as any).phone}
-                      </Text>
-                    ) : null}
-                  </View>
+                  <Text
+                    variant="bodyMedium"
+                    style={{
+                      color: formSalespersonId === (item.uID || item.userId || item.id) ? theme.colors.primary : theme.colors.onSurface,
+                      fontWeight: formSalespersonId === (item.uID || item.userId || item.id) ? '700' : '400',
+                      flex: 1,
+                      textAlign,
+                    }}
+                  >
+                    {item.userName || item.fullname || item.name || ''}
+                  </Text>
+                  {formSalespersonId === (item.uID || item.userId) && (
+                    <MaterialCommunityIcons name="check" size={18} color={theme.colors.primary} />
+                  )}
                 </TouchableOpacity>
               )}
               ListEmptyComponent={
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
-                  {contactSearching ? t('common.loading', 'טוען...') : t('common.noResults')}
+                  {t('common.noResults')}
                 </Text>
               }
             />
-          </Modal>
-        </Portal>
+          )}
+        </Modal>
+      </Portal>
 
-        {/* Salesperson picker Modal */}
-        <Portal>
-          <Modal
-            visible={userPickerVisible}
-            onDismiss={() => { setUserPickerVisible(false); setUserSearch(''); }}
-            contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
-          >
-            <View style={[styles.inventoryHeader, { flexDirection }]}>
-              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
-                {t('quotes.salesperson')}
-              </Text>
-              <IconButton icon="close" size={20} onPress={() => { setUserPickerVisible(false); setUserSearch(''); }} />
-            </View>
-            <Searchbar
-              placeholder={t('common.search')}
-              value={userSearch}
-              onChangeText={setUserSearch}
-              style={{ marginHorizontal: 12, marginBottom: 8 }}
-            />
-            {orgUsersLoading ? (
-              <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginVertical: 32 }} />
-            ) : (
-              <FlatList
-                data={filteredUsers}
-                keyExtractor={(item) => item.uID || item.userId || String(Math.random())}
-                style={{ maxHeight: 380 }}
-                keyboardShouldPersistTaps="handled"
-                ListHeaderComponent={
-                  <TouchableOpacity
-                    style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
-                    onPress={() => { setFormSalesperson(''); setFormSalespersonId(''); setUserPickerVisible(false); setUserSearch(''); }}
-                  >
-                    <MaterialCommunityIcons name="close-circle-outline" size={20} color={theme.colors.onSurfaceVariant} style={{ marginEnd: 8 }} />
-                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                      {t('common.none') || 'ללא'}
-                    </Text>
-                  </TouchableOpacity>
-                }
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
-                    onPress={() => {
-                      setFormSalesperson(item.userName || item.fullname || item.name || '');
-                      setFormSalespersonId(item.uID || item.userId || item.id || '');
-                      setUserPickerVisible(false);
-                      setUserSearch('');
-                    }}
-                  >
-                    <View style={[styles.contactAvatarSm, { backgroundColor: theme.colors.primaryContainer }]}>
-                      <Text style={{ color: theme.colors.primary, fontWeight: '700', fontSize: 12 }}>
-                        {getInitials(item.userName || item.fullname || item.name || '')}
-                      </Text>
-                    </View>
-                    <Text
-                      variant="bodyMedium"
-                      style={{
-                        color: formSalespersonId === (item.uID || item.userId || item.id) ? theme.colors.primary : theme.colors.onSurface,
-                        fontWeight: formSalespersonId === (item.uID || item.userId || item.id) ? '700' : '400',
-                        flex: 1,
-                        textAlign,
-                      }}
-                    >
-                      {item.userName || item.fullname || item.name || ''}
-                    </Text>
-                    {formSalespersonId === (item.uID || item.userId) && (
-                      <MaterialCommunityIcons name="check" size={18} color={theme.colors.primary} />
-                    )}
-                  </TouchableOpacity>
-                )}
-                ListEmptyComponent={
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
-                    {t('common.noResults')}
-                  </Text>
-                }
-              />
-            )}
-          </Modal>
-        </Portal>
-
-        {/* Inventory picker - available in edit mode */}
-        <Portal>
-          <Modal
-            visible={inventoryVisible}
-            onDismiss={() => { setInventoryVisible(false); setInventorySearch(''); }}
-            contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
-          >
-            <View style={[styles.inventoryHeader, { flexDirection }]}>
-              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
-                {t('quotes.fromCatalog') || 'בחר מהקטלוג'}
-              </Text>
-              <IconButton icon="close" size={20} onPress={() => { setInventoryVisible(false); setInventorySearch(''); }} />
-            </View>
-            <Searchbar
-              placeholder={t('common.search')}
-              value={inventorySearch}
-              onChangeText={setInventorySearch}
-              style={{ marginHorizontal: 12, marginBottom: 8 }}
-            />
-            {inventoryLoading ? (
-              <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginVertical: 32 }} />
-            ) : (
-              <FlatList
-                data={filteredInventory}
-                keyExtractor={(item, i) => String(item?.id ?? i)}
-                style={{ maxHeight: 460 }}
-                keyboardShouldPersistTaps="handled"
-                initialNumToRender={12}
-                maxToRenderPerBatch={16}
-                windowSize={7}
-                removeClippedSubviews
-                renderItem={({ item }) => {
-                  const cf = item.customFields || {};
-                  const { title, titleKey } = catBuildTitle(item, catalogColumns, catalogFieldsConfig, isRTL);
-                  const hasImage = Array.isArray(item.images) && item.images.filter(Boolean).length > 0;
-                  // Meta chips for every visible column (base + custom) in the web-configured order.
-                  const chips: { key: string; label: string }[] = [];
-                  for (const tok of catalogColumnTokens) {
-                    if (tok === 'image' || tok === 'name' || tok === 'unitPrice') continue;
-                    if (!isCatalogTokenVisible(tok)) continue;
-                    if (tok === 'sku') {
-                      if (item.sku) chips.push({ key: tok, label: String(item.sku) });
-                    } else if (tok === 'category') {
-                      if (item.category) chips.push({ key: tok, label: String(item.category) });
-                    } else if (tok.startsWith('custom:')) {
-                      const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
-                      if (col && col.key !== titleKey && catHasVal(cf[col.key])) {
-                        chips.push({ key: tok, label: `${col.label}: ${catFormatValue(cf[col.key], isRTL)}` });
-                      }
+      {/* Inventory picker - available in edit mode */}
+      <Portal>
+        <Modal
+          visible={inventoryVisible}
+          onDismiss={() => { setInventoryVisible(false); setInventorySearch(''); }}
+          contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <View style={[styles.inventoryHeader, { flexDirection }]}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+              {t('quotes.fromCatalog') || 'בחר מהקטלוג'}
+            </Text>
+            <IconButton icon="close" size={20} onPress={() => { setInventoryVisible(false); setInventorySearch(''); }} />
+          </View>
+          <Searchbar
+            placeholder={t('common.search')}
+            value={inventorySearch}
+            onChangeText={setInventorySearch}
+            style={{ marginHorizontal: 12, marginBottom: 8 }}
+          />
+          {inventoryLoading ? (
+            <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginVertical: 32 }} />
+          ) : (
+            <FlatList
+              data={filteredInventory}
+              keyExtractor={(item, i) => String(item?.id ?? i)}
+              style={{ maxHeight: 460 }}
+              keyboardShouldPersistTaps="handled"
+              initialNumToRender={12}
+              maxToRenderPerBatch={16}
+              windowSize={7}
+              removeClippedSubviews
+              renderItem={({ item }) => {
+                const cf = item.customFields || {};
+                const { title, titleKey } = catBuildTitle(item, catalogColumns, catalogFieldsConfig, isRTL);
+                const hasImage = Array.isArray(item.images) && item.images.filter(Boolean).length > 0;
+                // Meta chips for every visible column (base + custom) in the web-configured order.
+                const chips: { key: string; label: string }[] = [];
+                for (const tok of catalogColumnTokens) {
+                  if (tok === 'image' || tok === 'name' || tok === 'unitPrice') continue;
+                  if (!isCatalogTokenVisible(tok)) continue;
+                  if (tok === 'sku') {
+                    if (item.sku) chips.push({ key: tok, label: String(item.sku) });
+                  } else if (tok === 'category') {
+                    if (item.category) chips.push({ key: tok, label: String(item.category) });
+                  } else if (tok.startsWith('custom:')) {
+                    const col = catalogColumns.find((c) => `custom:${c.id}` === tok);
+                    if (col && col.key !== titleKey && catHasVal(cf[col.key])) {
+                      chips.push({ key: tok, label: `${col.label}: ${catFormatValue(cf[col.key], isRTL)}` });
                     }
                   }
-                  const price = Number(item.unitPrice || item.price || 0);
-                  return (
-                    <TouchableOpacity
-                      style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant, alignItems: 'flex-start' }]}
-                      onPress={() => addFromInventory(item)}
-                    >
-                      {hasImage ? (
-                        <Image source={{ uri: item.images.filter(Boolean)[0] }} style={styles.inventoryThumb} contentFit="cover" />
-                      ) : (
-                        <View style={[styles.inventoryThumb, styles.inventoryThumbPlaceholder, { backgroundColor: theme.colors.primary + '15' }]}>
-                          <MaterialCommunityIcons name="package-variant" size={20} color={theme.colors.primary} />
+                }
+                const price = Number(item.unitPrice || item.price || 0);
+                return (
+                  <TouchableOpacity
+                    style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant, alignItems: 'flex-start' }]}
+                    onPress={() => addFromInventory(item)}
+                  >
+                    {hasImage ? (
+                      <Image source={{ uri: item.images.filter(Boolean)[0] }} style={styles.inventoryThumb} contentFit="cover" />
+                    ) : (
+                      <View style={[styles.inventoryThumb, styles.inventoryThumbPlaceholder, { backgroundColor: theme.colors.primary + '15' }]}>
+                        <MaterialCommunityIcons name="package-variant" size={20} color={theme.colors.primary} />
+                      </View>
+                    )}
+                    <View style={{ flex: 1, marginHorizontal: 10 }}>
+                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }} numberOfLines={1}>
+                        {title}
+                      </Text>
+                      {item.description ? (
+                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 1 }} numberOfLines={1}>
+                          {item.description}
+                        </Text>
+                      ) : null}
+                      {chips.length > 0 && (
+                        <View style={[styles.inventoryChips, { flexDirection, flexWrap: 'wrap' }]}>
+                          {chips.slice(0, 6).map((c) => (
+                            <View key={c.key} style={[styles.inventoryChip, { backgroundColor: theme.colors.onSurfaceVariant + '14' }]}>
+                              <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }} numberOfLines={1}>{c.label}</Text>
+                            </View>
+                          ))}
                         </View>
                       )}
-                      <View style={{ flex: 1, marginHorizontal: 10 }}>
-                        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }} numberOfLines={1}>
-                          {title}
-                        </Text>
-                        {item.description ? (
-                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 1 }} numberOfLines={1}>
-                            {item.description}
-                          </Text>
-                        ) : null}
-                        {chips.length > 0 && (
-                          <View style={[styles.inventoryChips, { flexDirection, flexWrap: 'wrap' }]}>
-                            {chips.slice(0, 6).map((c) => (
-                              <View key={c.key} style={[styles.inventoryChip, { backgroundColor: theme.colors.onSurfaceVariant + '14' }]}>
-                                <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 10 }} numberOfLines={1}>{c.label}</Text>
-                              </View>
-                            ))}
-                          </View>
-                        )}
-                      </View>
-                      <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '700', marginTop: 2 }}>
-                        {price > 0 ? `₪${price.toLocaleString()}` : ''}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                }}
-                ListEmptyComponent={
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
-                    {t('common.noResults')}
-                  </Text>
-                }
-              />
-            )}
-          </Modal>
-        </Portal>
-      </View>
-    );
-  }
-
-  // ─── VIEW MODE ───
-  return (
-    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 4 },
-        ]}
-      >
-        <View style={[styles.headerRow, { flexDirection }]}>
-          <IconButton
-            icon={isRTL ? 'arrow-right' : 'arrow-left'}
-            iconColor={theme.custom.headerText}
-            size={24}
-            onPress={() => router.back()}
-          />
-          <Text
-            variant="titleMedium"
-            numberOfLines={1}
-            style={[styles.headerTitleText, { flex: 1, textAlign }]}
-          >
-            {quote.title}
-          </Text>
-          <IconButton
-            icon="eye-outline"
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={() => setPreviewVisible(true)}
-          />
-          <IconButton
-            icon="pencil"
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={openEditMode}
-          />
-          <IconButton
-            icon="share-variant"
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={handleShare}
-          />
-          <IconButton
-            icon="link-variant"
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={handleCopyLink}
-          />
-          <IconButton
-            icon="delete-outline"
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={handleDelete}
-            disabled={deleting}
-          />
-        </View>
-      </View>
-
-      <ScrollView
-        style={styles.body}
-        contentContainerStyle={styles.bodyContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Status Banner */}
-        <View
-          style={[
-            styles.statusBanner,
-            { backgroundColor: `${statusColor}12`, borderColor: `${statusColor}40` },
-          ]}
-        >
-          <View style={[styles.statusBannerInner, { flexDirection }]}>
-            <View style={[styles.statusIconWrap, { backgroundColor: `${statusColor}20` }]}>
-              <MaterialCommunityIcons name={statusIcon as any} size={28} color={statusColor} />
-            </View>
-            <View style={{ flex: 1, gap: 4 }}>
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                {t('quotes.quoteNumber')}
-              </Text>
-              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign }}>
-                #{quote.quoteNumber}
-              </Text>
-            </View>
-            <Chip
-              textStyle={[styles.statusBadgeText, { color: statusColor }]}
-              style={[styles.statusBadge, { backgroundColor: `${statusColor}20` }]}
-            >
-              {t(`quotes.${quote.status}`)}
-            </Chip>
-          </View>
-        </View>
-
-        {/* Contact Info */}
-        {quote.contactName ? (
-          <Pressable
-            onPress={() => {
-              const navId = quote.contactId || quote.contactPhone || quote.phoneNumber;
-              if (navId) {
-                router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: navId } });
-              }
-            }}
-            style={[
-              styles.sectionCard,
-              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-            ]}
-          >
-            <View style={[styles.contactRow, { flexDirection }]}>
-              <View style={[styles.contactAvatar, { backgroundColor: theme.colors.primaryContainer }]}>
-                <MaterialCommunityIcons name="account" size={24} color={theme.colors.primary} />
-              </View>
-              <View style={{ flex: 1, gap: 2 }}>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                  {t('quotes.contact')}
-                </Text>
-                <Text variant="bodyLarge" style={{ color: theme.colors.primary, fontWeight: '600', textAlign }}>
-                  {quote.contactName}
-                </Text>
-                {(quote.contactPhone || quote.phoneNumber) ? (
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                    {quote.contactPhone || quote.phoneNumber}
-                  </Text>
-                ) : null}
-              </View>
-              {(quote.contactId || quote.contactPhone || quote.phoneNumber) ? (
-                <MaterialCommunityIcons
-                  name={isRTL ? 'chevron-left' : 'chevron-right'}
-                  size={22}
-                  color={theme.colors.onSurfaceVariant}
-                />
-              ) : null}
-            </View>
-          </Pressable>
-        ) : null}
-
-        {/* Contact Action Buttons */}
-        {(quote.contactPhone || quote.phoneNumber) ? (
-          <View style={[styles.actionRow, { flexDirection }]}>
-            <Button
-              mode="outlined"
-              icon="phone"
-              onPress={handleCall}
-              style={[styles.actionButtonHalf, { borderColor: '#4CAF50' }]}
-              textColor="#4CAF50"
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('common.call')}
-            </Button>
-            <Button
-              mode="outlined"
-              icon="whatsapp"
-              onPress={handleWhatsAppChat}
-              style={[styles.actionButtonHalf, { borderColor: '#25D366' }]}
-              textColor="#25D366"
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('quotes.openChat', 'פתח צ\'אט')}
-            </Button>
-          </View>
-        ) : null}
-
-        {/* Items Table */}
-        <View
-          style={[
-            styles.sectionCard,
-            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-          ]}
-        >
-          <Text variant="titleSmall" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign }]}>
-            {t('quotes.items')} ({quote.items?.length ?? 0})
-          </Text>
-
-          <View style={[styles.tableHeader, { flexDirection, backgroundColor: theme.colors.surfaceVariant }]}>
-            <Text style={[styles.tableHeaderCell, styles.tableItemName, { color: theme.colors.onSurfaceVariant, textAlign }]}>
-              {t('quotes.itemDescription')}
-            </Text>
-            <Text style={[styles.tableHeaderCell, styles.tableItemQty, { color: theme.colors.onSurfaceVariant }]}>
-              {t('quotes.quantity')}
-            </Text>
-            <Text style={[styles.tableHeaderCell, styles.tableItemPrice, { color: theme.colors.onSurfaceVariant }]}>
-              {t('quotes.unitPrice')}
-            </Text>
-            <Text style={[styles.tableHeaderCell, styles.tableItemTotal, { color: theme.colors.onSurfaceVariant }]}>
-              {t('quotes.total')}
-            </Text>
-          </View>
-
-          <ScrollView
-            nestedScrollEnabled
-            style={[styles.tableBody, (quote.items?.length ?? 0) > 8 && { maxHeight: 320 }]}
-            showsVerticalScrollIndicator={(quote.items?.length ?? 0) > 8}
-          >
-            {quote.items.map((item, index) => (
-              <View key={item.id || index}>
-                <View style={[styles.tableRow, { flexDirection }]}>
-                  <View style={styles.tableItemName}>
-                    <Text variant="bodySmall" numberOfLines={2} style={{ color: theme.colors.onSurface, textAlign }}>
-                      {item.name || item.description}
-                    </Text>
-                    {item.description && item.name ? (
-                      <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                        {item.description}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Text style={[styles.tableCell, styles.tableItemQty, { color: theme.colors.onSurface }]}>
-                    {item.quantity}
-                  </Text>
-                  <Text style={[styles.tableCell, styles.tableItemPrice, { color: theme.colors.onSurface }]}>
-                    {formatCurrency(item.unitPrice, currSymbol)}
-                  </Text>
-                  <Text style={[styles.tableCell, styles.tableItemTotal, { color: theme.colors.primary, fontWeight: '600' }]}>
-                    {formatCurrency(item.total || item.quantity * item.unitPrice, currSymbol)}
-                  </Text>
-                </View>
-                {index < (quote.items?.length ?? 0) - 1 && (
-                  <Divider style={{ backgroundColor: theme.colors.outlineVariant }} />
-                )}
-              </View>
-            ))}
-          </ScrollView>
-
-          {(quote.items?.length ?? 0) === 0 && (
-            <View style={styles.noItems}>
-              <MaterialCommunityIcons name="package-variant" size={32} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                {t('quotes.noItemsYet')}
-              </Text>
-            </View>
-          )}
-        </View>
-
-        {/* Financial Summary */}
-        <View
-          style={[
-            styles.financialCard,
-            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-          ]}
-        >
-          <Text variant="titleSmall" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign }]}>
-            {t('quotes.financialSummary')}
-          </Text>
-
-          <View style={styles.summaryRow}>
-            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-              {t('quotes.subtotal')}
-            </Text>
-            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
-              {formatCurrency(quote.subtotal || 0, currSymbol)}
-            </Text>
-          </View>
-
-          {(quote.discount || 0) > 0 && (
-            <View style={styles.summaryRow}>
-              <Text variant="bodyMedium" style={{ color: '#F44336' }}>
-                {t('quotes.discount')} {quote.discountType === 'percent' ? `(${quote.discount}%)` : ''}
-              </Text>
-              <Text variant="bodyMedium" style={{ color: '#F44336' }}>
-                -{formatCurrency(quote.discountAmount || quote.discount || 0, currSymbol)}
-              </Text>
-            </View>
-          )}
-
-          {(quote.tax || 0) > 0 && (
-            <View style={styles.summaryRow}>
-              <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                {t('quotes.tax')} ({quote.tax}%)
-              </Text>
-              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
-                {formatCurrency(quote.taxAmount || 0, currSymbol)}
-              </Text>
-            </View>
-          )}
-
-          <Divider style={{ marginVertical: 10, backgroundColor: theme.colors.outlineVariant }} />
-
-          <View style={styles.summaryRow}>
-            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-              {t('quotes.total')}
-            </Text>
-            <Text variant="headlineSmall" style={{ color: theme.colors.primary, fontWeight: '800' }}>
-              {formatCurrency(quote.total || 0, currSymbol)}
-            </Text>
-          </View>
-        </View>
-
-        {/* Valid Until */}
-        {quote.validUntil ? (
-          <View
-            style={[
-              styles.sectionCard,
-              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-            ]}
-          >
-            <View style={[styles.detailRow, { flexDirection }]}>
-              <View style={[styles.detailIcon, { backgroundColor: '#FF980018' }]}>
-                <MaterialCommunityIcons name="calendar-clock" size={20} color="#FF9800" />
-              </View>
-              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('quotes.validUntil')}
-                </Text>
-                <Text
-                  variant="bodyMedium"
-                  style={{
-                    color: new Date(quote.validUntil) < new Date() ? '#F44336' : theme.colors.onSurface,
-                    fontWeight: '500',
-                  }}
-                >
-                  {formatDate(quote.validUntil)}
-                  {new Date(quote.validUntil) < new Date() ? ` (${t('quotes.expired')})` : ''}
-                </Text>
-              </View>
-            </View>
-          </View>
-        ) : null}
-
-        {/* Salesperson */}
-        {quote.salespersonName ? (
-          <View
-            style={[
-              styles.sectionCard,
-              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-            ]}
-          >
-            <View style={[styles.detailRow, { flexDirection }]}>
-              <View style={[styles.detailIcon, { backgroundColor: '#2196F318' }]}>
-                <MaterialCommunityIcons name="account-tie" size={20} color="#2196F3" />
-              </View>
-              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('quotes.salesperson')}
-                </Text>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '500' }}>
-                  {quote.salespersonName}
-                </Text>
-              </View>
-            </View>
-          </View>
-        ) : null}
-
-        {/* Dates */}
-        <View
-          style={[
-            styles.sectionCard,
-            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-          ]}
-        >
-          <View style={[styles.timestampRow, { flexDirection }]}>
-            <MaterialCommunityIcons name="clock-outline" size={14} color={theme.colors.onSurfaceVariant} />
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {t('quotes.createdDate')}:
-            </Text>
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurface }}>
-              {formatDate(quote.createdOn || quote.createdAt || '')}
-            </Text>
-          </View>
-          {quote.sentAt ? (
-            <View style={[styles.timestampRow, { flexDirection, marginTop: 6 }]}>
-              <MaterialCommunityIcons name="send-check" size={14} color="#2196F3" />
-              <Text variant="labelSmall" style={{ color: '#2196F3' }}>
-                {t('quotes.sentDate')}:
-              </Text>
-              <Text variant="labelSmall" style={{ color: '#2196F3' }}>
-                {formatDate(quote.sentAt)}
-              </Text>
-            </View>
-          ) : null}
-        </View>
-
-        {/* Notes */}
-        {quote.notes ? (
-          <View
-            style={[
-              styles.sectionCard,
-              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-            ]}
-          >
-            <Text variant="titleSmall" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign }]}>
-              {t('quotes.notes')}
-            </Text>
-            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign }}>
-              {quote.notes}
-            </Text>
-          </View>
-        ) : null}
-
-        {/* Terms */}
-        {quote.terms ? (
-          <View
-            style={[
-              styles.sectionCard,
-              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-            ]}
-          >
-            <Text variant="titleSmall" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign }]}>
-              {t('quotes.terms')}
-            </Text>
-            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign }}>
-              {quote.terms}
-            </Text>
-          </View>
-        ) : null}
-
-        {/* Shipping Details */}
-        {quote.showShipping && quote.shipping && (quote.shipping.address || quote.shipping.city || quote.shipping.notes) ? (
-          <View
-            style={[
-              styles.sectionCard,
-              { backgroundColor: '#f0f9ff', borderColor: '#bae6fd' },
-            ]}
-          >
-            <Text variant="titleSmall" style={[styles.sectionLabel, { color: '#0284c7', textAlign }]}>
-              🚚 {t('quotes.shippingDetails', 'פרטי משלוח')}
-            </Text>
-            {(quote.shipping.address || quote.shipping.city) ? (
-              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign }}>
-                {[quote.shipping.address, quote.shipping.city].filter(Boolean).join(', ')}
-                {quote.shipping.floor ? `\nקומה: ${quote.shipping.floor}` : ''}
-                {quote.shipping.elevator ? ' (מעלית זמינה)' : ''}
-              </Text>
-            ) : null}
-            {quote.shipping.notes ? (
-              <Text variant="bodySmall" style={{ color: '#64748b', marginTop: 4, textAlign }}>
-                {quote.shipping.notes}
-              </Text>
-            ) : null}
-          </View>
-        ) : null}
-
-        {/* Bank Details */}
-        {quote.showBankDetails && quote.bankDetails && (quote.bankDetails.bankName || quote.bankDetails.accountNumber) ? (
-          <View
-            style={[
-              styles.sectionCard,
-              { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' },
-            ]}
-          >
-            <Text variant="titleSmall" style={[styles.sectionLabel, { color: '#16a34a', textAlign }]}>
-              🏦 {t('quotes.bankDetails', 'פרטי בנק לתשלום')}
-            </Text>
-            {quote.bankDetails.bankName ? (
-              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
-                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>שם הבנק:</Text>
-                <Text variant="bodyMedium" style={{ color: '#1f2937' }}>{quote.bankDetails.bankName}</Text>
-              </View>
-            ) : null}
-            {quote.bankDetails.branchNumber ? (
-              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
-                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>מספר סניף:</Text>
-                <Text variant="bodyMedium" style={{ color: '#1f2937' }}>{quote.bankDetails.branchNumber}</Text>
-              </View>
-            ) : null}
-            {quote.bankDetails.accountNumber ? (
-              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
-                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>מספר חשבון:</Text>
-                <Text variant="bodyMedium" style={{ fontWeight: '700', color: '#1f2937' }}>{quote.bankDetails.accountNumber}</Text>
-              </View>
-            ) : null}
-            {quote.bankDetails.accountName ? (
-              <View style={{ flexDirection, justifyContent: 'space-between', paddingVertical: 2 }}>
-                <Text variant="bodyMedium" style={{ fontWeight: '600', color: '#374151' }}>על שם:</Text>
-                <Text variant="bodyMedium" style={{ color: '#1f2937' }}>{quote.bankDetails.accountName}</Text>
-              </View>
-            ) : null}
-          </View>
-        ) : null}
-
-        {/* Action Buttons */}
-        <View style={styles.actionsContainer}>
-          <Button
-            mode="contained"
-            icon="whatsapp"
-            onPress={handleSendWhatsApp}
-            loading={sending}
-            style={[styles.actionButton, { backgroundColor: '#25D366' }]}
-            textColor="#FFFFFF"
-            contentStyle={styles.actionButtonContent}
-          >
-            {t('quotes.sendViaWhatsApp')}
-          </Button>
-
-          <View style={[styles.actionRow, { flexDirection }]}>
-            <Button
-              mode="outlined"
-              icon="share-variant"
-              onPress={handleShare}
-              style={[styles.actionButtonHalf, { borderColor: theme.colors.outline }]}
-              textColor={theme.colors.onSurface}
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('quotes.share')}
-            </Button>
-            <Button
-              mode="outlined"
-              icon="draw-pen"
-              onPress={handleSendESignature}
-              style={[styles.actionButtonHalf, { borderColor: theme.colors.primary }]}
-              textColor={theme.colors.primary}
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('quotes.sendForESignature')}
-            </Button>
-          </View>
-
-          <Button
-            mode="outlined"
-            icon="file-document-check-outline"
-            onPress={() => {
-              router.push({
-                pathname: '/(tabs)/more/invoices/[id]',
-                params: {
-                  id: 'new',
-                  prefillContactName: quote?.contactName || '',
-                  prefillContactPhone: quote?.contactPhone || '',
-                  prefillRelatedQuoteId: quote?.id || '',
-                },
-              });
-            }}
-            style={[styles.actionButton, { borderColor: '#0891b2' }]}
-            textColor="#0891b2"
-            contentStyle={styles.actionButtonContent}
-          >
-            {t('invoices.generateFromQuote', 'הפק חשבונית מהצעה')}
-          </Button>
-
-          <View style={[styles.actionRow, { flexDirection }]}>
-            <Button
-              mode="outlined"
-              icon="pencil"
-              onPress={openEditMode}
-              style={[styles.actionButtonHalf, { borderColor: theme.colors.primary }]}
-              textColor={theme.colors.primary}
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('common.edit')}
-            </Button>
-            <Button
-              mode="outlined"
-              icon="delete-outline"
-              onPress={handleDelete}
-              loading={deleting}
-              style={[styles.actionButtonHalf, { borderColor: theme.colors.error }]}
-              textColor={theme.colors.error}
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('common.delete')}
-            </Button>
-          </View>
-        </View>
-
-        {/* ─── Timeline (change history) — documents create / update / status changes ─── */}
-        <View
-          style={[
-            styles.sectionCard,
-            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-          ]}
-        >
-          <View style={{ flexDirection, alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <MaterialCommunityIcons name="history" size={18} color={theme.colors.primary} />
-            <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-              {isRTL ? 'ציר זמן' : 'Timeline'}
-            </Text>
-          </View>
-
-          {timelineLoading && timelineEvents.length === 0 ? (
-            <ActivityIndicator size="small" color={theme.colors.primary} />
-          ) : timelineEvents.length === 0 ? (
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-              {isRTL ? 'אין עדיין תיעוד שינויים' : 'No change history yet'}
-            </Text>
-          ) : (
-            timelineEvents.map((ev: any, idx: number) => {
-              const type = (ev.TimelineType || ev.timelineType || ev.type || '').toLowerCase();
-              const creator = ev.createdByName || ev.CreatedByName || '';
-              const ts = ev.createdOn || ev.CreateDateTimeUTC || ev.timestamp || '';
-              const note = ev.note || ev.Note || ev.notes || ev.description || '';
-              let icon = 'circle-small';
-              let color = theme.colors.primary;
-              let label = isRTL ? 'עדכון' : 'Update';
-              if (type === 'quote_created') { icon = 'file-plus-outline'; color = '#2e6155'; label = isRTL ? 'הצעה נוצרה' : 'Quote created'; }
-              else if (type === 'quote_status_change') { icon = 'swap-horizontal'; color = '#8b5cf6'; label = isRTL ? 'סטטוס שונה' : 'Status changed'; }
-              else if (type === 'quote_updated') { icon = 'pencil-outline'; color = '#d97706'; label = isRTL ? 'הצעה עודכנה' : 'Quote updated'; }
-              else if (type === 'note') { icon = 'note-text-outline'; color = '#0891b2'; label = isRTL ? 'הערה' : 'Note'; }
-              return (
-                <View key={ev.TimelineId || ev.timelineId || idx} style={{ flexDirection, gap: 10, marginBottom: 12, alignItems: 'flex-start' }}>
-                  <MaterialCommunityIcons name={icon as any} size={18} color={color} style={{ marginTop: 2 }} />
-                  <View style={{ flex: 1 }}>
-                    <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign }}>
-                      {label}
-                    </Text>
-                    {note ? (
-                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, writingDirection: isRTL ? 'rtl' : 'ltr' }}>
-                        {note}
-                      </Text>
-                    ) : null}
-                    <View style={{ flexDirection, gap: 6, marginTop: 2 }}>
-                      {creator && creator.toLowerCase() !== 'system' ? (
-                        <Text variant="labelSmall" style={{ color: theme.colors.primary }}>{creator}</Text>
-                      ) : null}
-                      {ts ? (
-                        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                          {formatDate(ts, 'dd/MM/yyyy HH:mm')}
-                        </Text>
-                      ) : null}
                     </View>
-                  </View>
-                </View>
-              );
-            })
+                    <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '700', marginTop: 2 }}>
+                      {price > 0 ? `₪${price.toLocaleString()}` : ''}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', margin: 24 }}>
+                  {t('common.noResults')}
+                </Text>
+              }
+            />
           )}
-        </View>
-
-        <View style={{ height: insets.bottom + 24 }} />
-      </ScrollView>
-
+        </Modal>
+      </Portal>
       {/* ─── Quote Preview Modal ─── */}
       <Portal>
         <Modal
@@ -2451,10 +2045,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 4,
   },
-  contactRow: {
-    alignItems: 'center',
-    gap: 12,
-  },
   contactAvatar: {
     width: 44,
     height: 44,
@@ -2524,6 +2114,13 @@ const styles = StyleSheet.create({
   timestampRow: {
     alignItems: 'center',
     gap: 6,
+  },
+  infoBox: {
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 12,
+    gap: 4,
+    marginBottom: 12,
   },
   actionsContainer: {
     gap: 10,

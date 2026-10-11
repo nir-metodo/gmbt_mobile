@@ -60,6 +60,8 @@ import {
   hasWebFilterConstraints,
   buildWebFilterPredicate,
   decodeOverridesMap,
+  encodeOverridesMap,
+  toPersistableWebFilters,
   isBotOwnedChat,
 } from '../../../utils/webViewFilters';
 import WebSocketService from '../../../services/websocket';
@@ -198,11 +200,18 @@ const FILTER_OPTIONS = ['all', 'unread', 'internal', 'open', 'closed', 'myChats'
 interface SavedView {
   id: string;
   Name: string;
-  ViewData: { filters?: any; searchTerm?: string };
+  ViewData: { filters?: any; searchTerm?: string; advancedFilters?: any };
   IsPinned?: boolean;
   Visibility?: string;
+  SharedWithUserIds?: string[];
   UserId?: string;
 }
+
+// First SHARED doc of a singleton org-config viewType (or the first doc) — same pick as the web.
+const pickSharedDoc = (res: any): any => {
+  const views = res?.data?.Data?.views || (Array.isArray(res?.data) ? res.data : []);
+  return (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0] || null;
+};
 
 // Built-in views mirror the web Sidebar exactly (same IDs + order): הכל / לטיפול / שלי /
 // לא משויך / לא נקרא. The mobile app lets the user create, hide, reorder, or delete (own
@@ -312,7 +321,8 @@ export default function ChatsListScreen() {
   // Firebase Auth UID differs from the Firestore-doc uID, which is why personal views
   // created on the web did not show up in the app.
   const viewsUserId = user?.userId || user?.uID || '';
-  const userIsAdmin = user?.SecurityRole === 'Admin';
+  // Same admin test as the web Sidebar (case-insensitive, includes "System Admin").
+  const userIsAdmin = ['admin', 'system admin'].includes(String(user?.SecurityRole || '').toLowerCase());
 
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -432,7 +442,19 @@ export default function ChatsListScreen() {
   // Save-view modal (create a new view from the current filters)
   const [showSaveViewModal, setShowSaveViewModal] = useState(false);
   const [newViewName, setNewViewName] = useState('');
-  const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
+  const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared' | 'selected'>('personal');
+  const [saveViewError, setSaveViewError] = useState('');
+  const [savingView, setSavingView] = useState(false);
+  // Doc ids of the singleton org-config docs (so admin edits UPDATE the doc instead of adding a new one).
+  const [orgHiddenViewsDocId, setOrgHiddenViewsDocId] = useState('');
+  const [orgDefaultViewDocId, setOrgDefaultViewDocId] = useState('');
+  const [orgViewOverridesDocId, setOrgViewOverridesDocId] = useState('');
+  // PERSONAL default landing view (device-local, like the web's localStorage sidebar_pinned_builtin_*).
+  const [pinnedDefaultId, setPinnedDefaultId] = useState('');
+  // Per-tab action sheet (long-press a tab / ⋮ in the manage sheet) + rename dialog.
+  const [viewMenuTab, setViewMenuTab] = useState<ViewTab | null>(null);
+  const [renameViewTarget, setRenameViewTarget] = useState<SavedView | null>(null);
+  const [renameViewText, setRenameViewText] = useState('');
 
   // Advanced filters
   const [groupFilter, setGroupFilter] = useState<string[]>([]);
@@ -465,29 +487,45 @@ export default function ChatsListScreen() {
   // Sourced from CaseSettings.sla.messageResponse + org working hours (business-hours-aware clock).
   const [messageSla, setMessageSla] = useState<MessageSlaConfig | null>(null);
 
-  // Load saved views
-  useEffect(() => {
-    if (!user?.organization) return;
-    axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, {
-      organization: user.organization,
-      userId: viewsUserId,
-      viewType: 'sidebar',
-    }).then((res) => {
+  // Per-org AsyncStorage keys for the local view preferences (order + hidden tabs).
+  const org = user?.organization || '';
+  // Latest org (guards late responses of a previous org from overwriting the current one).
+  const orgRef = useRef(org);
+  orgRef.current = org;
+
+  // Load saved views. Re-runnable (mount, tab focus, app foreground, pull-to-refresh) so views created /
+  // edited / deleted on the web show up in the app without a reinstall or restart.
+  const lastViewsFetchRef = useRef(0);
+  const loadSavedViews = useCallback(async () => {
+    if (!org) return;
+    lastViewsFetchRef.current = Date.now();
+    try {
+      const res = await axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, {
+        organization: org,
+        userId: viewsUserId,
+        viewType: 'sidebar',
+      });
+      if (orgRef.current !== org) return;
       const data = res.data;
       if (data?.Success && data?.Data?.views) {
         setSavedViews(data.Data.views);
       } else if (Array.isArray(data)) {
         setSavedViews(data);
       }
-    }).catch(() => {}).finally(() => setSavedViewsLoaded(true));
-  }, [user?.organization, viewsUserId]);
+    } catch { /* keep whatever we have */ }
+    finally { if (orgRef.current === org) setSavedViewsLoaded(true); }
+  }, [org, viewsUserId]);
 
-  // Per-org AsyncStorage keys for the local view preferences (order + hidden tabs).
-  const org = user?.organization || '';
+  useEffect(() => {
+    setSavedViewsLoaded(false);
+    loadSavedViews();
+  }, [loadSavedViews]);
+
   const viewOrderKey = `chats_view_order_${org}`;
   const hiddenViewsKey = `chats_hidden_views_${org}`;
   const personalOrderKey = `chats_view_order_personal_${org}`;
   const orgShownViewsKey = `chats_org_shown_views_${org}`;
+  const pinnedDefaultKey = `chats_pinned_default_${org}`;
 
   // Restore the saved order / hidden set for this org. `viewPrefsLoaded` guards the persist
   // effects below so we don't overwrite storage with the empty initial state before load.
@@ -497,13 +535,15 @@ export default function ChatsListScreen() {
     setViewPrefsLoaded(false);
     (async () => {
       try {
-        const [orderRaw, hiddenRaw, personalRaw, shownRaw] = await Promise.all([
+        const [orderRaw, hiddenRaw, personalRaw, shownRaw, pinnedRaw] = await Promise.all([
           AsyncStorage.getItem(viewOrderKey),
           AsyncStorage.getItem(hiddenViewsKey),
           AsyncStorage.getItem(personalOrderKey),
           AsyncStorage.getItem(orgShownViewsKey),
+          AsyncStorage.getItem(pinnedDefaultKey),
         ]);
         if (cancelled) return;
+        setPinnedDefaultId(pinnedRaw || '');
         setViewOrder(orderRaw ? JSON.parse(orderRaw) : []);
         setHiddenViewIds(hiddenRaw ? JSON.parse(hiddenRaw) : []);
         setHasPersonalOrder(personalRaw === 'true');
@@ -519,52 +559,60 @@ export default function ChatsListScreen() {
 
   // Load the org-wide view ORDER (shared) and DEFAULT landing view configured on the web, so the
   // app shows the organization's default views exactly as an admin defined them.
-  useEffect(() => {
+  // Re-runnable (mount / focus / foreground / pull-to-refresh) so admin changes made on the web
+  // (order, default, overrides, org-hidden) reach the app without a restart.
+  const loadOrgConfig = useCallback(async () => {
     if (!org) return;
-    let cancelled = false;
-    setOrgConfigLoaded(false);
     const uid = viewsUserId;
+    const fetchDoc = (viewType: string) =>
+      axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType })
+        .then((res) => (orgRef.current === org ? { ok: true, doc: pickSharedDoc(res) } : { ok: false, doc: null }))
+        .catch(() => ({ ok: false, doc: null }));
+    const dataOf = (doc: any) => doc?.ViewData || doc?.viewData || {};
     // Org default view order (a single shared doc under viewType 'sidebarViewOrder').
-    const pOrder = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarViewOrder' })
-      .then((res) => {
-        if (cancelled) return;
-        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
-        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
-        const order = shared?.ViewData?.order || shared?.viewData?.order;
-        if (Array.isArray(order)) setOrgViewOrder(order);
-        if (shared?.id) setOrgViewOrderDocId(shared.id);
-      }).catch(() => {});
-    // Org default landing view.
-    const pDefault = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarOrgDefault' })
-      .then((res) => {
-        if (cancelled) return;
-        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
-        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
-        const def = shared?.ViewData?.defaultViewId || shared?.viewData?.defaultViewId;
-        if (def) setOrgDefaultViewId(def);
-      }).catch(() => {});
+    const pOrder = fetchDoc('sidebarViewOrder').then(({ ok, doc }) => {
+      if (!ok) return;
+      const order = dataOf(doc).order;
+      setOrgViewOrder(Array.isArray(order) ? order : []);
+      if (doc?.id) setOrgViewOrderDocId(doc.id);
+    });
+    // Org default landing view (an id of a built-in tab or a saved view; '' = none).
+    const pDefault = fetchDoc('sidebarOrgDefault').then(({ ok, doc }) => {
+      if (!ok) return;
+      const def = dataOf(doc).defaultViewId;
+      setOrgDefaultViewId(def ? String(def) : '');
+      if (doc?.id) setOrgDefaultViewDocId(doc.id);
+    });
     // Admin overrides of the built-in views (e.g. "שלי" = mine OR unassigned) — keys are encoded
     // ("builtin_mine") because Firestore rejects "__x__" field names; decode back to "__mine__".
-    const pOverrides = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarBuiltInOverrides' })
-      .then((res) => {
-        if (cancelled) return;
-        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
-        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
-        const overrides = shared?.ViewData?.overrides || shared?.viewData?.overrides;
-        if (overrides && typeof overrides === 'object') setOrgViewOverrides(decodeOverridesMap(overrides));
-      }).catch(() => {});
+    // A reset override is stored as null → falsy → "no override" (same as the web).
+    const pOverrides = fetchDoc('sidebarBuiltInOverrides').then(({ ok, doc }) => {
+      if (!ok) return;
+      const overrides = dataOf(doc).overrides;
+      setOrgViewOverrides(overrides && typeof overrides === 'object' ? decodeOverridesMap(overrides) : {});
+      if (doc?.id) setOrgViewOverridesDocId(doc.id);
+    });
     // Views the admin hid for the whole organization.
-    const pHidden = axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: uid, viewType: 'sidebarOrgHiddenViews' })
-      .then((res) => {
-        if (cancelled) return;
-        const views = res.data?.Data?.views || (Array.isArray(res.data) ? res.data : []);
-        const shared = (views || []).find((v: any) => (v.Visibility || v.visibility) === 'shared') || views?.[0];
-        const hidden = shared?.ViewData?.hiddenViews || shared?.viewData?.hiddenViews;
-        if (Array.isArray(hidden)) setOrgHiddenViewIds(hidden);
-      }).catch(() => {});
-    Promise.allSettled([pOrder, pDefault, pOverrides, pHidden]).then(() => { if (!cancelled) setOrgConfigLoaded(true); });
-    return () => { cancelled = true; };
+    const pHidden = fetchDoc('sidebarOrgHiddenViews').then(({ ok, doc }) => {
+      if (!ok) return;
+      const hidden = dataOf(doc).hiddenViews;
+      setOrgHiddenViewIds(Array.isArray(hidden) ? hidden : []);
+      if (doc?.id) setOrgHiddenViewsDocId(doc.id);
+    });
+    await Promise.allSettled([pOrder, pDefault, pOverrides, pHidden]);
+    if (orgRef.current === org) setOrgConfigLoaded(true);
   }, [org, viewsUserId]);
+
+  useEffect(() => {
+    setOrgConfigLoaded(false);
+    loadOrgConfig();
+  }, [loadOrgConfig]);
+
+  // Refetch every view definition (personal + shared + org config). Throttled unless forced.
+  const refreshViews = useCallback((force = false) => {
+    if (!force && Date.now() - lastViewsFetchRef.current < 10000) return Promise.resolve();
+    return Promise.allSettled([loadSavedViews(), loadOrgConfig()]);
+  }, [loadSavedViews, loadOrgConfig]);
 
   // Always holds the latest fully-ordered tab id list (built-ins + saved). Lets moveViewTab /
   // saveOrgViewOrder reorder against the real displayed order without a forward reference.
@@ -786,7 +834,7 @@ export default function ChatsListScreen() {
     return wabaNumbersList;
   }, [wabaNumbersList, user?.assignedWhatsAppNumbers]);
 
-  const loadSavedView = useCallback((view: SavedView) => {
+  const loadSavedView = useCallback((view: SavedView, keepNumber = false) => {
     // A user action: the late org-default landing must never overwrite it afterwards.
     orgDefaultAppliedRef.current = true;
     const viewData = view.ViewData || (view as any).viewData || {};
@@ -802,7 +850,7 @@ export default function ChatsListScreen() {
     setGroupFilter([]);
     setLeadStageFilter([]);
     setCaseStageFilter([]);
-    setNumberFilter('');
+    if (!keepNumber) setNumberFilter('');
     setActivityFilter('');
     setViewFilters(hasWebFilterConstraints(webFilters) ? webFilters : null);
     const term = viewData.searchTerm || '';
@@ -828,71 +876,360 @@ export default function ChatsListScreen() {
     storeSetSearchQuery('');
   }, [setFilter, setCategoryFilter, setOwnerFilter, storeSetSearchQuery]);
 
-  const saveCurrentView = useCallback(async () => {
-    if (!newViewName.trim() || !user?.organization) return;
-    try {
-      // Saved in the SAME shape the web uses (arrays, uID owner tokens) so the view works on both.
-      const ownerId = ownerFilter !== 'all'
-        ? (chats.find((c) => c.ownerName === ownerFilter)?.ownerId || ownerFilter)
-        : '';
-      const base = viewFilters || normalizeWebFilters({});
-      const viewData = {
-        filters: {
-          ...base,
-          myConversations: base.myConversations || filter === 'myChats' || filter === 'toHandle',
-          alsoInclude: filter === 'toHandle' ? ['unassigned', 'botOwned'] : base.alsoInclude,
-          unassigned: base.unassigned || filter === 'unassigned',
-          unread: base.unread || filter === 'unread',
-          internalMessages: base.internalMessages || filter === 'internal',
-          notReviewedByHuman: base.notReviewedByHuman || filter === 'notReviewedByHuman',
-          status: filter === 'open' ? ['Open', 'In Process'] : filter === 'closed' ? ['Closed'] : base.status,
-          category: categoryFilter !== 'all' ? [categoryFilter] : base.category,
-          owner: ownerId ? [ownerId] : base.owner,
-          contactGroup: groupFilter.length ? groupFilter : base.contactGroup,
-          leadStage: leadStageFilter.length ? leadStageFilter : base.leadStage,
-          caseStage: caseStageFilter.length ? caseStageFilter : base.caseStage,
-          activityFilter: activityFilter || base.activityFilter,
-        },
-        searchTerm: searchInput,
-      };
-      const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
-        organization: user.organization,
-        userId: viewsUserId,
-        viewType: 'sidebar',
-        name: newViewName.trim(),
-        isPinned: false,
-        viewData,
-        visibility: userIsAdmin ? saveViewVisibility : 'personal',
-      });
-      if (res.data?.Success) {
-        const newView: SavedView = {
-          id: res.data.Data?.id || Date.now().toString(),
-          Name: newViewName.trim(),
-          ViewData: viewData,
-          IsPinned: false,
-          Visibility: userIsAdmin ? saveViewVisibility : 'personal',
-          UserId: viewsUserId,
-        };
-        setSavedViews((prev) => [...prev, newView]);
-      }
-    } catch {}
+  // Keep the ACTIVE view in sync with its (re)fetched definition: a saved view edited on the web
+  // re-applies its new filters, one deleted on the web drops back to "הכל", and an admin override of
+  // the active built-in tab updates live. ('__all__' is excluded so "clear filters" can't be undone.)
+  useEffect(() => {
+    if (!savedViewsLoaded || !activeViewId || activeViewId === '__all__') return;
+    const toFilters = (raw: any) => {
+      const f = normalizeWebFilters(raw);
+      return hasWebFilterConstraints(f) ? f : null;
+    };
+    let next: WebViewFilters | null;
+    if (activeViewId.startsWith('__')) {
+      const ov = orgViewOverrides[activeViewId];
+      if (!ov) return;
+      next = toFilters(ov);
+    } else {
+      const v = savedViews.find((x) => x.id === activeViewId);
+      if (!v) { clearAllFilters(); return; }
+      next = toFilters((v.ViewData || (v as any).viewData || {}).filters);
+    }
+    setViewFilters((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+  }, [savedViews, savedViewsLoaded, orgViewOverrides, activeViewId, clearAllFilters]);
+
+  // Bilingual inline strings (no i18n-file edits): vt('עברית', 'English').
+  const vt = useCallback((he: string, en: string) => (lang === 'he' ? he : en), [lang]);
+
+  // Ownership / permission rules — same as the web Sidebar (owner OR admin may edit / delete a view).
+  const isViewOwner = useCallback((v: SavedView) => {
+    const o = v.UserId || (v as any).userId || '';
+    return !!o && (o === viewsUserId || o === currentUserId);
+  }, [viewsUserId, currentUserId]);
+  const canManageView = useCallback((v?: SavedView | null) => !!v && (isViewOwner(v) || userIsAdmin), [isViewOwner, userIsAdmin]);
+
+  // A view name must be unique (case-insensitive) among the saved views; `excludeId` lets a view keep its own.
+  const isDuplicateViewName = useCallback((name: string, excludeId?: string) => {
+    const n = name.trim().toLowerCase();
+    return !!n && savedViews.some((v) => v.id !== excludeId && (v.Name || (v as any).name || '').trim().toLowerCase() === n);
+  }, [savedViews]);
+  const duplicateViewMsg = vt('כבר קיימת תצוגה בשם הזה — בחר שם אחר', 'A view with this name already exists — choose another name');
+
+  // The COMPLETE current filter set (active view / overridden built-in + the simple chips), emitted in
+  // exactly the key set the web's normalizeFilters() produces — so what is saved here is what the web
+  // reads. Mobile-only `activityFilter` is translated to the web's activeWithinDays / inactiveDays.
+  const buildCurrentFilters = useCallback((): Record<string, any> => {
+    const ownerId = ownerFilter !== 'all'
+      ? (chats.find((c) => c.ownerName === ownerFilter)?.ownerId || ownerFilter)
+      : '';
+    const base = viewFilters || normalizeWebFilters({});
+    return toPersistableWebFilters(normalizeWebFilters({
+      ...base,
+      myConversations: base.myConversations || filter === 'myChats' || filter === 'toHandle',
+      alsoInclude: filter === 'toHandle' ? ['unassigned', 'botOwned'] : base.alsoInclude,
+      unassigned: base.unassigned,
+      unread: base.unread || filter === 'unread',
+      internalMessages: base.internalMessages || filter === 'internal',
+      notReviewedByHuman: base.notReviewedByHuman || filter === 'notReviewedByHuman',
+      status: filter === 'open' ? ['Open', 'In Process'] : filter === 'closed' ? ['Closed'] : base.status,
+      category: categoryFilter !== 'all' ? [categoryFilter] : base.category,
+      // Same token the web's built-in "לא הוקצתה" tab uses.
+      owner: ownerId ? [ownerId] : filter === 'unassigned' ? ['__unassigned__'] : base.owner,
+      contactGroup: groupFilter.length ? groupFilter : base.contactGroup,
+      leadStage: leadStageFilter.length ? leadStageFilter : base.leadStage,
+      caseStage: caseStageFilter.length ? caseStageFilter : base.caseStage,
+      activityFilter: activityFilter || base.activityFilter,
+    }));
+  }, [chats, viewFilters, filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, activityFilter]);
+
+  // Raw SaveUserView call (web contract: organization/userId/viewType/name/isPinned/viewData/visibility/
+  // sharedWithUserIds/existingId). Throws on failure so callers can surface it instead of failing silently.
+  const postSaveView = useCallback(async (payload: Record<string, any>): Promise<string | undefined> => {
+    const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, { organization: org, ...payload });
+    if (!res.data?.Success) throw new Error(res.data?.Message || 'save failed');
+    return res.data?.Data?.id as string | undefined;
+  }, [org]);
+
+  const showViewError = useCallback((msg: string) => {
+    Alert.alert(vt('שגיאה', 'Error'), msg);
+  }, [vt]);
+
+  // The active saved view (if any) and whether this user may edit it → the "+" modal then offers
+  // "update this view" next to "save as new", like the web's save-view modal.
+  const activeSavedView = useMemo(
+    () => (activeViewId ? savedViews.find((v) => v.id === activeViewId) : undefined),
+    [savedViews, activeViewId],
+  );
+  const editableActiveView = canManageView(activeSavedView) ? activeSavedView : undefined;
+
+  const openSaveViewModal = useCallback(() => {
+    setSaveViewError('');
+    if (editableActiveView) {
+      setNewViewName(editableActiveView.Name || '');
+      const vis = editableActiveView.Visibility || (editableActiveView as any).visibility || 'personal';
+      setSaveViewVisibility(vis === 'shared' || vis === 'selected' ? vis : 'personal');
+    } else {
+      setNewViewName('');
+      setSaveViewVisibility('personal');
+    }
+    setShowSaveViewModal(true);
+  }, [editableActiveView]);
+
+  const closeSaveViewModal = useCallback(() => {
     setShowSaveViewModal(false);
     setNewViewName('');
     setSaveViewVisibility('personal');
-  }, [newViewName, user, chats, viewFilters, filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, activityFilter, searchInput, userIsAdmin, saveViewVisibility, viewsUserId]);
+    setSaveViewError('');
+  }, []);
 
-  const deleteSavedView = useCallback(async (viewId: string) => {
-    if (!user?.organization) return;
+  // Create a NEW saved view from the current filters (+ search text), in the web's shape.
+  const saveCurrentView = useCallback(async () => {
+    const name = newViewName.trim();
+    if (!name || !org || savingView) return;
+    if (isDuplicateViewName(name)) { setSaveViewError(duplicateViewMsg); return; }
+    setSavingView(true);
+    setSaveViewError('');
     try {
-      await axiosInstance.post(ENDPOINTS.DELETE_USER_VIEW, {
-        organization: user.organization,
+      let visibility: string = userIsAdmin ? saveViewVisibility : 'personal';
+      // "selected users" audience can only be copied from the view being edited (no user picker on mobile).
+      let sharedWithUserIds: string[] = [];
+      if (visibility === 'selected') {
+        sharedWithUserIds = Array.isArray(activeSavedView?.SharedWithUserIds) ? activeSavedView!.SharedWithUserIds! : [];
+        if (sharedWithUserIds.length === 0) visibility = 'personal';
+      }
+      const viewData = {
+        filters: buildCurrentFilters(),
+        searchTerm: searchInput,
+        // Mobile has no advanced-filter builder; send the web's empty default so the shape is complete.
+        advancedFilters: { filters: [], logic: 'AND' },
+      };
+      const id = await postSaveView({
         userId: viewsUserId,
-        viewId,
+        viewType: 'sidebar',
+        name,
+        isPinned: false,
+        viewData,
+        visibility,
+        sharedWithUserIds,
       });
-      setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
-      if (activeViewId === viewId) clearAllFilters();
-    } catch {}
-  }, [user, activeViewId, clearAllFilters]);
+      if (id) {
+        const newView: SavedView = {
+          id, Name: name, ViewData: viewData, IsPinned: false, Visibility: visibility,
+          SharedWithUserIds: sharedWithUserIds, UserId: viewsUserId,
+        };
+        setSavedViews((prev) => [...prev, newView]);
+        // Highlight the new tab and fold the chips into it (number filter isn't part of a view → keep).
+        loadSavedView(newView, true);
+      } else {
+        loadSavedViews();
+      }
+      closeSaveViewModal();
+    } catch {
+      setSaveViewError(vt('השמירה נכשלה, נסה שוב', 'Saving failed, please try again'));
+    } finally {
+      setSavingView(false);
+    }
+  }, [newViewName, org, savingView, isDuplicateViewName, duplicateViewMsg, userIsAdmin, saveViewVisibility, activeSavedView,
+      buildCurrentFilters, searchInput, postSaveView, viewsUserId, loadSavedView, loadSavedViews, closeSaveViewModal, vt]);
+
+  // Persist an edit to an EXISTING view. The backend OVERWRITES UserId / IsPinned / Visibility with
+  // whatever is sent (defaults: personal, unpinned), so we always resend the view's current values:
+  // the owner's UserId (an admin editing someone else's view must not take ownership), its pin flag,
+  // visibility and audience, and its full ViewData (incl. web-only advancedFilters).
+  const persistViewEdit = useCallback(async (
+    view: SavedView,
+    patch: { name?: string; viewData?: any; visibility?: string; sharedWithUserIds?: string[] },
+  ): Promise<SavedView> => {
+    const name = patch.name ?? view.Name;
+    const viewData = patch.viewData ?? view.ViewData ?? { filters: {}, searchTerm: '', advancedFilters: { filters: [], logic: 'AND' } };
+    const visibility = patch.visibility ?? (view.Visibility || (view as any).visibility || 'personal');
+    const sharedWithUserIds = visibility === 'selected'
+      ? (patch.sharedWithUserIds ?? (Array.isArray(view.SharedWithUserIds) ? view.SharedWithUserIds : []))
+      : [];
+    await postSaveView({
+      userId: view.UserId || (view as any).userId || viewsUserId,
+      viewType: 'sidebar',
+      name,
+      isPinned: view.IsPinned || false,
+      viewData,
+      visibility,
+      sharedWithUserIds,
+      existingId: view.id,
+    });
+    const updated: SavedView = { ...view, Name: name, ViewData: viewData, Visibility: visibility, SharedWithUserIds: sharedWithUserIds };
+    setSavedViews((prev) => prev.map((v) => (v.id === view.id ? updated : v)));
+    return updated;
+  }, [postSaveView, viewsUserId]);
+
+  // Overwrite a view's filters (+ search) with what's currently on screen; keeps web-only advancedFilters.
+  const currentViewDataFor = useCallback((view: SavedView) => ({
+    ...(view.ViewData || {}),
+    filters: buildCurrentFilters(),
+    searchTerm: searchInput,
+    advancedFilters: view.ViewData?.advancedFilters ?? { filters: [], logic: 'AND' },
+  }), [buildCurrentFilters, searchInput]);
+
+  // Save modal → "עדכן תצוגה": rename / change audience / replace filters of the active view.
+  const updateActiveView = useCallback(async () => {
+    const view = editableActiveView;
+    const name = newViewName.trim();
+    if (!view || !name || savingView) return;
+    if (isDuplicateViewName(name, view.id)) { setSaveViewError(duplicateViewMsg); return; }
+    setSavingView(true);
+    setSaveViewError('');
+    try {
+      const updated = await persistViewEdit(view, {
+        name,
+        viewData: currentViewDataFor(view),
+        // Only admins change the audience (web rule); everyone else keeps the view's current one.
+        ...(userIsAdmin ? { visibility: saveViewVisibility } : {}),
+      });
+      loadSavedView(updated, true);
+      closeSaveViewModal();
+    } catch {
+      setSaveViewError(vt('העדכון נכשל, נסה שוב', 'Update failed, please try again'));
+    } finally {
+      setSavingView(false);
+    }
+  }, [editableActiveView, newViewName, savingView, isDuplicateViewName, duplicateViewMsg, persistViewEdit, currentViewDataFor,
+      userIsAdmin, saveViewVisibility, loadSavedView, closeSaveViewModal, vt]);
+
+  // Tab menu → "עדכן תצוגה": replace this view's filters with the current ones.
+  const updateViewWithCurrent = useCallback(async (view: SavedView) => {
+    try {
+      const updated = await persistViewEdit(view, { viewData: currentViewDataFor(view) });
+      loadSavedView(updated, true);
+    } catch {
+      showViewError(vt('עדכון התצוגה נכשל', 'Failed to update the view'));
+    }
+  }, [persistViewEdit, currentViewDataFor, loadSavedView, showViewError, vt]);
+
+  const openRenameView = useCallback((view: SavedView) => {
+    setRenameViewTarget(view);
+    setRenameViewText(view.Name || '');
+  }, []);
+
+  const submitRenameView = useCallback(async () => {
+    const view = renameViewTarget;
+    const name = renameViewText.trim();
+    if (!view || !name || name === view.Name) { setRenameViewTarget(null); return; }
+    if (isDuplicateViewName(name, view.id)) { showViewError(duplicateViewMsg); return; }
+    try {
+      await persistViewEdit(view, { name });
+      setRenameViewTarget(null);
+    } catch {
+      showViewError(vt('שינוי השם נכשל', 'Failed to rename the view'));
+    }
+  }, [renameViewTarget, renameViewText, isDuplicateViewName, duplicateViewMsg, persistViewEdit, showViewError, vt]);
+
+  // Admin: flip an existing view between "only me" and "everyone" (web: audience editor).
+  const toggleViewShared = useCallback(async (view: SavedView) => {
+    const vis = view.Visibility || (view as any).visibility || 'personal';
+    try {
+      await persistViewEdit(view, { visibility: vis === 'personal' ? 'shared' : 'personal' });
+    } catch {
+      showViewError(vt('עדכון ההרשאות נכשל', 'Failed to update the view access'));
+    }
+  }, [persistViewEdit, showViewError, vt]);
+
+  // Delete (owner or admin — same as the web) after confirmation.
+  const deleteSavedView = useCallback((viewId: string) => {
+    if (!org) return;
+    const view = savedViews.find((v) => v.id === viewId);
+    if (!canManageView(view)) return;
+    Alert.alert(view?.Name || '', vt('למחוק תצוגה זו?', 'Delete this view?'), [
+      { text: vt('ביטול', 'Cancel'), style: 'cancel' },
+      {
+        text: vt('מחק', 'Delete'),
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const res = await axiosInstance.post(ENDPOINTS.DELETE_USER_VIEW, { organization: org, viewId });
+            if (res.data?.Success === false) throw new Error('delete failed');
+            setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
+            if (activeViewId === viewId) clearAllFilters();
+            if (pinnedDefaultId === viewId) {
+              setPinnedDefaultId('');
+              AsyncStorage.removeItem(pinnedDefaultKey).catch(() => {});
+            }
+          } catch {
+            showViewError(vt('מחיקת התצוגה נכשלה', 'Failed to delete the view'));
+          }
+        },
+      },
+    ]);
+  }, [org, savedViews, canManageView, vt, activeViewId, clearAllFilters, pinnedDefaultId, pinnedDefaultKey, showViewError]);
+
+  // Personal default landing tab (device-local — the web keeps this in localStorage too).
+  const togglePinnedDefault = useCallback((tabId: string) => {
+    setPinnedDefaultId((prev) => {
+      const next = prev === tabId ? '' : tabId;
+      AsyncStorage.setItem(pinnedDefaultKey, next).catch(() => {});
+      return next;
+    });
+  }, [pinnedDefaultKey]);
+
+  // ── Admin: org-wide config docs (same shared UserViews docs the web writes) ──
+  const saveOrgDoc = useCallback(async (viewType: string, name: string, viewData: any, existingId: string) => {
+    const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
+      organization: org,
+      userId: viewsUserId,
+      viewType,
+      name,
+      isPinned: true,
+      viewData,
+      visibility: 'shared',
+      ...(existingId ? { existingId } : {}),
+    });
+    if (!res.data?.Success) throw new Error('save failed');
+    return (res.data?.Data?.id as string | undefined) || existingId;
+  }, [org, viewsUserId]);
+
+  // Hide / unhide a tab for the WHOLE organization.
+  const toggleOrgHiddenView = useCallback(async (viewId: string) => {
+    if (!userIsAdmin) return;
+    const prev = orgHiddenViewIds;
+    const next = prev.includes(viewId) ? prev.filter((id) => id !== viewId) : [...prev, viewId];
+    setOrgHiddenViewIds(next);
+    try {
+      const id = await saveOrgDoc('sidebarOrgHiddenViews', 'orgHiddenViews', { hiddenViews: next }, orgHiddenViewsDocId);
+      if (id) setOrgHiddenViewsDocId(id);
+    } catch {
+      setOrgHiddenViewIds(prev);
+      showViewError(vt('השמירה לארגון נכשלה', 'Failed to save for the organization'));
+    }
+  }, [userIsAdmin, orgHiddenViewIds, saveOrgDoc, orgHiddenViewsDocId, showViewError, vt]);
+
+  // Make a tab (built-in or saved) the default landing view for EVERYONE (or clear it).
+  const toggleOrgDefaultView = useCallback(async (tabId: string) => {
+    if (!userIsAdmin) return;
+    const prev = orgDefaultViewId;
+    const next = prev === tabId ? '' : tabId;
+    setOrgDefaultViewId(next);
+    try {
+      const id = await saveOrgDoc('sidebarOrgDefault', 'orgDefaultView', { defaultViewId: next }, orgDefaultViewDocId);
+      if (id) setOrgDefaultViewDocId(id);
+    } catch {
+      setOrgDefaultViewId(prev);
+      showViewError(vt('השמירה לארגון נכשלה', 'Failed to save for the organization'));
+    }
+  }, [userIsAdmin, orgDefaultViewId, saveOrgDoc, orgDefaultViewDocId, showViewError, vt]);
+
+  // Make the current filters THE definition of a built-in tab for the whole org (or reset it → null,
+  // which every reader treats as "no override"; null rather than delete because the backend MergeAlls).
+  const saveBuiltInOverride = useCallback(async (builtInId: string, filters: Record<string, any> | null) => {
+    if (!userIsAdmin) return;
+    const prev = orgViewOverrides;
+    const next: Record<string, any> = { ...prev, [builtInId]: filters === null ? null : toPersistableWebFilters(normalizeWebFilters(filters)) };
+    setOrgViewOverrides(next);
+    try {
+      const id = await saveOrgDoc('sidebarBuiltInOverrides', 'orgBuiltInOverrides', { overrides: encodeOverridesMap(next) }, orgViewOverridesDocId);
+      if (id) setOrgViewOverridesDocId(id);
+    } catch {
+      setOrgViewOverrides(prev);
+      showViewError(vt('השמירה לארגון נכשלה', 'Failed to save for the organization'));
+    }
+  }, [userIsAdmin, orgViewOverrides, saveOrgDoc, orgViewOverridesDocId, showViewError, vt]);
 
   // The full tab set (built-in + the saved views this user is allowed to see), before ordering
   // or hiding. Shared views are visible to everyone; personal views only to their owner.
@@ -909,7 +1246,7 @@ export default function ChatsListScreen() {
         const vis = v.Visibility || (v as any).visibility || 'personal';
         // 'selected' views are already scoped server-side to their audience (GetUserViews).
         if (vis === 'shared' || vis === 'selected') return true;
-        return (v.UserId || '') === viewsUserId;
+        return isViewOwner(v);
       })
       .map((v) => {
         const shared = ['shared', 'selected'].includes(v.Visibility || (v as any).visibility || 'personal');
@@ -919,13 +1256,12 @@ export default function ChatsListScreen() {
           kind: 'saved' as const,
           view: v,
           shared,
-          // Only a PERSONAL view you own can be deleted. Shared (organization) views can only
-          // be hidden locally — deleting them would affect the whole org.
-          deletable: !shared && (v.UserId || '') === viewsUserId,
+          // Same rule as the web: the view's owner OR an admin may delete it.
+          deletable: canManageView(v),
         };
       });
     return [...builtins, ...saved];
-  }, [savedViews, viewsUserId, t]);
+  }, [savedViews, isViewOwner, canManageView, t]);
 
   // Once prefs are loaded, append any tab IDs that aren't in the persisted order yet (newly
   // created views, or first run). We never remove IDs — a view that disappears just drops out
@@ -978,24 +1314,25 @@ export default function ChatsListScreen() {
   // load (guarded by a ref) so it never fights the user's own tab selection afterwards.
   useEffect(() => {
     if (!viewPrefsLoaded || !orgConfigLoaded || !savedViewsLoaded || orgDefaultAppliedRef.current) return;
-    // Same precedence as the web Sidebar: org default → legacy "pinned" shared saved view → "הכל".
+    // Same precedence as the web Sidebar: MY personal default → org default (built-in or saved) →
+    // legacy "IsPinned" saved view → "הכל". An id that no longer exists is skipped (like the web); a
+    // default is honored even if its tab is hidden for me (the web applies it regardless).
     const pinnedSaved = savedViews.find((v) => v.IsPinned === true);
-    const wantId = orgDefaultViewId || pinnedSaved?.id || '__all__';
-    const target = visibleViewTabs.find((tb) => tb.id === wantId)
-      || visibleViewTabs.find((tb) => tb.id === '__all__');
-    // If the org default is a saved view that hasn't loaded yet, defer (don't consume the guard).
-    if (orgDefaultViewId && !target) return;
+    const target = [pinnedDefaultId, orgDefaultViewId, pinnedSaved?.id]
+      .filter(Boolean)
+      .map((id) => allViewTabs.find((tb) => tb.id === id))
+      .find(Boolean);
     orgDefaultAppliedRef.current = true;
-    if (target && target.id !== '__all__') applyViewTab(target);
+    if (target && (target.id !== '__all__' || orgViewOverrides['__all__'])) applyViewTab(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewPrefsLoaded, orgConfigLoaded, savedViewsLoaded, orgDefaultViewId, visibleViewTabs, savedViews]);
+  }, [viewPrefsLoaded, orgConfigLoaded, savedViewsLoaded, pinnedDefaultId, orgDefaultViewId, allViewTabs, savedViews]);
 
   // Apply a tab by its id (built-in tabs map to a store filter; saved views restore their filters).
   const applyViewTab = useCallback((tab: ViewTab) => {
     if (tab.kind === 'saved' && tab.view) { loadSavedView(tab.view); return; }
-    if (tab.id === '__all__') { clearAllFilters(); return; }
     // Start from a clean slate (also marks the org-default landing as consumed), like the web.
     clearAllFilters();
+    // (An admin override applies to EVERY built-in tab — including "הכל" — like the web's BUILT_IN_OV.)
     // Built-in view the admin customized on the web → apply the org-wide override (for everyone).
     const override = orgViewOverrides[tab.id];
     if (override) {
@@ -1009,7 +1346,7 @@ export default function ChatsListScreen() {
       case '__mine__': setActiveViewId('__mine__'); setFilter('myChats'); break;
       case '__unassigned__': setActiveViewId('__unassigned__'); setFilter('unassigned'); break;
       case '__unread__': setActiveViewId('__unread__'); setFilter('unread'); break;
-      default: break;
+      default: break; // '__all__' → the clean slate above
     }
   }, [loadSavedView, clearAllFilters, setFilter, orgViewOverrides]);
 
@@ -1045,6 +1382,7 @@ export default function ChatsListScreen() {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active' && user?.organization) {
         WebSocketService.reconnectAll();
+        refreshViews(); // pick up web-side view changes made while the app was backgrounded
         // The list often looks stale after the app was in the background (WebSocket may have missed
         // events). If it's been a while, do a FULL resync (with the refresh indicator) so the user
         // immediately sees the current chats instead of the state from when they left. For quick
@@ -1061,7 +1399,7 @@ export default function ChatsListScreen() {
       }
     });
     return () => subscription.remove();
-  }, [user?.organization, refreshChatsIncremental, refreshChatsFull, chatsDV, currentUserId, scrollChatsToTop]);
+  }, [user?.organization, refreshChatsIncremental, refreshChatsFull, chatsDV, currentUserId, scrollChatsToTop, refreshViews]);
 
   // Snap to the top whenever the chats tab regains focus, and resync the list if it's gone stale
   // (e.g. coming back from a conversation or another tab after a while) so it never keeps showing
@@ -1069,6 +1407,8 @@ export default function ChatsListScreen() {
   useFocusEffect(
     useCallback(() => {
       if (user?.organization) {
+        // Views created / edited on the web while the app was open show up on re-entering the tab.
+        refreshViews();
         const { pendingListReload, clearListReload } = useChatStore.getState();
         if (pendingListReload) {
           // We just came back from a conversation that was opened via a push notification. The list
@@ -1094,7 +1434,7 @@ export default function ChatsListScreen() {
       // pre-load snap scrolls the STALE list and new rows appear above the viewport (the "always
       // shows the list as it was last time / have to scroll up" bug).
       InteractionManager.runAfterInteractions(() => scrollChatsToTop(false));
-    }, [user?.organization, refreshChatsFull, refreshChatsIncremental, scrollChatsToTop])
+    }, [user?.organization, refreshChatsFull, refreshChatsIncremental, scrollChatsToTop, refreshViews])
   );
 
   useEffect(() => {
@@ -1239,6 +1579,7 @@ export default function ChatsListScreen() {
         meId: user?.uID || user?.userId || '',
         contactLeadMap,
         contactCaseMap,
+        messageSla,
       });
       if (viewPredicate) result = result.filter(viewPredicate);
     }
@@ -1318,7 +1659,7 @@ export default function ChatsListScreen() {
     // "list re-sorts wrong after entering a chat and coming back" report. Sorting the (already
     // filtered) copy here makes the displayed order correct no matter what.
     return [...result].sort((a, b) => chatActivityMs(b) - chatActivityMs(a));
-  }, [chats, filter, viewFilters, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages]);
+  }, [chats, filter, viewFilters, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages, messageSla]);
 
   // When searching, show all results; otherwise paginate for smooth scrolling
   const displayedChats = useMemo(() => {
@@ -1360,12 +1701,13 @@ export default function ChatsListScreen() {
   }, [filter, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter]);
 
   const onRefresh = useCallback(async () => {
-    await refreshChatsFull(true);
+    // Pull-to-refresh also re-syncs the saved views / org view config (forced, not throttled).
+    await Promise.all([refreshChatsFull(true), refreshViews(true)]);
     // Once the fresh list has landed, snap to the top so newly-arrived conversations are visible
     // without the user having to scroll up (the list otherwise stays anchored at the old offset,
     // showing the previous state at the top — the reported "I have to scroll up after refresh" bug).
     scrollChatsToTop(true);
-  }, [refreshChatsFull, scrollChatsToTop]);
+  }, [refreshChatsFull, scrollChatsToTop, refreshViews]);
 
   const openChat = useCallback(
     (chat: Chat) => {
@@ -2272,47 +2614,46 @@ export default function ChatsListScreen() {
       )}
 
       {/* Saved Views Tabs — order & visibility mirror the web Sidebar (user-configurable, per-org) */}
-      <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection: scrollRowDirection }]}>
+      <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, flexDirection: scrollRowDirection, alignItems: 'center' }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={[styles.filtersScroll, { flexDirection: scrollRowDirection }]}>
           {visibleViewTabs.map((tab) => {
             const active = activeViewId === tab.id;
+            const pinned = pinnedDefaultId === tab.id || (tab.kind === 'saved' && tab.view?.IsPinned === true);
             return (
               <Pressable
                 key={tab.id}
                 onPress={() => applyViewTab(tab)}
-                onLongPress={() => {
-                  const options: any[] = [{ text: t('common.cancel'), style: 'cancel' }];
-                  options.push({
-                    text: t('sidebar.hideView', 'הסתר תצוגה'),
-                    onPress: () => toggleHideView(tab.id),
-                  });
-                  if (tab.deletable) {
-                    options.push({
-                      text: t('common.delete', 'מחק'),
-                      style: 'destructive',
-                      onPress: () => deleteSavedView(tab.id),
-                    });
-                  }
-                  Alert.alert(tab.label, t('sidebar.viewActions', 'פעולות תצוגה'), options);
-                }}
+                onLongPress={() => setViewMenuTab(tab)}
                 style={[styles.viewTab, active && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
               >
                 <Text
                   style={[styles.viewTabText, { color: active ? theme.colors.primary : theme.colors.onSurfaceVariant }]}
                   numberOfLines={1}
                 >
-                  {(tab.shared ? '👥 ' : '') + tab.label}
+                  {(pinned ? '📌 ' : '') + (tab.shared ? '👥 ' : '') + tab.label}
                 </Text>
               </Pressable>
             );
           })}
-          <Pressable onPress={() => setShowSaveViewModal(true)} style={styles.viewTab}>
-            <MaterialCommunityIcons name="plus" size={18} color={theme.colors.primary} />
-          </Pressable>
-          <Pressable onPress={() => setShowViewsSettings(true)} style={styles.viewTab}>
-            <MaterialCommunityIcons name="cog-outline" size={18} color={theme.colors.onSurfaceVariant} />
-          </Pressable>
         </ScrollView>
+        {/* Always-visible "+" (save the CURRENT filters + search as a view) and ⚙ (manage views) — kept
+            outside the scrolling tabs so adding a view is one obvious tap no matter how many tabs exist. */}
+        <Pressable
+          onPress={openSaveViewModal}
+          accessibilityLabel={vt('הוסף תצוגה', 'Add view')}
+          hitSlop={4}
+          style={[styles.viewTab, { paddingHorizontal: 12 }]}
+        >
+          <MaterialCommunityIcons name="plus-circle-outline" size={22} color={theme.colors.primary} />
+        </Pressable>
+        <Pressable
+          onPress={() => setShowViewsSettings(true)}
+          accessibilityLabel={vt('ניהול תצוגות', 'Manage views')}
+          hitSlop={4}
+          style={[styles.viewTab, { paddingHorizontal: 10 }]}
+        >
+          <MaterialCommunityIcons name="cog-outline" size={20} color={theme.colors.onSurfaceVariant} />
+        </Pressable>
       </View>
 
       {/* Filter chips */}
@@ -2863,21 +3204,31 @@ export default function ChatsListScreen() {
         {/* Save View Modal */}
         <Modal
           visible={showSaveViewModal}
-          onDismiss={() => { setShowSaveViewModal(false); setNewViewName(''); }}
+          onDismiss={closeSaveViewModal}
           contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
         >
-          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 16 }}>
-            {t('sidebar.saveCurrentView', 'שמור תצוגה נוכחית')}
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
+            {editableActiveView
+              ? vt('שמירת שינויים בתצוגה', 'Save view changes')
+              : t('sidebar.saveCurrentView', 'שמור תצוגה נוכחית')}
+          </Text>
+          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, marginBottom: 12, textAlign }}>
+            {editableActiveView
+              ? vt(`שינית את "${editableActiveView.Name}" — עדכן אותה, או שמור כתצוגה חדשה בשם אחר.`, `You changed "${editableActiveView.Name}" — update it, or save as a new view with a different name.`)
+              : vt('הסינון הנוכחי (כולל טקסט החיפוש) יישמר כתצוגה חדשה, גם באתר.', 'The current filters (including the search text) are saved as a new view, also on the web.')}
           </Text>
           <PaperInput
             label={t('sidebar.viewName', 'שם התצוגה')}
             value={newViewName}
-            onChangeText={setNewViewName}
+            onChangeText={(v) => { setNewViewName(v); if (saveViewError) setSaveViewError(''); }}
             mode="outlined"
-            style={{ marginBottom: 12 }}
+            error={!!saveViewError}
+            autoFocus
+            style={{ marginBottom: saveViewError ? 0 : 12 }}
           />
+          {!!saveViewError && <HelperText type="error" visible style={{ marginBottom: 8 }}>{saveViewError}</HelperText>}
           {userIsAdmin && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
               <Chip
                 selected={saveViewVisibility === 'personal'}
                 onPress={() => setSaveViewVisibility('personal')}
@@ -2894,16 +3245,152 @@ export default function ChatsListScreen() {
               >
                 {t('sidebar.everyone', 'לכולם')}
               </Chip>
+              {saveViewVisibility === 'selected' && (
+                <Chip selected compact style={{ backgroundColor: theme.colors.primaryContainer }}>
+                  {vt('משתמשים נבחרים', 'Selected users')}
+                </Chip>
+              )}
             </View>
           )}
-          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
-            <Button mode="outlined" onPress={() => { setShowSaveViewModal(false); setNewViewName(''); }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
+            <Button mode="outlined" onPress={closeSaveViewModal} disabled={savingView}>
               {t('common.cancel')}
             </Button>
-            <Button mode="contained" disabled={!newViewName.trim()} onPress={saveCurrentView}>
+            {editableActiveView && (
+              <Button mode="contained" disabled={!newViewName.trim() || savingView} loading={savingView} onPress={updateActiveView}>
+                {vt('עדכן תצוגה', 'Update view')}
+              </Button>
+            )}
+            <Button
+              mode={editableActiveView ? 'outlined' : 'contained'}
+              disabled={!newViewName.trim() || savingView}
+              loading={savingView && !editableActiveView}
+              onPress={saveCurrentView}
+            >
+              {editableActiveView ? vt('שמור כחדשה', 'Save as new') : t('common.save', 'שמור')}
+            </Button>
+          </View>
+        </Modal>
+
+        {/* Rename a view */}
+        <Modal
+          visible={!!renameViewTarget}
+          onDismiss={() => setRenameViewTarget(null)}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, textAlign }}>
+            {vt('שנה שם לתצוגה', 'Rename view')}
+          </Text>
+          <PaperInput
+            label={t('sidebar.viewName', 'שם התצוגה')}
+            value={renameViewText}
+            onChangeText={setRenameViewText}
+            mode="outlined"
+            autoFocus
+            style={{ marginBottom: 12 }}
+          />
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+            <Button mode="outlined" onPress={() => setRenameViewTarget(null)}>{t('common.cancel')}</Button>
+            <Button mode="contained" disabled={!renameViewText.trim()} onPress={submitRenameView}>
               {t('common.save', 'שמור')}
             </Button>
           </View>
+        </Modal>
+
+        {/* Per-tab actions (long-press a tab, or ⋮ in the manage sheet) — mirrors the web's tab context menu */}
+        <Modal
+          visible={!!viewMenuTab}
+          onDismiss={() => setViewMenuTab(null)}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
+        >
+          {(() => {
+            const tab = viewMenuTab;
+            if (!tab) return null;
+            const view = tab.kind === 'saved' ? savedViews.find((v) => v.id === tab.id) || tab.view : undefined;
+            const manage = tab.kind === 'saved' && canManageView(view);
+            const orgScoped = tab.kind === 'builtin' || tab.shared;
+            const isActiveTab = activeViewId === tab.id;
+            const close = () => setViewMenuTab(null);
+            const rows: { icon: string; label: string; danger?: boolean; onPress: () => void }[] = [];
+            rows.push({
+              icon: 'pin-outline',
+              label: pinnedDefaultId === tab.id ? vt('בטל ברירת מחדל שלי', 'Unset my default') : vt('הצמד כברירת מחדל עבורי', 'Pin as my default'),
+              onPress: () => togglePinnedDefault(tab.id),
+            });
+            if (userIsAdmin) {
+              rows.push({
+                icon: 'account-group-outline',
+                label: orgDefaultViewId === tab.id ? vt('בטל ברירת מחדל לכולם', 'Unset default for everyone') : vt('הצמד כברירת מחדל לכולם', 'Pin as default for everyone'),
+                onPress: () => toggleOrgDefaultView(tab.id),
+              });
+            }
+            if (tab.kind === 'saved' && view && manage) {
+              // Only offered on the open tab (like the web): "current filters" must be this view's own + edits.
+              if (isActiveTab) {
+                rows.push({ icon: 'refresh', label: vt('עדכן תצוגה (לפי הסינון הנוכחי)', 'Update view (with current filters)'), onPress: () => updateViewWithCurrent(view) });
+              }
+              rows.push({ icon: 'pencil-outline', label: vt('שנה שם', 'Rename'), onPress: () => openRenameView(view) });
+              if (userIsAdmin) {
+                const vis = view.Visibility || (view as any).visibility || 'personal';
+                rows.push({
+                  icon: vis === 'personal' ? 'account-group-outline' : 'lock-outline',
+                  label: vis === 'personal' ? vt('שתף עם כולם', 'Share with everyone') : vt('הפוך לאישי (רק לי)', 'Make personal (only me)'),
+                  onPress: () => toggleViewShared(view),
+                });
+              }
+            }
+            if (tab.kind === 'builtin' && userIsAdmin && isActiveTab) {
+              rows.push({
+                icon: 'content-save-cog-outline',
+                label: vt('עדכן תצוגת מערכת לכולם (לפי הסינון הנוכחי)', 'Update system view for everyone (current filters)'),
+                onPress: () => saveBuiltInOverride(tab.id, buildCurrentFilters()),
+              });
+            }
+            if (tab.kind === 'builtin' && userIsAdmin && orgViewOverrides[tab.id]) {
+              rows.push({
+                icon: 'restore',
+                label: vt('אפס תצוגת מערכת לברירת מחדל', 'Reset system view to default'),
+                onPress: () => saveBuiltInOverride(tab.id, null),
+              });
+            }
+            rows.push({
+              icon: hiddenViewIds.includes(tab.id) || (orgHiddenViewIds.includes(tab.id) && orgViewShownForMe.includes(tab.id)) ? 'eye-outline' : 'eye-off-outline',
+              label: isViewHidden(tab.id) ? vt('הצג עבורי', 'Show for me') : vt('הסתר עבורי', 'Hide for me'),
+              onPress: () => toggleHideView(tab.id),
+            });
+            if (userIsAdmin && orgScoped) {
+              rows.push({
+                icon: 'earth',
+                label: orgHiddenViewIds.includes(tab.id) ? vt('בטל הסתרה לכל הארגון', 'Unhide for the whole org') : vt('הסתר לכל הארגון', 'Hide for the whole org'),
+                onPress: () => toggleOrgHiddenView(tab.id),
+              });
+            }
+            if (manage) {
+              rows.push({ icon: 'trash-can-outline', label: vt('מחק', 'Delete'), danger: true, onPress: () => deleteSavedView(tab.id) });
+            }
+            return (
+              <>
+                <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 8, fontWeight: '700', textAlign }} numberOfLines={1}>
+                  {tab.label}
+                </Text>
+                <ScrollView style={{ maxHeight: 420 }}>
+                  {rows.map((r, i) => (
+                    <Pressable
+                      key={`${r.icon}-${i}`}
+                      onPress={() => { close(); r.onPress(); }}
+                      style={({ pressed }) => [
+                        { flexDirection, alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 8 },
+                        pressed && { backgroundColor: theme.colors.surfaceVariant },
+                      ]}
+                    >
+                      <MaterialCommunityIcons name={r.icon as any} size={20} color={r.danger ? theme.colors.error : theme.colors.onSurfaceVariant} />
+                      <Text style={{ flex: 1, textAlign, color: r.danger ? theme.colors.error : theme.colors.onSurface }}>{r.label}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </>
+            );
+          })()}
         </Modal>
 
         {/* Views Settings — reorder, hide/show, and delete (personal only) */}
@@ -2916,7 +3403,7 @@ export default function ChatsListScreen() {
             {t('sidebar.manageViews', 'ניהול תצוגות')}
           </Text>
           <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, fontSize: 12, textAlign }}>
-            {t('sidebar.manageViewsHint', 'שנה סדר, הסתר או הצג תצוגות. תצוגות ארגון ניתן רק להסתיר.')}
+            {vt('שנה סדר, הסתר או הצג תצוגות. ⋮ לפעולות נוספות (שינוי שם, עדכון, ברירת מחדל). מחיקה — רק ליוצר התצוגה או למנהל.', 'Reorder, hide or show views. ⋮ for more actions (rename, update, default). Only the creator or an admin can delete.')}
           </Text>
           <ScrollView style={{ maxHeight: 420 }}>
             {orderedViewTabs.map((tab, idx) => {
@@ -2966,21 +3453,19 @@ export default function ChatsListScreen() {
                     onPress={() => toggleHideView(tab.id)}
                     style={{ margin: 0 }}
                   />
+                  <IconButton
+                    icon="dots-vertical"
+                    size={20}
+                    iconColor={theme.colors.onSurfaceVariant}
+                    onPress={() => setViewMenuTab(tab)}
+                    style={{ margin: 0 }}
+                  />
                   {tab.deletable && (
                     <IconButton
                       icon="trash-can-outline"
                       size={20}
                       iconColor={theme.colors.error}
-                      onPress={() => {
-                        Alert.alert(
-                          tab.label,
-                          t('sidebar.deleteViewConfirm', 'למחוק תצוגה זו?'),
-                          [
-                            { text: t('common.cancel'), style: 'cancel' },
-                            { text: t('common.delete', 'מחק'), style: 'destructive', onPress: () => deleteSavedView(tab.id) },
-                          ],
-                        );
-                      }}
+                      onPress={() => deleteSavedView(tab.id)}
                       style={{ margin: 0 }}
                     />
                   )}

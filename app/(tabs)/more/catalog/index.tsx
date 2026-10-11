@@ -29,6 +29,9 @@ import {
   IconButton,
   Switch,
 } from 'react-native-paper';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { HeaderMenu } from '../../../../components/HeaderMenu';
+import { ListToolbar } from '../../../../components/ListToolbar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -1042,41 +1045,36 @@ export default function CatalogScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      {/* Header */}
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} statusBarHeight={insets.top}>
-        <Appbar.BackAction onPress={() => router.back()} color="#fff" />
-        <Appbar.Content
-          title={t('more.catalog')}
-          titleStyle={styles.headerTitle}
-          color="#fff"
-        />
-        <Appbar.Action
-          icon={selectionMode ? 'close' : 'checkbox-multiple-marked-outline'}
-          color="#fff"
-          onPress={() => { if (selectionMode) exitSelection(); else setSelectionMode(true); }}
-        />
-        <Appbar.Action icon="inbox-arrow-down" color="#fff" onPress={openSelections} />
-        <Appbar.Action icon={sharing ? 'loading' : 'share-variant'} color="#fff" disabled={sharing} onPress={openShareSettings} />
-        <Appbar.Action
-          icon={hasActiveFilters ? 'filter' : 'filter-outline'}
-          color="#fff"
-          onPress={() => setFiltersVisible((v) => !v)}
-        />
-        <Appbar.Action icon="magnify" color="#fff" onPress={() => setSearchVisible(!searchVisible)} />
-      </Appbar.Header>
-
-      {/* Search */}
-      {searchVisible && (
-        <View style={[styles.searchRow, { backgroundColor: theme.colors.surface }]}>
-          <Searchbar
-            placeholder="חיפוש פריטים..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={styles.searchbar}
-            inputStyle={{ textAlign: isRTL ? 'right' : 'left' }}
+      <ScreenHeader
+        title={t('more.catalog')}
+        color={BRAND_COLOR}
+        onBack={() => router.back()}
+        actions={
+          <HeaderMenu
+            items={[
+              { key: 'select', title: selectionMode ? (isRTL ? 'בטל בחירה' : 'Cancel selection') : (isRTL ? 'בחירת פריטים' : 'Select items'), icon: selectionMode ? 'close' : 'checkbox-multiple-marked-outline', onPress: () => { if (selectionMode) exitSelection(); else setSelectionMode(true); } },
+              { key: 'inbox', title: isRTL ? 'בקשות לקוחות' : 'Customer selections', icon: 'inbox-arrow-down', onPress: openSelections },
+              { key: 'share', title: isRTL ? 'שיתוף קטלוג' : 'Share catalog', icon: 'share-variant', onPress: openShareSettings, disabled: sharing },
+            ]}
           />
-        </View>
-      )}
+        }
+      />
+
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder="חיפוש פריטים..."
+        trailing={
+          <View>
+            <IconButton
+              icon={hasActiveFilters ? 'filter' : 'filter-outline'}
+              size={22}
+              iconColor={hasActiveFilters ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+              onPress={() => setFiltersVisible((v) => !v)}
+            />
+          </View>
+        }
+      />
 
       {/* Advanced filters panel — mirrors the web catalog toolbar (price range + per-column filters) */}
       {filtersVisible && (

@@ -30,6 +30,11 @@ import { getDataVisibility } from '../../../../constants/permissions';
 import { formatDate } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import type { ESignatureDocument } from '../../../../types';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { DocumentListItem } from '../../../../components/DocumentListItem';
+import { EmptyState } from '../../../../components/EmptyState';
 
 const STATUS_FILTERS = ['all', 'pending', 'partiallySigned', 'signed', 'expired', 'cancelled'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
@@ -68,10 +73,7 @@ export default function ESignatureListScreen() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-
-  const searchAnim = useRef(new Animated.Value(0)).current;
 
   const esigDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'esignature');
 
@@ -81,7 +83,7 @@ export default function ESignatureListScreen() {
       setError(null);
       const result = await esignatureApi.getDocuments(
         user.organization,
-        esigDV,
+        esigDV as 'all' | 'own',
         user.uID || user.userId
       );
       setDocuments(Array.isArray(result) ? result : []);
@@ -102,37 +104,11 @@ export default function ESignatureListScreen() {
     setRefreshing(false);
   }, [fetchDocuments]);
 
-  const toggleSearch = useCallback(() => {
-    const willShow = !searchVisible;
-    if (willShow) {
-      setSearchVisible(true);
-      Animated.timing(searchAnim, {
-        toValue: 1,
-        duration: 220,
-        useNativeDriver: false,
-      }).start();
-    } else {
-      Animated.timing(searchAnim, {
-        toValue: 0,
-        duration: 180,
-        useNativeDriver: false,
-      }).start(() => {
-        setSearchVisible(false);
-        setSearchQuery('');
-      });
-    }
-  }, [searchVisible, searchAnim]);
-
   // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
   const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
-  const filteredDocuments = useMemo(() => {
+  const baseList = useMemo(() => {
     let result = documents;
-
-    if (statusFilter !== 'all') {
-      result = result.filter((d) => d.status === statusFilter);
-    }
-
     if (debouncedSearch.trim()) {
       const query = debouncedSearch.toLowerCase();
       result = result.filter((d) => {
@@ -141,18 +117,28 @@ export default function ESignatureListScreen() {
           d.documentName?.toLowerCase().includes(query);
         const contactMatch = d.contactName?.toLowerCase().includes(query);
         const signerMatch = d.signers?.some(
-          (s) =>
-            s.signerName?.toLowerCase().includes(query) ||
-            s.signerEmail?.toLowerCase().includes(query)
+          (sg) =>
+            sg.signerName?.toLowerCase().includes(query) ||
+            sg.signerEmail?.toLowerCase().includes(query)
         );
         return nameMatch || contactMatch || signerMatch;
       });
     }
+    return result;
+  }, [documents, debouncedSearch]);
 
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const d of baseList) c[d.status] = (c[d.status] || 0) + 1;
+    return c;
+  }, [baseList]);
+
+  const filteredDocuments = useMemo(() => {
+    const result = statusFilter === 'all' ? [...baseList] : baseList.filter((d) => d.status === statusFilter);
     return result.sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
-  }, [documents, statusFilter, debouncedSearch]);
+  }, [baseList, statusFilter]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visibleDocs, hasMore: docsHasMore, loadMore: docsLoadMore, loadAll: docsLoadAll, count: docsCount } = useWindowedList(filteredDocuments, {
@@ -169,11 +155,6 @@ export default function ESignatureListScreen() {
     [router],
   );
 
-  const searchHeightInterp = searchAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 56],
-  });
-
   const getSignersSummary = (doc: ESignatureDocument): string => {
     if (!doc.signers || doc.signers.length === 0) {
       return doc.contactName || '';
@@ -187,149 +168,42 @@ export default function ESignatureListScreen() {
     return { signed, total: doc.signers.length };
   };
 
+  const createDocument = useCallback(() => router.push('/(tabs)/more/esignature/create' as any), [router]);
+
   const renderDocumentCard = useCallback(
     ({ item }: { item: ESignatureDocument }) => {
-      const statusColor = getStatusColor(item.status);
-      const statusIcon = STATUS_ICONS[item.status] || 'file-document';
       const signersSummary = getSignersSummary(item);
       const signersCount = getSignersCount(item);
-
+      const expiring = !!item.expiresAt && item.status !== 'signed';
+      const subtitle = [signersSummary, signersCount ? `${signersCount.signed}/${signersCount.total}` : ''].filter(Boolean).join(' · ');
       return (
-        <Pressable
+        <DocumentListItem
+          title={item.documentName || item.title}
+          subtitle={subtitle}
+          statusLabel={t(`esignature.${item.status}`)}
+          statusColor={getStatusColor(item.status)}
+          date={item.signedAt ? formatDate(item.signedAt) : expiring ? formatDate(item.expiresAt!) : formatDate(item.createdAt)}
+          dateWarning={item.status === 'expired'}
           onPress={() => openDocument(item)}
-          android_ripple={{ color: theme.colors.surfaceVariant }}
-          style={({ pressed }) => [
-            styles.docCard,
-            {
-              backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom.cardBackground,
-              borderColor: theme.colors.outlineVariant,
-            },
-          ]}
-        >
-          <View style={[styles.docCardInner, { flexDirection }]}>
-            <View style={[styles.docIconWrap, { backgroundColor: `${statusColor}15` }]}>
-              <MaterialCommunityIcons name={statusIcon as any} size={24} color={statusColor} />
-            </View>
-
-            <View style={{ flex: 1, gap: 4 }}>
-              <View style={[styles.docTopRow, { flexDirection }]}>
-                <Text
-                  variant="titleSmall"
-                  numberOfLines={1}
-                  style={[styles.docTitle, { color: theme.colors.onSurface, textAlign }]}
-                >
-                  {item.documentName || item.title}
-                </Text>
-                <View style={[styles.statusBadge, { backgroundColor: `${statusColor}18` }]}>
-                  <Text style={[styles.statusBadgeText, { color: statusColor }]}>
-                    {t(`esignature.${item.status}`)}
-                  </Text>
-                </View>
-              </View>
-
-              {signersSummary ? (
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="account-group"
-                    size={14}
-                    color={theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelSmall"
-                    numberOfLines={1}
-                    style={[styles.metaText, { color: theme.colors.onSurfaceVariant, flex: 1 }]}
-                  >
-                    {signersSummary}
-                  </Text>
-                  {signersCount && (
-                    <Text variant="labelSmall" style={{ color: statusColor, fontWeight: '600' }}>
-                      {signersCount.signed}/{signersCount.total}
-                    </Text>
-                  )}
-                </View>
-              ) : null}
-
-              <View style={[styles.docMeta, { flexDirection }]}>
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="calendar"
-                    size={14}
-                    color={theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelSmall"
-                    style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}
-                  >
-                    {formatDate(item.createdAt)}
-                  </Text>
-                </View>
-
-                {item.signedAt ? (
-                  <View style={[styles.metaItem, { flexDirection }]}>
-                    <MaterialCommunityIcons
-                      name="check-decagram"
-                      size={14}
-                      color="#4CAF50"
-                    />
-                    <Text
-                      variant="labelSmall"
-                      style={[styles.metaText, { color: '#4CAF50' }]}
-                    >
-                      {formatDate(item.signedAt)}
-                    </Text>
-                  </View>
-                ) : null}
-
-                {item.expiresAt && item.status !== 'signed' ? (
-                  <View style={[styles.metaItem, { flexDirection }]}>
-                    <MaterialCommunityIcons
-                      name="calendar-clock"
-                      size={14}
-                      color={item.status === 'expired' ? '#F44336' : '#FF9800'}
-                    />
-                    <Text
-                      variant="labelSmall"
-                      style={[styles.metaText, { color: item.status === 'expired' ? '#F44336' : theme.colors.onSurfaceVariant }]}
-                    >
-                      {formatDate(item.expiresAt)}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            </View>
-          </View>
-        </Pressable>
+        />
       );
     },
-    [theme, openDocument, flexDirection, textAlign, t],
+    [openDocument, t],
   );
 
   const renderEmpty = useCallback(() => {
     if (loading) return null;
-
+    const filtering = documents.length > 0;
     return (
-      <View style={styles.emptyContainer}>
-        <MaterialCommunityIcons
-          name="file-sign"
-          size={72}
-          color={theme.colors.onSurfaceVariant}
-          style={{ opacity: 0.3 }}
-        />
-        <Text
-          variant="titleMedium"
-          style={[styles.emptyTitle, { color: theme.colors.onSurface }]}
-        >
-          {t('esignature.noDocuments')}
-        </Text>
-        <Text
-          variant="bodyMedium"
-          style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}
-        >
-          {t('esignature.noDocumentsDesc')}
-        </Text>
-      </View>
+      <EmptyState
+        icon="file-sign"
+        title={filtering ? t('common.noResults') : t('esignature.noDocuments')}
+        description={filtering ? undefined : t('esignature.noDocumentsDesc')}
+        actionLabel={filtering ? undefined : t('esignature.addDocument')}
+        onAction={filtering ? undefined : createDocument}
+      />
     );
-  }, [loading, theme, t]);
+  }, [loading, documents.length, t, createDocument]);
 
   if (loading && documents.length === 0) {
     return (
@@ -341,99 +215,26 @@ export default function ESignatureListScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 8 },
-        ]}
-      >
-        <View style={[styles.headerRow, { flexDirection }]}>
-          <IconButton
-            icon={isRTL ? 'arrow-right' : 'arrow-left'}
-            iconColor={theme.custom.headerText}
-            size={24}
-            onPress={() => router.back()}
-          />
-          <Text style={[styles.headerTitle, { flex: 1, textAlign }]}>{t('esignature.title')}</Text>
-          <Pressable
-            onPress={toggleSearch}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name={searchVisible ? 'close' : 'magnify'}
-              size={24}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
-        </View>
-      </View>
+      <ScreenHeader title={t('esignature.title')} onBack={() => router.back()} />
 
-      {/* Search bar */}
-      {searchVisible && (
-        <Animated.View
-          style={[
-            styles.searchWrap,
-            {
-              height: searchHeightInterp,
-              opacity: searchAnim,
-              backgroundColor: theme.custom.headerBackground,
-            },
-          ]}
-        >
-          <Searchbar
-            placeholder={t('esignature.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
-          />
-        </Animated.View>
-      )}
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('esignature.searchPlaceholder')}
+      />
 
-      {/* Filter chips */}
-      <View
-        style={[
-          styles.filtersRow,
-          { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline },
-        ]}
-      >
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
-        >
-          {STATUS_FILTERS.map((f) => {
-            const chipColor = f === 'all' ? theme.colors.primary : getStatusColor(f);
-            const isActive = statusFilter === f;
-
-            return (
-              <Chip
-                key={f}
-                selected={isActive}
-                onPress={() => setStatusFilter(f)}
-                showSelectedOverlay
-                compact
-                style={[
-                  styles.filterChip,
-                  isActive
-                    ? { backgroundColor: `${chipColor}20`, borderColor: chipColor, borderWidth: 1 }
-                    : { backgroundColor: theme.colors.surfaceVariant },
-                ]}
-                textStyle={[
-                  styles.filterChipText,
-                  isActive && { color: chipColor, fontWeight: '600' },
-                ]}
-              >
-                {f === 'all' ? t('common.all') : t(`esignature.${f}`)}
-              </Chip>
-            );
-          })}
-        </ScrollView>
-      </View>
+      <StatusFilterBar
+        allLabel={t('common.all')}
+        allCount={baseList.length}
+        options={STATUS_FILTERS.filter((f) => f !== 'all').map((st) => ({
+          key: st,
+          label: t(`esignature.${st}`),
+          color: getStatusColor(st),
+          count: counts[st] || 0,
+        }))}
+        value={statusFilter}
+        onChange={(k) => setStatusFilter(k as StatusFilter)}
+      />
 
       {/* Error banner */}
       {error ? (
@@ -491,7 +292,7 @@ export default function ESignatureListScreen() {
       {/* FAB */}
       <FAB
         icon="plus"
-        onPress={() => router.push('/(tabs)/more/esignature/create' as any)}
+        onPress={createDocument}
         style={[
           styles.fab,
           { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },

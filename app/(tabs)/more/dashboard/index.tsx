@@ -1,844 +1,628 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl, Dimensions } from 'react-native';
-import { Appbar, Surface, Text, ProgressBar, Divider, Chip, ActivityIndicator } from 'react-native-paper';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
-import { useAuthStore } from '../../../../stores/authStore';
-import axiosInstance from '../../../../services/api/axiosInstance';
-import { ENDPOINTS } from '../../../../constants/api';
-import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
+import { useRowDirection } from '../../../../hooks/useRowDirection';
+import { usePersistedPeriod } from '../../../../hooks/usePersistedPeriod';
+import ScreenHeader from '../../../../components/ScreenHeader';
+import EmptyState from '../../../../components/EmptyState';
+import { BRAND, ChipRow, fmtMoney, fmtNum, PeriodChips, ProgressBar, SectionCard, Skeleton } from '../../../../components/dashboard/ui';
+import { Legend, MiniBars } from '../../../../components/dashboard/charts';
+import { DashEntity, useDashboardScope } from '../../../../components/dashboard/useDashboardScope';
+import {
+  AiUsage,
+  DrillEntity,
+  fetchCasesHeadline,
+  fetchContactsHeadline,
+  fetchDrilldown,
+  fetchLeadsHeadline,
+  fetchMessagesHeadline,
+  fetchOrdersHeadline,
+  fetchPaymentsHeadline,
+  fetchQuotesHeadline,
+  fetchSlaChats,
+  fetchTasksHeadline,
+  fetchWhatsAppNumbers,
+} from '../../../../services/api/dashboard';
+import { PERIOD_LABEL_FALLBACK } from '../../../../utils/datePresets';
 
-const BRAND = '#2e6155';
-const { width } = Dimensions.get('window');
-const CARD_WIDTH = (width - spacing.md * 2 - spacing.sm) / 2;
+type Slot<T = any> = T | null | undefined; // undefined = loading, null = nothing to show
 
-type DateRange = 'today' | 'week' | 'month' | 'year';
+const ENTITY_STYLE: Record<DashEntity, { icon: string; color: string }> = {
+  messages: { icon: 'message-text-outline', color: '#16a34a' },
+  contacts: { icon: 'account-group-outline', color: '#2563eb' },
+  leads: { icon: 'account-tie-outline', color: '#7c3aed' },
+  cases: { icon: 'folder-open-outline', color: '#ea580c' },
+  tasks: { icon: 'checkbox-marked-circle-outline', color: '#d97706' },
+  orders: { icon: 'package-variant-closed', color: '#db2777' },
+  quotes: { icon: 'file-document-outline', color: '#0891b2' },
+  payments: { icon: 'credit-card-outline', color: '#0d9488' },
+};
 
-interface DashboardData {
-  messages?: { total: number; sent: number; received: number; delivered: number; read: number; failed: number };
-  activeTasks?: number;
+const DRILL_ENTITIES: DrillEntity[] = ['cases', 'leads', 'contacts', 'messages', 'tasks', 'orders'];
+
+interface Stat {
+  value: string | number;
+  label: string;
+  tone?: 'good' | 'bad';
 }
 
-interface ContactGrowth {
-  totalContacts?: number;
-  thisMonthCount?: number;
-  lastMonthCount?: number;
-  growthPercentage?: number;
-}
-
-interface RecentLead {
-  id: string;
+function KpiCard({
+  entity,
+  title,
+  value,
+  suffix,
+  stats,
+  progress,
+  onPress,
+}: {
+  entity: DashEntity;
   title: string;
-  stage: string;
-  value: number;
-  contactName?: string;
-}
-
-interface LeadsDashboard {
-  totalLeads?: number;
-  openLeads?: number;
-  byStage?: Record<string, number>;
-  wonThisMonth?: number;
-  lostThisMonth?: number;
-  pipelineValue?: number;
-  conversionRate?: number;
-  recentLeads?: RecentLead[];
-}
-
-interface TaskStats {
-  total: number;
-  active: number;
-  completed: number;
-  overdue: number;
-  byPriority: Record<string, number>;
-}
-
-interface QuoteStats {
-  total: number;
-  totalValue: number;
-  byStatus: Record<string, number>;
-}
-
-interface ESignatureStats {
-  total: number;
-  signed: number;
-  pending: number;
-  expired: number;
-}
-
-interface ConversationDashboard {
-  totalConversations?: number;
-  openConversations?: number;
-  closedConversations?: number;
-  avgResponseTime?: number;
-}
-
-interface PhoneCallStats {
-  total: number;
-  answered: number;
-  missed: number;
-  avgDuration: number;
-}
-
-const STAGE_COLORS = ['#2e6155', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#10b981', '#ef4444', '#6366f1'];
-const PRIORITY_COLORS: Record<string, string> = { High: '#ef4444', Medium: '#f59e0b', Low: '#10b981', None: '#94a3b8' };
-const QUOTE_STATUS_COLORS: Record<string, string> = { Draft: '#94a3b8', Sent: '#3b82f6', Accepted: '#10b981', Rejected: '#ef4444', Paid: '#8b5cf6' };
-
-function formatDuration(seconds: number): string {
-  if (!seconds || seconds <= 0) return '0s';
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  if (mins < 60) return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  const remainMins = mins % 60;
-  return remainMins > 0 ? `${hrs}h ${remainMins}m` : `${hrs}h`;
-}
-
-function getDateRange(range: DateRange): { startDate: string; endDate: string } {
-  const now = new Date();
-  const end = now.toISOString();
-  let start: Date;
-  switch (range) {
-    case 'today':
-      start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      break;
-    case 'week': {
-      const day = now.getDay();
-      start = new Date(now);
-      start.setDate(now.getDate() - day);
-      start.setHours(0, 0, 0, 0);
-      break;
-    }
-    case 'month':
-      start = new Date(now.getFullYear(), now.getMonth(), 1);
-      break;
-    case 'year':
-      start = new Date(now.getFullYear(), 0, 1);
-      break;
-  }
-  return { startDate: start.toISOString(), endDate: end };
-}
-
-function StatCard({ icon, label, value, color, surfaceBg, textColor, subtextColor }: {
-  icon: string; label: string; value: string | number; color: string;
-  surfaceBg: string; textColor: string; subtextColor: string;
+  value: string;
+  suffix?: string;
+  stats?: Stat[];
+  progress?: { pct: number } | null;
+  onPress: () => void;
 }) {
+  const theme = useAppTheme();
+  const st = ENTITY_STYLE[entity];
+  const dir = useRowDirection();
   return (
-    <Surface style={[styles.statCard, { backgroundColor: surfaceBg, borderTopWidth: 3, borderTopColor: color }]} elevation={1}>
-      <View style={[styles.statIcon, { backgroundColor: color + '18' }]}>
-        <MaterialCommunityIcons name={icon as any} size={22} color={color} />
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      style={[styles.kpi, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant || '#e2e8f0' }]}
+    >
+      <View style={{ flexDirection: dir, alignItems: 'center', gap: 6 }}>
+        <View style={[styles.kpiIcon, { backgroundColor: st.color + '1f' }]}>
+          <MaterialCommunityIcons name={st.icon as any} size={16} color={st.color} />
+        </View>
+        <Text numberOfLines={1} style={{ flex: 1, fontSize: 13, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>
+          {title}
+        </Text>
+        <MaterialCommunityIcons name="chevron-left" size={16} color={theme.colors.onSurfaceVariant} />
       </View>
-      <Text variant="headlineSmall" style={[styles.statValue, { color: textColor }]}>
-        {typeof value === 'number' ? value.toLocaleString() : value}
-      </Text>
-      <Text variant="labelSmall" style={{ color: subtextColor }}>{label}</Text>
-    </Surface>
+      <View style={{ flexDirection: dir, alignItems: 'baseline', gap: 4, marginTop: 8 }}>
+        <Text style={{ fontSize: 28, fontWeight: '800', color: theme.colors.onSurface }}>{value}</Text>
+        {suffix ? (
+          <Text numberOfLines={1} style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, flexShrink: 1 }}>
+            {suffix}
+          </Text>
+        ) : null}
+      </View>
+      {progress ? (
+        <View style={{ marginTop: 6 }}>
+          <ProgressBar pct={progress.pct} color={st.color} />
+        </View>
+      ) : null}
+      {stats && stats.length > 0 ? (
+        <View style={{ flexDirection: dir, flexWrap: 'wrap', columnGap: 10, rowGap: 2, marginTop: 8 }}>
+          {stats.slice(0, 3).map((s, i) => (
+            <Text key={i} style={{ fontSize: 11, color: s.tone === 'bad' ? '#dc2626' : s.tone === 'good' ? '#16a34a' : theme.colors.onSurfaceVariant }}>
+              <Text style={{ fontWeight: '700', color: s.tone === 'bad' ? '#dc2626' : s.tone === 'good' ? '#16a34a' : theme.colors.onSurface }}>{s.value}</Text> {s.label}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </Pressable>
   );
 }
 
 export default function DashboardScreen() {
-  const router = useRouter();
-  const theme = useAppTheme();
   const { t } = useTranslation();
-  const user = useAuthStore((s) => s.user);
-  const org = user?.organization || '';
+  const theme = useAppTheme();
+  const router = useRouter();
+  const dir = useRowDirection();
+  const { scope, canEntity, can, isAdmin, org, uid } = useDashboardScope();
+  const { period, setPeriod, range, ready } = usePersistedPeriod('gambot.period.dashboard');
+  const isRanged = range.key !== 'all';
 
+  const [data, setData] = useState<Record<string, Slot>>({});
+  const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
+  const [drill, setDrill] = useState<Partial<Record<DrillEntity, any>>>({});
+  const [slaChats, setSlaChats] = useState<Slot<any[]>>(undefined);
+  const [waNumbers, setWaNumbers] = useState<any[]>([]);
+  const [numberId, setNumberId] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [dateRange, setDateRange] = useState<DateRange>('month');
-  const [dashData, setDashData] = useState<DashboardData>({});
-  const [contactGrowth, setContactGrowth] = useState<ContactGrowth>({});
-  const [leadsData, setLeadsData] = useState<LeadsDashboard>({});
-  const [taskStats, setTaskStats] = useState<TaskStats>({ total: 0, active: 0, completed: 0, overdue: 0, byPriority: {} });
-  const [quoteStats, setQuoteStats] = useState<QuoteStats>({ total: 0, totalValue: 0, byStatus: {} });
-  const [esigStats, setEsigStats] = useState<ESignatureStats>({ total: 0, signed: 0, pending: 0, expired: 0 });
-  const [conversationData, setConversationData] = useState<ConversationDashboard>({});
-  const [phoneCallStats, setPhoneCallStats] = useState<PhoneCallStats>({ total: 0, answered: 0, missed: 0, avgDuration: 0 });
+  const cacheKey = `dashboard_v2_${org}_${isAdmin ? 'admin' : uid}`;
+  const loadSeq = useRef(0);
 
-  const fetchData = useCallback(async () => {
+  const put = useCallback((key: string, value: any) => setData((p) => ({ ...p, [key]: value })), []);
+
+  // ── Headline cards (each loads independently, never blocks the rest) ───────────────────────────
+  const loadHeadlines = useCallback((): Promise<any>[] => {
+    if (!org) return [];
+    const run = <T,>(entity: DashEntity, fn: () => Promise<T>, handler: (v: T) => void) => {
+      if (!canEntity(entity)) {
+        put(entity, null);
+        return Promise.resolve();
+      }
+      return fn().then(handler).catch(() => put(entity, null));
+    };
+    return [
+      run('messages', () => fetchMessagesHeadline(scope), (r) => {
+        put('messages', r.messages);
+        setAiUsage(r.aiUsage);
+      }),
+      run('contacts', () => fetchContactsHeadline(scope), (v) => put('contacts', v)),
+      run('leads', () => fetchLeadsHeadline(scope), (v) => put('leads', v)),
+      run('cases', () => fetchCasesHeadline(scope), (v) => put('cases', v)),
+      run('tasks', () => fetchTasksHeadline(scope), (v) => put('tasks', v)),
+      run('quotes', () => fetchQuotesHeadline(scope), (v) => put('quotes', v)),
+      run('payments', () => fetchPaymentsHeadline(scope), (v) => put('payments', v)),
+      run('orders', () => fetchOrdersHeadline(scope), (v) => put('orders', v)),
+      can('chats')
+        ? fetchSlaChats(scope).then(setSlaChats).catch(() => setSlaChats(null))
+        : Promise.resolve(setSlaChats(null)),
+    ];
+  }, [org, scope, canEntity, can, put]);
+
+  // ── Time-range aware breakdowns (the numbers that follow the period chips) ────────────────────
+  const loadDrills = useCallback(
+    (force: boolean): Promise<any>[] => {
+      if (!org) return [];
+      const seq = ++loadSeq.current;
+      setDrill({});
+      const numberActive = !!numberId;
+      // All time: skip the heavy per-message aggregation, but still load the cheap cases/leads drill-downs
+      // (their cards show open/closed/breached). A selected number also needs messages + contacts.
+      const entities = isRanged ? DRILL_ENTITIES : numberActive ? (['cases', 'leads', 'contacts', 'messages'] as DrillEntity[]) : (['cases', 'leads'] as DrillEntity[]);
+      return entities
+        .filter((e) => canEntity(e as DashEntity))
+        .map((entity) =>
+          fetchDrilldown(
+            { org, entity, dateFrom: range.from, dateTo: range.to, owners: [], uid, isAdmin: scope.isAdmin, fromNumberId: numberId || null },
+            force,
+          ).then((d) => {
+            if (seq === loadSeq.current) setDrill((p) => ({ ...p, [entity]: d }));
+          }),
+        );
+    },
+    [org, isRanged, range.from, range.to, numberId, uid, scope.isAdmin, canEntity],
+  );
+
+  // Instant repaint from the last visit, then refresh in the background.
+  useEffect(() => {
     if (!org) return;
-    const { startDate, endDate } = getDateRange(dateRange);
-    // GetDashboardStatistics / GetContactGrowthStatistics require organizationName + userId + userRole
-    // (the backend rejects payloads that only carry `organization`). Send web-compatible fields.
-    const userId = (user as any)?.uID || (user as any)?.userId || '';
-    const userRole = ((user as any)?.SecurityRole || '').toLowerCase() === 'admin' ? 'admin' : 'user';
-    try {
-      const [dashRes, growthRes, leadsRes] = await Promise.allSettled([
-        axiosInstance.post(ENDPOINTS.GET_DASHBOARD_STATS, { organizationName: org, organization: org, userId, userRole, startDate, endDate }),
-        axiosInstance.post(ENDPOINTS.GET_CONTACT_GROWTH, { organizationName: org, organization: org, userId, userRole, startDate, endDate }),
-        axiosInstance.post(ENDPOINTS.GET_LEADS_DASHBOARD, { organization: org, startDate, endDate }),
-      ]);
-      if (dashRes.status === 'fulfilled') setDashData(dashRes.value.data || {});
-      if (growthRes.status === 'fulfilled') setContactGrowth(growthRes.value.data || {});
-      if (leadsRes.status === 'fulfilled') setLeadsData(leadsRes.value.data || {});
-
-      const withTimeout = (promise: Promise<any>, ms = 15000) =>
-        Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
-
-      const [tasksRes, quotesRes, esigRes, convRes, callsRes] = await Promise.allSettled([
-        // GetAllTasksByOrganization expects organizationName (+ userId/dataVisibility), not `organization`.
-        withTimeout(axiosInstance.post(ENDPOINTS.GET_TASKS, { organizationName: org, userId, dataVisibility: userRole === 'admin' ? 'all' : 'own' })),
-        withTimeout(axiosInstance.post(ENDPOINTS.GET_ALL_QUOTES, { organization: org })),
-        withTimeout(axiosInstance.post(ENDPOINTS.GET_ESIGNATURE_DOCS, { organization: org })),
-        withTimeout(axiosInstance.post(ENDPOINTS.GET_CONVERSATION_STATS, { organization: org, startDate, endDate })),
-        withTimeout(axiosInstance.post(ENDPOINTS.GET_PHONE_CALLS, { organization: org, page: 1, pageSize: 100 })),
-      ]);
-
-      if (tasksRes.status === 'fulfilled') {
-        const raw = tasksRes.value.data;
-        const tasks: any[] = raw?.tasks || raw?.Tasks || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);
-        const now = new Date();
-        const isDone = (tk: any) => (tk.status || tk.Status || '').toLowerCase() === 'completed' || tk.isCompleted === true;
-        const active = tasks.filter((tk) => !isDone(tk)).length;
-        const completed = tasks.filter(isDone).length;
-        const overdue = tasks.filter((tk) => !isDone(tk) && tk.dueDate && new Date(tk.dueDate) < now).length;
-        const byPriority: Record<string, number> = {};
-        tasks.forEach((tk) => { const p = tk.priority || tk.Priority || 'None'; byPriority[p] = (byPriority[p] || 0) + 1; });
-        setTaskStats({ total: tasks.length, active, completed, overdue, byPriority });
-      }
-
-      if (quotesRes.status === 'fulfilled') {
-        const quotes: any[] = Array.isArray(quotesRes.value.data) ? quotesRes.value.data : [];
-        const totalValue = quotes.reduce((sum: number, q: any) => sum + (q.totalAmount || q.total || 0), 0);
-        const byStatus: Record<string, number> = {};
-        quotes.forEach((q: any) => { const s = q.status || 'Draft'; byStatus[s] = (byStatus[s] || 0) + 1; });
-        setQuoteStats({ total: quotes.length, totalValue, byStatus });
-      }
-
-      if (esigRes.status === 'fulfilled') {
-        const docs: any[] = Array.isArray(esigRes.value.data) ? esigRes.value.data : [];
-        const signed = docs.filter((d: any) => d.status === 'Signed' || d.status === 'Completed').length;
-        const pending = docs.filter((d: any) => d.status === 'Pending' || d.status === 'Sent').length;
-        const expired = docs.filter((d: any) => d.status === 'Expired').length;
-        setEsigStats({ total: docs.length, signed, pending, expired });
-      }
-
-      if (convRes.status === 'fulfilled') setConversationData(convRes.value.data || {});
-
-      if (callsRes.status === 'fulfilled') {
-        const callData = callsRes.value.data;
-        const calls: any[] = Array.isArray(callData) ? callData : (callData?.items || callData?.data || []);
-        const answered = calls.filter((c: any) => c.status === 'Answered' || c.status === 'Completed' || c.duration > 0).length;
-        const missed = calls.filter((c: any) => c.status === 'Missed' || c.status === 'NoAnswer' || c.status === 'No Answer').length;
-        const durations = calls.filter((c: any) => c.duration > 0).map((c: any) => c.duration);
-        const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a: number, b: number) => a + b, 0) / durations.length) : 0;
-        setPhoneCallStats({ total: calls.length, answered, missed, avgDuration });
-      }
-    } catch {
-      // error handled by empty state UI
-    } finally {
-      setLoading(false);
-    }
-  }, [org, dateRange]);
+    AsyncStorage.getItem(cacheKey)
+      .then((raw) => {
+        if (!raw) return;
+        const c = JSON.parse(raw);
+        const { aiUsage: cachedAi, ...rest } = c.data || {};
+        setData((prev) => (Object.keys(prev).length ? prev : rest));
+        if (cachedAi !== undefined) setAiUsage(cachedAi);
+      })
+      .catch(() => {});
+    Promise.allSettled(loadHeadlines());
+    fetchWhatsAppNumbers(org).then(setWaNumbers).catch(() => setWaNumbers([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [org, cacheKey]);
 
   useEffect(() => {
-    setLoading(true);
-    fetchData();
-  }, [fetchData]);
+    const loaded = Object.keys(data).length >= 8 && Object.values(data).every((v) => v !== undefined);
+    if (!loaded) return;
+    AsyncStorage.setItem(cacheKey, JSON.stringify({ data: { ...data, aiUsage }, ts: Date.now() })).catch(() => {});
+  }, [data, aiUsage, cacheKey]);
+
+  useEffect(() => {
+    if (!ready) return;
+    Promise.allSettled(loadDrills(false));
+  }, [ready, loadDrills]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchData();
-    setRefreshing(false);
-  }, [fetchData]);
+    try {
+      await Promise.allSettled([...loadHeadlines(), ...loadDrills(true)]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadHeadlines, loadDrills]);
 
-  const handleDateRange = useCallback((range: DateRange) => {
-    if (range !== dateRange) setDateRange(range);
-  }, [dateRange]);
+  // ── Navigation ───────────────────────────────────────────────────────────────────────────────
+  const openDetail = (entity: string, extra: Record<string, string> = {}) =>
+    router.push({ pathname: '/(tabs)/more/dashboard/detail', params: { entity, number: numberId, ...extra } } as any);
 
-  const msgs = dashData.messages || { total: 0, sent: 0, received: 0, delivered: 0, read: 0, failed: 0 };
-  const msgMax = Math.max(msgs.sent, msgs.received, msgs.delivered, msgs.read, msgs.failed, 1);
+  // ── Card values ──────────────────────────────────────────────────────────────────────────────
+  const numberActive = !!numberId;
+  const rangedValue = (entity: DrillEntity, base: number): string => {
+    const useDrill = isRanged || (numberActive && (entity === 'messages' || entity === 'contacts'));
+    if (!useDrill) return fmtNum(base);
+    const d = drill[entity];
+    if (d === undefined) return '…';
+    if (entity === 'messages') return fmtNum(d.total ?? d.bots ?? 0);
+    return fmtNum(d.created ?? 0);
+  };
+  const created = t('dashboard.createdSuffix', 'חדשים');
 
-  const rawStageEntries = Object.entries(leadsData.byStage || {});
-  const stageEntries: [string, number][] = rawStageEntries.map(([key, val]: [string, any]) => {
-    const count = typeof val === 'number' ? val : (val?.count ?? val?.value ?? 0);
-    return [val?.stageName || key, count as number];
+  const m = data.messages;
+  const c = data.contacts;
+  const l = data.leads;
+  const cs = data.cases;
+  const tk = data.tasks;
+  const q = data.quotes;
+  const p = data.payments;
+  const o = data.orders;
+
+  const cards: { key: DashEntity; node: React.ReactNode | null; loading: boolean }[] = [];
+
+  {
+    const md = drill.messages;
+    const breach =
+      (isRanged || numberActive) && md && md.msgSlaEnabled && (md.msgSlaConsidered || 0) > 0 && (md.msgSlaBreached || 0) > 0
+        ? [{ value: fmtNum(md.msgSlaBreached), label: t('dashboard.slaBreaches', 'חריגות SLA'), tone: 'bad' as const }]
+        : [];
+    cards.push({
+      key: 'messages',
+      loading: m === undefined,
+      node: m ? (
+        <KpiCard
+          entity="messages"
+          title={m.scoped ? t('dashboard.myMessages30', 'ההודעות שלי (30 יום)') : t('dashboard.messages', 'הודעות')}
+          value={rangedValue('messages', m.total || 0)}
+          progress={!isRanged && !m.scoped && m.sent > 0 ? { pct: ((m.delivered || 0) / m.sent) * 100 } : null}
+          stats={
+            isRanged
+              ? [
+                  ...(md && typeof md.incoming === 'number' ? [{ value: fmtNum(md.incoming), label: t('dashboard.received', 'התקבלו') }] : []),
+                  ...(md && typeof md.outgoing === 'number' ? [{ value: fmtNum(md.outgoing), label: t('dashboard.sent', 'נשלחו') }] : []),
+                  ...breach,
+                ]
+              : [
+                  { value: fmtNum(m.sent || 0), label: t('dashboard.sent', 'נשלחו') },
+                  { value: fmtNum(m.received || 0), label: t('dashboard.received', 'התקבלו') },
+                  ...breach,
+                ]
+          }
+          onPress={() => openDetail('messages')}
+        />
+      ) : null,
+    });
+  }
+  {
+    const md = drill.messages;
+    const contactsInTouch = isRanged && md && typeof md.activeContacts === 'number';
+    cards.push({
+      key: 'contacts',
+      loading: c === undefined,
+      node: c ? (
+        <KpiCard
+          entity="contacts"
+          title={t('dashboard.contacts', 'אנשי קשר')}
+          value={contactsInTouch ? fmtNum(md.activeContacts) : rangedValue('contacts', c.totalContacts || 0)}
+          suffix={contactsInTouch ? t('dashboard.inTouch', 'בקשר') : undefined}
+          stats={
+            isRanged
+              ? [
+                  ...(drill.contacts && typeof drill.contacts.created === 'number'
+                    ? [{ value: fmtNum(drill.contacts.created), label: t('dashboard.newlyCreated', 'חדשים'), tone: 'good' as const }]
+                    : []),
+                  ...(md && typeof md.inboundContacts === 'number' ? [{ value: fmtNum(md.inboundContacts), label: t('dashboard.wroteToUs', 'כתבו לנו') }] : []),
+                ]
+              : [
+                  { value: `+${fmtNum(c.thisMonthCount || 0)}`, label: t('dashboard.thisMonth', 'החודש'), tone: 'good' as const },
+                  ...(typeof c.growthPercentage === 'number' && c.growthPercentage !== 0
+                    ? [{ value: `${c.growthPercentage > 0 ? '+' : ''}${c.growthPercentage}%`, label: t('dashboard.growth', 'צמיחה'), tone: (c.growthPercentage >= 0 ? 'good' : 'bad') as 'good' | 'bad' }]
+                    : []),
+                ]
+          }
+          onPress={() => openDetail('contacts')}
+        />
+      ) : null,
+    });
+  }
+  {
+    const ld = drill.leads;
+    const openCount = ld && typeof ld.openTotal === 'number' ? ld.openTotal : l?.totalOpen || 0;
+    const wonCount = ld && typeof ld.won === 'number' ? ld.won : l?.wonThisMonth || 0;
+    cards.push({
+      key: 'leads',
+      loading: l === undefined,
+      node: l ? (
+        <KpiCard
+          entity="leads"
+          title={t('dashboard.leads', 'לידים')}
+          value={rangedValue('leads', l.totalOpen || 0)}
+          suffix={isRanged ? created : t('dashboard.open', 'פתוחים')}
+          progress={!isRanged && l.conversionRate ? { pct: l.conversionRate } : null}
+          stats={isRanged ? [] : [{ value: fmtNum(openCount), label: t('dashboard.open', 'פתוחים') }, { value: fmtNum(wonCount), label: t('dashboard.won', 'נסגרו'), tone: 'good' as const }]}
+          onPress={() => openDetail('leads')}
+        />
+      ) : null,
+    });
+  }
+  {
+    const cd = drill.cases;
+    cards.push({
+      key: 'cases',
+      loading: cs === undefined,
+      node: cs ? (
+        <KpiCard
+          entity="cases"
+          title={t('dashboard.cases', 'פניות')}
+          value={rangedValue('cases', cs.total || 0)}
+          suffix={isRanged ? created : undefined}
+          progress={cd && typeof cd.resolutionRate === 'number' && cd.resolutionRate >= 0 ? { pct: cd.resolutionRate } : null}
+          stats={
+            cd
+              ? [
+                  ...(typeof cd.openTotal === 'number' ? [{ value: fmtNum(cd.openTotal), label: t('dashboard.open', 'פתוחות') }] : []),
+                  ...(typeof cd.closed === 'number' ? [{ value: fmtNum(cd.closed), label: t('dashboard.closed', 'נסגרו'), tone: 'good' as const }] : []),
+                  ...((cd.breachedOpen || 0) > 0 ? [{ value: fmtNum(cd.breachedOpen), label: t('dashboard.slaBreaches', 'חריגות SLA'), tone: 'bad' as const }] : []),
+                ]
+              : []
+          }
+          onPress={() => openDetail('cases')}
+        />
+      ) : null,
+    });
+  }
+  cards.push({
+    key: 'tasks',
+    loading: tk === undefined,
+    node: tk ? (
+      <KpiCard
+        entity="tasks"
+        title={t('dashboard.tasks', 'משימות')}
+        value={rangedValue('tasks', tk.active || 0)}
+        suffix={isRanged ? created : t('dashboard.active', 'פעילות')}
+        stats={
+          isRanged
+            ? []
+            : [
+                ...((tk.overdueTasks || 0) > 0 ? [{ value: fmtNum(tk.overdueTasks), label: t('dashboard.overdue', 'באיחור'), tone: 'bad' as const }] : []),
+                { value: fmtNum(tk.dueToday || 0), label: t('dashboard.today', 'היום') },
+                { value: fmtNum(tk.inProgress || 0), label: t('dashboard.inProgress', 'בטיפול') },
+              ]
+        }
+        onPress={() => openDetail('tasks')}
+      />
+    ) : null,
   });
-  const maxStageCount = stageEntries.length > 0 ? Math.max(...stageEntries.map(([, c]) => c), 1) : 1;
-  const funnelStages = [...stageEntries].sort(([, a], [, b]) => b - a);
-  const maxFunnelCount = funnelStages.length > 0 ? funnelStages[0][1] : 1;
+  cards.push({
+    key: 'orders',
+    loading: o === undefined,
+    node: o ? (
+      <KpiCard
+        entity="orders"
+        title={t('dashboard.orders', 'הזמנות')}
+        value={rangedValue('orders', o.count || 0)}
+        suffix={isRanged ? created : undefined}
+        stats={
+          isRanged
+            ? []
+            : [
+                ...(o.revenue ? [{ value: fmtMoney(o.revenue), label: t('dashboard.revenue30', 'הכנסות (30 יום)') }] : []),
+                ...(o.active ? [{ value: fmtNum(o.active), label: t('dashboard.active', 'פעילות'), tone: 'good' as const }] : []),
+              ]
+        }
+        onPress={() => openDetail('orders')}
+      />
+    ) : null,
+  });
+  cards.push({
+    key: 'quotes',
+    loading: q === undefined,
+    node: q ? (
+      <KpiCard
+        entity="quotes"
+        title={t('dashboard.quotes', 'הצעות מחיר')}
+        value={fmtNum(q.count || 0)}
+        progress={q.count > 0 ? { pct: ((q.approved || 0) / q.count) * 100 } : null}
+        stats={[
+          ...(q.value ? [{ value: fmtMoney(q.value), label: t('dashboard.totalValue', 'שווי כולל') }] : []),
+          { value: fmtNum(q.approved || 0), label: t('dashboard.approved', 'אושרו'), tone: 'good' as const },
+        ]}
+        onPress={() => router.push('/(tabs)/more/quotes' as any)}
+      />
+    ) : null,
+  });
+  cards.push({
+    key: 'payments',
+    loading: p === undefined,
+    node: p ? (
+      <KpiCard
+        entity="payments"
+        title={t('dashboard.payments', 'תשלומים')}
+        value={fmtMoney(p.paidAmount)}
+        stats={[
+          { value: fmtNum(p.paid || 0), label: t('dashboard.paid', 'שולמו'), tone: 'good' as const },
+          ...((p.pending || 0) > 0 ? [{ value: fmtNum(p.pending), label: t('dashboard.pending', 'ממתינים') }] : []),
+        ]}
+        onPress={() => router.push('/(tabs)/more/transactions' as any)}
+      />
+    ) : null,
+  });
 
-  const growthPositive = (contactGrowth.growthPercentage || 0) >= 0;
+  const visibleCards = cards.filter((x) => x.node || x.loading);
+  const allLoaded = cards.every((x) => !x.loading) && slaChats !== undefined;
+  const nothing = allLoaded && visibleCards.length === 0;
 
-  const dateRangeOptions: { key: DateRange; label: string }[] = [
-    { key: 'today', label: t('dashboard.filterToday') },
-    { key: 'week', label: t('dashboard.filterThisWeek') },
-    { key: 'month', label: t('dashboard.filterThisMonth') },
-    { key: 'year', label: t('dashboard.filterThisYear') },
-  ];
+  // ── Needs attention: only non-zero items (web renderAttention) ─────────────────────────────
+  const attention = useMemo(() => {
+    const items: { key: string; tone: 'bad' | 'warn'; icon: string; count: number; label: string; onPress: () => void }[] = [];
+    if (Array.isArray(slaChats) && slaChats.length > 0)
+      items.push({ key: 'sla', tone: 'bad', icon: 'clock-alert-outline', count: slaChats.length, label: t('dashboard.chatsWaiting', 'שיחות ממתינות מעבר ל-SLA'), onPress: () => openDetail('sla') });
+    if ((tk?.overdueTasks || 0) > 0)
+      items.push({ key: 'overdue', tone: 'bad', icon: 'alert-circle-outline', count: tk.overdueTasks, label: t('dashboard.overdueTasks', 'משימות באיחור'), onPress: () => openDetail('tasks') });
+    if ((drill.cases?.breachedOpen || 0) > 0)
+      items.push({ key: 'cases', tone: 'bad', icon: 'folder-alert-outline', count: drill.cases.breachedOpen, label: t('dashboard.casesBreaching', 'פניות חורגות מ-SLA'), onPress: () => openDetail('cases', { tab: 'breaches' }) });
+    if ((tk?.dueToday || 0) > 0)
+      items.push({ key: 'today', tone: 'warn', icon: 'calendar-today', count: tk.dueToday, label: t('dashboard.tasksDueToday', 'משימות להיום'), onPress: () => openDetail('tasks') });
+    return items;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slaChats, tk, drill.cases, numberId]);
+  const attentionLoaded = tk !== undefined && slaChats !== undefined;
 
-  const msgBars = [
-    { label: t('dashboard.sent'), value: msgs.sent, color: BRAND },
-    { label: t('dashboard.received'), value: msgs.received, color: '#6366f1' },
-    { label: t('dashboard.delivered'), value: msgs.delivered, color: '#0ea5e9' },
-    { label: t('dashboard.read'), value: msgs.read, color: '#10b981' },
-    { label: t('dashboard.failed'), value: msgs.failed, color: '#ef4444' },
-  ];
+  // ── Messages chart ───────────────────────────────────────────────────────────────────────────
+  const chart = useMemo(() => {
+    if (!canEntity('messages') || !m) return null;
+    if (isRanged) {
+      const md = drill.messages;
+      if (!md || !range.from || !range.to) return null;
+      if (range.from === range.to) {
+        const h = Array.isArray(md.byHour) ? md.byHour : [];
+        return h.map((x: any) => ({ label: String(x.hour), a: x.incoming || 0, b: x.outgoing || 0 }));
+      }
+      const byDay: Record<string, any> = {};
+      (Array.isArray(md.byDay) ? md.byDay : []).forEach((x: any) => {
+        byDay[x.date] = x;
+      });
+      const out: { label: string; a: number; b: number }[] = [];
+      const d = new Date(`${range.from}T12:00:00`);
+      const end = new Date(`${range.to}T12:00:00`);
+      for (let guard = 0; d <= end && guard < 93; guard++) {
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const x = byDay[key] || {};
+        out.push({ label: `${d.getDate()}/${d.getMonth() + 1}`, a: x.incoming || 0, b: x.outgoing || 0 });
+        d.setDate(d.getDate() + 1);
+      }
+      return out;
+    }
+    const rows = Array.isArray(m.monthly) ? m.monthly : [];
+    return rows.map((x: any) => ({ label: String(x.month || '').split(' ')[0], a: x.received || 0, b: x.sent || 0 }));
+  }, [m, drill.messages, isRanged, range.from, range.to, canEntity]);
+  const chartHasData = !!chart && chart.some((x: any) => x.a + x.b > 0);
 
-  const surfaceBg = theme.colors.surface;
-  const textColor = theme.colors.onSurface;
-  const subtextColor = theme.colors.onSurfaceVariant;
+  // ── Leads by stage ───────────────────────────────────────────────────────────────────────────
+  const leadStages: { stageName: string; count: number }[] = (drill.leads?.byStage || l?.byStage || []).filter((s: any) => (s.count || 0) > 0);
+
+  const numberLabel = (n: any) => {
+    const id = n.PhoneNumberId || n.phoneNumberId;
+    return n.Label || n.label || n.DisplayNumber || n.displayNumber || id;
+  };
+  const numberOptions = useMemo(
+    () => [
+      { key: '', label: t('dashboard.allNumbers', 'כל המספרים'), icon: 'whatsapp' },
+      ...waNumbers.map((n) => ({ key: n.PhoneNumberId || n.phoneNumberId || '', label: String(numberLabel(n)), icon: 'whatsapp' })).filter((x) => x.key),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [waNumbers, t],
+  );
+
+  const periodTitle = t(`dashboard.period.${period}`, PERIOD_LABEL_FALLBACK[period]);
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND }}>
-        <Appbar.BackAction onPress={() => router.back()} color="#fff" />
-        <Appbar.Content title={t('dashboard.title')} titleStyle={styles.headerTitle} />
-      </Appbar.Header>
+    <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
+      <ScreenHeader
+        title={t('dashboard.title', 'דשבורד')}
+        subtitle={isAdmin ? t('dashboard.orgView', 'תמונת מצב ארגונית') : t('dashboard.myView', 'הדשבורד שלי')}
+        onBack={() => router.back()}
+      />
+      <PeriodChips value={period} onChange={setPeriod} />
+      {waNumbers.length > 1 ? <ChipRow options={numberOptions} value={numberId} onChange={setNumberId} /> : null}
 
       <ScrollView
-        contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND]} />}
+        contentContainerStyle={{ paddingBottom: 32, paddingTop: 4 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND]} tintColor={BRAND} />}
       >
-        {/* Date Range Chips */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipRow}>
-          {dateRangeOptions.map((opt) => {
-            const active = dateRange === opt.key;
-            return (
-              <Chip
-                key={opt.key}
-                selected={active}
-                onPress={() => handleDateRange(opt.key)}
-                style={[styles.chip, active && styles.chipActive]}
-                textStyle={[styles.chipText, active && styles.chipTextActive]}
-                showSelectedOverlay={false}
-                showSelectedCheck={false}
-              >
-                {opt.label}
-              </Chip>
-            );
-          })}
-        </ScrollView>
+        {aiUsage ? <AiUsageBanner usage={aiUsage} /> : null}
 
-        {loading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={BRAND} />
-          </View>
+        {/* Needs attention */}
+        {attentionLoaded && (attention.length > 0 || visibleCards.length > 0) ? (
+          <SectionCard title={t('dashboard.needsAttention', 'דורש טיפול')} icon="bell-alert-outline" color={attention.length ? '#dc2626' : '#16a34a'}>
+            {attention.length === 0 ? (
+              <View style={{ flexDirection: dir, alignItems: 'center', gap: 6 }}>
+                <MaterialCommunityIcons name="check-circle-outline" size={18} color="#16a34a" />
+                <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, flex: 1 }}>{t('dashboard.allClear', 'הכול תקין - אין חריגות או איחורים')}</Text>
+              </View>
+            ) : (
+              attention.map((it) => (
+                <Pressable key={it.key} onPress={it.onPress} style={[styles.attnRow, { flexDirection: dir, backgroundColor: it.tone === 'bad' ? '#fef2f2' : '#fffbeb' }]}>
+                  <MaterialCommunityIcons name={it.icon as any} size={20} color={it.tone === 'bad' ? '#dc2626' : '#d97706'} />
+                  <Text style={{ flex: 1, fontSize: 13, color: '#1e293b' }}>{it.label}</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: it.tone === 'bad' ? '#dc2626' : '#d97706' }}>{fmtNum(it.count)}</Text>
+                  <MaterialCommunityIcons name="chevron-left" size={18} color="#94a3b8" />
+                </Pressable>
+              ))
+            )}
+          </SectionCard>
+        ) : !attentionLoaded ? (
+          <Skeleton height={64} style={{ marginHorizontal: 12, marginBottom: 12 }} />
+        ) : null}
+
+        {nothing ? (
+          <EmptyState icon="chart-box-outline" title={t('dashboard.emptyTitle', 'עדיין אין נתונים')} description={t('dashboard.emptyDesc', 'הנתונים יופיעו כאן ברגע שתתחילו לעבוד')} />
         ) : (
-          <>
-            {/* Stats Cards */}
-            <View style={styles.statsGrid}>
-              <StatCard icon="account-group" label={t('dashboard.totalContacts')} value={contactGrowth.totalContacts || 0} color={BRAND} surfaceBg={surfaceBg} textColor={textColor} subtextColor={subtextColor} />
-              <StatCard icon="trending-up" label={t('dashboard.openLeads')} value={leadsData.openLeads ?? leadsData.totalLeads ?? 0} color="#f59e0b" surfaceBg={surfaceBg} textColor={textColor} subtextColor={subtextColor} />
-              <StatCard icon="clipboard-check-outline" label={t('dashboard.activeTasks')} value={dashData.activeTasks || 0} color="#10b981" surfaceBg={surfaceBg} textColor={textColor} subtextColor={subtextColor} />
-              <StatCard icon="message-text" label={t('dashboard.totalMessages')} value={msgs.total} color="#6366f1" surfaceBg={surfaceBg} textColor={textColor} subtextColor={subtextColor} />
-            </View>
-
-            {/* Contact Growth */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="account-arrow-up" size={20} color={BRAND} />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.contactGrowth')}
-                </Text>
+          <View style={[styles.grid, { flexDirection: dir }]}>
+            {visibleCards.map((x) => (
+              <View key={x.key} style={styles.gridCell}>
+                {x.node || <Skeleton height={118} />}
               </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.growthRow}>
-                <View style={styles.growthItem}>
-                  <Text variant="headlineSmall" style={{ color: BRAND, fontWeight: '800' }}>
-                    {(contactGrowth.totalContacts || 0).toLocaleString()}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalContacts')}</Text>
-                </View>
-                <View style={styles.growthItem}>
-                  <Text variant="headlineSmall" style={{ color: textColor, fontWeight: '700' }}>
-                    {(contactGrowth.thisMonthCount || 0).toLocaleString()}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.thisMonth')}</Text>
-                </View>
-                <View style={styles.growthItem}>
-                  <Text variant="headlineSmall" style={{ color: subtextColor, fontWeight: '700' }}>
-                    {(contactGrowth.lastMonthCount || 0).toLocaleString()}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.lastMonth')}</Text>
-                </View>
-                <View style={[styles.growthBadge, { backgroundColor: growthPositive ? '#dcfce7' : '#fee2e2' }]}>
-                  <MaterialCommunityIcons
-                    name={growthPositive ? 'arrow-up' : 'arrow-down'}
-                    size={16}
-                    color={growthPositive ? '#10b981' : '#ef4444'}
-                  />
-                  <Text style={{ color: growthPositive ? '#10b981' : '#ef4444', fontWeight: '700', fontSize: 16 }}>
-                    {Math.abs(contactGrowth.growthPercentage || 0).toFixed(1)}%
-                  </Text>
-                </View>
-              </View>
-            </Surface>
-
-            {/* Message Stats */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="chart-bar" size={20} color="#6366f1" />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.messageStats')}
-                </Text>
-              </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.msgTotal}>
-                <Text variant="headlineMedium" style={{ color: textColor, fontWeight: '800' }}>
-                  {msgs.total.toLocaleString()}
-                </Text>
-                <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalMessages')}</Text>
-              </View>
-              {msgBars.map((item) => (
-                <View key={item.label} style={styles.msgBarRow}>
-                  <View style={styles.msgBarHeader}>
-                    <View style={styles.msgBarLabel}>
-                      <View style={[styles.msgDot, { backgroundColor: item.color }]} />
-                      <Text variant="bodyMedium" style={{ color: textColor }}>{item.label}</Text>
-                    </View>
-                    <Text variant="bodyMedium" style={{ color: item.color, fontWeight: '700' }}>
-                      {item.value.toLocaleString()}
-                    </Text>
-                  </View>
-                  <ProgressBar
-                    progress={msgMax > 0 ? Math.min(item.value / msgMax, 1) : 0}
-                    color={item.color}
-                    style={styles.progressBar}
-                  />
-                </View>
-              ))}
-            </Surface>
-
-            {/* Leads Pipeline */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="filter-variant" size={20} color="#f59e0b" />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.leadsPipeline')}
-                </Text>
-              </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.pipelineSummary}>
-                <View style={styles.pipelineStat}>
-                  <View style={[styles.pipelineDot, { backgroundColor: BRAND }]} />
-                  <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{t('dashboard.totalLeads')}</Text>
-                  <Text variant="titleMedium" style={{ color: BRAND, fontWeight: '700' }}>
-                    {leadsData.totalLeads || 0}
-                  </Text>
-                </View>
-                <View style={styles.pipelineStat}>
-                  <View style={[styles.pipelineDot, { backgroundColor: '#3b82f6' }]} />
-                  <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{t('dashboard.pipelineValue')}</Text>
-                  <Text variant="titleMedium" style={{ color: '#3b82f6', fontWeight: '700' }}>
-                    ₪{(leadsData.pipelineValue || 0).toLocaleString()}
-                  </Text>
-                </View>
-                <View style={styles.pipelineStat}>
-                  <View style={[styles.pipelineDot, { backgroundColor: '#10b981' }]} />
-                  <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{t('dashboard.wonThisMonth')}</Text>
-                  <Text variant="titleMedium" style={{ color: '#10b981', fontWeight: '700' }}>
-                    {leadsData.wonThisMonth || 0}
-                  </Text>
-                </View>
-                <View style={styles.pipelineStat}>
-                  <View style={[styles.pipelineDot, { backgroundColor: '#ef4444' }]} />
-                  <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{t('dashboard.lostThisMonth')}</Text>
-                  <Text variant="titleMedium" style={{ color: '#ef4444', fontWeight: '700' }}>
-                    {leadsData.lostThisMonth || 0}
-                  </Text>
-                </View>
-                <View style={styles.pipelineStat}>
-                  <View style={[styles.pipelineDot, { backgroundColor: '#f59e0b' }]} />
-                  <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{t('dashboard.conversionRate')}</Text>
-                  <Text variant="titleMedium" style={{ color: '#f59e0b', fontWeight: '700' }}>
-                    {(leadsData.conversionRate || 0).toFixed(1)}%
-                  </Text>
-                </View>
-              </View>
-
-              {stageEntries.length > 0 && (
-                <View style={styles.stageSection}>
-                  <Divider style={styles.sectionDivider} />
-                  <Text variant="labelMedium" style={[styles.stageHeading, { color: subtextColor }]}>
-                    {t('dashboard.byStage')}
-                  </Text>
-                  {stageEntries.map(([stage, count], i) => (
-                    <View key={stage} style={styles.stageBarRow}>
-                      <View style={styles.stageBarHeader}>
-                        <Text variant="bodyMedium" style={{ color: textColor, flex: 1 }} numberOfLines={1}>
-                          {stage}
-                        </Text>
-                        <Text variant="bodyMedium" style={{ color: STAGE_COLORS[i % STAGE_COLORS.length], fontWeight: '700' }}>
-                          {count}
-                        </Text>
-                      </View>
-                      <ProgressBar
-                        progress={maxStageCount > 0 ? count / maxStageCount : 0}
-                        color={STAGE_COLORS[i % STAGE_COLORS.length]}
-                        style={styles.progressBar}
-                      />
-                    </View>
-                  ))}
-                </View>
-              )}
-            </Surface>
-
-            {/* Recent Leads */}
-            {(leadsData.recentLeads?.length ?? 0) > 0 && (
-              <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-                <View style={styles.sectionHeader}>
-                  <MaterialCommunityIcons name="clock-outline" size={20} color={BRAND} />
-                  <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                    {t('dashboard.recentLeads')}
-                  </Text>
-                </View>
-                <Divider style={styles.sectionDivider} />
-                {leadsData.recentLeads!.map((lead, i) => (
-                  <View
-                    key={lead.id || i}
-                    style={[
-                      styles.recentLeadRow,
-                      i < leadsData.recentLeads!.length - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#e2e8f0' },
-                    ]}
-                  >
-                    <View style={styles.recentLeadInfo}>
-                      <Text variant="bodyMedium" style={{ color: textColor, fontWeight: '600' }} numberOfLines={1}>
-                        {lead.title}
-                      </Text>
-                      <View style={styles.recentLeadMeta}>
-                        <View style={[styles.stageBadge, { backgroundColor: BRAND + '15' }]}>
-                          <Text variant="labelSmall" style={{ color: BRAND, fontWeight: '600' }}>{typeof lead.stage === 'object' ? (lead.stage as any)?.stageName || '' : lead.stage}</Text>
-                        </View>
-                        {lead.contactName ? (
-                          <Text variant="labelSmall" style={{ color: subtextColor }} numberOfLines={1}>
-                            {lead.contactName}
-                          </Text>
-                        ) : null}
-                      </View>
-                    </View>
-                    {lead.value > 0 && (
-                      <Text variant="bodyMedium" style={{ color: BRAND, fontWeight: '700' }}>
-                        ₪{lead.value.toLocaleString()}
-                      </Text>
-                    )}
-                  </View>
-                ))}
-              </Surface>
-            )}
-
-            {/* Tasks Dashboard */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="clipboard-check-outline" size={20} color="#10b981" />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.tasksDashboard')}
-                </Text>
-              </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.widgetStatsRow}>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: textColor, fontWeight: '800' }}>{taskStats.total}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalTasks')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#3b82f6', fontWeight: '800' }}>{taskStats.active}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.active')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#10b981', fontWeight: '800' }}>{taskStats.completed}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.completed')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#ef4444', fontWeight: '800' }}>{taskStats.overdue}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.overdue')}</Text>
-                </View>
-              </View>
-              {Object.keys(taskStats.byPriority).length > 0 && (
-                <>
-                  <Divider style={[styles.sectionDivider, { marginTop: spacing.sm }]} />
-                  <Text variant="labelMedium" style={[styles.stageHeading, { color: subtextColor }]}>
-                    {t('dashboard.byPriority')}
-                  </Text>
-                  {Object.entries(taskStats.byPriority).map(([priority, count]) => (
-                    <View key={priority} style={styles.pipelineStat}>
-                      <View style={[styles.pipelineDot, { backgroundColor: PRIORITY_COLORS[priority] || '#94a3b8' }]} />
-                      <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{priority}</Text>
-                      <Text variant="titleMedium" style={{ color: PRIORITY_COLORS[priority] || '#94a3b8', fontWeight: '700' }}>
-                        {count}
-                      </Text>
-                    </View>
-                  ))}
-                </>
-              )}
-            </Surface>
-
-            {/* Quotes Dashboard */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="file-document-outline" size={20} color="#8b5cf6" />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.quotesDashboard')}
-                </Text>
-              </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.widgetStatsRow}>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: textColor, fontWeight: '800' }}>{quoteStats.total}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalQuotes')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#8b5cf6', fontWeight: '800' }}>
-                    ₪{quoteStats.totalValue.toLocaleString()}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalValue')}</Text>
-                </View>
-              </View>
-              {Object.keys(quoteStats.byStatus).length > 0 && (
-                <>
-                  <Divider style={[styles.sectionDivider, { marginTop: spacing.md }]} />
-                  <Text variant="labelMedium" style={[styles.stageHeading, { color: subtextColor }]}>
-                    {t('dashboard.byStatus')}
-                  </Text>
-                  {Object.entries(quoteStats.byStatus).map(([status, count]) => (
-                    <View key={status} style={styles.pipelineStat}>
-                      <View style={[styles.pipelineDot, { backgroundColor: QUOTE_STATUS_COLORS[status] || '#94a3b8' }]} />
-                      <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{status}</Text>
-                      <Text variant="titleMedium" style={{ color: QUOTE_STATUS_COLORS[status] || '#94a3b8', fontWeight: '700' }}>
-                        {count}
-                      </Text>
-                    </View>
-                  ))}
-                </>
-              )}
-            </Surface>
-
-            {/* E-Signature Dashboard */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="draw" size={20} color="#ec4899" />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.esignatureDashboard')}
-                </Text>
-              </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.widgetStatsRow}>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: textColor, fontWeight: '800' }}>{esigStats.total}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalDocs')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#10b981', fontWeight: '800' }}>{esigStats.signed}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.signed')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#f59e0b', fontWeight: '800' }}>{esigStats.pending}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.pending')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#ef4444', fontWeight: '800' }}>{esigStats.expired}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.expired')}</Text>
-                </View>
-              </View>
-            </Surface>
-
-            {/* Leads Funnel */}
-            {funnelStages.length > 0 && (
-              <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-                <View style={styles.sectionHeader}>
-                  <MaterialCommunityIcons name="filter" size={20} color={BRAND} />
-                  <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                    {t('dashboard.leadsFunnel')}
-                  </Text>
-                </View>
-                <Divider style={styles.sectionDivider} />
-                <View style={styles.funnelContainer}>
-                  {funnelStages.map(([stage, count], i) => {
-                    const widthPct = maxFunnelCount > 0 ? Math.max((count / maxFunnelCount) * 100, 20) : 20;
-                    const color = STAGE_COLORS[i % STAGE_COLORS.length];
-                    return (
-                      <View key={stage} style={styles.funnelStep}>
-                        <View style={[styles.funnelBar, { width: `${widthPct}%`, backgroundColor: color }]}>
-                          <Text style={styles.funnelBarText}>{count}</Text>
-                        </View>
-                        <Text variant="bodySmall" style={{ color: subtextColor, marginTop: 2, textAlign: 'center' }}>
-                          {stage}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              </Surface>
-            )}
-
-            {/* Conversation Stats */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="forum-outline" size={20} color="#0ea5e9" />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.conversationStats')}
-                </Text>
-              </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.widgetStatsRow}>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: textColor, fontWeight: '800' }}>
-                    {(conversationData.totalConversations || 0).toLocaleString()}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalConversations')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#10b981', fontWeight: '800' }}>
-                    {(conversationData.openConversations || 0).toLocaleString()}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.openConversations')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#6366f1', fontWeight: '800' }}>
-                    {(conversationData.closedConversations || 0).toLocaleString()}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.closedConversations')}</Text>
-                </View>
-              </View>
-              {conversationData.avgResponseTime != null && (
-                <View style={[styles.pipelineStat, { marginTop: spacing.sm }]}>
-                  <MaterialCommunityIcons name="clock-fast" size={18} color="#0ea5e9" />
-                  <Text variant="bodySmall" style={{ color: subtextColor, flex: 1 }}>{t('dashboard.avgResponseTime')}</Text>
-                  <Text variant="titleMedium" style={{ color: '#0ea5e9', fontWeight: '700' }}>
-                    {formatDuration(conversationData.avgResponseTime)}
-                  </Text>
-                </View>
-              )}
-            </Surface>
-
-            {/* Phone Calls Stats */}
-            <Surface style={[styles.section, { backgroundColor: surfaceBg }]} elevation={1}>
-              <View style={styles.sectionHeader}>
-                <MaterialCommunityIcons name="phone" size={20} color="#3b82f6" />
-                <Text variant="titleMedium" style={[styles.sectionTitle, { color: textColor }]}>
-                  {t('dashboard.phoneCallStats')}
-                </Text>
-              </View>
-              <Divider style={styles.sectionDivider} />
-              <View style={styles.widgetStatsRow}>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: textColor, fontWeight: '800' }}>{phoneCallStats.total}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.totalCalls')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#10b981', fontWeight: '800' }}>{phoneCallStats.answered}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.answered')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#ef4444', fontWeight: '800' }}>{phoneCallStats.missed}</Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.missed')}</Text>
-                </View>
-                <View style={styles.widgetStatItem}>
-                  <Text variant="headlineSmall" style={{ color: '#3b82f6', fontWeight: '800' }}>
-                    {formatDuration(phoneCallStats.avgDuration)}
-                  </Text>
-                  <Text variant="labelSmall" style={{ color: subtextColor }}>{t('dashboard.avgDuration')}</Text>
-                </View>
-              </View>
-              {phoneCallStats.total > 0 && (
-                <>
-                  <Divider style={[styles.sectionDivider, { marginTop: spacing.md }]} />
-                  <View style={styles.msgBarRow}>
-                    <View style={styles.msgBarHeader}>
-                      <View style={styles.msgBarLabel}>
-                        <View style={[styles.msgDot, { backgroundColor: '#10b981' }]} />
-                        <Text variant="bodyMedium" style={{ color: textColor }}>{t('dashboard.answered')}</Text>
-                      </View>
-                      <Text variant="bodyMedium" style={{ color: '#10b981', fontWeight: '700' }}>
-                        {phoneCallStats.answered}
-                      </Text>
-                    </View>
-                    <ProgressBar
-                      progress={phoneCallStats.total > 0 ? phoneCallStats.answered / phoneCallStats.total : 0}
-                      color="#10b981"
-                      style={styles.progressBar}
-                    />
-                  </View>
-                  <View style={styles.msgBarRow}>
-                    <View style={styles.msgBarHeader}>
-                      <View style={styles.msgBarLabel}>
-                        <View style={[styles.msgDot, { backgroundColor: '#ef4444' }]} />
-                        <Text variant="bodyMedium" style={{ color: textColor }}>{t('dashboard.missed')}</Text>
-                      </View>
-                      <Text variant="bodyMedium" style={{ color: '#ef4444', fontWeight: '700' }}>
-                        {phoneCallStats.missed}
-                      </Text>
-                    </View>
-                    <ProgressBar
-                      progress={phoneCallStats.total > 0 ? phoneCallStats.missed / phoneCallStats.total : 0}
-                      color="#ef4444"
-                      style={styles.progressBar}
-                    />
-                  </View>
-                </>
-              )}
-            </Surface>
-          </>
+            ))}
+          </View>
         )}
+
+        {/* Messages trend */}
+        {chart && chartHasData ? (
+          <SectionCard
+            title={`${t('dashboard.messages', 'הודעות')} · ${isRanged ? periodTitle : t('dashboard.last6Months', '6 חודשים אחרונים')}`}
+            icon="chart-bar"
+            color="#16a34a"
+            onPress={() => openDetail('messages')}
+          >
+            <MiniBars data={chart} colorA="#2e6155" colorB="#93c5fd" />
+            <Legend items={[{ color: '#2e6155', label: t('dashboard.received', 'התקבלו') }, { color: '#93c5fd', label: t('dashboard.sent', 'נשלחו') }]} />
+          </SectionCard>
+        ) : null}
+
+        {/* Leads by stage */}
+        {l && leadStages.length > 0 ? (
+          <SectionCard title={t('dashboard.leadsByStage', 'לידים לפי שלב')} icon="filter-variant" color="#7c3aed" onPress={() => openDetail('leads')}>
+            {(() => {
+              const max = Math.max(1, ...leadStages.map((s) => s.count));
+              return leadStages.slice(0, 6).map((s) => (
+                <View key={s.stageName} style={{ marginBottom: 8 }}>
+                  <View style={{ flexDirection: dir, justifyContent: 'space-between', marginBottom: 2 }}>
+                    <Text numberOfLines={1} style={{ flex: 1, fontSize: 13, color: theme.colors.onSurface }}>
+                      {s.stageName}
+                    </Text>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: theme.colors.onSurface }}>{fmtNum(s.count)}</Text>
+                  </View>
+                  <ProgressBar pct={(s.count / max) * 100} color="#7c3aed" />
+                </View>
+              ));
+            })()}
+          </SectionCard>
+        ) : null}
       </ScrollView>
     </View>
   );
 }
 
+function AiUsageBanner({ usage }: { usage: AiUsage }) {
+  const { t } = useTranslation();
+  const theme = useAppTheme();
+  const dir = useRowDirection();
+  const used = Math.max(0, Number(usage.used) || 0);
+  const limit = usage.limit;
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  const over = used > limit;
+  const color = over ? '#dc2626' : pct >= 90 ? '#d97706' : BRAND;
+  return (
+    <SectionCard>
+      <View style={{ flexDirection: dir, justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
+        <View style={{ flexDirection: dir, alignItems: 'center', gap: 6 }}>
+          <MaterialCommunityIcons name="robot-outline" size={18} color={color} />
+          <Text style={{ fontSize: 13, fontWeight: '700', color: theme.colors.onSurface }}>{t('dashboard.aiCredits', 'קרדיטי AI החודש')}</Text>
+        </View>
+        <Text style={{ fontSize: 13, fontWeight: '800', color }}>
+          {fmtNum(used)} / {fmtNum(limit)}
+        </Text>
+      </View>
+      <ProgressBar pct={pct} color={color} />
+      {over ? <Text style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>{t('dashboard.aiOverQuota', 'חריגה מהמכסה - כל 500 קרדיטים נוספים = ₪39')}</Text> : null}
+    </SectionCard>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  headerTitle: { color: '#fff', fontWeight: '700', fontSize: fontSize.xl },
-  content: { padding: spacing.md, paddingBottom: spacing.xxl },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 80 },
-
-  chipScroll: { marginBottom: spacing.md },
-  chipRow: { gap: spacing.sm, paddingHorizontal: 2 },
-  chip: { borderRadius: borderRadius.full, backgroundColor: '#e2e8f0' },
-  chipActive: { backgroundColor: BRAND },
-  chipText: { fontSize: fontSize.sm, color: '#475569' },
-  chipTextActive: { color: '#fff' },
-
-  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
-  statCard: { width: CARD_WIDTH, borderRadius: borderRadius.xl, padding: spacing.md, alignItems: 'center' },
-  statIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.sm },
-  statValue: { fontWeight: '800', marginBottom: 2 },
-
-  section: { borderRadius: borderRadius.xl, padding: spacing.md, marginBottom: spacing.md },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-  sectionTitle: { fontWeight: '700' },
-  sectionDivider: { marginBottom: spacing.md },
-
-  growthRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' },
-  growthItem: { alignItems: 'center' },
-  growthBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.lg,
-  },
-
-  msgTotal: { alignItems: 'center', marginBottom: spacing.md },
-  msgBarRow: { marginBottom: spacing.sm },
-  msgBarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs },
-  msgBarLabel: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  msgDot: { width: 8, height: 8, borderRadius: 4 },
-
-  progressBar: { height: 8, borderRadius: 4 },
-
-  pipelineSummary: { gap: spacing.sm },
-  pipelineStat: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  pipelineDot: { width: 10, height: 10, borderRadius: 5 },
-
-  stageSection: { marginTop: spacing.sm },
-  stageHeading: { fontWeight: '600', marginBottom: spacing.sm },
-  stageBarRow: { marginBottom: spacing.sm },
-  stageBarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs },
-
-  recentLeadRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm },
-  recentLeadInfo: { flex: 1, marginRight: spacing.sm },
-  recentLeadMeta: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: 4 },
-  stageBadge: { paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: borderRadius.sm },
-
-  widgetStatsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-around', gap: spacing.sm, marginBottom: spacing.sm },
-  widgetStatItem: { alignItems: 'center', minWidth: 70 },
-
-  funnelContainer: { alignItems: 'center', gap: spacing.sm },
-  funnelStep: { width: '100%', alignItems: 'center' },
-  funnelBar: { height: 36, borderRadius: borderRadius.lg, alignItems: 'center', justifyContent: 'center', minWidth: 40 },
-  funnelBarText: { color: '#fff', fontWeight: '700', fontSize: fontSize.sm },
+  grid: { flexWrap: 'wrap', paddingHorizontal: 12, gap: 10, marginBottom: 12 },
+  gridCell: { width: '48%', flexGrow: 1 },
+  kpi: { borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, padding: 12, minHeight: 118 },
+  kpiIcon: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  attnRow: { alignItems: 'center', gap: 10, padding: 10, borderRadius: 10, marginBottom: 6 },
 });

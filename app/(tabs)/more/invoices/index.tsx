@@ -1,21 +1,6 @@
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import {
-  View,
-  StyleSheet,
-  FlatList,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-} from 'react-native';
-import {
-  Text,
-  Searchbar,
-  Chip,
-  ActivityIndicator,
-  Appbar,
-  FAB,
-  Divider,
-} from 'react-native-paper';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { View, StyleSheet, FlatList, Pressable, RefreshControl } from 'react-native';
+import { Text, ActivityIndicator, FAB, IconButton, Menu } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,250 +8,211 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
-import { invoicesApi, Invoice, DOCUMENT_TYPES, INVOICE_STATUSES } from '../../../../services/api/invoices';
+import { useDebouncedValue } from '../../../../hooks/useWindowedList';
+import {
+  invoicesApi,
+  Invoice,
+  OpenInvoicesSummary,
+  DOCUMENT_TYPES,
+  INVOICE_STATUSES,
+} from '../../../../services/api/invoices';
 import { cacheEntities } from '../../../../services/entityCache';
-import { formatDate } from '../../../../utils/formatters';
-import { borderRadius } from '../../../../constants/theme';
+import { formatDate, formatCurrency } from '../../../../utils/formatters';
+import { currencySymbol } from '../../../../utils/currency';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { SummaryHeader } from '../../../../components/SummaryHeader';
+import { DocumentListItem } from '../../../../components/DocumentListItem';
+import { EmptyState } from '../../../../components/EmptyState';
 
 const BRAND_COLOR = '#2e6155';
-
-type TypeFilter = 'all' | 'tax_invoice' | 'combined' | 'receipt' | 'transaction' | 'credit_invoice' | 'credit_receipt';
-type StatusFilterType = 'all' | 'draft' | 'issued' | 'sent' | 'paid' | 'overdue' | 'cancelled';
 
 export default function InvoicesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
-  const { isRTL, flexDirection, textAlign } = useRTL();
+  const { isRTL } = useRTL();
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [totalCount, setTotalCount] = useState(0);
+  const [summary, setSummary] = useState<OpenInvoicesSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchVisible, setSearchVisible] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilterType>('all');
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [typeMenuVisible, setTypeMenuVisible] = useState(false);
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
+  const loadedOnceRef = useRef(false);
+
+  // Search runs as you type (debounced) — no hidden magnifier, no "submit" step.
+  const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
   const fetchInvoices = useCallback(async (p = 1, append = false) => {
     if (!user?.organization) { setLoading(false); return; }
-    if (p === 1) setLoading(true); else setLoadingMore(true);
+    // Full-screen spinner only on the very first load; later refreshes/filters keep the rows on screen.
+    if (p === 1 && !append) { if (!loadedOnceRef.current) setLoading(true); } else setLoadingMore(true);
     try {
       setError(null);
       const result = await invoicesApi.getPaginated(user.organization, {
         page: p,
         pageSize: 25,
-        searchTerm: searchQuery || undefined,
+        searchTerm: debouncedSearch || undefined,
         statusFilter,
         typeFilter,
       });
       cacheEntities('invoices', result.invoices);
-      setInvoices((prev) => append ? [...prev, ...result.invoices] : result.invoices);
+      setInvoices((prev) => (append ? [...prev, ...result.invoices] : result.invoices));
       setTotalCount(result.totalCount);
       setPage(p);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
+      loadedOnceRef.current = true;
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [user?.organization, searchQuery, statusFilter, typeFilter, t]);
+  }, [user?.organization, debouncedSearch, statusFilter, typeFilter, t]);
 
-  useEffect(() => {
-    fetchInvoices(1);
-  }, [fetchInvoices]);
+  const fetchSummary = useCallback(async () => {
+    if (!user?.organization) return;
+    try {
+      setSummary(await invoicesApi.getOpenSummary(user.organization));
+    } catch {
+      setSummary(null); // header is optional — never block the list
+    }
+  }, [user?.organization]);
+
+  useEffect(() => { fetchInvoices(1); }, [fetchInvoices]);
+  useEffect(() => { fetchSummary(); }, [fetchSummary]);
 
   const didMountRef = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      if (!didMountRef.current) {
-        didMountRef.current = true;
-        return;
-      }
+      if (!didMountRef.current) { didMountRef.current = true; return; }
       fetchInvoices(1);
-    }, [fetchInvoices])
+      fetchSummary();
+    }, [fetchInvoices, fetchSummary]),
   );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchInvoices(1);
+    await Promise.all([fetchInvoices(1), fetchSummary()]);
     setRefreshing(false);
-  }, [fetchInvoices]);
+  }, [fetchInvoices, fetchSummary]);
 
   const onEndReached = useCallback(() => {
-    if (!loadingMore && invoices.length < totalCount) {
-      fetchInvoices(page + 1, true);
-    }
+    if (!loadingMore && invoices.length < totalCount) fetchInvoices(page + 1, true);
   }, [loadingMore, invoices.length, totalCount, page, fetchInvoices]);
 
+  const createInvoice = useCallback(
+    () => router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: 'new' } }),
+    [router],
+  );
+
   const getDocLabel = (type: string) => DOCUMENT_TYPES.find((d) => d.key === type)?.labelHe || type;
-  const getDocColor = (type: string) => DOCUMENT_TYPES.find((d) => d.key === type)?.color || BRAND_COLOR;
   const getStatusLabel = (status: string) => INVOICE_STATUSES.find((s) => s.key === status)?.labelHe || status;
   const getStatusColor = (status: string) => INVOICE_STATUSES.find((s) => s.key === status)?.color || '#9E9E9E';
 
   const renderCard = useCallback(({ item }: { item: Invoice }) => {
-    const docColor = getDocColor(item.type);
-    const statusColor = getStatusColor(item.status);
-
+    const overdue = item.status === 'overdue';
     return (
-      <Pressable
+      <DocumentListItem
+        title={`${getDocLabel(item.type)}${item.documentNumber ? ` #${item.documentNumber}` : ''}`}
+        subtitle={item.contactName}
+        amount={item.total != null ? formatCurrency(Number(item.total), currencySymbol(item.currency)) : undefined}
+        statusLabel={getStatusLabel(item.status)}
+        statusColor={getStatusColor(item.status)}
+        date={overdue && item.dueDate ? `${t('invoices.dueDate', 'פירעון')} ${formatDate(item.dueDate)}` : item.date ? formatDate(item.date) : undefined}
+        dateWarning={overdue}
+        viewCount={item.viewCount}
         onPress={() => router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: item.id } })}
-        android_ripple={{ color: theme.colors.surfaceVariant }}
-        style={({ pressed }) => [
-          styles.card,
-          {
-            backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
-            borderColor: theme.colors.outlineVariant,
-          },
-        ]}
-      >
-        <View style={[styles.cardBar, { backgroundColor: docColor }]} />
-        <View style={styles.cardBody}>
-          <View style={[styles.cardHeader, { flexDirection }]}>
-            <View style={{ flex: 1 }}>
-              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign }}>
-                {getDocLabel(item.type)}{item.documentNumber ? ` #${item.documentNumber}` : ''}
-              </Text>
-              {item.contactName ? (
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                  {item.contactName}
-                </Text>
-              ) : null}
-            </View>
-            <View style={[styles.statusBadge, { backgroundColor: `${statusColor}18` }]}>
-              <Text variant="labelSmall" style={{ color: statusColor, fontWeight: '700' }}>
-                {getStatusLabel(item.status)}
-              </Text>
-            </View>
-          </View>
-
-          <View style={[styles.cardFooter, { flexDirection }]}>
-            {item.date ? (
-              <View style={[styles.metaRow, { flexDirection }]}>
-                <MaterialCommunityIcons name="calendar-outline" size={12} color={theme.colors.onSurfaceVariant} />
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {formatDate(item.date)}
-                </Text>
-              </View>
-            ) : null}
-            {item.viewCount && item.viewCount > 0 ? (
-              <View style={[styles.viewCountBadge, { flexDirection }]}>
-                <MaterialCommunityIcons name="eye-check-outline" size={12} color="#53bdeb" />
-                <Text variant="labelSmall" style={{ color: '#53bdeb', fontWeight: '600', fontSize: 10 }}>
-                  {item.viewCount}
-                </Text>
-              </View>
-            ) : null}
-            {item.total != null ? (
-              <Text variant="titleSmall" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-                {item.currency === 'USD' ? '$' : item.currency === 'EUR' ? '€' : '₪'}
-                {Number(item.total).toFixed(2)}
-              </Text>
-            ) : null}
-          </View>
-        </View>
-      </Pressable>
+      />
     );
-  }, [router, theme, flexDirection, textAlign]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, t]);
+
+  const filtering = statusFilter !== 'all' || typeFilter !== 'all' || !!debouncedSearch;
+
+  const summaryItems = summary
+    ? [
+        { label: t('invoices.unpaid', 'לתשלום'), value: formatCurrency(summary.total), color: BRAND_COLOR },
+        {
+          label: t('invoices.overdueTotal', 'באיחור'),
+          value: formatCurrency(summary.overdueTotal),
+          color: summary.overdueCount > 0 ? '#dc2626' : theme.colors.onSurfaceVariant,
+        },
+      ]
+    : [];
 
   const renderEmpty = () => {
     if (loading) return null;
     return (
-      <View style={styles.emptyContainer}>
-        <MaterialCommunityIcons name="file-invoice-dollar" size={72} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.3 }} />
-        <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginTop: 12 }}>
-          אין חשבוניות
-        </Text>
-        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 6 }}>
-          צור חשבונית חדשה בלחיצה על +
-        </Text>
-      </View>
+      <EmptyState
+        icon="file-document-outline"
+        title={filtering ? t('common.noResults') : t('invoices.noInvoices', 'אין חשבוניות')}
+        description={filtering ? undefined : t('invoices.noInvoicesDesc', 'הפק את החשבונית הראשונה שלך')}
+        actionLabel={filtering ? undefined : t('invoices.newInvoice', 'חשבונית חדשה')}
+        onAction={filtering ? undefined : createInvoice}
+      />
     );
   };
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        {searchVisible ? (
-          <Searchbar
-            value={searchQuery}
-            onChangeText={(q) => { setSearchQuery(q); }}
-            onSubmitEditing={() => fetchInvoices(1)}
-            placeholder="חפש חשבוניות..."
-            style={[styles.searchbar, { flex: 1, marginHorizontal: 8 }]}
-            onIconPress={() => { setSearchVisible(false); setSearchQuery(''); }}
-            autoFocus
-          />
-        ) : (
-          <>
-            <Appbar.Content title="חשבוניות" titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 18 }} />
-            <Appbar.Action icon="magnify" color="#FFF" onPress={() => setSearchVisible(true)} />
-            <Appbar.Action
-              icon="plus"
-              color="#FFF"
-              onPress={() => router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: 'new' } })}
+      <ScreenHeader title={t('invoices.title', 'חשבוניות')} onBack={() => router.back()} />
+
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('invoices.searchPlaceholder', 'חפש חשבוניות...')}
+        trailing={
+          <Menu
+            visible={typeMenuVisible}
+            onDismiss={() => setTypeMenuVisible(false)}
+            anchor={
+              <View>
+                <IconButton
+                  icon="file-document-multiple-outline"
+                  size={22}
+                  iconColor={typeFilter !== 'all' ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+                  onPress={() => setTypeMenuVisible(true)}
+                />
+                {typeFilter !== 'all' ? <View style={[styles.activeDot, { backgroundColor: BRAND_COLOR }]} /> : null}
+              </View>
+            }
+            contentStyle={{ backgroundColor: theme.colors.surface }}
+          >
+            <Menu.Item
+              title={t('invoices.allTypes', 'כל סוגי המסמכים')}
+              leadingIcon={typeFilter === 'all' ? 'check' : undefined}
+              onPress={() => { setTypeFilter('all'); setTypeMenuVisible(false); }}
             />
-          </>
-        )}
-      </Appbar.Header>
+            {DOCUMENT_TYPES.map((d) => (
+              <Menu.Item
+                key={d.key}
+                title={d.labelHe}
+                leadingIcon={typeFilter === d.key ? 'check' : undefined}
+                onPress={() => { setTypeFilter(d.key); setTypeMenuVisible(false); }}
+              />
+            ))}
+          </Menu>
+        }
+      />
 
-      {/* Type filter chips */}
-      <View style={[styles.filtersRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersScroll}>
-          {(['all', ...DOCUMENT_TYPES.map((d) => d.key)] as TypeFilter[]).map((type) => {
-            const isActive = typeFilter === type;
-            const color = type === 'all' ? BRAND_COLOR : getDocColor(type);
-            const label = type === 'all' ? 'הכל' : getDocLabel(type);
-            return (
-              <Chip
-                key={type}
-                selected={isActive}
-                onPress={() => setTypeFilter(type)}
-                compact
-                style={[
-                  styles.filterChip,
-                  isActive ? { backgroundColor: `${color}20`, borderColor: color, borderWidth: 1 } : { backgroundColor: theme.colors.surfaceVariant },
-                ]}
-                textStyle={[{ fontSize: 12 }, isActive && { color, fontWeight: '600' }]}
-              >
-                {label}
-              </Chip>
-            );
-          })}
-        </ScrollView>
-      </View>
+      <SummaryHeader items={summaryItems} />
 
-      {/* Status filter chips */}
-      <View style={[{ backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersScroll}>
-          {(['all', ...INVOICE_STATUSES.map((s) => s.key)] as StatusFilterType[]).map((status) => {
-            const isActive = statusFilter === status;
-            const statusMeta = INVOICE_STATUSES.find((s) => s.key === status);
-            const color = statusMeta?.color || BRAND_COLOR;
-            const label = status === 'all' ? 'כל הסטטוסים' : (statusMeta?.labelHe || status);
-            return (
-              <Chip
-                key={status}
-                selected={isActive}
-                onPress={() => setStatusFilter(status)}
-                compact
-                style={[
-                  styles.filterChip,
-                  isActive ? { backgroundColor: `${color}20`, borderColor: color, borderWidth: 1 } : { backgroundColor: theme.colors.surfaceVariant },
-                ]}
-                textStyle={[{ fontSize: 11 }, isActive && { color, fontWeight: '600' }]}
-              >
-                {label}
-              </Chip>
-            );
-          })}
-        </ScrollView>
-      </View>
+      <StatusFilterBar
+        allLabel={t('common.all')}
+        options={INVOICE_STATUSES.map((s) => ({ key: s.key, label: s.labelHe, color: s.color }))}
+        value={statusFilter}
+        onChange={setStatusFilter}
+      />
 
       {error ? (
         <Pressable onPress={() => fetchInvoices(1)} style={[styles.errorBanner, { backgroundColor: theme.colors.errorContainer }]}>
@@ -287,7 +233,7 @@ export default function InvoicesScreen() {
           keyExtractor={(item, idx) => item.id || String(idx)}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />}
           contentContainerStyle={[styles.listContent, invoices.length === 0 && styles.listContentEmpty]}
-          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={renderEmpty}
           onEndReached={onEndReached}
@@ -298,8 +244,8 @@ export default function InvoicesScreen() {
 
       <FAB
         icon="plus"
-        label="חשבונית חדשה"
-        onPress={() => router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: 'new' } })}
+        label={t('invoices.newInvoice', 'חשבונית חדשה')}
+        onPress={createInvoice}
         style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFF"
       />
@@ -310,36 +256,9 @@ export default function InvoicesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  searchbar: { height: 40, borderRadius: 20, elevation: 0 },
-  filtersRow: { borderBottomWidth: StyleSheet.hairlineWidth },
-  filtersScroll: { paddingHorizontal: 14, gap: 8, alignItems: 'center', paddingVertical: 10 },
-  filterChip: { height: 32 },
   listContent: { padding: 14, paddingBottom: 100 },
   listContentEmpty: { flexGrow: 1 },
-  card: {
-    flexDirection: 'row',
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    overflow: 'hidden',
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-  },
-  cardBar: { width: 5 },
-  cardBody: { flex: 1, padding: 14, gap: 6 },
-  cardHeader: { alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    alignSelf: 'flex-start',
-  },
-  cardFooter: { alignItems: 'center', justifyContent: 'space-between', marginTop: 2 },
-  metaRow: { alignItems: 'center', gap: 4 },
-  viewCountBadge: { alignItems: 'center', gap: 3, backgroundColor: 'rgba(83, 189, 235, 0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
   errorBanner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
-  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80, paddingHorizontal: 40 },
+  activeDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4 },
   fab: { position: 'absolute', borderRadius: 16 },
 });

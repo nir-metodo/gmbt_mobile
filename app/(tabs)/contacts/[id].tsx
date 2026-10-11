@@ -121,6 +121,10 @@ export default function ContactDetailScreen() {
     contact ? { ...contact } : { ...EMPTY_CONTACT },
   );
   const [saving, setSaving] = useState(false);
+  const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const baselineRef = useRef('');
+  const savingRef = useRef(false);
+  const lastErrorSnapRef = useRef('');
   const [existingContact, setExistingContact] = useState<Contact | null>(null);
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
   const [contactFormSections, setContactFormSections] = useState<DynamicSection[]>([]);
@@ -189,6 +193,8 @@ export default function ContactDetailScreen() {
       setSelectedContact(contact);
       setForm({ ...contact });
       setFormTags(extractTags(contact.keys));
+      // What's currently saved on the server — autosave only fires when the form differs from this.
+      baselineRef.current = JSON.stringify({ f: { ...contact }, tags: extractTags(contact.keys) });
     }
     return () => setSelectedContact(null);
   }, [contact, setSelectedContact]);
@@ -530,6 +536,66 @@ export default function ContactDetailScreen() {
     }
   }, [organization, form, formTags, contact, isNew, createContact, updateContact, refetchContact, checkDuplicate, t, router]);
 
+  // ── Inline editing with autosave (existing contacts) ────────────────────────────────────────
+  // No Edit button: the fields on the screen are editable and persist ~1.2s after the last
+  // keystroke (and when leaving the screen). Phone changes need an explicit tap because the phone
+  // is the contact's identity and half-typed numbers must never be saved.
+  const latestRef = useRef({ form, formTags });
+  latestRef.current = { form, formTags };
+  const snapshotOf = (f: unknown, tg: string[]) => JSON.stringify({ f, tags: tg });
+  const phoneDirty =
+    !isNew && !!contact && cleanPhoneNumber(form.phoneNumber || '') !== cleanPhoneNumber(contact.phoneNumber || '');
+
+  const flushAutoSave = useCallback(async (force = false) => {
+    if (isNew || !organization || !contact || savingRef.current) return;
+    const { form: f, formTags: tg } = latestRef.current;
+    const snap = snapshotOf(f, tg);
+    if (snap === baselineRef.current) return;
+    const normalizedPhone = cleanPhoneNumber(f.phoneNumber || '');
+    const phoneChanged = normalizedPhone !== cleanPhoneNumber(contact.phoneNumber || '');
+    if (phoneChanged && !force) return;
+    if (!normalizedPhone) {
+      if (force) Alert.alert(t('common.error'));
+      return;
+    }
+    savingRef.current = true;
+    setAutoSaveState('saving');
+    try {
+      const formData = { ...f, phoneNumber: normalizedPhone, keys: tg.length > 0 ? tg.join('#') : '' };
+      const userId = user?.userId || user?.uID || '';
+      const userName = user?.fullname || user?.name || 'Gambot';
+      await updateContact(organization, { ...formData, id: contact.id ?? '' }, userId, userName);
+      lastErrorSnapRef.current = '';
+      const cur = latestRef.current;
+      if (snapshotOf(cur.form, cur.formTags) === snap) {
+        // Nothing typed while saving: adopt the saved record (this also resets the baseline).
+        setFetchedContact({ ...(contact as Contact), ...formData } as Contact);
+      } else {
+        baselineRef.current = snap; // user kept typing; the effect below saves the rest next
+      }
+      setAutoSaveState('saved');
+    } catch {
+      lastErrorSnapRef.current = snap;
+      setAutoSaveState('error');
+    } finally {
+      savingRef.current = false;
+    }
+  }, [isNew, organization, contact, user, updateContact, t]);
+
+  const flushRef = useRef(flushAutoSave);
+  flushRef.current = flushAutoSave;
+
+  useEffect(() => {
+    if (isNew || !contact || !organization) return;
+    const snap = snapshotOf(form, formTags);
+    if (snap === baselineRef.current || snap === lastErrorSnapRef.current) return;
+    const timer = setTimeout(() => { flushAutoSave(false); }, 1200);
+    return () => clearTimeout(timer);
+  }, [form, formTags, contact, organization, isNew, flushAutoSave, autoSaveState]);
+
+  // Leaving the screen with unsaved edits: save them.
+  useEffect(() => () => { flushRef.current(false); }, []);
+
   const updateField = useCallback(
     (field: keyof Contact, value: string) => {
       setForm((prev) => ({ ...prev, [field]: value }));
@@ -702,378 +768,10 @@ export default function ContactDetailScreen() {
     );
   }
 
-  return (
-    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
-
-      <View
-        style={[
-          styles.header,
-          {
-            backgroundColor: theme.custom.headerBackground,
-            paddingTop: insets.top + 4,
-            flexDirection,
-          },
-        ]}
-      >
-        <IconButton
-          icon={isRTL ? 'arrow-right' : 'arrow-left'}
-          iconColor={theme.custom.headerText}
-          size={24}
-          onPress={() => router.back()}
-        />
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {isNew ? t('contacts.addContact') : contactName}
-        </Text>
-        {!isNew ? (
-          <Menu
-            visible={menuVisible}
-            onDismiss={() => setMenuVisible(false)}
-            anchor={
-              <IconButton
-                icon="dots-vertical"
-                iconColor={theme.custom.headerText}
-                size={24}
-                onPress={() => setMenuVisible(true)}
-              />
-            }
-            contentStyle={{ backgroundColor: theme.colors.surface }}
-          >
-            <Menu.Item
-              leadingIcon="pencil-outline"
-              onPress={() => {
-                setMenuVisible(false);
-                setEditVisible(true);
-              }}
-              title={t('common.edit')}
-            />
-            <Menu.Item
-              leadingIcon="image-multiple"
-              onPress={() => {
-                setMenuVisible(false);
-                setMediaPanelVisible(true);
-              }}
-              title={t('contacts.mediaAndFiles', 'מדיה וקבצים')}
-            />
-            <Divider />
-            <Menu.Item
-              leadingIcon="shield-check"
-              onPress={openConsentModal}
-              title={t('contacts.documentConsent', 'תעד הסכמה לדיוור')}
-              titleStyle={{ color: '#16A34A' }}
-            />
-            {(contact as any)?.consent !== false ? (
-              <Menu.Item
-                leadingIcon="cancel"
-                onPress={handleRevokeConsent}
-                title={t('contacts.markNotAgreed', 'סמן כאי-הסכמה')}
-                titleStyle={{ color: '#D97706' }}
-              />
-            ) : null}
-            <Menu.Item
-              leadingIcon={(contact as any)?.isSpam ? 'shield-check-outline' : 'shield-alert-outline'}
-              onPress={handleToggleSpam}
-              title={(contact as any)?.isSpam ? t('contacts.removeSpam', 'הסר ספאם') : t('contacts.markSpam', 'סמן כספאם')}
-              titleStyle={{ color: (contact as any)?.isSpam ? theme.colors.onSurface : '#DC2626' }}
-            />
-            <Divider />
-            <Menu.Item
-              leadingIcon="delete-outline"
-              onPress={handleDelete}
-              title={t('common.delete')}
-              titleStyle={{ color: theme.colors.error }}
-            />
-          </Menu>
-        ) : (
-          <View style={{ width: 48 }} />
-        )}
-      </View>
-
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.avatarSection}>
-          {contact?.photoURL ? (
-            <Avatar.Image size={88} source={{ uri: contact.photoURL }} />
-          ) : (
-            <Avatar.Text
-              size={88}
-              label={getInitials(contactName || '?')}
-              style={{ backgroundColor: theme.colors.primaryContainer }}
-              labelStyle={{ color: theme.colors.primary, fontWeight: '700', fontSize: 32 }}
-            />
-          )}
-          <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', marginTop: 12 }}>
-            {contactName || t('contacts.addContact')}
-          </Text>
-          {contact?.phoneNumber ? (
-            <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-              {formatPhoneNumber(contact.phoneNumber)}
-            </Text>
-          ) : null}
-          {contact?.email ? (
-            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-              {contact.email}
-            </Text>
-          ) : null}
-          {(() => {
-            const c = contact as any;
-            const chips: React.ReactNode[] = [];
-            if (c?.isSpam) {
-              chips.push(
-                <Chip key="spam" compact icon="shield-alert" style={{ backgroundColor: '#FEE2E2' }} textStyle={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>
-                  {t('contacts.possibleSpam', 'ספאם')}
-                </Chip>,
-              );
-            }
-            if (c?.consent === true) {
-              const srcLabel = c?.consentSource ? ` · ${c.consentSource}` : '';
-              chips.push(
-                <Chip key="consent-yes" compact icon="check-decagram" style={{ backgroundColor: '#DCFCE7' }} textStyle={{ color: '#16A34A', fontWeight: '700', fontSize: 12 }}>
-                  {t('contacts.consentAgreed', 'הסכים')}{srcLabel}
-                </Chip>,
-              );
-            } else if (c?.consent === false) {
-              chips.push(
-                <Chip key="consent-no" compact icon="cancel" style={{ backgroundColor: '#FEF3C7' }} textStyle={{ color: '#D97706', fontWeight: '700', fontSize: 12 }}>
-                  {t('contacts.consentNotAgreed', 'לא הסכים')}
-                </Chip>,
-              );
-            }
-            return chips.length > 0 ? (
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, justifyContent: 'center', opacity: flagSaving ? 0.5 : 1 }}>
-                {chips}
-              </View>
-            ) : null;
-          })()}
-        </View>
-
-        {!isNew ? (
-          <View style={[styles.actionsRow, { flexDirection }]}>
-            <ActionButton
-              icon="phone"
-              label={t('contacts.makeCall')}
-              color={theme.colors.primary}
-              bg={theme.colors.primaryContainer}
-              onPress={handleCall}
-            />
-            <ActionButton
-              icon="whatsapp"
-              label="WhatsApp"
-              color="#25D366"
-              bg="#E8F5E9"
-              onPress={handleWhatsApp}
-            />
-            <ActionButton
-              icon="note-plus-outline"
-              label={t('phoneCalls.noteShort', 'הערה')}
-              color="#9C27B0"
-              bg="#F3E5F5"
-              onPress={() => setNoteModalVisible(true)}
-            />
-            <ActionButton
-              icon="clipboard-check-outline"
-              label={t('tasks.taskShort', 'משימה')}
-              color="#FF9800"
-              bg="#FFF3E0"
-              onPress={() => setAddTaskVisible(true)}
-            />
-          </View>
-        ) : null}
-
-        <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          {contact?.ownerName ? (
-            <InfoRow
-              icon="account-outline"
-              label={t('contacts.owner')}
-              value={contact.ownerName}
-              theme={theme}
-              flexDirection={flexDirection}
-              textAlign={textAlign}
-            />
-          ) : null}
-          {contact?.lastConversationStatus ? (
-            <>
-              {contact.ownerName ? <Divider style={styles.cardDivider} /> : null}
-              <InfoRow
-                icon="chat-processing-outline"
-                label={t('contacts.status', 'Status')}
-                value={contact.lastConversationStatus}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {contact?.modifiedOn ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="calendar-outline"
-                label={t('common.modified', 'Modified')}
-                value={formatDate(contact.modifiedOn)}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {contact?.createdOn ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="calendar-plus-outline"
-                label={t('common.created', 'Created')}
-                value={formatDate(contact.createdOn)}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-        </Surface>
-
-        {tags.length > 0 ? (
-          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <Text
-              variant="titleSmall"
-              style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 8 }}
-            >
-              {t('contacts.tags')}
-            </Text>
-            <View style={[styles.tagsWrap, { flexDirection }]}>
-              {tags.map((tag) => (
-                <Chip
-                  key={tag}
-                  compact
-                  style={{ backgroundColor: theme.colors.primaryContainer }}
-                  textStyle={{ color: theme.colors.primary, fontSize: 12 }}
-                >
-                  #{tag}
-                </Chip>
-              ))}
-            </View>
-          </Surface>
-        ) : null}
-
-        <DynamicFieldsSectionView
-          sections={contactFormSections}
-          data={contact as Record<string, any>}
-          lang={lang}
-          formLayout={contactFormLayout}
-        />
-
-        {!isNew ? (
-          <>
-            <View
-              style={[
-                styles.tabBar,
-                { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline },
-              ]}
-            >
-              {([
-                { key: 'timeline' as DetailTab, label: t('contacts.timeline') },
-                { key: 'internal' as DetailTab, label: t('internalMessages.tabShort', isRTL ? 'הודעות פנימיות' : 'Internal') },
-                { key: 'related' as DetailTab, label: t('contacts.relatedRecords') },
-              ]).map((tabItem) => {
-                const isActive = activeTab === tabItem.key;
-                return (
-                  <Pressable
-                    key={tabItem.key}
-                    style={[
-                      styles.tab,
-                      isActive && { borderBottomWidth: 3, borderBottomColor: theme.colors.primary },
-                    ]}
-                    onPress={() => switchTab(tabItem.key)}
-                  >
-                    <Text
-                      variant="titleSmall"
-                      numberOfLines={1}
-                      style={{
-                        color: isActive ? theme.colors.primary : theme.colors.onSurfaceVariant,
-                        fontWeight: isActive ? '700' : '500',
-                      }}
-                    >
-                      {tabItem.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            {activeTab === 'timeline' ? (
-              <TimelineSection
-                events={timelineEvents}
-                loading={timelineLoading}
-                theme={theme}
-                t={t}
-                lang={lang}
-                isRTL={isRTL}
-                flexDirection={flexDirection}
-                onTogglePin={handleTogglePin}
-                onOpenTask={openTaskFromTimeline}
-                onCompleteTask={completeTaskFromTimeline}
-              />
-            ) : activeTab === 'internal' ? (
-              <ContactInternalMessages contactPhone={contact?.phoneNumber || ''} />
-            ) : (
-              <RelatedRecordsSection
-                data={relatedRecords}
-                loading={relatedLoading}
-                theme={theme}
-                t={t}
-                isRTL={isRTL}
-                flexDirection={flexDirection}
-                router={router}
-              />
-            )}
-          </>
-        ) : null}
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-
-      <Portal>
-        <Modal
-          visible={editVisible}
-          animationType="slide"
-          presentationStyle="pageSheet"
-          onRequestClose={() => setEditVisible(false)}
-        >
-          <KeyboardAvoidingView
-            behavior="padding"
-            style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
-          >
-            <View
-              style={[
-                styles.modalHeader,
-                { borderBottomColor: theme.colors.outline, flexDirection },
-              ]}
-            >
-              <Pressable onPress={() => setEditVisible(false)}>
-                <Text style={{ color: theme.colors.primary, fontSize: 16 }}>
-                  {t('common.cancel')}
-                </Text>
-              </Pressable>
-              <Text
-                variant="titleMedium"
-                style={{ color: theme.colors.onSurface, fontWeight: '700' }}
-              >
-                {isNew ? t('contacts.addContact') : t('contacts.editContact')}
-              </Text>
-              <Pressable onPress={handleSave} disabled={saving}>
-                {saving ? (
-                  <ActivityIndicator size="small" color={theme.colors.primary} />
-                ) : (
-                  <Text style={{ color: theme.colors.primary, fontSize: 16, fontWeight: '600' }}>
-                    {t('common.save')}
-                  </Text>
-                )}
-              </Pressable>
-            </View>
-
-            <ScrollView contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
+  // Contact fields (name / phone / email / owner / tags / custom fields). Rendered INLINE for existing contacts
+  // (auto-saved, no Edit button) and inside the create modal for a NEW contact.
+  const renderFormFields = () => (
+    <>
               <FormField
                 label={t('contacts.name', 'Name')}
                 value={form.name ?? ''}
@@ -1265,6 +963,364 @@ export default function ContactDetailScreen() {
                 writingDirection={writingDirection}
                 flexDirection={flexDirection}
               />
+    </>
+  );
+
+  return (
+    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
+
+      <View
+        style={[
+          styles.header,
+          {
+            backgroundColor: theme.custom.headerBackground,
+            paddingTop: insets.top + 4,
+            flexDirection,
+          },
+        ]}
+      >
+        <IconButton
+          icon={isRTL ? 'arrow-right' : 'arrow-left'}
+          iconColor={theme.custom.headerText}
+          size={24}
+          onPress={() => router.back()}
+        />
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {isNew ? t('contacts.addContact') : contactName}
+        </Text>
+        {!isNew ? (
+          <Menu
+            visible={menuVisible}
+            onDismiss={() => setMenuVisible(false)}
+            anchor={
+              <IconButton
+                icon="dots-vertical"
+                iconColor={theme.custom.headerText}
+                size={24}
+                onPress={() => setMenuVisible(true)}
+              />
+            }
+            contentStyle={{ backgroundColor: theme.colors.surface }}
+          >
+            <Menu.Item
+              leadingIcon="image-multiple"
+              onPress={() => {
+                setMenuVisible(false);
+                setMediaPanelVisible(true);
+              }}
+              title={t('contacts.mediaAndFiles', 'מדיה וקבצים')}
+            />
+            <Divider />
+            <Menu.Item
+              leadingIcon="shield-check"
+              onPress={openConsentModal}
+              title={t('contacts.documentConsent', 'תעד הסכמה לדיוור')}
+              titleStyle={{ color: '#16A34A' }}
+            />
+            {(contact as any)?.consent !== false ? (
+              <Menu.Item
+                leadingIcon="cancel"
+                onPress={handleRevokeConsent}
+                title={t('contacts.markNotAgreed', 'סמן כאי-הסכמה')}
+                titleStyle={{ color: '#D97706' }}
+              />
+            ) : null}
+            <Menu.Item
+              leadingIcon={(contact as any)?.isSpam ? 'shield-check-outline' : 'shield-alert-outline'}
+              onPress={handleToggleSpam}
+              title={(contact as any)?.isSpam ? t('contacts.removeSpam', 'הסר ספאם') : t('contacts.markSpam', 'סמן כספאם')}
+              titleStyle={{ color: (contact as any)?.isSpam ? theme.colors.onSurface : '#DC2626' }}
+            />
+            <Divider />
+            <Menu.Item
+              leadingIcon="delete-outline"
+              onPress={handleDelete}
+              title={t('common.delete')}
+              titleStyle={{ color: theme.colors.error }}
+            />
+          </Menu>
+        ) : (
+          <View style={{ width: 48 }} />
+        )}
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.avatarSection}>
+          {contact?.photoURL ? (
+            <Avatar.Image size={88} source={{ uri: contact.photoURL }} />
+          ) : (
+            <Avatar.Text
+              size={88}
+              label={getInitials(contactName || '?')}
+              style={{ backgroundColor: theme.colors.primaryContainer }}
+              labelStyle={{ color: theme.colors.primary, fontWeight: '700', fontSize: 32 }}
+            />
+          )}
+          <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, fontWeight: '700', marginTop: 12 }}>
+            {contactName || t('contacts.addContact')}
+          </Text>
+          {contact?.phoneNumber ? (
+            <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+              {formatPhoneNumber(contact.phoneNumber)}
+            </Text>
+          ) : null}
+          {contact?.email ? (
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+              {contact.email}
+            </Text>
+          ) : null}
+          {(() => {
+            const c = contact as any;
+            const chips: React.ReactNode[] = [];
+            if (c?.isSpam) {
+              chips.push(
+                <Chip key="spam" compact icon="shield-alert" style={{ backgroundColor: '#FEE2E2' }} textStyle={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>
+                  {t('contacts.possibleSpam', 'ספאם')}
+                </Chip>,
+              );
+            }
+            if (c?.consent === true) {
+              const srcLabel = c?.consentSource ? ` · ${c.consentSource}` : '';
+              chips.push(
+                <Chip key="consent-yes" compact icon="check-decagram" style={{ backgroundColor: '#DCFCE7' }} textStyle={{ color: '#16A34A', fontWeight: '700', fontSize: 12 }}>
+                  {t('contacts.consentAgreed', 'הסכים')}{srcLabel}
+                </Chip>,
+              );
+            } else if (c?.consent === false) {
+              chips.push(
+                <Chip key="consent-no" compact icon="cancel" style={{ backgroundColor: '#FEF3C7' }} textStyle={{ color: '#D97706', fontWeight: '700', fontSize: 12 }}>
+                  {t('contacts.consentNotAgreed', 'לא הסכים')}
+                </Chip>,
+              );
+            }
+            return chips.length > 0 ? (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, justifyContent: 'center', opacity: flagSaving ? 0.5 : 1 }}>
+                {chips}
+              </View>
+            ) : null;
+          })()}
+        </View>
+
+        {!isNew ? (
+          <View style={[styles.actionsRow, { flexDirection }]}>
+            <ActionButton
+              icon="phone"
+              label={t('contacts.makeCall')}
+              color={theme.colors.primary}
+              bg={theme.colors.primaryContainer}
+              onPress={handleCall}
+            />
+            <ActionButton
+              icon="whatsapp"
+              label="WhatsApp"
+              color="#25D366"
+              bg="#E8F5E9"
+              onPress={handleWhatsApp}
+            />
+            <ActionButton
+              icon="note-plus-outline"
+              label={t('phoneCalls.noteShort', 'הערה')}
+              color="#9C27B0"
+              bg="#F3E5F5"
+              onPress={() => setNoteModalVisible(true)}
+            />
+            <ActionButton
+              icon="clipboard-check-outline"
+              label={t('tasks.taskShort', 'משימה')}
+              color="#FF9800"
+              bg="#FFF3E0"
+              onPress={() => setAddTaskVisible(true)}
+            />
+          </View>
+        ) : null}
+
+        {/* Existing contact: the fields ARE the screen — tap and type, changes save automatically
+            (no Edit button). A NEW contact still uses the create modal. */}
+        {!isNew ? (
+          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            {renderFormFields()}
+            <Pressable
+              onPress={autoSaveState === 'error' || phoneDirty ? () => { flushAutoSave(true); } : undefined}
+              style={{ flexDirection, alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 4 }}
+            >
+              {autoSaveState === 'saving' ? <ActivityIndicator size="small" color={theme.colors.primary} /> : null}
+              <Text
+                variant="labelMedium"
+                style={{
+                  color: autoSaveState === 'error' ? theme.colors.error : phoneDirty ? theme.colors.primary : theme.colors.onSurfaceVariant,
+                  fontWeight: autoSaveState === 'error' || phoneDirty ? '700' : '400',
+                }}
+              >
+                {autoSaveState === 'saving'
+                  ? (isRTL ? 'שומר…' : 'Saving…')
+                  : autoSaveState === 'error'
+                    ? (isRTL ? 'השמירה נכשלה — הקש לנסות שוב' : 'Save failed — tap to retry')
+                    : phoneDirty
+                      ? (isRTL ? 'הקש כדי לשמור את שינוי המספר' : 'Tap to save the phone change')
+                      : autoSaveState === 'saved'
+                        ? (isRTL ? '✓ נשמר' : '✓ Saved')
+                        : (isRTL ? 'השינויים נשמרים אוטומטית' : 'Changes are saved automatically')}
+              </Text>
+            </Pressable>
+          </Surface>
+        ) : null}
+
+        <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          {contact?.lastConversationStatus ? (
+            <>
+              <InfoRow
+                icon="chat-processing-outline"
+                label={t('contacts.status', 'Status')}
+                value={contact.lastConversationStatus}
+                theme={theme}
+                flexDirection={flexDirection}
+                textAlign={textAlign}
+              />
+            </>
+          ) : null}
+          {contact?.modifiedOn ? (
+            <>
+              <Divider style={styles.cardDivider} />
+              <InfoRow
+                icon="calendar-outline"
+                label={t('common.modified', 'Modified')}
+                value={formatDate(contact.modifiedOn)}
+                theme={theme}
+                flexDirection={flexDirection}
+                textAlign={textAlign}
+              />
+            </>
+          ) : null}
+          {contact?.createdOn ? (
+            <>
+              <Divider style={styles.cardDivider} />
+              <InfoRow
+                icon="calendar-plus-outline"
+                label={t('common.created', 'Created')}
+                value={formatDate(contact.createdOn)}
+                theme={theme}
+                flexDirection={flexDirection}
+                textAlign={textAlign}
+              />
+            </>
+          ) : null}
+        </Surface>
+
+        {!isNew ? (
+          <>
+            <View
+              style={[
+                styles.tabBar,
+                { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline },
+              ]}
+            >
+              {([
+                { key: 'timeline' as DetailTab, label: t('contacts.timeline') },
+                { key: 'internal' as DetailTab, label: t('internalMessages.tabShort', isRTL ? 'הודעות פנימיות' : 'Internal') },
+                { key: 'related' as DetailTab, label: t('contacts.relatedRecords') },
+              ]).map((tabItem) => {
+                const isActive = activeTab === tabItem.key;
+                return (
+                  <Pressable
+                    key={tabItem.key}
+                    style={[
+                      styles.tab,
+                      isActive && { borderBottomWidth: 3, borderBottomColor: theme.colors.primary },
+                    ]}
+                    onPress={() => switchTab(tabItem.key)}
+                  >
+                    <Text
+                      variant="titleSmall"
+                      numberOfLines={1}
+                      style={{
+                        color: isActive ? theme.colors.primary : theme.colors.onSurfaceVariant,
+                        fontWeight: isActive ? '700' : '500',
+                      }}
+                    >
+                      {tabItem.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {activeTab === 'timeline' ? (
+              <TimelineSection
+                events={timelineEvents}
+                loading={timelineLoading}
+                theme={theme}
+                t={t}
+                lang={lang}
+                isRTL={isRTL}
+                flexDirection={flexDirection}
+                onTogglePin={handleTogglePin}
+                onOpenTask={openTaskFromTimeline}
+                onCompleteTask={completeTaskFromTimeline}
+              />
+            ) : activeTab === 'internal' ? (
+              <ContactInternalMessages contactPhone={contact?.phoneNumber || ''} />
+            ) : (
+              <RelatedRecordsSection
+                data={relatedRecords}
+                loading={relatedLoading}
+                theme={theme}
+                t={t}
+                isRTL={isRTL}
+                flexDirection={flexDirection}
+                router={router}
+              />
+            )}
+          </>
+        ) : null}
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+
+      <Portal>
+        <Modal
+          visible={editVisible}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setEditVisible(false)}
+        >
+          <KeyboardAvoidingView
+            behavior="padding"
+            style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
+          >
+            <View
+              style={[
+                styles.modalHeader,
+                { borderBottomColor: theme.colors.outline, flexDirection },
+              ]}
+            >
+              <Pressable onPress={() => setEditVisible(false)}>
+                <Text style={{ color: theme.colors.primary, fontSize: 16 }}>
+                  {t('common.cancel')}
+                </Text>
+              </Pressable>
+              <Text
+                variant="titleMedium"
+                style={{ color: theme.colors.onSurface, fontWeight: '700' }}
+              >
+                {isNew ? t('contacts.addContact') : t('contacts.editContact')}
+              </Text>
+              <Pressable onPress={handleSave} disabled={saving}>
+                {saving ? (
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                ) : (
+                  <Text style={{ color: theme.colors.primary, fontSize: 16, fontWeight: '600' }}>
+                    {t('common.save')}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
+              {renderFormFields()}
             </ScrollView>
           </KeyboardAvoidingView>
         </Modal>

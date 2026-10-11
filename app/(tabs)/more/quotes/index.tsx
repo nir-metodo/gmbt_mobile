@@ -1,28 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import {
-  View,
-  StyleSheet,
-  FlatList,
-  Pressable,
-  RefreshControl,
-  Animated,
-  ScrollView,
-  Dimensions,
-  Alert,
-} from 'react-native';
-import {
-  Text,
-  Searchbar,
-  Chip,
-  FAB,
-  ActivityIndicator,
-  Portal,
-  Modal,
-  Button,
-  IconButton,
-  Divider,
-  Menu,
-} from 'react-native-paper';
+import { View, StyleSheet, FlatList, Pressable, RefreshControl, Dimensions, Alert } from 'react-native';
+import { Text, FAB, ActivityIndicator, Portal, Modal, Button, IconButton, Menu } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -36,16 +14,22 @@ import { cacheEntities } from '../../../../services/entityCache';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { formatDate, formatCurrency, withAlpha } from '../../../../utils/formatters';
-import { spacing, borderRadius } from '../../../../constants/theme';
 import type { Quote } from '../../../../types';
+import { currencySymbol } from '../../../../utils/currency';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { SummaryHeader } from '../../../../components/SummaryHeader';
+import { DocumentListItem } from '../../../../components/DocumentListItem';
+import { EmptyState } from '../../../../components/EmptyState';
 
-const STATUS_FILTERS = ['all', 'draft', 'sent', 'accepted', 'awaiting_payment', 'paid', 'rejected', 'expired'] as const;
-type StatusFilter = (typeof STATUS_FILTERS)[number];
-
-const KANBAN_STATUSES = ['draft', 'sent', 'accepted', 'awaiting_payment', 'paid', 'rejected', 'expired'] as const;
+const STATUSES = ['draft', 'sent', 'accepted', 'awaiting_payment', 'paid', 'rejected', 'expired'] as const;
+/** Quotes that still wait for the customer / payment — summed in the header. */
+const OPEN_STATUSES = ['sent', 'accepted', 'awaiting_payment'];
 
 type SortField = 'date' | 'amount' | 'status';
 type SortDirection = 'asc' | 'desc';
+type DateRange = 'all' | 'thisWeek' | 'thisMonth' | 'lastMonth';
 
 const STATUS_COLORS: Record<string, string> = {
   draft: '#9E9E9E',
@@ -77,20 +61,26 @@ const STATUS_ORDER: Record<string, number> = {
   expired: 6,
 };
 
-function getStatusColor(status: string): string {
-  return STATUS_COLORS[status] || '#9E9E9E';
-}
+const getStatusColor = (status: string): string => STATUS_COLORS[status] || '#9E9E9E';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const KANBAN_COLUMN_WIDTH = SCREEN_WIDTH * 0.72;
+
+const parseTs = (v: any): number => {
+  if (!v) return 0;
+  if (typeof v === 'number') return v;
+  if (v._seconds) return v._seconds * 1000;
+  if (v.seconds) return v.seconds * 1000;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+};
 
 export default function QuotesListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
-  const { isRTL, flexDirection, textAlign } = useRTL();
+  const { isRTL, textAlign } = useRTL();
   const { t } = useTranslation();
-
   const user = useAuthStore((s) => s.user);
 
   const [quotes, setQuotes] = useState<Quote[]>([]);
@@ -98,17 +88,13 @@ export default function QuotesListScreen() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchVisible, setSearchVisible] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [dateRangeFilter, setDateRangeFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [dateRangeFilter, setDateRangeFilter] = useState<DateRange>('all');
+  const [dateMenuVisible, setDateMenuVisible] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
-  const [sortMenuVisible, setSortMenuVisible] = useState(false);
-
   const [statusPickerQuote, setStatusPickerQuote] = useState<Quote | null>(null);
-
-  const searchAnim = useRef(new Animated.Value(0)).current;
 
   const fetchQuotes = useCallback(async () => {
     if (!user?.organization) { setLoading(false); return; }
@@ -126,19 +112,14 @@ export default function QuotesListScreen() {
     }
   }, [user?.organization, t]);
 
-  useEffect(() => {
-    fetchQuotes();
-  }, [fetchQuotes]);
+  useEffect(() => { fetchQuotes(); }, [fetchQuotes]);
 
   const didMountRef = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      if (!didMountRef.current) {
-        didMountRef.current = true;
-        return;
-      }
+      if (!didMountRef.current) { didMountRef.current = true; return; }
       fetchQuotes();
-    }, [fetchQuotes])
+    }, [fetchQuotes]),
   );
 
   const onRefresh = useCallback(async () => {
@@ -147,65 +128,36 @@ export default function QuotesListScreen() {
     setRefreshing(false);
   }, [fetchQuotes]);
 
-  const toggleSearch = useCallback(() => {
-    const willShow = !searchVisible;
-    if (willShow) {
-      setSearchVisible(true);
-      Animated.timing(searchAnim, {
-        toValue: 1,
-        duration: 220,
-        useNativeDriver: false,
-      }).start();
-    } else {
-      Animated.timing(searchAnim, {
-        toValue: 0,
-        duration: 180,
-        useNativeDriver: false,
-      }).start(() => {
-        setSearchVisible(false);
-        setSearchQuery('');
-      });
-    }
-  }, [searchVisible, searchAnim]);
+  const debouncedSearch = useDebouncedValue(searchQuery, 300);
 
-  // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
-  const debouncedSearch = useDebouncedValue(searchQuery, 350);
-
-  const filteredAndSortedQuotes = useMemo(() => {
+  // Search + date range apply to everything (counts, totals, list); the status chip only narrows the list.
+  const baseList = useMemo(() => {
     let result = quotes;
-
-    if (statusFilter !== 'all') {
-      result = result.filter((q) => q.status === statusFilter);
-    }
-
-    // Date range filter
     if (dateRangeFilter !== 'all') {
       const now = new Date();
-      let startDate: Date | null = null;
-      let endDate: Date | null = null;
+      let start: Date | null = null;
+      let end: Date | null = null;
       if (dateRangeFilter === 'thisMonth') {
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
       } else if (dateRangeFilter === 'lastMonth') {
-        startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+        start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
       } else if (dateRangeFilter === 'thisWeek') {
-        const day = now.getDay();
-        startDate = new Date(now);
-        startDate.setDate(now.getDate() - day);
-        startDate.setHours(0, 0, 0, 0);
-        endDate = now;
+        start = new Date(now);
+        start.setDate(now.getDate() - now.getDay());
+        start.setHours(0, 0, 0, 0);
+        end = now;
       }
-      if (startDate && endDate) {
+      if (start && end) {
         result = result.filter((q) => {
           const d = new Date(q.createdOn || q.date || '');
-          return d >= startDate! && d <= endDate!;
+          return d >= start! && d <= end!;
         });
       }
     }
-
-    if (debouncedSearch.trim()) {
-      const query = debouncedSearch.toLowerCase();
+    const query = debouncedSearch.trim().toLowerCase();
+    if (query) {
       result = result.filter(
         (q) =>
           q.title?.toLowerCase().includes(query) ||
@@ -213,81 +165,50 @@ export default function QuotesListScreen() {
           q.contactName?.toLowerCase().includes(query),
       );
     }
+    return result;
+  }, [quotes, dateRangeFilter, debouncedSearch]);
 
-    const parseTs = (v: any): number => {
-      if (!v) return 0;
-      if (typeof v === 'number') return v;
-      if (v._seconds) return v._seconds * 1000;
-      if (v.seconds) return v.seconds * 1000;
-      const d = new Date(v);
-      return isNaN(d.getTime()) ? 0 : d.getTime();
-    };
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const q of baseList) c[q.status] = (c[q.status] || 0) + 1;
+    return c;
+  }, [baseList]);
 
+  const summary = useMemo(() => {
+    let open = 0;
+    let paid = 0;
+    for (const q of baseList) {
+      if (OPEN_STATUSES.includes(q.status)) open += q.total || 0;
+      else if (q.status === 'paid') paid += q.total || 0;
+    }
+    return [
+      { label: t('docs.openTotal', 'פתוחות'), value: formatCurrency(open), color: theme.colors.primary },
+      { label: t('docs.paidTotal', 'שולמו'), value: formatCurrency(paid), color: STATUS_COLORS.paid },
+    ];
+  }, [baseList, t, theme.colors.primary]);
+
+  const filteredAndSorted = useMemo(() => {
+    const result = statusFilter === 'all' ? [...baseList] : baseList.filter((q) => q.status === statusFilter);
     return result.sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case 'date':
-          comparison = parseTs(a.createdOn || a.createdAt) - parseTs(b.createdOn || b.createdAt);
-          break;
-        case 'amount':
-          comparison = (a.total || 0) - (b.total || 0);
-          break;
-        case 'status':
-          comparison = (STATUS_ORDER[a.status] || 0) - (STATUS_ORDER[b.status] || 0);
-          break;
-      }
-      return sortDirection === 'desc' ? -comparison : comparison;
+      let cmp = 0;
+      if (sortField === 'date') cmp = parseTs(a.createdOn || a.createdAt) - parseTs(b.createdOn || b.createdAt);
+      else if (sortField === 'amount') cmp = (a.total || 0) - (b.total || 0);
+      else cmp = (STATUS_ORDER[a.status] || 0) - (STATUS_ORDER[b.status] || 0);
+      return sortDirection === 'desc' ? -cmp : cmp;
     });
-  }, [quotes, statusFilter, dateRangeFilter, debouncedSearch, sortField, sortDirection]);
+  }, [baseList, statusFilter, sortField, sortDirection]);
 
-  // Client-side pagination over the filtered list (search still spans everything).
-  const { visible: visibleQuotes, hasMore, loadMore, loadAll, count } = useWindowedList(filteredAndSortedQuotes, {
+  const { visible: visibleQuotes, hasMore, loadMore, loadAll, count } = useWindowedList(filteredAndSorted, {
     pageSize: 30,
     resetKey: `${statusFilter}|${dateRangeFilter}|${debouncedSearch}|${sortField}|${sortDirection}`,
   });
 
-  const kanbanData = useMemo(() => {
-    const grouped: Record<string, Quote[]> = {};
-    for (const status of KANBAN_STATUSES) {
-      grouped[status] = [];
-    }
-    const searchFiltered = searchQuery.trim()
-      ? quotes.filter((q) => {
-          const query = searchQuery.toLowerCase();
-          return (
-            q.title?.toLowerCase().includes(query) ||
-            q.quoteNumber?.toLowerCase().includes(query) ||
-            q.contactName?.toLowerCase().includes(query)
-          );
-        })
-      : quotes;
-
-    for (const q of searchFiltered) {
-      if (grouped[q.status]) {
-        grouped[q.status].push(q);
-      }
-    }
-    return grouped;
-  }, [quotes, searchQuery]);
-
-  const quotesKanbanColumns = useMemo<KanbanColumn<Quote>[]>(() => {
-    return KANBAN_STATUSES.map((status) => ({
-      id: status,
-      title: t(`quotes.${status}`),
-      color: getStatusColor(status),
-      icon: STATUS_ICONS[status] || 'file-document',
-      items: kanbanData[status] || [],
-    }));
-  }, [kanbanData, t]);
-
-  const handleQuotesKanbanMove = useCallback((item: Quote, _from: string, toColumnId: string) => {
-    handleStatusChange(item, toColumnId);
-  }, [handleStatusChange]);
-
   const openQuote = useCallback(
-    (quote: Quote) => {
-      router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: quote.id } });
-    },
+    (quote: Quote) => router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: quote.id } }),
+    [router],
+  );
+  const createQuote = useCallback(
+    () => router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: 'new' } }),
     [router],
   );
 
@@ -295,323 +216,79 @@ export default function QuotesListScreen() {
     async (quote: Quote, newStatus: string) => {
       setStatusPickerQuote(null);
       if (!user?.organization) return;
+      setQuotes((prev) => prev.map((q) => (q.id === quote.id ? { ...q, status: newStatus as any } : q)));
       try {
-        await quotesApi.update(
-          user.organization,
-          { id: quote.id, status: newStatus as any },
-          user.uID || user.userId,
-          user.fullname,
-        );
-        setQuotes((prev) =>
-          prev.map((q) => (q.id === quote.id ? { ...q, status: newStatus as any } : q)),
-        );
+        await quotesApi.update(user.organization, { id: quote.id, status: newStatus as any }, user.uID || user.userId, user.fullname);
       } catch (err: any) {
         Alert.alert(t('common.error'), err.message || t('errors.generic'));
-        // rollback optimistic update
-        setQuotes((prev) =>
-          prev.map((q) => (q.id === quote.id ? { ...q, status: quote.status } : q)),
-        );
+        setQuotes((prev) => prev.map((q) => (q.id === quote.id ? { ...q, status: quote.status } : q)));
       }
     },
     [user, t],
   );
 
-  const searchHeightInterp = searchAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 56],
-  });
+  const handleSort = useCallback((field: string) => {
+    if (field === sortField) setSortDirection((d) => (d === 'desc' ? 'asc' : 'desc'));
+    else { setSortField(field as SortField); setSortDirection('desc'); }
+  }, [sortField]);
 
-  const handleSortSelect = useCallback((field: SortField) => {
-    setSortField((prev) => {
-      if (prev === field) {
-        setSortDirection((d) => (d === 'desc' ? 'asc' : 'desc'));
-      } else {
-        setSortDirection('desc');
-      }
-      return field;
-    });
-    setSortMenuVisible(false);
-  }, []);
+  // ── Kanban (board view) ──
+  const kanbanColumns = useMemo<KanbanColumn<Quote>[]>(() => {
+    const grouped: Record<string, Quote[]> = {};
+    for (const s of STATUSES) grouped[s] = [];
+    for (const q of baseList) if (grouped[q.status]) grouped[q.status].push(q);
+    return STATUSES.map((status) => ({
+      id: status,
+      title: t(`quotes.${status}`),
+      color: getStatusColor(status),
+      icon: STATUS_ICONS[status] || 'file-document',
+      items: grouped[status],
+    }));
+  }, [baseList, t]);
 
-  const renderQuoteCard = useCallback(
+  const handleKanbanMove = useCallback(
+    (item: Quote, _from: string, toColumnId: string) => { handleStatusChange(item, toColumnId); },
+    [handleStatusChange],
+  );
+
+  const renderQuote = useCallback(
     ({ item }: { item: Quote }) => {
-      const statusColor = getStatusColor(item.status);
-
+      const validUntilTs = item.validUntil ? new Date(item.validUntil).getTime() : 0;
+      const stillOpen = item.status === 'draft' || item.status === 'sent';
+      const expired = !!validUntilTs && validUntilTs < Date.now() && stillOpen;
+      const showValidity = !!validUntilTs && stillOpen;
       return (
-        <Pressable
+        <DocumentListItem
+          title={item.title}
+          subtitle={[item.quoteNumber ? `#${item.quoteNumber}` : '', item.contactName || ''].filter(Boolean).join(' · ')}
+          amount={formatCurrency(item.total || 0, currencySymbol(item.currency))}
+          statusLabel={t(`quotes.${item.status}`)}
+          statusColor={getStatusColor(item.status)}
+          date={showValidity
+            ? `${t('quotes.validUntil')} ${formatDate(item.validUntil!)}`
+            : formatDate(item.createdOn || item.createdAt || '')}
+          dateWarning={expired}
+          viewCount={item.viewCount}
           onPress={() => openQuote(item)}
-          android_ripple={{ color: theme.colors.surfaceVariant }}
-          style={({ pressed }) => [
-            styles.quoteCard,
-            {
-              backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom.cardBackground,
-              borderColor: theme.colors.outlineVariant,
-            },
-          ]}
-        >
-          <View style={[styles.cardStatusBar, { backgroundColor: statusColor }]} />
-
-          <View style={styles.cardContent}>
-            <View style={[styles.cardTopRow, { flexDirection }]}>
-              <View style={{ flex: 1, gap: 2 }}>
-                <Text
-                  variant="titleSmall"
-                  numberOfLines={1}
-                  style={[styles.cardTitle, { color: theme.colors.onSurface, textAlign }]}
-                >
-                  {item.title}
-                </Text>
-                {item.quoteNumber ? (
-                  <Text
-                    variant="labelSmall"
-                    style={{ color: theme.colors.onSurfaceVariant, textAlign }}
-                  >
-                    #{item.quoteNumber}
-                  </Text>
-                ) : null}
-              </View>
-              <Chip
-                compact
-                textStyle={[styles.statusChipText, { color: statusColor }]}
-                style={[styles.statusChip, { backgroundColor: withAlpha(statusColor, 0.21) }]}
-              >
-                {t(`quotes.${item.status}`)}
-              </Chip>
-            </View>
-
-            <Divider style={{ marginVertical: 8, backgroundColor: theme.colors.outlineVariant }} />
-
-            <View style={[styles.cardMeta, { flexDirection }]}>
-              {item.contactName ? (
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="account"
-                    size={14}
-                    color={theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelSmall"
-                    numberOfLines={1}
-                    style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}
-                  >
-                    {item.contactName}
-                  </Text>
-                </View>
-              ) : null}
-
-              <View style={[styles.metaItem, { flexDirection }]}>
-                <MaterialCommunityIcons
-                  name="calendar"
-                  size={14}
-                  color={theme.colors.onSurfaceVariant}
-                />
-                <Text
-                  variant="labelSmall"
-                  style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}
-                >
-                  {formatDate(item.createdOn || item.createdAt || '')}
-                </Text>
-              </View>
-
-              {item.validUntil ? (
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="clock-alert-outline"
-                    size={14}
-                    color={
-                      new Date(item.validUntil) < new Date()
-                        ? '#F44336'
-                        : theme.colors.onSurfaceVariant
-                    }
-                  />
-                  <Text
-                    variant="labelSmall"
-                    style={[
-                      styles.metaText,
-                      {
-                        color:
-                          new Date(item.validUntil) < new Date()
-                            ? '#F44336'
-                            : theme.colors.onSurfaceVariant,
-                      },
-                    ]}
-                  >
-                    {formatDate(item.validUntil)}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-
-            <View style={[styles.cardBottomRow, { flexDirection }]}>
-              {item.viewCount && item.viewCount > 0 ? (
-                <View style={[styles.viewCountBadge, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="eye-check-outline"
-                    size={13}
-                    color="#53bdeb"
-                  />
-                  <Text
-                    variant="labelSmall"
-                    style={{ color: '#53bdeb', fontWeight: '600', fontSize: 11 }}
-                  >
-                    {item.viewCount}
-                  </Text>
-                </View>
-              ) : (
-                <View style={{ flex: 1 }} />
-              )}
-              <Text
-                variant="titleMedium"
-                style={[styles.totalAmount, { color: theme.colors.primary }]}
-              >
-                {formatCurrency(item.total || 0, item.currency || '₪')}
-              </Text>
-            </View>
-          </View>
-        </Pressable>
+        />
       );
     },
-    [theme, openQuote, flexDirection, textAlign, t],
+    [openQuote, t],
   );
-
-  const renderKanbanCard = useCallback(
-    (item: Quote) => {
-      const statusColor = getStatusColor(item.status);
-      return (
-        <Pressable
-          key={item.id}
-          onPress={() => openQuote(item)}
-          onLongPress={() => setStatusPickerQuote(item)}
-          delayLongPress={400}
-          android_ripple={{ color: theme.colors.surfaceVariant }}
-          style={({ pressed }) => [
-            styles.kanbanCard,
-            {
-              backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom.cardBackground,
-              borderColor: theme.colors.outlineVariant,
-            },
-          ]}
-        >
-          <Text
-            variant="titleSmall"
-            numberOfLines={1}
-            style={[styles.cardTitle, { color: theme.colors.onSurface, textAlign }]}
-          >
-            {item.title}
-          </Text>
-          {item.quoteNumber ? (
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-              #{item.quoteNumber}
-            </Text>
-          ) : null}
-
-          {item.contactName ? (
-            <View style={[styles.kanbanMeta, { flexDirection }]}>
-              <MaterialCommunityIcons name="account" size={13} color={theme.colors.onSurfaceVariant} />
-              <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
-                {item.contactName}
-              </Text>
-            </View>
-          ) : null}
-
-          <View style={[styles.kanbanBottom, { flexDirection }]}>
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {formatDate(item.createdOn || item.createdAt || '')}
-            </Text>
-            <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700' }}>
-              {formatCurrency(item.total || 0, item.currency || '₪')}
-            </Text>
-          </View>
-        </Pressable>
-      );
-    },
-    [theme, openQuote, flexDirection, textAlign],
-  );
-
-  const renderKanbanView = useCallback(() => {
-    return (
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.kanbanContainer}
-        style={{ flex: 1 }}
-      >
-        {KANBAN_STATUSES.map((status) => {
-          const statusColor = getStatusColor(status);
-          const statusQuotes = kanbanData[status] || [];
-          return (
-            <View key={status} style={[styles.kanbanColumn, { width: KANBAN_COLUMN_WIDTH }]}>
-              <View
-                style={[
-                  styles.kanbanColumnHeader,
-                  { backgroundColor: withAlpha(statusColor, 0.08), borderBottomColor: statusColor },
-                ]}
-              >
-                <View style={[styles.kanbanHeaderInner, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name={(STATUS_ICONS[status] || 'file-document') as any}
-                    size={16}
-                    color={statusColor}
-                  />
-                  <Text variant="labelLarge" style={{ color: statusColor, fontWeight: '700', flex: 1 }}>
-                    {t(`quotes.${status}`)}
-                  </Text>
-                  <View style={[styles.kanbanBadge, { backgroundColor: withAlpha(statusColor, 0.15) }]}>
-                    <Text variant="labelSmall" style={{ color: statusColor, fontWeight: '700' }}>
-                      {statusQuotes.length}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              <ScrollView
-                style={styles.kanbanColumnBody}
-                contentContainerStyle={styles.kanbanColumnContent}
-                showsVerticalScrollIndicator={false}
-              >
-                {statusQuotes.length === 0 ? (
-                  <View style={styles.kanbanEmpty}>
-                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
-                      {t('quotes.noQuotesInStatus')}
-                    </Text>
-                  </View>
-                ) : (
-                  statusQuotes.map(renderKanbanCard)
-                )}
-              </ScrollView>
-            </View>
-          );
-        })}
-      </ScrollView>
-    );
-  }, [kanbanData, theme, t, flexDirection, renderKanbanCard]);
 
   const renderEmpty = useCallback(() => {
     if (loading) return null;
-
+    const filtering = quotes.length > 0;
     return (
-      <View style={styles.emptyContainer}>
-        <MaterialCommunityIcons
-          name="file-document-outline"
-          size={72}
-          color={theme.colors.onSurfaceVariant}
-          style={{ opacity: 0.3 }}
-        />
-        <Text
-          variant="titleMedium"
-          style={[styles.emptyTitle, { color: theme.colors.onSurface }]}
-        >
-          {t('quotes.noQuotes')}
-        </Text>
-        <Text
-          variant="bodyMedium"
-          style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}
-        >
-          {t('quotes.noQuotesDesc')}
-        </Text>
-      </View>
+      <EmptyState
+        icon="file-document-outline"
+        title={filtering ? t('common.noResults') : t('quotes.noQuotes')}
+        description={filtering ? undefined : t('quotes.noQuotesDesc')}
+        actionLabel={filtering ? undefined : t('quotes.addQuote')}
+        onAction={filtering ? undefined : createQuote}
+      />
     );
-  }, [loading, theme, t]);
+  }, [loading, quotes.length, t, createQuote]);
 
   if (loading && quotes.length === 0) {
     return (
@@ -621,228 +298,102 @@ export default function QuotesListScreen() {
     );
   }
 
+  const dateOptions: { key: DateRange; label: string }[] = [
+    { key: 'all', label: t('docs.allDates', 'כל התאריכים') },
+    { key: 'thisWeek', label: t('docs.thisWeek', 'השבוע') },
+    { key: 'thisMonth', label: t('docs.thisMonth', 'החודש') },
+    { key: 'lastMonth', label: t('docs.lastMonth', 'חודש קודם') },
+  ];
+
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 8 },
-        ]}
-      >
-        <View style={[styles.headerRow, { flexDirection }]}>
+      <ScreenHeader
+        title={t('quotes.title')}
+        onBack={() => router.back()}
+        actions={
           <IconButton
-            icon={isRTL ? 'arrow-right' : 'arrow-left'}
+            icon={viewMode === 'list' ? 'view-column' : 'view-list'}
             iconColor={theme.custom.headerText}
-            size={24}
-            onPress={() => router.back()}
-          />
-          <Text style={[styles.headerTitle, { flex: 1, textAlign }]}>{t('quotes.title')}</Text>
-
-          <Pressable
-            onPress={onRefresh}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name="download"
-              size={22}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
-
-          <Pressable
+            size={22}
             onPress={() => setViewMode((v) => (v === 'list' ? 'kanban' : 'list'))}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name={viewMode === 'list' ? 'view-column' : 'view-list'}
-              size={22}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
-
-          <Pressable
-            onPress={toggleSearch}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name={searchVisible ? 'close' : 'magnify'}
-              size={24}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
-        </View>
-      </View>
-
-      {/* Search bar */}
-      {searchVisible && (
-        <Animated.View
-          style={[
-            styles.searchWrap,
-            {
-              height: searchHeightInterp,
-              opacity: searchAnim,
-              backgroundColor: theme.custom.headerBackground,
-            },
-          ]}
-        >
-          <Searchbar
-            placeholder={t('quotes.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
           />
-        </Animated.View>
-      )}
+        }
+      />
 
-      {/* Filter chips + sort (only in list mode) */}
-      <View
-        style={[
-          styles.filtersRow,
-          { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline },
-        ]}
-      >
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={[styles.filtersScroll, { flexDirection }]}
-        >
-          {viewMode === 'list' &&
-            STATUS_FILTERS.map((f) => {
-              const chipColor = f === 'all' ? theme.colors.primary : getStatusColor(f);
-              const isActive = statusFilter === f;
-
-              return (
-                <Chip
-                  key={f}
-                  selected={isActive}
-                  onPress={() => setStatusFilter(f)}
-                  showSelectedOverlay
-                  compact
-                  style={[
-                    styles.filterChip,
-                    isActive
-                      ? { backgroundColor: withAlpha(chipColor, 0.13), borderColor: chipColor, borderWidth: 1 }
-                      : { backgroundColor: theme.colors.surfaceVariant },
-                  ]}
-                  textStyle={[
-                    styles.filterChipText,
-                    isActive && { color: chipColor, fontWeight: '600' },
-                  ]}
-                >
-                  {f === 'all' ? t('common.all') : t(`quotes.${f}`)}
-                </Chip>
-              );
-            })}
-
-          {viewMode === 'list' && (
-            <Menu
-              visible={sortMenuVisible}
-              onDismiss={() => setSortMenuVisible(false)}
-              anchor={
-                <Chip
-                  compact
-                  icon="sort"
-                  onPress={() => setSortMenuVisible(true)}
-                  style={[styles.filterChip, { backgroundColor: theme.colors.surfaceVariant }]}
-                  textStyle={styles.filterChipText}
-                >
-                  {t('quotes.sortBy')}
-                </Chip>
-              }
-              contentStyle={{ backgroundColor: theme.colors.surface }}
-            >
-              <Menu.Item
-                onPress={() => handleSortSelect('date')}
-                title={t('quotes.sortByDate')}
-                leadingIcon={sortField === 'date' ? (sortDirection === 'desc' ? 'sort-calendar-descending' : 'sort-calendar-ascending') : 'calendar'}
-                titleStyle={sortField === 'date' ? { color: theme.colors.primary, fontWeight: '600' } : undefined}
-              />
-              <Menu.Item
-                onPress={() => handleSortSelect('amount')}
-                title={t('quotes.sortByAmount')}
-                leadingIcon={sortField === 'amount' ? (sortDirection === 'desc' ? 'sort-numeric-descending' : 'sort-numeric-ascending') : 'cash'}
-                titleStyle={sortField === 'amount' ? { color: theme.colors.primary, fontWeight: '600' } : undefined}
-              />
-              <Menu.Item
-                onPress={() => handleSortSelect('status')}
-                title={t('quotes.sortByStatus')}
-                leadingIcon="list-status"
-                titleStyle={sortField === 'status' ? { color: theme.colors.primary, fontWeight: '600' } : undefined}
-              />
-            </Menu>
-          )}
-
-          {/* Date range presets */}
-          {viewMode === 'list' && (<>
-            <View style={{ width: 1, height: 20, backgroundColor: theme.colors.outlineVariant, marginHorizontal: 6 }} />
-            {([
-              { key: 'all', label: 'הכל' },
-              { key: 'thisWeek', label: 'השבוע' },
-              { key: 'thisMonth', label: 'החודש' },
-              { key: 'lastMonth', label: 'חודש קודם' },
-            ] as const).map((preset) => (
-              <Chip
-                key={preset.key}
-                selected={dateRangeFilter === preset.key}
-                onPress={() => setDateRangeFilter(preset.key)}
-                compact
-                icon={preset.key !== 'all' ? 'calendar-range' : undefined}
-                style={[
-                  styles.filterChip,
-                  dateRangeFilter === preset.key
-                    ? { backgroundColor: withAlpha(theme.colors.tertiary, 0.13), borderColor: theme.colors.tertiary, borderWidth: 1 }
-                    : { backgroundColor: theme.colors.surfaceVariant },
-                ]}
-                textStyle={[
-                  styles.filterChipText,
-                  dateRangeFilter === preset.key && { color: theme.colors.tertiary, fontWeight: '600' },
-                ]}
-              >
-                {preset.label}
-              </Chip>
-            ))}
-          </>)}
-        </ScrollView>
-      </View>
-
-      {/* Error banner */}
-      {error ? (
-        <Pressable
-          onPress={fetchQuotes}
-          style={[styles.errorBanner, { backgroundColor: theme.colors.errorContainer }]}
-        >
-          <MaterialCommunityIcons name="alert-circle" size={18} color={theme.colors.error} />
-          <Text
-            variant="bodySmall"
-            style={[styles.errorText, { color: theme.colors.error }]}
-            numberOfLines={1}
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('quotes.searchPlaceholder')}
+        sortOptions={viewMode === 'list' ? [
+          { key: 'date', label: t('quotes.sortByDate') },
+          { key: 'amount', label: t('quotes.sortByAmount') },
+          { key: 'status', label: t('quotes.sortByStatus') },
+        ] : undefined}
+        sortKey={sortField}
+        sortDir={sortDirection}
+        onSort={handleSort}
+        trailing={
+          <Menu
+            visible={dateMenuVisible}
+            onDismiss={() => setDateMenuVisible(false)}
+            anchor={
+              <View>
+                <IconButton
+                  icon="calendar-range"
+                  size={22}
+                  iconColor={dateRangeFilter !== 'all' ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                  onPress={() => setDateMenuVisible(true)}
+                />
+                {dateRangeFilter !== 'all' ? <View style={[styles.activeDot, { backgroundColor: theme.colors.primary }]} /> : null}
+              </View>
+            }
+            contentStyle={{ backgroundColor: theme.colors.surface }}
           >
-            {error}
-          </Text>
-          <Text variant="labelSmall" style={{ color: theme.colors.error, fontWeight: '600' }}>
-            {t('common.retry')}
-          </Text>
+            {dateOptions.map((o) => (
+              <Menu.Item
+                key={o.key}
+                title={o.label}
+                leadingIcon={dateRangeFilter === o.key ? 'check' : undefined}
+                onPress={() => { setDateRangeFilter(o.key); setDateMenuVisible(false); }}
+              />
+            ))}
+          </Menu>
+        }
+      />
+
+      {viewMode === 'list' ? (
+        <>
+          <SummaryHeader items={summary} />
+          <StatusFilterBar
+            allLabel={t('common.all')}
+            allCount={baseList.length}
+            options={STATUSES.map((s) => ({ key: s, label: t(`quotes.${s}`), color: getStatusColor(s), count: counts[s] || 0 }))}
+            value={statusFilter}
+            onChange={setStatusFilter}
+          />
+        </>
+      ) : null}
+
+      {error ? (
+        <Pressable onPress={fetchQuotes} style={[styles.errorBanner, { backgroundColor: theme.colors.errorContainer }]}>
+          <MaterialCommunityIcons name="alert-circle" size={18} color={theme.colors.error} />
+          <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.error }} numberOfLines={1}>{error}</Text>
+          <Text variant="labelSmall" style={{ color: theme.colors.error, fontWeight: '600' }}>{t('common.retry')}</Text>
         </Pressable>
       ) : null}
 
-      {/* View: List or Kanban */}
       {viewMode === 'kanban' ? (
         <KanbanBoard
-          columns={quotesKanbanColumns}
+          columns={kanbanColumns}
           keyExtractor={(item) => item.id}
-          onMoveItem={handleQuotesKanbanMove}
+          onMoveItem={handleKanbanMove}
           columnWidth={KANBAN_COLUMN_WIDTH}
           emptyLabel={t('quotes.noQuotesInStatus')}
           renderCard={(item) => (
             <Pressable
               onPress={() => openQuote(item)}
+              onLongPress={() => setStatusPickerQuote(item)}
+              delayLongPress={400}
               android_ripple={{ color: theme.colors.surfaceVariant }}
               style={({ pressed }) => [
                 styles.kanbanCard,
@@ -852,105 +403,54 @@ export default function QuotesListScreen() {
                 },
               ]}
             >
-              <Text variant="titleSmall" numberOfLines={1} style={[styles.cardTitle, { color: theme.colors.onSurface, textAlign }]}>
+              <Text variant="titleSmall" numberOfLines={1} style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
                 {item.title}
               </Text>
-              {item.quoteNumber ? (
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                  #{item.quoteNumber}
+              {item.contactName ? (
+                <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+                  {item.contactName}
                 </Text>
               ) : null}
-              {item.contactName ? (
-                <View style={[styles.kanbanMeta, { flexDirection }]}>
-                  <MaterialCommunityIcons name="account" size={13} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
-                    {item.contactName}
-                  </Text>
-                </View>
-              ) : null}
-              <View style={[styles.kanbanBottom, { flexDirection }]}>
+              <View style={styles.kanbanBottom}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {formatDate(item.createdOn || item.createdAt || '')}
                 </Text>
                 <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700' }}>
-                  {formatCurrency(item.total || 0, item.currency || '₪')}
+                  {formatCurrency(item.total || 0, currencySymbol(item.currency))}
                 </Text>
               </View>
             </Pressable>
           )}
         />
       ) : (
-        <>
-          {/* Sort bar */}
-          <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, alignItems: 'center' }}>
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('quotes.sortBy', 'מיין:')}</Text>
-            {([
-              { key: 'date' as SortField, label: t('quotes.date', 'תאריך'), icon: 'calendar' },
-              { key: 'amount' as SortField, label: t('quotes.amount', 'סכום'), icon: 'cash' },
-              { key: 'status' as SortField, label: t('quotes.status', 'סטטוס'), icon: 'tag-outline' },
-            ]).map((opt) => (
-              <Pressable
-                key={opt.key}
-                onPress={() => handleSortSelect(opt.key)}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortField === opt.key ? withAlpha(theme.colors.primary, 0.08) : 'transparent' }}
-              >
-                <MaterialCommunityIcons name={opt.icon as any} size={14} color={sortField === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant} />
-                <Text style={{ fontSize: 11, color: sortField === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant, fontWeight: sortField === opt.key ? '600' : '400' }}>
-                  {opt.label}
-                </Text>
-                {sortField === opt.key && (
-                  <MaterialCommunityIcons name={sortDirection === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={theme.colors.primary} />
-                )}
-              </Pressable>
-            ))}
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 'auto' }}>{filteredAndSortedQuotes.length} {t('quotes.items', 'פריטים')}</Text>
-          </View>
-          <FlatList
-            data={visibleQuotes}
-            renderItem={renderQuoteCard}
-            keyExtractor={(item) => item.id}
-            ListEmptyComponent={renderEmpty}
-            ListFooterComponent={
-              <ListPaginationFooter
-                count={count}
-                total={filteredAndSortedQuotes.length}
-                hasMore={hasMore}
-                onLoadMore={loadMore}
-                onLoadAll={loadAll}
-              />
-            }
-            onEndReached={hasMore ? loadMore : undefined}
-            onEndReachedThreshold={0.4}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                colors={[theme.colors.primary]}
-                tintColor={theme.colors.primary}
-              />
-            }
-            contentContainerStyle={[
-              styles.listContent,
-              filteredAndSortedQuotes.length === 0 && styles.listContentEmpty,
-            ]}
-            ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-            showsVerticalScrollIndicator={false}
-          />
-        </>
+        <FlatList
+          data={visibleQuotes}
+          renderItem={renderQuote}
+          keyExtractor={(item) => item.id}
+          ListEmptyComponent={renderEmpty}
+          ListFooterComponent={
+            <ListPaginationFooter count={count} total={filteredAndSorted.length} hasMore={hasMore} onLoadMore={loadMore} onLoadAll={loadAll} />
+          }
+          onEndReached={hasMore ? loadMore : undefined}
+          onEndReachedThreshold={0.4}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[theme.colors.primary]} tintColor={theme.colors.primary} />
+          }
+          contentContainerStyle={[styles.listContent, filteredAndSorted.length === 0 && styles.listContentEmpty]}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          showsVerticalScrollIndicator={false}
+        />
       )}
 
-      {/* FAB */}
       <FAB
         icon="plus"
-        onPress={() => router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: 'new' } })}
-        style={[
-          styles.fab,
-          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },
-        ]}
+        onPress={createQuote}
+        style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFFFFF"
         label={t('quotes.addQuote')}
       />
 
+      {/* Long-press on a board card → quick status change */}
       <Portal>
         <Modal
           visible={!!statusPickerQuote}
@@ -965,7 +465,7 @@ export default function QuotesListScreen() {
               {statusPickerQuote.title}
             </Text>
           ) : null}
-          {KANBAN_STATUSES.map((status) => {
+          {STATUSES.map((status) => {
             const color = getStatusColor(status);
             const isCurrent = statusPickerQuote?.status === status;
             return (
@@ -975,42 +475,18 @@ export default function QuotesListScreen() {
                 disabled={isCurrent}
                 style={({ pressed }) => [
                   styles.statusPickerOption,
-                  {
-                    backgroundColor: isCurrent
-                      ? withAlpha(color, 0.12)
-                      : pressed
-                        ? theme.colors.surfaceVariant
-                        : 'transparent',
-                  },
+                  { backgroundColor: isCurrent ? withAlpha(color, 0.12) : pressed ? theme.colors.surfaceVariant : 'transparent' },
                 ]}
               >
-                <MaterialCommunityIcons
-                  name={(STATUS_ICONS[status] || 'file-document') as any}
-                  size={18}
-                  color={color}
-                />
-                <Text
-                  variant="bodyMedium"
-                  style={{
-                    flex: 1,
-                    color: isCurrent ? color : theme.colors.onSurface,
-                    fontWeight: isCurrent ? '700' : '400',
-                  }}
-                >
+                <MaterialCommunityIcons name={(STATUS_ICONS[status] || 'file-document') as any} size={18} color={color} />
+                <Text variant="bodyMedium" style={{ flex: 1, color: isCurrent ? color : theme.colors.onSurface, fontWeight: isCurrent ? '700' : '400' }}>
                   {t(`quotes.${status}`)}
                 </Text>
-                {isCurrent ? (
-                  <MaterialCommunityIcons name="check" size={20} color={color} />
-                ) : null}
+                {isCurrent ? <MaterialCommunityIcons name="check" size={20} color={color} /> : null}
               </Pressable>
             );
           })}
-          <Button
-            mode="text"
-            onPress={() => setStatusPickerQuote(null)}
-            style={{ marginTop: 8 }}
-            textColor={theme.colors.onSurfaceVariant}
-          >
+          <Button mode="text" onPress={() => setStatusPickerQuote(null)} style={{ marginTop: 8 }} textColor={theme.colors.onSurfaceVariant}>
             {t('common.cancel')}
           </Button>
         </Modal>
@@ -1022,192 +498,13 @@ export default function QuotesListScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header: {
-    paddingBottom: 4,
-  },
-  headerRow: {
-    alignItems: 'center',
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  headerIcon: { padding: 4, marginEnd: 8 },
-  searchWrap: {
-    paddingHorizontal: 14,
-    overflow: 'hidden',
-    justifyContent: 'center',
-    paddingBottom: 8,
-  },
-  searchbar: { height: 40, borderRadius: 20, elevation: 0 },
-  filtersRow: {
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  filtersScroll: {
-    paddingHorizontal: 14,
-    gap: 8,
-    alignItems: 'center',
-  },
-  filterChip: { height: 32 },
-  filterChipText: { fontSize: 13 },
   listContent: { padding: 14, paddingBottom: 100 },
   listContentEmpty: { flexGrow: 1 },
-  quoteCard: {
-    flexDirection: 'row',
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    overflow: 'hidden',
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-  },
-  cardStatusBar: {
-    width: 5,
-    borderTopLeftRadius: borderRadius.lg,
-    borderBottomLeftRadius: borderRadius.lg,
-  },
-  cardContent: {
-    flex: 1,
-    padding: 14,
-  },
-  cardTopRow: {
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  cardTitle: {
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  statusChip: {
-    height: 'auto' as any,
-    minHeight: 26,
-    borderRadius: 12,
-    paddingHorizontal: 2,
-    flexShrink: 0,
-    alignSelf: 'flex-start',
-  },
-  statusChipText: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginHorizontal: 2,
-  },
-  cardMeta: {
-    alignItems: 'center',
-    gap: 14,
-    flexWrap: 'wrap',
-  },
-  metaItem: {
-    alignItems: 'center',
-    gap: 4,
-  },
-  metaText: {
-    fontSize: 12,
-  },
-  cardBottomRow: {
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 8,
-  },
-  totalAmount: {
-    fontWeight: '700',
-    fontSize: 18,
-  },
-  viewCountBadge: {
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: 'rgba(83, 189, 235, 0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 80,
-    paddingHorizontal: 40,
-    gap: 12,
-  },
-  emptyTitle: { fontWeight: '600', marginTop: 8 },
-  fab: {
-    position: 'absolute',
-    borderRadius: 16,
-  },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 8,
-  },
-  errorText: { flex: 1, fontSize: 13 },
-  modalContainer: {
-    marginHorizontal: 20,
-    borderRadius: borderRadius.xl,
-    maxHeight: '85%',
-    padding: 20,
-  },
-  modalHeader: {
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  formInput: {
-    marginBottom: 14,
-  },
-  modalActions: {
-    gap: 12,
-    justifyContent: 'flex-end',
-    marginTop: 8,
-  },
-  modalButton: {
-    minWidth: 100,
-    borderRadius: borderRadius.md,
-  },
-  // Kanban styles
-  kanbanContainer: {
-    paddingHorizontal: 10,
-    paddingTop: 10,
-    paddingBottom: 100,
-    gap: 10,
-  },
-  kanbanColumn: {
-    borderRadius: borderRadius.lg,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  kanbanColumnHeader: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 2,
-  },
-  kanbanHeaderInner: {
-    alignItems: 'center',
-    gap: 6,
-  },
-  kanbanBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-    minWidth: 24,
-    alignItems: 'center',
-  },
-  kanbanColumnBody: {
-    flex: 1,
-    maxHeight: Dimensions.get('window').height * 0.6,
-  },
-  kanbanColumnContent: {
-    padding: 8,
-    gap: 8,
-  },
+  fab: { position: 'absolute', borderRadius: 16 },
+  activeDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4 },
+  errorBanner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
   kanbanCard: {
-    borderRadius: borderRadius.md,
+    borderRadius: 10,
     borderWidth: 1,
     padding: 12,
     gap: 4,
@@ -1217,29 +514,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 2,
   },
-  kanbanMeta: {
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 4,
-  },
   kanbanBottom: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginTop: 6,
     paddingTop: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E0E0E0',
   },
-  kanbanEmpty: {
-    paddingVertical: 24,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-  },
-  statusPickerModal: {
-    marginHorizontal: 24,
-    borderRadius: 16,
-    padding: 20,
-  },
+  statusPickerModal: { marginHorizontal: 24, borderRadius: 16, padding: 20 },
   statusPickerOption: {
     flexDirection: 'row',
     alignItems: 'center',

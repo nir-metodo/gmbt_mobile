@@ -29,6 +29,8 @@ import { inventoryApi, InventoryItem, StockMovement } from '../../../../services
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { formatDate, withAlpha } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
 
 const BRAND_COLOR = '#2e6155';
 const LOW_STOCK_THRESHOLD = 5;
@@ -125,15 +127,11 @@ export default function InventoryDetailScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
-        <Appbar.Content
-          title={item?.productName || t('inventory.item')}
-          titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }}
-          subtitle={item?.sku ? `SKU: ${item.sku}` : undefined}
-          subtitleStyle={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}
-        />
-      </Appbar.Header>
+      <ScreenHeader
+        title={item?.productName || t('inventory.item')}
+        subtitle={item?.sku ? `SKU: ${item.sku}` : undefined}
+        onBack={() => router.back()}
+      />
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {item ? (
@@ -166,17 +164,6 @@ export default function InventoryDetailScreen() {
               ) : null}
             </View>
 
-            {/* Adjust Stock Button */}
-            <Pressable
-              onPress={() => setAdjustModalVisible(true)}
-              style={[styles.adjustButton, { backgroundColor: BRAND_COLOR }]}
-            >
-              <MaterialCommunityIcons name="plus-minus" size={20} color="#fff" />
-              <Text variant="bodyMedium" style={{ color: '#fff', fontWeight: '700' }}>
-                {t('inventory.adjustStock')}
-              </Text>
-            </Pressable>
-
             {/* Product Details */}
             <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
               <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
@@ -185,8 +172,6 @@ export default function InventoryDetailScreen() {
               <Divider style={{ marginBottom: 12 }} />
 
               {[
-                { icon: 'tag-outline', label: t('inventory.productName'), value: item.productName },
-                item.sku ? { icon: 'barcode-scan', label: 'SKU', value: item.sku } : null,
                 item.category ? { icon: 'shape-outline', label: t('inventory.category'), value: item.category } : null,
                 item.location ? { icon: 'map-marker-outline', label: t('inventory.location'), value: item.location } : null,
                 item.price != null ? { icon: 'cash-multiple', label: t('inventory.price'), value: `${item.currency || '₪'}${Number(item.price).toFixed(2)}` } : null,
@@ -275,6 +260,14 @@ export default function InventoryDetailScreen() {
         )}
       </ScrollView>
 
+      {item ? (
+        <PrimaryActionBar
+          label={t('inventory.adjustStock')}
+          icon="plus-minus"
+          onPress={() => setAdjustModalVisible(true)}
+        />
+      ) : null}
+
       {/* Adjust Stock Modal */}
       <Portal>
         <Modal
@@ -343,7 +336,7 @@ export default function InventoryDetailScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  scrollContent: { padding: 16, gap: 12, paddingBottom: 40 },
+  scrollContent: { padding: 16, gap: 12, paddingBottom: 120 },
   stockCard: {
     borderRadius: borderRadius.xl,
     borderWidth: 1.5,

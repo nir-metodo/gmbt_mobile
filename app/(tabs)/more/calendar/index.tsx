@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { View, StyleSheet, ScrollView, Alert, Pressable, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, Alert, Pressable, Platform, RefreshControl } from 'react-native';
 import { Text, TextInput, FAB, Card, IconButton, Button, Chip, Menu, Portal, Modal, ActivityIndicator, Divider, Switch } from 'react-native-paper';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Calendar from 'expo-calendar';
@@ -147,8 +147,11 @@ export default function CalendarScreen() {
   // Apply the preferred default view only once, so it never fights the user's later navigation.
   const appliedDefaultView = React.useRef(false);
 
-  // View mode: agenda-style list or a real month grid calendar.
-  const [viewMode, setViewMode] = useState<'month' | 'list'>('month');
+  // View mode: month grid, week strip (+ the selected day's agenda), or the agenda-style list.
+  const [viewMode, setViewMode] = useState<'month' | 'week' | 'list'>('month');
+  // Quick-create deep link (More → "+" → New event passes ?create=<timestamp>).
+  const { create: createParam } = useLocalSearchParams<{ create?: string }>();
+  const handledCreateParam = React.useRef<string | null>(null);
   // Month the grid is showing + the day the user tapped (drives the day-agenda below the grid).
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [selectedDay, setSelectedDay] = useState<string>(() => toLocalDateStr(new Date()));
@@ -240,11 +243,12 @@ export default function CalendarScreen() {
       setConnections(conns);
       setOrgUsers(usrs);
       setCalPrefs(prefs);
-      // Apply the preferred default view once. Mobile only has 'month' + 'list', so day/week map to
-      // the month grid (which drives a per-day agenda anyway).
+      // Apply the preferred default view once. Mobile has month / week / list; the web's "day"
+      // maps to the week strip (which drives a per-day agenda).
       if (!appliedDefaultView.current && prefs.defaultView) {
         appliedDefaultView.current = true;
-        setViewMode(prefs.defaultView === 'list' ? 'list' : 'month');
+        const dv = String(prefs.defaultView).toLowerCase();
+        setViewMode(dv === 'list' || dv === 'agenda' ? 'list' : dv === 'week' || dv === 'day' ? 'week' : 'month');
       }
       // Paint immediately, then pull fresh external events in the background so they "just appear"
       // like on the web (which relies on the same SyncCalendarFromProvider).
@@ -326,13 +330,18 @@ export default function CalendarScreen() {
       rangeStart = new Date(year, month, 1 - startWeekday);
       rangeEnd = new Date(rangeStart);
       rangeEnd.setDate(rangeEnd.getDate() + 41);
+    } else if (viewMode === 'week') {
+      const sel = parseLocalDate(selectedDay) || new Date();
+      rangeStart = new Date(sel.getFullYear(), sel.getMonth(), sel.getDate() - sel.getDay());
+      rangeEnd = new Date(rangeStart);
+      rangeEnd.setDate(rangeEnd.getDate() + 6);
     } else {
       const now = new Date();
       rangeStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       rangeEnd = new Date(now.getFullYear(), now.getMonth() + 6, 0);
     }
     return expandEvents(sourceFilteredEvents, rangeStart, rangeEnd);
-  }, [sourceFilteredEvents, viewMode, monthCursor]);
+  }, [sourceFilteredEvents, viewMode, monthCursor, selectedDay]);
 
   const filteredEvents = useMemo(() => {
     const today = toLocalDateStr(new Date());
@@ -410,7 +419,42 @@ export default function CalendarScreen() {
     const now = new Date();
     setMonthCursor(new Date(now.getFullYear(), now.getMonth(), 1));
     setSelectedDay(toLocalDateStr(now));
+    // In the agenda list "today" means: start from today.
+    setDateFilter('upcoming');
   }, []);
+
+  // Week strip: the 7 days (Sun–Sat) around the selected day.
+  const weekDays = useMemo(() => {
+    const sel = parseLocalDate(selectedDay) || new Date();
+    const start = new Date(sel.getFullYear(), sel.getMonth(), sel.getDate() - sel.getDay());
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+      return { date: d, dateStr: toLocalDateStr(d) };
+    });
+  }, [selectedDay]);
+
+  const weekLabel = useMemo(() => {
+    const locale = isRTL ? 'he-IL' : 'en-US';
+    const a = weekDays[0].date;
+    const b = weekDays[6].date;
+    const fmt = (d: Date, withYear: boolean) =>
+      d.toLocaleDateString(locale, withYear ? { day: 'numeric', month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short' });
+    return `${fmt(a, false)} – ${fmt(b, true)}`;
+  }, [weekDays, isRTL]);
+
+  const shiftWeek = useCallback((delta: number) => {
+    const sel = parseLocalDate(selectedDay) || new Date();
+    const next = new Date(sel.getFullYear(), sel.getMonth(), sel.getDate() + delta * 7);
+    setSelectedDay(toLocalDateStr(next));
+    setMonthCursor(new Date(next.getFullYear(), next.getMonth(), 1));
+  }, [selectedDay]);
+
+  const changeViewMode = useCallback((mode: 'month' | 'week' | 'list') => {
+    setViewMode(mode);
+    // Keep the month grid on the month of the day the user is looking at.
+    const sel = parseLocalDate(selectedDay);
+    if (sel) setMonthCursor(new Date(sel.getFullYear(), sel.getMonth(), 1));
+  }, [selectedDay]);
 
   const todayStr = toLocalDateStr(new Date());
 
@@ -485,6 +529,17 @@ export default function CalendarScreen() {
     setFormStartDate(day);
     setFormEndDate(day);
   };
+
+  // Opened via the More-screen "+" → New event: jump straight into the create form (once data
+  // is loaded so the default calendar / duration preferences are applied).
+  useEffect(() => {
+    if (loading || !createParam || handledCreateParam.current === String(createParam)) return;
+    handledCreateParam.current = String(createParam);
+    const now = new Date();
+    setSelectedDay(toLocalDateStr(now));
+    openCreateModal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, createParam]);
 
   const openEditModal = (event: CalendarEvent) => {
     // A recurring occurrence is a virtual copy with a shifted date — edit the underlying series.
@@ -784,14 +839,35 @@ export default function CalendarScreen() {
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       {/* Header */}
       <View style={[styles.header, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant }]}>
-        <IconButton icon="arrow-right" onPress={() => router.back()} iconColor={theme.colors.onSurface} />
-        <Text style={[styles.headerTitle, { color: theme.colors.onSurface }]}>{isRTL ? 'יומן' : 'Calendar'}</Text>
-        <IconButton
-          icon={viewMode === 'month' ? 'view-agenda-outline' : 'calendar-month-outline'}
-          onPress={() => setViewMode(m => (m === 'month' ? 'list' : 'month'))}
-          iconColor={theme.colors.onSurface}
-        />
+        <IconButton icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} iconColor={theme.colors.onSurface} />
+        <Text style={[styles.headerTitle, { color: theme.colors.onSurface }]}>{t('more.calendar')}</Text>
+        <IconButton icon="calendar-today" onPress={goToToday} iconColor={BRAND_COLOR} accessibilityLabel={t('more.calToday')} />
         <IconButton icon="refresh" onPress={() => { setRefreshing(true); loadData(true); }} iconColor={theme.colors.onSurface} />
+      </View>
+
+      {/* View switcher: month / week / agenda list */}
+      <View style={[styles.viewSwitchRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant, flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+        {([
+          { key: 'month', label: t('more.calViewMonth'), icon: 'calendar-month-outline' },
+          { key: 'week', label: t('more.calViewWeek'), icon: 'calendar-week' },
+          { key: 'list', label: t('more.calViewList'), icon: 'view-agenda-outline' },
+        ] as const).map((v) => {
+          const active = viewMode === v.key;
+          return (
+            <Chip
+              key={v.key}
+              icon={v.icon}
+              selected={active}
+              showSelectedOverlay
+              onPress={() => changeViewMode(v.key)}
+              compact
+              style={[{ backgroundColor: isDark ? theme.colors.surfaceVariant : '#f3f4f6' }, active && styles.filterChipActive]}
+              textStyle={[{ fontSize: 12, color: theme.colors.onSurfaceVariant }, active && styles.filterChipTextActive]}
+            >
+              {v.label}
+            </Chip>
+          );
+        })}
       </View>
 
       {/* External-calendar filter — only when there are external calendars with synced events. */}
@@ -833,8 +909,56 @@ export default function CalendarScreen() {
         </Pressable>
       )}
 
-      {viewMode === 'month' ? (
-        <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 90 }}>
+      {viewMode !== 'list' ? (
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={{ paddingBottom: 90 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadData(true); }} colors={[BRAND_COLOR]} />}
+        >
+          {viewMode === 'week' ? (
+            <>
+              {/* Week navigation */}
+              <View style={[styles.monthNav, { backgroundColor: theme.colors.surface }]}>
+                <IconButton icon={isRTL ? 'chevron-right' : 'chevron-left'} onPress={() => shiftWeek(-1)} iconColor={theme.colors.onSurface} size={26} />
+                <Pressable onPress={goToToday} style={{ flex: 1 }}>
+                  <Text style={[styles.monthLabel, { color: theme.colors.onSurface }]}>{weekLabel}</Text>
+                </Pressable>
+                <IconButton icon={isRTL ? 'chevron-left' : 'chevron-right'} onPress={() => shiftWeek(1)} iconColor={theme.colors.onSurface} size={26} />
+              </View>
+              {/* Week strip: tap a day to see it, long-press to add an event on it */}
+              <View style={[styles.weekStrip, { flexDirection: isRTL ? 'row-reverse' : 'row', backgroundColor: theme.colors.surface }]}>
+                {weekDays.map((wd, i) => {
+                  const dayEvents = eventsByDate[wd.dateStr] || [];
+                  const isToday = wd.dateStr === todayStr;
+                  const isSelected = wd.dateStr === selectedDay;
+                  return (
+                    <Pressable
+                      key={wd.dateStr}
+                      onPress={() => setSelectedDay(wd.dateStr)}
+                      onLongPress={() => openCreateModalForDay(wd.dateStr)}
+                      style={[
+                        styles.weekDayCell,
+                        { borderColor: isSelected ? BRAND_COLOR : 'transparent', backgroundColor: isSelected ? `${BRAND_COLOR}22` : 'transparent' },
+                      ]}
+                    >
+                      <Text style={[styles.weekdayText, { color: theme.colors.onSurfaceVariant }]}>{weekdayLabels[i]}</Text>
+                      <View style={[styles.dayNumWrap, isToday && { backgroundColor: BRAND_COLOR }]}>
+                        <Text style={[styles.dayNum, { color: theme.colors.onSurface }, isToday && { color: '#fff', fontWeight: '700' }]}>
+                          {wd.date.getDate()}
+                        </Text>
+                      </View>
+                      <View style={styles.dotsRow}>
+                        {dayEvents.slice(0, 3).map((e, idx) => (
+                          <View key={idx} style={[styles.dot, { backgroundColor: getEventColor(e) }]} />
+                        ))}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          ) : (
+          <>
           {/* Month navigation */}
           <View style={[styles.monthNav, { backgroundColor: theme.colors.surface }]}>
             <IconButton icon={isRTL ? 'chevron-right' : 'chevron-left'} onPress={goToPrevMonth} iconColor={theme.colors.onSurface} size={26} />
@@ -870,6 +994,7 @@ export default function CalendarScreen() {
                 <Pressable
                   key={cell.dateStr}
                   onPress={() => setSelectedDay(cell.dateStr)}
+                  onLongPress={() => openCreateModalForDay(cell.dateStr)}
                   style={[
                     styles.dayCell,
                     dayCellWidth ? { width: dayCellWidth, aspectRatio: 1 } : null,
@@ -901,6 +1026,8 @@ export default function CalendarScreen() {
               );
             })}
           </View>
+          </>
+          )}
 
           {/* Selected day agenda */}
           <View style={styles.dayAgenda}>
@@ -942,7 +1069,11 @@ export default function CalendarScreen() {
           </View>
 
           {/* Events list */}
-          <ScrollView style={styles.list} contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 80 }}>
+          <ScrollView
+            style={styles.list}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 80 }}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadData(true); }} colors={[BRAND_COLOR]} />}
+          >
             {filteredEvents.length === 0 && (
               <View style={styles.emptyState}>
                 <MaterialCommunityIcons name="calendar-blank-outline" size={48} color={theme.colors.onSurfaceVariant} />
@@ -1558,6 +1689,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     gap: 8,
+  },
+  viewSwitchRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  weekStrip: { paddingHorizontal: 6, paddingBottom: 6 },
+  weekDayCell: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    marginHorizontal: 2,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 4,
   },
   filterChipActive: { backgroundColor: BRAND_COLOR },
   filterChipTextActive: { color: 'white' },

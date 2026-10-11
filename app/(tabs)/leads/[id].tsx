@@ -25,7 +25,7 @@ import {
   Switch,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation, Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
@@ -154,6 +154,29 @@ const EMPTY_LEAD: Partial<Lead> = {
   lostReason: '',
 };
 
+// Keys that are never part of the "unsaved edits" comparison: stage moves are persisted immediately
+// by the stage banner (moveStage API + won/auto-quote effects), and these are server-stamped.
+const DIRTY_IGNORE_KEYS = new Set([
+  'stage', 'stageName', 'stageId', 'modifiedOn', 'updatedOn', 'modifiedBy', 'updatedBy',
+]);
+
+// Treat null / undefined / '' / 0 / false / [] as the same "empty" so untouched fields never look edited.
+function normalizeFormValue(v: any): string {
+  if (v == null || v === '' || v === false || v === 0) return '';
+  if (Array.isArray(v)) return v.length === 0 ? '' : JSON.stringify(v);
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+function formHasChanges(a: Partial<Lead>, b: Partial<Lead>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    if (DIRTY_IGNORE_KEYS.has(k)) continue;
+    if (normalizeFormValue((a as any)[k]) !== normalizeFormValue((b as any)[k])) return true;
+  }
+  return false;
+}
+
 export default function LeadDetailScreen() {
   const router = useRouter();
   const { id, contactPhone: prefillPhone, prefillContactName } = useLocalSearchParams<{
@@ -187,8 +210,9 @@ export default function LeadDetailScreen() {
 
   const [menuVisible, setMenuVisible] = useState(false);
   const [stagePickerVisible, setStagePickerVisible] = useState(false);
-  const [editVisible, setEditVisible] = useState(isNew);
   const [saving, setSaving] = useState(false);
+  // "More details" (rarely-edited fields) collapsed by default on the inline form.
+  const [moreOpen, setMoreOpen] = useState(false);
   const [addTaskVisible, setAddTaskVisible] = useState(false);
   const [contactLookupVisible, setContactLookupVisible] = useState(false);
   // B2C-friendly progressive disclosure: hide company/job-title behind a small "add" link so
@@ -243,19 +267,59 @@ export default function LeadDetailScreen() {
         },
   );
 
+  // Snapshot of the lead as last loaded/saved — the inline form is "dirty" when it differs from this.
+  const [baseline, setBaseline] = useState<Partial<Lead> | null>(lead ? { ...lead } : null);
+  const baselineRef = useRef<Partial<Lead> | null>(baseline);
+  const formRef = useRef<Partial<Lead>>(form);
+  formRef.current = form;
+  // Set while a save is in flight (+ a short grace period) so the optimistic store update / revert
+  // doesn't overwrite what the user typed.
+  const saveInFlightRef = useRef(false);
+
+  const commitBaseline = useCallback((next: Partial<Lead> | null) => {
+    baselineRef.current = next;
+    setBaseline(next);
+  }, []);
+
   useEffect(() => {
-    if (lead) setForm({ ...lead });
-  }, [lead]);
+    if (!lead || saveInFlightRef.current) return;
+    const base = baselineRef.current;
+    const cur = formRef.current;
+    if (!base || base.id !== lead.id || !formHasChanges(cur, base)) {
+      // Clean (or different lead): just mirror the store.
+      setForm({ ...lead });
+      commitBaseline({ ...lead });
+      return;
+    }
+    // User has unsaved edits: take the fresh server/store values for fields they didn't touch
+    // (e.g. a stage move from the banner) and keep their edits.
+    const merged: Record<string, any> = { ...lead };
+    const keys = new Set([...Object.keys(cur), ...Object.keys(base)]);
+    keys.forEach((k) => {
+      if (DIRTY_IGNORE_KEYS.has(k)) return;
+      if (normalizeFormValue((cur as any)[k]) !== normalizeFormValue((base as any)[k])) merged[k] = (cur as any)[k];
+    });
+    setForm(merged as Partial<Lead>);
+    commitBaseline({ ...lead });
+  }, [lead, commitBaseline]);
+
+  const isDirty = useMemo(
+    () => !isNew && !!baseline && formHasChanges(form, baseline),
+    [isNew, form, baseline],
+  );
 
   useEffect(() => {
     if (!syncCatalogToValue || !catalogEnabled) return;
     const products = form.interestedProducts || [];
     if (products.length === 0) return;
+    // Existing lead: only recompute the value once the user actually changes the products — otherwise
+    // merely opening a lead with a slightly different stored value would mark the form dirty.
+    if (!isNew && baseline && normalizeFormValue(products) === normalizeFormValue(baseline.interestedProducts)) return;
     const total = products.reduce((s: number, p: any) => s + (parseFloat(p.unitPrice) || 0) * (parseInt(p.quantity) || 1), 0);
     if (total > 0 && Number(form.value) !== total) {
       setForm((prev) => ({ ...prev, value: total }));
     }
-  }, [form.interestedProducts, syncCatalogToValue, catalogEnabled]);
+  }, [form.interestedProducts, syncCatalogToValue, catalogEnabled, baseline, isNew]);
 
   useEffect(() => {
     if (!organization) return;
@@ -532,6 +596,7 @@ export default function LeadDetailScreen() {
           if (!organization || !lead) return;
           try {
             await deleteLead(organization, lead.id);
+            skipGuardRef.current = true;
             Alert.alert(t('common.success', 'הצלחה'), t('leads.deleteSuccess', 'הליד נמחק בהצלחה'));
             if (router.canGoBack()) router.back();
             else router.replace('/(tabs)/leads');
@@ -711,9 +776,10 @@ export default function LeadDetailScreen() {
     }
   }, [organization, lead, paymentAmount, paymentDescription, paymentInstallments, t]);
 
-  const handleSave = useCallback(async () => {
-    if (!organization) return;
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (!organization) return false;
     setSaving(true);
+    if (!isNew) saveInFlightRef.current = true;
     try {
       const payload: Partial<Lead> = { ...form };
 
@@ -745,14 +811,80 @@ export default function LeadDetailScreen() {
         }
       } else {
         await updateLead(organization, { ...payload, id: lead?.id ?? '' });
-        setEditVisible(false);
+        // Saved: the saved payload becomes the new clean snapshot (form === baseline → bar disappears).
+        const saved = { ...payload, id: lead?.id ?? '' };
+        setForm(saved);
+        commitBaseline(saved);
+        Keyboard.dismiss();
       }
+      return true;
     } catch {
       Alert.alert(t('common.error'));
+      return false;
     } finally {
       setSaving(false);
+      // Keep ignoring the store's optimistic update / revert for a moment (see effect on `lead`).
+      setTimeout(() => { saveInFlightRef.current = false; }, 400);
     }
-  }, [organization, form, isNew, lead, createLead, updateLead, t, router]);
+  }, [organization, form, isNew, lead, createLead, updateLead, t, router, commitBaseline]);
+
+  const handleDiscard = useCallback(() => {
+    Keyboard.dismiss();
+    setOwnerPickerExpanded(false);
+    setFollowUpTemplateExpanded(false);
+    if (lead) {
+      setForm({ ...lead });
+      commitBaseline({ ...lead });
+    }
+  }, [lead, commitBaseline]);
+
+  // Unsaved-changes guard: leaving the screen (header back, hardware back, swipe) with a dirty form
+  // asks to save / discard / stay.
+  const navigation = useNavigation();
+  const isDirtyRef = useRef(false);
+  isDirtyRef.current = isDirty;
+  const skipGuardRef = useRef(false);
+  const handleSaveRef = useRef(handleSave);
+  handleSaveRef.current = handleSave;
+  useEffect(() => {
+    if (isNew) return;
+    const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
+      if (skipGuardRef.current || !isDirtyRef.current) return;
+      e.preventDefault();
+      const he = lang === 'he';
+      Alert.alert(
+        he ? 'שינויים שלא נשמרו' : 'Unsaved changes',
+        he ? 'יש שינויים שלא נשמרו בליד. מה לעשות?' : 'You have unsaved changes to this lead. What would you like to do?',
+        [
+          { text: he ? 'הישאר' : 'Stay', style: 'cancel' },
+          {
+            text: he ? 'בטל שינויים' : 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              skipGuardRef.current = true;
+              navigation.dispatch(e.data.action);
+            },
+          },
+          {
+            text: t('common.save'),
+            onPress: async () => {
+              const ok = await handleSaveRef.current();
+              if (ok) {
+                skipGuardRef.current = true;
+                navigation.dispatch(e.data.action);
+              }
+            },
+          },
+        ],
+      );
+    });
+    return unsubscribe;
+  }, [navigation, isNew, lang, t]);
+
+  const goBack = useCallback(() => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/leads');
+  }, [router]);
 
   const updateField = useCallback(
     (field: keyof Lead | string, value: string | number | boolean | string[]) => {
@@ -770,532 +902,29 @@ export default function LeadDetailScreen() {
     );
   }
 
-  return (
-    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+  const contactLookupEl = (
+    <ContactLookup
+      visible={contactLookupVisible}
+      organization={organization}
+      onSelect={(contact) => {
+        setForm((prev) => ({
+          ...prev,
+          contactName: contact.name,
+          contactPhone: contact.phoneNumber,
+          contactId: contact.id,
+        }));
+        setContactLookupVisible(false);
+      }}
+      onDismiss={() => setContactLookupVisible(false)}
+    />
+  );
 
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          {
-            backgroundColor: theme.custom.headerBackground,
-            paddingTop: insets.top + 4,
-            flexDirection,
-          },
-        ]}
-      >
-        <IconButton
-          icon={isRTL ? 'arrow-right' : 'arrow-left'}
-          iconColor={theme.custom.headerText}
-          size={24}
-          onPress={() => router.back()}
-        />
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {isNew ? t('leads.addLead') : lead?.title ?? ''}
-        </Text>
-        {!isNew ? (
-          <Menu
-            visible={menuVisible}
-            onDismiss={() => setMenuVisible(false)}
-            anchor={
-              <IconButton
-                icon="dots-vertical"
-                iconColor={theme.custom.headerText}
-                size={24}
-                onPress={() => setMenuVisible(true)}
-              />
-            }
-            contentStyle={{ backgroundColor: theme.colors.surface }}
-          >
-            <Menu.Item
-              leadingIcon="pencil-outline"
-              onPress={() => {
-                setMenuVisible(false);
-                setOwnerPickerExpanded(false);
-                setEditVisible(true);
-                if (orgUsers.length === 0) {
-                  setOrgUsersLoading(true);
-                  usersApi.getAll(organization).then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
-                }
-              }}
-              title={t('common.edit')}
-            />
-            <Divider />
-            <Menu.Item
-              leadingIcon="delete-outline"
-              onPress={handleDelete}
-              title={t('common.delete')}
-              titleStyle={{ color: theme.colors.error }}
-            />
-          </Menu>
-        ) : (
-          <View style={{ width: 48 }} />
-        )}
-      </View>
-
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Stage indicator */}
-        {!isNew && lead ? (
-          <Pressable
-            onPress={() => setStagePickerVisible(true)}
-            style={[styles.stageBanner, { backgroundColor: withAlpha(stageColor, 0.082) }]}
-          >
-            <View style={[styles.stageIndicator, { flexDirection }]}>
-              <View style={[styles.stageDot, { backgroundColor: stageColor }]} />
-              <Text variant="titleMedium" style={{ color: stageColor, fontWeight: '700', flex: 1 }}>
-                {resolveStageName(lead.stageName || lead.stage)}
-              </Text>
-              <MaterialCommunityIcons
-                name="chevron-down"
-                size={20}
-                color={stageColor}
-              />
-            </View>
-            {/* Stage progress */}
-            <View style={styles.stageProgress}>
-              {stageKeys.map((stage, idx) => {
-                const currentIdx = Math.max(0, stageKeys.indexOf(lead.stageName || lead.stage || 'New'));
-                const isActive = idx <= currentIdx;
-                return (
-                  <View
-                    key={stage}
-                    style={[
-                      styles.stageProgressDot,
-                      {
-                        backgroundColor: isActive
-                          ? stageColor
-                          : theme.colors.outlineVariant,
-                        flex: 1,
-                      },
-                    ]}
-                  />
-                );
-              })}
-            </View>
-          </Pressable>
-        ) : null}
-
-        {/* Lead info card */}
-        <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-          {lead?.value != null && lead.value > 0 ? (
-            <InfoRow
-              icon="currency-usd"
-              label={t('leads.value')}
-              value={formatCurrency(lead.value, lead.currency ?? '₪')}
-              theme={theme}
-              flexDirection={flexDirection}
-              textAlign={textAlign}
-              valueStyle={{ color: theme.colors.primary, fontWeight: '700' }}
-            />
-          ) : null}
-          {lead?.source ? (
-            <>
-              {lead.value != null && lead.value > 0 ? <Divider style={styles.cardDivider} /> : null}
-              <InfoRow
-                icon="source-branch"
-                label={t('leads.source')}
-                value={lead.source}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.medium ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="transit-connection-variant"
-                label={t('leads.channel')}
-                value={lead.medium}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.status ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="flag-outline"
-                label={t('leads.status')}
-                value={lead.status}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.expectedCloseDate ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="calendar-clock"
-                label={t('leads.expectedClose')}
-                value={formatDate(lead.expectedCloseDate)}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.nextFollowUp ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="calendar-arrow-right"
-                label={t('leads.nextFollowUp', 'Next Follow-Up')}
-                value={formatDate(lead.nextFollowUp)}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.owner || lead?.ownerName ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="account-outline"
-                label={t('leads.owner')}
-                value={lead.ownerName ?? lead.owner ?? ''}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.jobTitle ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="briefcase-outline"
-                label={t('leads.jobTitle', 'Job Title')}
-                value={lead.jobTitle}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.currency ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="cash"
-                label={t('leads.currency', 'Currency')}
-                value={lead.currency}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.tags && lead.tags.length > 0 ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="tag-multiple-outline"
-                label={t('leads.tags', 'Tags')}
-                value={lead.tags.join(', ')}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-              />
-            </>
-          ) : null}
-          {lead?.score != null && lead.score > 0 ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="star-outline"
-                label={t('leads.score', 'Score')}
-                value={'★'.repeat(lead.score) + '☆'.repeat(Math.max(0, 5 - lead.score))}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-                valueStyle={{ color: '#FFC107', fontSize: 18 }}
-              />
-            </>
-          ) : null}
-          {lead?.lostReason ? (
-            <>
-              <Divider style={styles.cardDivider} />
-              <InfoRow
-                icon="close-circle-outline"
-                label={t('leads.lostReason', 'Lost Reason')}
-                value={lead.lostReason}
-                theme={theme}
-                flexDirection={flexDirection}
-                textAlign={textAlign}
-                valueStyle={{ color: theme.colors.error }}
-              />
-            </>
-          ) : null}
-        </Surface>
-
-        {lead ? (
-          <DynamicFieldsSectionView
-            sections={leadFormSections}
-            data={lead as Record<string, any>}
-            lang={lang}
-            formLayout={leadFormLayout}
-          />
-        ) : null}
-
-        {lead ? (
-          <ExtraFieldsSectionView
-            data={lead as Record<string, any>}
-            lang={lang}
-            excludeKeys={[
-              'value', 'currency', 'source', 'medium', 'status',
-              'expectedCloseDate', 'nextFollowUp', 'owner', 'ownerName',
-              'jobTitle', 'tags', 'score', 'lostReason', 'description',
-              'title', 'name', 'contactName', 'contactPhone', 'phoneNumber',
-              'contactEmail', 'email', 'phone',
-              ...getSectionFieldKeys(leadFormSections),
-            ]}
-          />
-        ) : null}
-
-        {/* Description */}
-        {lead?.description ? (
-          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <Text
-              variant="titleSmall"
-              style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 8 }}
-            >
-              {t('leads.description')}
-            </Text>
-            <Text
-              variant="bodyMedium"
-              style={{
-                color: theme.colors.onSurfaceVariant,
-                textAlign,
-                writingDirection,
-                lineHeight: 22,
-              }}
-            >
-              {lead.description}
-            </Text>
-          </Surface>
-        ) : null}
-
-        {/* Contact link */}
-        {lead?.contactName ? (
-          <Pressable onPress={handleViewContact}>
-            <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-              <View style={[styles.contactLink, { flexDirection }]}>
-                <Avatar.Text
-                  size={40}
-                  label={getInitials(lead.contactName)}
-                  style={{ backgroundColor: theme.colors.primaryContainer }}
-                  labelStyle={{ color: theme.colors.primary, fontWeight: '700' }}
-                />
-                <View style={styles.contactLinkText}>
-                  <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('leads.contact')}
-                  </Text>
-                  <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                    {lead.contactName}
-                  </Text>
-                </View>
-                <MaterialCommunityIcons
-                  name={isRTL ? 'chevron-left' : 'chevron-right'}
-                  size={20}
-                  color={theme.colors.onSurfaceVariant}
-                  style={{ opacity: 0.5 }}
-                />
-              </View>
-            </Surface>
-          </Pressable>
-        ) : null}
-
-        {/* Action buttons */}
-        {!isNew ? (
-          <View style={[styles.actionsRow, { flexDirection }]}>
-            <ActionButton
-              icon="phone"
-              label={t('contacts.makeCall')}
-              color={theme.colors.primary}
-              bg={theme.colors.primaryContainer}
-              onPress={handleCall}
-            />
-            <ActionButton
-              icon="whatsapp"
-              label={t('contacts.messageShort', 'הודעה')}
-              color="#25D366"
-              bg="#E8F5E9"
-              onPress={handleMessage}
-            />
-            <ActionButton
-              icon="clipboard-check-outline"
-              label={t('tasks.taskShort', 'משימה')}
-              color="#FF9800"
-              bg="#FFF3E0"
-              onPress={openAddTask}
-            />
-            <ActionButton
-              icon="note-plus-outline"
-              label={t('phoneCalls.noteShort', 'הערה')}
-              color="#9C27B0"
-              bg="#F3E5F5"
-              onPress={() => setNoteModalVisible(true)}
-            />
-            {enableQuoteFromLeadForm && (
-              <ActionButton
-                icon="file-document-outline"
-                label={t('quotes.quoteShort', 'הצעה')}
-                color="#2196F3"
-                bg="#E3F2FD"
-                onPress={() => router.push({
-                  pathname: '/(tabs)/more/quotes/[id]',
-                  params: {
-                    id: 'new',
-                    prefillContactName: lead?.contactName || '',
-                    prefillContactPhone: lead?.contactPhone || lead?.phoneNumber || '',
-                    prefillTitle: lead?.title || '',
-                    prefillLeadId: lead?.id || '',
-                  },
-                })}
-              />
-            )}
-            {clearingEnabled ? (
-              <ActionButton
-                icon="credit-card-outline"
-                label={t('payments.charge', 'סליקה')}
-                color="#2e6155"
-                bg="#E8F5E9"
-                onPress={handleOpenPayment}
-              />
-            ) : null}
-          </View>
-        ) : null}
-
-        {/* Tasks — dedicated section (mirrors the web lead view) */}
-        {!isNew ? (
-          <LeadTasksSection
-            theme={theme}
-            t={t}
-            isRTL={isRTL}
-            flexDirection={flexDirection}
-            tasks={leadTasks}
-            loading={leadTasksLoading}
-            onOpenTask={openTaskFromTimeline}
-            onCompleteTask={completeTaskFromTimeline}
-            onAddTask={openAddTask}
-          />
-        ) : null}
-
-        {/* Timeline */}
-        {!isNew ? (
-          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <Text
-              variant="titleSmall"
-              style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 12 }}
-            >
-              {t('contacts.timeline')}
-            </Text>
-            <TimelineSection theme={theme} t={t} lang={lang} isRTL={isRTL} flexDirection={flexDirection} events={timelineEvents} loading={timelineLoading} onOpenTask={openTaskFromTimeline} onCompleteTask={completeTaskFromTimeline} />
-          </Surface>
-        ) : null}
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-
-      {/* Stage picker modal */}
-      <Modal
-        visible={stagePickerVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setStagePickerVisible(false)}
-        >
-          <Pressable
-            style={styles.stagePickerOverlay}
-            onPress={() => setStagePickerVisible(false)}
-          >
-            <Pressable
-              onPress={(e) => e.stopPropagation()}
-              style={[
-                styles.stagePickerSheet,
-                { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 },
-              ]}
-            >
-              <Text
-                variant="titleMedium"
-                style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}
-              >
-                {t('leads.moveStage')}
-              </Text>
-              {stageKeys.map((stage) => {
-                const color = stageColorMap[stage] ?? theme.colors.primary;
-                const isActive = (lead?.stage === stage) || (lead?.stageName === stage);
-                return (
-                  <Pressable
-                    key={stage}
-                    onPress={() => handleStageChange(stage)}
-                    style={[
-                      styles.stagePickerItem,
-                      isActive && { backgroundColor: withAlpha(color, 0.082) },
-                      { flexDirection },
-                    ]}
-                  >
-                    <View
-                      style={[styles.stagePickerDot, { backgroundColor: color }]}
-                    />
-                    <Text
-                      variant="bodyLarge"
-                      style={{
-                        color: isActive ? color : theme.colors.onSurface,
-                        fontWeight: isActive ? '700' : '400',
-                        flex: 1,
-                      }}
-                    >
-                      {t(STAGE_I18N[stage] ?? stage)}
-                    </Text>
-                    {isActive ? (
-                      <MaterialCommunityIcons name="check" size={20} color={color} />
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </Pressable>
-          </Pressable>
-      </Modal>
-
-      {/* Edit modal */}
-      <Modal
-        visible={editVisible}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => {
-          if (isNew) { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/leads'); }
-          else setEditVisible(false);
-        }}
-      >
-          <KeyboardAvoidingView
-            behavior="padding"
-            style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
-          >
-            <View style={[styles.modalHeader, { borderBottomColor: theme.colors.outline, flexDirection }]}>
-              <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => { if (isNew) { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/leads'); } else setEditVisible(false); }} style={{ margin: 0 }} />
-              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
-                {isNew ? t('leads.addLead') : t('leads.editLead')}
-              </Text>
-              <View style={{ width: 40 }} />
-            </View>
-
-            <ScrollView
-              contentContainerStyle={styles.formScrollContent}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              {/* ── Contact Section ── */}
+  // ── Lead form pieces ──
+  // Rendered inside the create Modal (new lead) and inline in the detail screen (existing lead).
+  // Stage chips are only shown in the create form: for existing leads the stage banner owns stage
+  // moves (moveStage API + won/auto-quote effects).
+  const fmContact = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -1352,8 +981,11 @@ export default function LeadDetailScreen() {
                   );
                 })()}
               </View>
+    </>
+  );
 
-              {/* ── Lead Details Section ── */}
+  const fmDetails = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -1369,7 +1001,9 @@ export default function LeadDetailScreen() {
                 writingDirection={writingDirection}
               />
 
-              <Text
+              {isNew && (
+<>
+<Text
                 variant="labelMedium"
                 style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
               >
@@ -1406,6 +1040,8 @@ export default function LeadDetailScreen() {
                   );
                 })}
               </ScrollView>
+</>
+)}
 
               <FormField
                 label={t('leads.value')}
@@ -1461,8 +1097,11 @@ export default function LeadDetailScreen() {
                 </>
               )}
               </View>
+    </>
+  );
 
-              {/* ── Auto Follow-up Section (pinned near top for quick access) ── */}
+  const fmFollowUp = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -1655,8 +1294,11 @@ export default function LeadDetailScreen() {
                   </View>
                 ) : null}
               </View>
+    </>
+  );
 
-              {/* ── Product Catalog Section ── */}
+  const fmCatalog = (
+    <>
               {catalogEnabled && catalogItems.length > 0 && (
                 <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                   <View style={[styles.formSectionHeader, { flexDirection }]}>
@@ -1750,8 +1392,11 @@ export default function LeadDetailScreen() {
                   )}
                 </View>
               )}
+    </>
+  );
 
-              {/* ── Source & Channel Section ── */}
+  const fmSource = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -1794,13 +1439,18 @@ export default function LeadDetailScreen() {
                   );
                 })}
               </ScrollView>
+              </View>
+    </>
+  );
 
-              <Text
-                variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
-              >
-                {t('leads.channel')}
-              </Text>
+  const fmChannel = (
+    <>
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="swap-horizontal" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.channel')}</Text>
+                </View>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -1832,8 +1482,11 @@ export default function LeadDetailScreen() {
                 })}
               </ScrollView>
               </View>
+    </>
+  );
 
-              {/* ── Status & Assignment Section ── */}
+  const fmStatus = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -1914,8 +1567,11 @@ export default function LeadDetailScreen() {
                 })}
               </ScrollView>
               </View>
+    </>
+  );
 
-              {/* ── Dates Section ── */}
+  const fmDates = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -1941,8 +1597,11 @@ export default function LeadDetailScreen() {
                 placeholder="YYYY-MM-DD"
               />
               </View>
+    </>
+  );
 
-              {/* ── Additional Details Section ── */}
+  const fmAdditional = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -1953,15 +1612,6 @@ export default function LeadDetailScreen() {
                 label={t('leads.description')}
                 value={form.description ?? ''}
                 onChangeText={(v) => updateField('description', v)}
-                theme={theme}
-                textAlign={textAlign}
-                writingDirection={writingDirection}
-                multiline
-              />
-              <FormField
-                label={t('quotes.notes')}
-                value={form.notes ?? ''}
-                onChangeText={(v) => updateField('notes', v)}
                 theme={theme}
                 textAlign={textAlign}
                 writingDirection={writingDirection}
@@ -2022,6 +1672,27 @@ export default function LeadDetailScreen() {
                 </View>
               )}
 
+              </View>
+    </>
+  );
+
+  const fmNotesTags = (
+    <>
+              <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
+                <View style={[styles.formSectionHeader, { flexDirection }]}>
+                  <View style={styles.formSectionAccent} />
+                  <MaterialCommunityIcons name="note-text-outline" size={18} color="#2e6155" />
+                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('quotes.notes')}</Text>
+                </View>
+              <FormField
+                label={t('quotes.notes')}
+                value={form.notes ?? ''}
+                onChangeText={(v) => updateField('notes', v)}
+                theme={theme}
+                textAlign={textAlign}
+                writingDirection={writingDirection}
+                multiline
+              />
               <FormField
                 label={t('leads.tags', 'Tags')}
                 value={Array.isArray(form.tags) ? form.tags.join(', ') : ''}
@@ -2037,8 +1708,11 @@ export default function LeadDetailScreen() {
                 placeholder={t('leads.tagsPlaceholder', 'tag1, tag2, tag3')}
               />
               </View>
+    </>
+  );
 
-              {/* ── Custom Fields Section ── */}
+  const fmCustom = (
+    <>
               {leadFormSections.length > 0 && (
                 <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                   <DynamicFieldsSectionForm
@@ -2054,8 +1728,11 @@ export default function LeadDetailScreen() {
                   />
                 </View>
               )}
+    </>
+  );
 
-              {/* ── Scoring Section ── */}
+  const fmScoring = (
+    <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
                 <View style={[styles.formSectionHeader, { flexDirection }]}>
                   <View style={styles.formSectionAccent} />
@@ -2132,22 +1809,452 @@ export default function LeadDetailScreen() {
                 </>
               ) : null}
               </View>
+    </>
+  );
 
+  // Everyday fields stay on screen (title, value, source, owner, description, custom fields, products).
+  // Everything rarely touched hides behind ONE collapsed "More options" row. For an existing lead the
+  // contact picker lives there too (the contact card above already links to it).
+  const moreSummary = lang === 'he'
+    ? 'סטטוס, עדיפות, דירוג, ערוץ, הערות, תגיות, תאריכים, פולואפ'
+    : 'Status, priority, score, channel, notes, tags, dates, follow-up';
+  const fmMoreBlock = (
+    <>
+      <Pressable
+        onPress={() => setMoreOpen((v) => !v)}
+        style={[
+          { alignItems: 'center', gap: 8, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, marginBottom: 12, backgroundColor: theme.colors.surface },
+          { flexDirection },
+        ]}
+      >
+        <MaterialCommunityIcons name="tune-variant" size={18} color="#2e6155" />
+        <View style={{ flex: 1 }}>
+          <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>
+            {lang === 'he' ? 'עוד אפשרויות' : 'More options'}
+          </Text>
+          {!moreOpen ? (
+            <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
+              {moreSummary}
+            </Text>
+          ) : null}
+        </View>
+        {form.followUpEnabled ? (
+          <View style={{ backgroundColor: '#dcfce7', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 }}>
+            <Text style={{ fontSize: 10, color: '#166534', fontWeight: '700' }}>{lang === 'he' ? 'פולואפ פעיל' : 'Follow-up on'}</Text>
+          </View>
+        ) : null}
+        <MaterialCommunityIcons name={moreOpen ? 'chevron-up' : 'chevron-down'} size={20} color={theme.colors.onSurfaceVariant} />
+      </Pressable>
+      {moreOpen ? (
+        <>
+          {!isNew ? fmContact : null}
+          {fmStatus}
+          {fmScoring}
+          {fmChannel}
+          {fmNotesTags}
+          {fmDates}
+          {fmFollowUp}
+        </>
+      ) : null}
+    </>
+  );
+
+  return (
+    <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
+
+      {/* Inline editing: the whole column (header + content + Save/Discard bar) sits in the KAV so the
+          focused field and the sticky bar stay above the keyboard. */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {/* Header */}
+      <View
+        style={[
+          styles.header,
+          {
+            backgroundColor: theme.custom.headerBackground,
+            paddingTop: insets.top + 4,
+            flexDirection,
+          },
+        ]}
+      >
+        <IconButton
+          icon={isRTL ? 'arrow-right' : 'arrow-left'}
+          iconColor={theme.custom.headerText}
+          size={24}
+          onPress={goBack}
+        />
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {isNew ? t('leads.addLead') : lead?.title ?? ''}
+        </Text>
+        {!isNew ? (
+          <Menu
+            visible={menuVisible}
+            onDismiss={() => setMenuVisible(false)}
+            anchor={
+              <IconButton
+                icon="dots-vertical"
+                iconColor={theme.custom.headerText}
+                size={24}
+                onPress={() => setMenuVisible(true)}
+              />
+            }
+            contentStyle={{ backgroundColor: theme.colors.surface }}
+          >
+            <Menu.Item
+              leadingIcon="delete-outline"
+              onPress={handleDelete}
+              title={t('common.delete')}
+              titleStyle={{ color: theme.colors.error }}
+            />
+          </Menu>
+        ) : (
+          <View style={{ width: 48 }} />
+        )}
+      </View>
+
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Stage indicator */}
+        {!isNew && lead ? (
+          <Pressable
+            onPress={() => setStagePickerVisible(true)}
+            style={[styles.stageBanner, { backgroundColor: withAlpha(stageColor, 0.082) }]}
+          >
+            <View style={[styles.stageIndicator, { flexDirection }]}>
+              <View style={[styles.stageDot, { backgroundColor: stageColor }]} />
+              <Text variant="titleMedium" style={{ color: stageColor, fontWeight: '700', flex: 1 }}>
+                {resolveStageName(lead.stageName || lead.stage)}
+              </Text>
+              <MaterialCommunityIcons
+                name="chevron-down"
+                size={20}
+                color={stageColor}
+              />
+            </View>
+            {/* Stage progress */}
+            <View style={styles.stageProgress}>
+              {stageKeys.map((stage, idx) => {
+                const currentIdx = Math.max(0, stageKeys.indexOf(lead.stageName || lead.stage || 'New'));
+                const isActive = idx <= currentIdx;
+                return (
+                  <View
+                    key={stage}
+                    style={[
+                      styles.stageProgressDot,
+                      {
+                        backgroundColor: isActive
+                          ? stageColor
+                          : theme.colors.outlineVariant,
+                        flex: 1,
+                      },
+                    ]}
+                  />
+                );
+              })}
+            </View>
+          </Pressable>
+        ) : null}
+
+        {/* Action buttons */}
+        {!isNew ? (
+          <View style={[styles.actionsRow, { flexDirection }]}>
+            <ActionButton
+              icon="phone"
+              label={t('contacts.makeCall')}
+              color={theme.colors.primary}
+              bg={theme.colors.primaryContainer}
+              onPress={handleCall}
+            />
+            <ActionButton
+              icon="whatsapp"
+              label={t('contacts.messageShort', 'הודעה')}
+              color="#25D366"
+              bg="#E8F5E9"
+              onPress={handleMessage}
+            />
+            <ActionButton
+              icon="clipboard-check-outline"
+              label={t('tasks.taskShort', 'משימה')}
+              color="#FF9800"
+              bg="#FFF3E0"
+              onPress={openAddTask}
+            />
+            <ActionButton
+              icon="note-plus-outline"
+              label={t('phoneCalls.noteShort', 'הערה')}
+              color="#9C27B0"
+              bg="#F3E5F5"
+              onPress={() => setNoteModalVisible(true)}
+            />
+            {enableQuoteFromLeadForm && (
+              <ActionButton
+                icon="file-document-outline"
+                label={t('quotes.quoteShort', 'הצעה')}
+                color="#2196F3"
+                bg="#E3F2FD"
+                onPress={() => router.push({
+                  pathname: '/(tabs)/more/quotes/[id]',
+                  params: {
+                    id: 'new',
+                    prefillContactName: lead?.contactName || '',
+                    prefillContactPhone: lead?.contactPhone || lead?.phoneNumber || '',
+                    prefillTitle: lead?.title || '',
+                    prefillLeadId: lead?.id || '',
+                  },
+                })}
+              />
+            )}
+            {clearingEnabled ? (
+              <ActionButton
+                icon="credit-card-outline"
+                label={t('payments.charge', 'סליקה')}
+                color="#2e6155"
+                bg="#E8F5E9"
+                onPress={handleOpenPayment}
+              />
+            ) : null}
+          </View>
+        ) : null}
+
+        {/* Contact link */}
+        {lead?.contactName ? (
+          <Pressable onPress={handleViewContact}>
+            <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+              <View style={[styles.contactLink, { flexDirection }]}>
+                <Avatar.Text
+                  size={40}
+                  label={getInitials(lead.contactName)}
+                  style={{ backgroundColor: theme.colors.primaryContainer }}
+                  labelStyle={{ color: theme.colors.primary, fontWeight: '700' }}
+                />
+                <View style={styles.contactLinkText}>
+                  <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {t('leads.contact')}
+                  </Text>
+                  <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                    {lead.contactName}
+                  </Text>
+                </View>
+                <MaterialCommunityIcons
+                  name={isRTL ? 'chevron-left' : 'chevron-right'}
+                  size={20}
+                  color={theme.colors.onSurfaceVariant}
+                  style={{ opacity: 0.5 }}
+                />
+              </View>
+            </Surface>
+          </Pressable>
+        ) : null}
+
+        {/* Inline lead form — existing leads are edited in place (no Edit button). Changes are kept in
+            `form` and persisted through the sticky Save / Discard bar below. */}
+        {!isNew && lead ? (
+          <View style={{ paddingHorizontal: 16 }}>
+            {fmDetails}
+            {fmSource}
+            {fmAdditional}
+            {fmCatalog}
+            {fmCustom}
+            {fmMoreBlock}
+          </View>
+        ) : null}
+
+        {lead ? (
+          <ExtraFieldsSectionView
+            data={lead as Record<string, any>}
+            lang={lang}
+            excludeKeys={[
+              'value', 'currency', 'source', 'medium', 'status',
+              'expectedCloseDate', 'nextFollowUp', 'owner', 'ownerName',
+              'jobTitle', 'tags', 'score', 'lostReason', 'description',
+              'title', 'name', 'contactName', 'contactPhone', 'phoneNumber',
+              'contactEmail', 'email', 'phone',
+              'notes', 'companyName', 'priority', 'interestedProducts', 'relatedContacts',
+              ...getSectionFieldKeys(leadFormSections),
+            ]}
+            title={lang === 'he' ? 'הגדרות מתקדמות (UTM ומעקב)' : 'Advanced (UTM & tracking)'}
+          />
+        ) : null}
+
+        {/* Tasks — dedicated section (mirrors the web lead view) */}
+        {!isNew ? (
+          <LeadTasksSection
+            theme={theme}
+            t={t}
+            isRTL={isRTL}
+            flexDirection={flexDirection}
+            tasks={leadTasks}
+            loading={leadTasksLoading}
+            onOpenTask={openTaskFromTimeline}
+            onCompleteTask={completeTaskFromTimeline}
+            onAddTask={openAddTask}
+          />
+        ) : null}
+
+        {/* Timeline */}
+        {!isNew ? (
+          <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            <Text
+              variant="titleSmall"
+              style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 12 }}
+            >
+              {t('contacts.timeline')}
+            </Text>
+            <TimelineSection theme={theme} t={t} lang={lang} isRTL={isRTL} flexDirection={flexDirection} events={timelineEvents} loading={timelineLoading} onOpenTask={openTaskFromTimeline} onCompleteTask={completeTaskFromTimeline} />
+          </Surface>
+        ) : null}
+
+        <View style={{ height: isDirty ? 110 : 40 }} />
+      </ScrollView>
+
+      {/* Sticky Save / Discard bar — only while the inline form has unsaved changes */}
+      {isDirty ? (
+        <View
+          style={{
+            flexDirection,
+            alignItems: 'center',
+            gap: 12,
+            paddingHorizontal: 16,
+            paddingTop: 10,
+            paddingBottom: Math.max(insets.bottom, 8) + 4,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: theme.colors.outline,
+            backgroundColor: theme.colors.surface,
+            elevation: 8,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: -2 },
+            shadowOpacity: 0.08,
+            shadowRadius: 6,
+          }}
+        >
+          <Button
+            mode="outlined"
+            onPress={handleDiscard}
+            disabled={saving}
+            style={{ flex: 1 }}
+            textColor={theme.colors.onSurface}
+          >
+            {lang === 'he' ? 'בטל שינויים' : 'Discard'}
+          </Button>
+          <Button
+            mode="contained"
+            onPress={() => { Keyboard.dismiss(); handleSave(); }}
+            loading={saving}
+            disabled={saving}
+            style={{ flex: 1, backgroundColor: '#2e6155' }}
+            textColor="#FFFFFF"
+          >
+            {t('common.save')}
+          </Button>
+        </View>
+      ) : null}
+      </KeyboardAvoidingView>
+
+      {/* Stage picker modal */}
+      <Modal
+        visible={stagePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setStagePickerVisible(false)}
+        >
+          <Pressable
+            style={styles.stagePickerOverlay}
+            onPress={() => setStagePickerVisible(false)}
+          >
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
+              style={[
+                styles.stagePickerSheet,
+                { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 },
+              ]}
+            >
+              <Text
+                variant="titleMedium"
+                style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}
+              >
+                {t('leads.moveStage')}
+              </Text>
+              {stageKeys.map((stage) => {
+                const color = stageColorMap[stage] ?? theme.colors.primary;
+                const isActive = (lead?.stage === stage) || (lead?.stageName === stage);
+                return (
+                  <Pressable
+                    key={stage}
+                    onPress={() => handleStageChange(stage)}
+                    style={[
+                      styles.stagePickerItem,
+                      isActive && { backgroundColor: withAlpha(color, 0.082) },
+                      { flexDirection },
+                    ]}
+                  >
+                    <View
+                      style={[styles.stagePickerDot, { backgroundColor: color }]}
+                    />
+                    <Text
+                      variant="bodyLarge"
+                      style={{
+                        color: isActive ? color : theme.colors.onSurface,
+                        fontWeight: isActive ? '700' : '400',
+                        flex: 1,
+                      }}
+                    >
+                      {t(STAGE_I18N[stage] ?? stage)}
+                    </Text>
+                    {isActive ? (
+                      <MaterialCommunityIcons name="check" size={20} color={color} />
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </Pressable>
+          </Pressable>
+      </Modal>
+
+      {/* Create modal — only for brand-new leads (id === 'new'). Existing leads are edited inline. */}
+      {isNew ? (
+      <Modal
+        visible
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={goBack}
+      >
+          <KeyboardAvoidingView
+            behavior="padding"
+            style={[styles.modalContainer, { backgroundColor: theme.colors.background, paddingTop: insets.top }]}
+          >
+            <View style={[styles.modalHeader, { borderBottomColor: theme.colors.outline, flexDirection }]}>
+              <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={goBack} style={{ margin: 0 }} />
+              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
+                {t('leads.addLead')}
+              </Text>
+              <View style={{ width: 40 }} />
+            </View>
+
+            <ScrollView
+              contentContainerStyle={styles.formScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {fmContact}
+              {fmDetails}
+              {fmSource}
+              {fmAdditional}
+              {fmCatalog}
+              {fmCustom}
+              {fmMoreBlock}
               <View style={{ height: 100 }} />
             </ScrollView>
 
             {/* ── Sticky Footer ── */}
             <View style={[styles.stickyFooter, { paddingBottom: insets.bottom + 12, borderTopColor: theme.colors.outline, backgroundColor: theme.colors.surface }]}>
-              {!isNew && (
-                <Pressable onPress={handleDelete} style={[styles.deleteBtn, { backgroundColor: withAlpha(theme.colors.error, 0.08) }]}>
-                  <MaterialCommunityIcons name="delete-outline" size={20} color={theme.colors.error} />
-                  <Text style={{ color: theme.colors.error, fontWeight: '600', fontSize: 14 }}>{t('common.delete')}</Text>
-                </Pressable>
-              )}
               <View style={{ flex: 1 }} />
               <Button
                 mode="outlined"
-                onPress={() => { if (isNew) { if (router.canGoBack()) router.back(); else router.replace('/(tabs)/leads'); } else setEditVisible(false); }}
+                onPress={goBack}
                 style={styles.footerBtn}
                 textColor={theme.colors.onSurface}
               >
@@ -2169,21 +2276,12 @@ export default function LeadDetailScreen() {
           {/* Contact picker — MUST be nested inside this edit Modal. A second RN <Modal> rendered as
               a sibling at the root won't present on top of an already-open pageSheet Modal (pressing
               "select contact" appeared to do nothing). Nesting it here makes it present correctly. */}
-          <ContactLookup
-            visible={contactLookupVisible}
-            organization={organization}
-            onSelect={(contact) => {
-              setForm((prev) => ({
-                ...prev,
-                contactName: contact.name,
-                contactPhone: contact.phoneNumber,
-                contactId: contact.id,
-              }));
-              setContactLookupVisible(false);
-            }}
-            onDismiss={() => setContactLookupVisible(false)}
-          />
+          {contactLookupEl}
       </Modal>
+      ) : (
+        // Existing lead: the contact picker lives at the screen root (no parent Modal to nest in).
+        contactLookupEl
+      )}
 
       {/* Add Task — shared lightweight sheet (one-tap, sensible defaults, no required fields) */}
       <AddTaskSheet

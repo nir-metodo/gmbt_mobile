@@ -37,6 +37,10 @@ import { inventoryApi, InventoryItem } from '../../../../services/api/inventory'
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
 import { cacheEntities } from '../../../../services/entityCache';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { EmptyState } from '../../../../components/EmptyState';
 
 const BRAND_COLOR = '#2e6155';
 const LOW_STOCK_THRESHOLD = 5;
@@ -235,15 +239,16 @@ export default function InventoryScreen() {
 
   const renderEmpty = useCallback(() => {
     if (loading) return null;
+    const filtering = items.length > 0;
     return (
-      <View style={styles.emptyContainer}>
-        <MaterialCommunityIcons name="package-variant-closed" size={72} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.3 }} />
-        <Text variant="titleMedium" style={[styles.emptyTitle, { color: theme.colors.onSurface }]}>
-          {t('inventory.noItems')}
-        </Text>
-      </View>
+      <EmptyState
+        icon="package-variant-closed"
+        title={filtering ? t('common.noResults') : t('inventory.noItems')}
+        actionLabel={filtering ? undefined : t('inventory.addItem')}
+        onAction={filtering ? undefined : () => setCreateVisible(true)}
+      />
     );
-  }, [loading, theme, t]);
+  }, [loading, items.length, t]);
 
   if (loading && items.length === 0) {
     return (
@@ -258,58 +263,24 @@ export default function InventoryScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
-        <Appbar.Content title={t('inventory.title')} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 18 }} />
-        <Appbar.Action
-          icon={searchVisible ? 'close' : 'magnify'}
-          color="#FFF"
-          onPress={() => { setSearchVisible(!searchVisible); if (searchVisible) setSearchQuery(''); }}
-        />
-        <Appbar.Action icon="plus" color="#FFF" onPress={() => setCreateVisible(true)} />
-      </Appbar.Header>
+      <ScreenHeader title={t('inventory.title')} onBack={() => router.back()} />
 
-      {searchVisible && (
-        <View style={{ paddingHorizontal: 14, paddingVertical: 8, backgroundColor: theme.colors.surface }}>
-          <Searchbar
-            placeholder={t('inventory.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={[styles.searchbar, { backgroundColor: theme.colors.surfaceVariant }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
-          />
-        </View>
-      )}
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('inventory.searchPlaceholder')}
+      />
 
-      {/* Summary banner */}
-      {(lowStockCount > 0 || outOfStockCount > 0) && !searchVisible && (
-        <View style={[styles.alertBanner, { flexDirection, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant }]}>
-          {outOfStockCount > 0 ? (
-            <Pressable onPress={() => setStockFilter('out')} style={[styles.alertItem, { backgroundColor: '#F4433618' }]}>
-              <MaterialCommunityIcons name="alert-circle" size={16} color="#F44336" />
-              <Text variant="labelSmall" style={{ color: '#F44336', fontWeight: '700' }}>
-                {outOfStockCount} {t('inventory.outOfStock')}
-              </Text>
-            </Pressable>
-          ) : null}
-          {lowStockCount > 0 ? (
-            <Pressable onPress={() => setStockFilter('low')} style={[styles.alertItem, { backgroundColor: '#FF980018' }]}>
-              <MaterialCommunityIcons name="alert" size={16} color="#FF9800" />
-              <Text variant="labelSmall" style={{ color: '#FF9800', fontWeight: '700' }}>
-                {lowStockCount} {t('inventory.lowStock')}
-              </Text>
-            </Pressable>
-          ) : null}
-          {stockFilter !== 'all' && (
-            <Pressable onPress={() => setStockFilter('all')} style={[styles.alertItem, { backgroundColor: theme.colors.surfaceVariant }]}>
-              <MaterialCommunityIcons name="close" size={14} color={theme.colors.onSurfaceVariant} />
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('common.all')}</Text>
-            </Pressable>
-          )}
-        </View>
-      )}
+      <StatusFilterBar
+        allLabel={t('common.all')}
+        allCount={items.length}
+        options={[
+          { key: 'low', label: t('inventory.lowStock'), color: '#FF9800', count: lowStockCount },
+          { key: 'out', label: t('inventory.outOfStock'), color: '#F44336', count: outOfStockCount },
+        ]}
+        value={stockFilter}
+        onChange={(k) => setStockFilter(k as 'all' | 'low' | 'out')}
+      />
 
       {error ? (
         <Pressable onPress={fetchInventory} style={[styles.errorBanner, { backgroundColor: theme.colors.errorContainer }]}>

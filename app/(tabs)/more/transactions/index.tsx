@@ -35,7 +35,13 @@ import { useRTL } from '../../../../hooks/useRTL';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { paymentsApi, type Transaction } from '../../../../services/api/payments';
-import { withAlpha } from '../../../../utils/formatters';
+import { withAlpha, formatCurrency } from '../../../../utils/formatters';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { SummaryHeader } from '../../../../components/SummaryHeader';
+import { DocumentListItem } from '../../../../components/DocumentListItem';
+import { EmptyState } from '../../../../components/EmptyState';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -78,6 +84,7 @@ export default function TransactionsScreen() {
   const lang = i18n.language;
   const user = useAuthStore((s) => s.user);
   const organization = user?.organization ?? '';
+  const he = lang === 'he';
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -209,246 +216,74 @@ export default function TransactionsScreen() {
     return { total, paid, pending, totalAmount };
   }, [transactions]);
 
-  const he = lang === 'he';
-
   const renderItem = useCallback(
     ({ item }: { item: Transaction }) => {
       const cfg = STATUS_CONFIG[item.status] || STATUS_CONFIG.pending;
       const amount = parseFloat(String(item.amount)) || 0;
+      const subtitle = [item.description, item.entityType, item.payments && item.payments > 1 ? `${item.payments}x` : '']
+        .filter(Boolean).join(' · ');
       return (
-        <Pressable
+        <DocumentListItem
+          title={item.customerName || item.linkedRecordName || '—'}
+          subtitle={subtitle}
+          amount={formatCurrency(amount)}
+          statusLabel={he ? cfg.labelHe : cfg.labelEn}
+          statusColor={cfg.color}
+          date={formatTxDate(item.createdAt, lang)}
+          viewCount={item.viewCount}
           onPress={() => setSelectedTx(item)}
-          android_ripple={{ color: theme.colors.surfaceVariant }}
-          style={({ pressed }) => [
-            styles.txRow,
-            {
-              backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
-              flexDirection,
-            },
-          ]}
-        >
-          <View style={[styles.statusStripe, { backgroundColor: cfg.color }]} />
-          <View style={styles.txBody}>
-            <View style={[styles.txTop, { flexDirection }]}>
-              <Text
-                variant="titleSmall"
-                numberOfLines={1}
-                style={{ color: theme.colors.onSurface, fontWeight: '600', flex: 1, textAlign }}
-              >
-                {item.customerName || item.linkedRecordName || '—'}
-              </Text>
-              <Text
-                variant="titleSmall"
-                style={{ color: cfg.color, fontWeight: '700' }}
-              >
-                ₪{amount.toFixed(2)}
-              </Text>
-            </View>
-
-            <View style={[styles.txMeta, { flexDirection }]}>
-              {item.description ? (
-                <Text
-                  variant="bodySmall"
-                  numberOfLines={1}
-                  style={{ color: theme.colors.onSurfaceVariant, flex: 1, textAlign }}
-                >
-                  {item.description}
-                </Text>
-              ) : null}
-            </View>
-
-            <View style={[styles.txBottom, { flexDirection }]}>
-              <Chip
-                compact
-                icon={() => (
-                  <MaterialCommunityIcons name={cfg.icon as any} size={12} color={cfg.color} />
-                )}
-                textStyle={{ fontSize: 10, color: cfg.color, fontWeight: '600', lineHeight: 14 }}
-                style={{ backgroundColor: withAlpha(cfg.color, 0.12), minHeight: 24 }}
-              >
-                {he ? cfg.labelHe : cfg.labelEn}
-              </Chip>
-              {item.entityType ? (
-                <Chip
-                  compact
-                  textStyle={{ fontSize: 10, color: theme.colors.onSurfaceVariant, lineHeight: 14 }}
-                  style={{ backgroundColor: theme.colors.surfaceVariant, minHeight: 24 }}
-                >
-                  {item.entityType}
-                </Chip>
-              ) : null}
-              {item.payments && item.payments > 1 ? (
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {item.payments}x
-                </Text>
-              ) : null}
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                {formatTxDate(item.createdAt, lang)}
-              </Text>
-              {item.viewCount && item.viewCount > 0 ? (
-                <View style={[styles.viewCountBadge, { flexDirection: 'row' }]}>
-                  <MaterialCommunityIcons name="eye-check-outline" size={11} color="#53bdeb" />
-                  <Text variant="labelSmall" style={{ color: '#53bdeb', fontWeight: '600', fontSize: 10 }}>
-                    {item.viewCount}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-          </View>
-
-          <MaterialCommunityIcons
-            name={isRTL ? 'chevron-left' : 'chevron-right'}
-            size={18}
-            color={theme.colors.onSurfaceVariant}
-            style={{ opacity: 0.4, alignSelf: 'center' }}
-          />
-        </Pressable>
+        />
       );
     },
-    [theme, isRTL, flexDirection, textAlign, he, lang],
+    [he, lang],
   );
 
-  const renderEmpty = useCallback(
-    () => (
-      <View style={styles.emptyWrap}>
-        <MaterialCommunityIcons
-          name="credit-card-off-outline"
-          size={64}
-          color={theme.colors.onSurfaceVariant}
-          style={{ opacity: 0.35 }}
-        />
-        <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginTop: 12 }}>
-          {he ? 'אין עסקאות' : 'No transactions'}
-        </Text>
-        <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 4 }}>
-          {he ? 'עסקאות סליקה יופיעו כאן' : 'Payment transactions will appear here'}
-        </Text>
-      </View>
-    ),
-    [theme, he],
-  );
+  const openCreate = useCallback(() => setShowCreateModal(true), []);
+
+  const renderEmpty = useCallback(() => {
+    const filtering = transactions.length > 0;
+    return (
+      <EmptyState
+        icon="credit-card-off-outline"
+        title={filtering ? t('common.noResults') : (he ? 'אין עסקאות' : 'No transactions')}
+        description={filtering ? undefined : (he ? 'עסקאות סליקה יופיעו כאן' : 'Payment transactions will appear here')}
+        actionLabel={filtering ? undefined : (he ? 'סליקה חדשה' : 'New Payment')}
+        onAction={filtering ? undefined : openCreate}
+      />
+    );
+  }, [transactions.length, he, t, openCreate]);
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      {/* Header */}
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }}>
-        <Appbar.BackAction
-          iconColor="#FFF"
-          onPress={() => router.back()}
-        />
-        <Appbar.Content
-          title={he ? 'עסקאות סליקה' : 'Transactions'}
-          titleStyle={styles.headerTitle}
-        />
-        <Appbar.Action
-          icon={searchVisible ? 'close' : 'magnify'}
-          iconColor="#FFF"
-          onPress={() => {
-            setSearchVisible((v) => !v);
-            if (searchVisible) setSearchQuery('');
-          }}
-        />
-      </Appbar.Header>
+      <ScreenHeader title={he ? 'עסקאות סליקה' : 'Transactions'} onBack={() => router.back()} />
 
-      {/* Search */}
-      {searchVisible ? (
-        <View style={[styles.searchWrap, { backgroundColor: BRAND_COLOR }]}>
-          <Searchbar
-            placeholder={he ? 'חיפוש לפי שם, טלפון, תיאור...' : 'Search by name, phone, description...'}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
-          />
-        </View>
-      ) : null}
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={he ? 'חיפוש לפי שם, טלפון, תיאור...' : 'Search by name, phone, description...'}
+      />
 
-      {/* Stats */}
       {!loading && transactions.length > 0 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.statsRow}
-        >
-          <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <MaterialCommunityIcons name="credit-card-multiple-outline" size={20} color={BRAND_COLOR} />
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {he ? 'סה"כ' : 'Total'}
-            </Text>
-            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-              {stats.total}
-            </Text>
-          </Surface>
-          <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <MaterialCommunityIcons name="check-circle-outline" size={20} color="#16a34a" />
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {he ? 'שולמו' : 'Paid'}
-            </Text>
-            <Text variant="titleMedium" style={{ color: '#16a34a', fontWeight: '700' }}>
-              {stats.paid}
-            </Text>
-          </Surface>
-          <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <MaterialCommunityIcons name="clock-outline" size={20} color="#d97706" />
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {he ? 'ממתינים' : 'Pending'}
-            </Text>
-            <Text variant="titleMedium" style={{ color: '#d97706', fontWeight: '700' }}>
-              {stats.pending}
-            </Text>
-          </Surface>
-          <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-            <MaterialCommunityIcons name="cash-check" size={20} color={BRAND_COLOR} />
-            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {he ? 'סה"כ שולם' : 'Total Paid'}
-            </Text>
-            <Text variant="titleMedium" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-              ₪{stats.totalAmount.toLocaleString(he ? 'he-IL' : 'en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-            </Text>
-          </Surface>
-        </ScrollView>
+        <SummaryHeader
+          items={[
+            { label: he ? 'סה"כ שולם' : 'Total paid', value: formatCurrency(stats.totalAmount), color: '#16a34a' },
+            { label: he ? 'ממתינים' : 'Pending', value: String(stats.pending), color: '#d97706' },
+          ]}
+        />
       ) : null}
 
-      {/* Status filter chips */}
-      <View style={{ backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterRow}
-        >
-          {([
-            { key: '' as StatusFilter, label: he ? 'הכל' : 'All' },
-            { key: 'paid' as StatusFilter, label: he ? 'שולם' : 'Paid' },
-            { key: 'pending' as StatusFilter, label: he ? 'ממתין' : 'Pending' },
-            { key: 'failed' as StatusFilter, label: he ? 'נכשל' : 'Failed' },
-          ]).map((f) => {
-            const isSelected = statusFilter === f.key;
-            return (
-              <Chip
-                key={f.key}
-                selected={isSelected}
-                onPress={() => setStatusFilter(isSelected && f.key ? '' : f.key)}
-                showSelectedOverlay
-                compact
-                style={[
-                  styles.filterChip,
-                  isSelected
-                    ? { backgroundColor: withAlpha(BRAND_COLOR, 0.12) }
-                    : { backgroundColor: theme.colors.surfaceVariant },
-                ]}
-                textStyle={[
-                  styles.filterChipText,
-                  isSelected && { color: BRAND_COLOR, fontWeight: '600' },
-                ]}
-              >
-                {f.label}
-              </Chip>
-            );
-          })}
-        </ScrollView>
-      </View>
+      <StatusFilterBar
+        allLabel={he ? 'הכל' : 'All'}
+        allCount={transactions.length}
+        options={(['paid', 'pending', 'failed'] as const).map((k) => ({
+          key: k,
+          label: he ? STATUS_CONFIG[k].labelHe : STATUS_CONFIG[k].labelEn,
+          color: STATUS_CONFIG[k].color,
+          count: transactions.filter((tx) => tx.status === k).length,
+        }))}
+        value={statusFilter || 'all'}
+        onChange={(k) => setStatusFilter(k === 'all' ? '' : (k as StatusFilter))}
+      />
 
       {/* Content */}
       <View style={{ flex: 1 }}>
@@ -461,7 +296,7 @@ export default function TransactionsScreen() {
             data={visibleTx}
             renderItem={renderItem}
             keyExtractor={(item, idx) => item.id || item.transactionId || `tx_${idx}`}
-            ItemSeparatorComponent={() => <Divider />}
+            ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
             ListEmptyComponent={renderEmpty}
             ListFooterComponent={
               <ListPaginationFooter
@@ -483,7 +318,6 @@ export default function TransactionsScreen() {
               />
             }
             contentContainerStyle={styles.listContent}
-            estimatedItemSize={90}
           />
         )}
       </View>
@@ -491,9 +325,9 @@ export default function TransactionsScreen() {
       {/* FAB - Create new payment */}
       <FAB
         icon="plus"
-        style={[styles.fab, { backgroundColor: BRAND_COLOR }]}
+        style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFF"
-        onPress={() => setShowCreateModal(true)}
+        onPress={openCreate}
         label={he ? 'סליקה חדשה' : 'New Payment'}
       />
 
@@ -839,7 +673,7 @@ const styles = StyleSheet.create({
   },
   filterChip: { height: 28 },
   filterChipText: { fontSize: 11, lineHeight: 16 },
-  listContent: { paddingTop: 4, paddingBottom: 100 },
+  listContent: { padding: 14, paddingBottom: 100 },
   txRow: {
     alignItems: 'stretch',
     paddingTop: 10,

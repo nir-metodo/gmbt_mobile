@@ -26,11 +26,22 @@ import { useAuthStore } from '../../../../stores/authStore';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../../constants/api';
 import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
+import { hasPermission, PermissionFeature } from '../../../../constants/permissions';
+import { usePersistedPeriod } from '../../../../hooks/usePersistedPeriod';
+import ScreenHeader from '../../../../components/ScreenHeader';
+import { PeriodChips } from '../../../../components/dashboard/ui';
+import DailyConversationsPanel from '../../../../components/reports/DailyConversationsPanel';
+import BotPanel from '../../../../components/reports/BotPanel';
+import TemplatesPanel from '../../../../components/reports/TemplatesPanel';
+import StorePanel from '../../../../components/reports/StorePanel';
+import AiPanel from '../../../../components/reports/AiPanel';
+import { getCachedOrgUsage, isModuleUsed, loadOrgUsage, OrgUsage } from '../../../../services/api/dashboard';
+import { PeriodKey, rangeBounds, rangeForPeriod } from '../../../../utils/datePresets';
 
 const BRAND = '#2e6155';
 
-type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'contacts' | 'whatsapp' | 'sla' | 'ctwa' | 'templates' | 'daily_conversations' | 'botomations';
-type DatePreset = 'all' | 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth' | 'lastMonth' | 'thisQuarter' | 'thisYear';
+type ReportCategory = 'leads' | 'cases' | 'tasks' | 'quotes' | 'esignatures' | 'phonecalls' | 'contacts' | 'whatsapp' | 'sla' | 'ctwa' | 'templates' | 'daily_conversations' | 'botomations' | 'store' | 'ai';
+type DatePreset = PeriodKey;
 type DataScope = 'my' | 'all';
 type SortOption = 'date_desc' | 'date_asc' | 'name' | 'status';
 
@@ -45,57 +56,48 @@ const ALL_CATEGORIES: { key: ReportCategory; icon: string; color: string; label:
   { key: 'quotes', icon: 'file-document-outline', color: '#7B2D8E', label: 'הצעות מחיר' },
   { key: 'esignatures', icon: 'draw-pen', color: '#0ea5e9', label: 'חתימות' },
   { key: 'contacts', icon: 'account-group-outline', color: '#2196F3', label: 'אנשי קשר' },
-  { key: 'whatsapp', icon: 'whatsapp', color: '#25D366', label: 'וואטסאפ' },
   { key: 'phonecalls', icon: 'phone-outline', color: '#6366f1', label: 'שיחות' },
   { key: 'sla', icon: 'shield-alert-outline', color: '#ef4444', label: 'SLA' },
+  { key: 'store', icon: 'storefront-outline', color: '#db2777', label: 'חנות' },
+  { key: 'ai', icon: 'robot-happy-outline', color: '#7c3aed', label: 'דוח AI' },
 ];
 
-const DATE_PRESETS: DatePreset[] = ['all', 'today', 'yesterday', 'thisWeek', 'lastWeek', 'thisMonth', 'lastMonth', 'thisQuarter', 'thisYear'];
+// Topics rendered by their own panels (same data as the web reports) instead of the generic record list.
+const PANEL_CATEGORIES: ReportCategory[] = ['daily_conversations', 'botomations', 'templates', 'store', 'ai'];
 
+// Feature permission needed to see a topic (web ReportsPage SECTION_PERM_MAP).
+const CATEGORY_PERMISSION: Partial<Record<ReportCategory, PermissionFeature>> = {
+  daily_conversations: 'chats',
+  botomations: 'botomation',
+  templates: 'templates',
+  ctwa: 'campaigns',
+  leads: 'leads',
+  cases: 'cases',
+  sla: 'cases',
+  tasks: 'tasks',
+  quotes: 'quotes',
+  esignatures: 'esignature',
+  contacts: 'contacts',
+  phonecalls: 'phoneCalls',
+  store: 'orders',
+};
+
+// Org-usage modules behind a topic: hidden when the org never used any of them (unknown => shown).
+const CATEGORY_USAGE: Partial<Record<ReportCategory, string[]>> = {
+  leads: ['leads'],
+  cases: ['cases'],
+  sla: ['cases'],
+  tasks: ['tasks'],
+  quotes: ['quotes'],
+  esignatures: ['esignatures'],
+  store: ['orders', 'inventory', 'purchaseOrders'],
+};
+
+// Same presets as the web (Monday-based weeks). `end` is exclusive (start of the day after the range).
 function getDateRange(preset: DatePreset): { start: Date | null; end: Date | null } {
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const todayEnd = new Date(todayStart);
-  todayEnd.setDate(todayEnd.getDate() + 1);
-
-  switch (preset) {
-    case 'today':
-      return { start: todayStart, end: todayEnd };
-    case 'yesterday': {
-      const yesterdayStart = new Date(todayStart);
-      yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-      return { start: yesterdayStart, end: todayStart };
-    }
-    case 'thisWeek': {
-      const dayOfWeek = todayStart.getDay();
-      const weekStart = new Date(todayStart);
-      weekStart.setDate(weekStart.getDate() - dayOfWeek);
-      return { start: weekStart, end: todayEnd };
-    }
-    case 'lastWeek': {
-      const dayOfWeek = todayStart.getDay();
-      const thisWeekStart = new Date(todayStart);
-      thisWeekStart.setDate(thisWeekStart.getDate() - dayOfWeek);
-      const lastWeekStart = new Date(thisWeekStart);
-      lastWeekStart.setDate(lastWeekStart.getDate() - 7);
-      return { start: lastWeekStart, end: thisWeekStart };
-    }
-    case 'thisMonth':
-      return { start: new Date(now.getFullYear(), now.getMonth(), 1), end: todayEnd };
-    case 'lastMonth': {
-      const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { start: lastMonthStart, end: lastMonthEnd };
-    }
-    case 'thisQuarter': {
-      const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
-      return { start: quarterStart, end: todayEnd };
-    }
-    case 'thisYear':
-      return { start: new Date(now.getFullYear(), 0, 1), end: todayEnd };
-    default:
-      return { start: null, end: null };
-  }
+  const r = rangeForPeriod(preset);
+  const { start, end } = rangeBounds(r.from, r.to);
+  return { start, end: end ? new Date(end.getTime() + 1) : null };
 }
 
 function getItemDate(item: any): Date | null {
@@ -158,6 +160,8 @@ function getItemTitle(item: any, category: ReportCategory): string {
       return item.name || item.contactName || item.phone || item.date || item.Date || '—';
     case 'botomations':
       return item.botomationName || item.BotomationName || item.botomationId || '—';
+    default:
+      return '-';
   }
 }
 
@@ -211,6 +215,8 @@ function getItemSubtitle(item: any, category: ReportCategory): string {
       const rate = item.completionRate != null ? `${item.completionRate}%` : '';
       return [`נפתחו: ${total}`, `השלימו: ${completed}`, `עזבו: ${stopped}`, rate ? `השלמה: ${rate}` : ''].filter(Boolean).join(' · ');
     }
+    default:
+      return '';
   }
 }
 
@@ -235,7 +241,10 @@ export default function ReportsScreen() {
   const userId = user?.uID || user?.userId || '';
 
   const [category, setCategory] = useState<ReportCategory>('daily_conversations');
-  const [datePreset, setDatePreset] = useState<DatePreset>('all');
+  // The period is remembered between visits (and shared with the Dashboard's logic via the same presets).
+  const { period: datePreset, setPeriod: setDatePreset, range: periodRange, ready: periodReady } = usePersistedPeriod('gambot.period.reports');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [orgUsage, setOrgUsage] = useState<OrgUsage | null>(null);
   const [dataScope, setDataScope] = useState<DataScope>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('date_desc');
@@ -243,65 +252,40 @@ export default function ReportsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rawData, setRawData] = useState<any[]>([]);
-  const [botEngagement, setBotEngagement] = useState<any>(null);
-  const [availableCategories, setAvailableCategories] = useState<ReportCategory[]>([]);
-  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const botEngagement: any = null; // the bot engagement funnel now lives in BotPanel
   const scrollRef = useRef<ScrollView>(null);
 
-  // Smart filter: only show categories that have data
+  // Topics offered: permitted for this user AND the org really uses the module (web ReportsPage). Unknown usage
+  // never hides anything. No per-topic probing requests anymore.
   useEffect(() => {
     if (!org) return;
-    const checkCategories = async () => {
-      setCategoriesLoading(true);
-      const available: ReportCategory[] = [];
-      const checks: { key: ReportCategory; endpoint: string; payload: any }[] = [
-        { key: 'leads', endpoint: ENDPOINTS.GET_LEADS, payload: { organization: org, pageNumber: 1, pageSize: 1, userId, dataVisibility: 'seeAll' } },
-        { key: 'cases', endpoint: ENDPOINTS.GET_CASES, payload: { organization: org, pageNumber: 1, pageSize: 1, userId, dataVisibility: 'seeAll' } },
-        { key: 'tasks', endpoint: ENDPOINTS.GET_TASKS, payload: { organizationName: org, userId, dataVisibility: 'seeAll' } },
-        { key: 'quotes', endpoint: ENDPOINTS.GET_ALL_QUOTES, payload: { organization: org, userId, dataVisibility: 'seeAll' } },
-        { key: 'esignatures', endpoint: ENDPOINTS.GET_ESIGNATURE_DOCS, payload: { organization: org } },
-        { key: 'contacts', endpoint: ENDPOINTS.GET_CONTACTS_PAGINATED || ENDPOINTS.GET_CONTACTS, payload: { organization: org, pageNumber: 1, pageSize: 1 } },
-        { key: 'whatsapp', endpoint: ENDPOINTS.GET_TEMPLATES, payload: { organization: org } },
-        { key: 'phonecalls', endpoint: ENDPOINTS.GET_PHONE_CALLS, payload: { organization: org, userId, dataVisibility: 'seeAll' } },
-        { key: 'sla', endpoint: ENDPOINTS.GET_SLA_BREACHES, payload: { organization: org } },
-      ];
-
-      // Always include the new report types
-      available.push('daily_conversations', 'botomations', 'ctwa', 'templates');
-
-      const results = await Promise.allSettled(
-        checks.map(async (c) => {
-          const res = await axiosInstance.post(c.endpoint, c.payload);
-          const raw = res.data;
-          const items =
-            raw?.Leads || raw?.Cases || raw?.Quotes || raw?.tasks || raw?.Tasks ||
-            raw?.Data || raw?.data || raw?.Documents || raw?.documents ||
-            raw?.Calls || raw?.calls || raw?.Breaches || raw?.breaches ||
-            raw?.Contacts || raw?.contacts || raw?.Templates || raw?.templates ||
-            (Array.isArray(raw) ? raw : []);
-          const arr = Array.isArray(items) ? items : [];
-          return { key: c.key, count: arr.length };
-        })
-      );
-
-      results.forEach((r) => {
-        if (r.status === 'fulfilled' && r.value.count > 0) {
-          available.push(r.value.key);
-        }
-      });
-
-      setAvailableCategories(available.length > 0 ? available : ['leads']);
-      if (available.length > 0 && !available.includes(category)) {
-        setCategory(available[0]);
-      }
-      setCategoriesLoading(false);
+    let alive = true;
+    getCachedOrgUsage(org).then((u) => alive && u && setOrgUsage(u));
+    loadOrgUsage(org).then((u) => alive && u && setOrgUsage(u));
+    return () => {
+      alive = false;
     };
-    checkCategories();
   }, [org]);
+
+  const availableCategories = useMemo(
+    () =>
+      ALL_CATEGORIES.filter((cat) => {
+        const perm = CATEGORY_PERMISSION[cat.key];
+        if (perm && !hasPermission(user?.Permissions, user?.SecurityRole, perm)) return false;
+        const modules = CATEGORY_USAGE[cat.key];
+        if (modules && !modules.some((m) => isModuleUsed(orgUsage, m))) return false;
+        return true;
+      }).map((cat) => cat.key),
+    [user, orgUsage],
+  );
+
+  useEffect(() => {
+    if (availableCategories.length > 0 && !availableCategories.includes(category)) setCategory(availableCategories[0]);
+  }, [availableCategories, category]);
 
   const canSeeAll = useMemo(() => {
     if (user?.SecurityRole === 'Admin') return true;
-    if (['sla', 'ctwa', 'templates', 'daily_conversations', 'botomations'].includes(category)) return true;
+    if (['sla', 'ctwa', 'templates', 'daily_conversations', 'botomations', 'store', 'ai'].includes(category)) return true;
     const vis = user?.DataVisibility;
     if (!vis) return true;
     const catKey = category === 'esignatures' ? 'esignature' : category === 'phonecalls' ? 'phoneCalls' : category;
@@ -316,36 +300,9 @@ export default function ReportsScreen() {
     if (!org) return;
     setLoading(true);
     try {
-      // Special reports with their own data structure
-      if (cat === 'daily_conversations') {
-        const effectivePreset = datePreset === 'all' ? 'thisMonth' : datePreset;
-        const { start, end } = getDateRange(effectivePreset as DatePreset);
-        const dateFrom = start ? start.toISOString().slice(0, 10) : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-        const dateTo = end ? end.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
-        const res = await axiosInstance.post(ENDPOINTS.GET_DAILY_CONVERSATION_REPORT, {
-          organizationId: org, dateFrom: `${dateFrom}T00:00:00Z`, dateTo: `${dateTo}T23:59:59Z`,
-        });
-        const data = res.data;
-        const dailySummary = data?.dailySummary || data?.DailySummary || [];
-        const contactBreakdown = data?.contactBreakdown || data?.ContactBreakdown || [];
-        // Use contactBreakdown as the list view (each contact) and dailySummary for charts
-        const items = contactBreakdown.length > 0 ? contactBreakdown : dailySummary;
-        setRawData(Array.isArray(items) ? items : []);
-        setLoading(false);
-        return;
-      }
-      if (cat === 'botomations') {
-        const effectivePreset = datePreset === 'all' ? 'thisMonth' : datePreset;
-        const { start, end } = getDateRange(effectivePreset as DatePreset);
-        const dateFrom = start ? start.toISOString().slice(0, 10) : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-        const dateTo = end ? end.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
-        const res = await axiosInstance.post(ENDPOINTS.GET_DAILY_BOT_SUMMARY, {
-          organizationId: org, dateFrom: `${dateFrom}T00:00:00Z`, dateTo: `${dateTo}T23:59:59Z`,
-        });
-        const data = res.data;
-        const summary = data?.botSummary || data?.BotSummary || [];
-        setBotEngagement(data?.templateEngagement || data?.TemplateEngagement || null);
-        setRawData(Array.isArray(summary) ? summary : []);
+      // Panel topics (conversations, bots, templates, store, AI) load their own data.
+      if (PANEL_CATEGORIES.includes(cat)) {
+        setRawData([]);
         setLoading(false);
         return;
       }
@@ -363,15 +320,6 @@ export default function ReportsScreen() {
         setLoading(false);
         return;
       }
-      if (cat === 'templates') {
-        const res = await axiosInstance.post(ENDPOINTS.GET_TEMPLATES, { organization: org });
-        const raw = res.data;
-        const templates = raw?.Templates || raw?.templates || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);
-        setRawData(Array.isArray(templates) ? templates : []);
-        setLoading(false);
-        return;
-      }
-
       let endpoint = '';
       const payload: any = { organization: org, pageNumber: 1, pageSize: 5000 };
 
@@ -437,12 +385,13 @@ export default function ReportsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [org, userId, dataScope, datePreset]);
+  }, [org, userId, dataScope]);
 
   useEffect(() => { fetchReport(category); }, [category, fetchReport]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
+    setRefreshKey((k) => k + 1);
     await fetchReport(category);
     setRefreshing(false);
   }, [category, fetchReport]);
@@ -770,14 +719,13 @@ export default function ReportsScreen() {
   const handleExport = useCallback(async () => {
     if (sortedData.length === 0) return;
     try {
-      const headerMap: Record<ReportCategory, string[]> = {
+      const headerMap: Partial<Record<ReportCategory, string[]>> = {
         leads: ['Title', 'Stage', 'Source', 'Owner', 'Channel', 'Value', 'Created'],
         cases: ['Title', 'Status', 'Category', 'Owner', 'Priority', 'Created'],
         tasks: ['Title', 'Status', 'Priority', 'Assigned To', 'Due Date', 'Created'],
         quotes: ['Title', 'Status', 'Salesperson', 'Total', 'Contact', 'Created'],
         esignatures: ['Title', 'Status', 'Contact', 'Created'],
         contacts: ['Name', 'Phone', 'Email', 'Owner', 'Created'],
-        whatsapp: ['Template', 'Status', 'Category', 'Language'],
         phonecalls: ['Contact', 'Phone', 'Direction', 'Status', 'Duration', 'Date'],
         sla: ['Entity', 'Type', 'Breach Type', 'Owner', 'Breached At'],
         ctwa: ['Name', 'Phone', 'Platform', 'Ad ID', 'Headline', 'CTWA Clid'],
@@ -785,7 +733,7 @@ export default function ReportsScreen() {
         daily_conversations: ['Name', 'Phone', 'Inbound', 'Outbound', 'Total'],
         botomations: ['Bot', 'Opened', 'Completed', 'Dropped', 'Errors', 'Rate %', 'Contacts'],
       };
-      const headers = headerMap[category];
+      const headers = headerMap[category] || [];
 
       const rows = sortedData.map((item) => {
         switch (category) {
@@ -893,6 +841,7 @@ export default function ReportsScreen() {
             String(item.completionRate != null ? item.completionRate : ''),
             String(item.uniqueContacts || 0),
           ];
+        default: return [];
         }
       });
 
@@ -1180,6 +1129,30 @@ export default function ReportsScreen() {
     );
   };
 
+  const isPanel = PANEL_CATEGORIES.includes(category);
+  const openChat = (phone: string) => router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: phone } } as any);
+
+  const renderPanel = () => {
+    if (!periodReady || !org) return null;
+    // The conversation / bot reports need a concrete window: "all time" shows this month.
+    const needsWindow = category === 'daily_conversations' || category === 'botomations';
+    const r = needsWindow && datePreset === 'all' ? rangeForPeriod('thisMonth') : periodRange;
+    switch (category) {
+      case 'daily_conversations':
+        return <DailyConversationsPanel org={org} from={r.from!} to={r.to!} refreshKey={refreshKey} onOpenChat={openChat} />;
+      case 'botomations':
+        return <BotPanel org={org} from={r.from!} to={r.to!} refreshKey={refreshKey} onOpenChat={openChat} />;
+      case 'templates':
+        return <TemplatesPanel org={org} from={r.from} to={r.to} refreshKey={refreshKey} />;
+      case 'store':
+        return <StorePanel org={org} from={r.from} to={r.to} refreshKey={refreshKey} />;
+      case 'ai':
+        return <AiPanel org={org} userId={userId} />;
+      default:
+        return null;
+    }
+  };
+
   const datePresetLabel = (preset: DatePreset) => {
     switch (preset) {
       case 'all': return t('reports.all');
@@ -1196,12 +1169,39 @@ export default function ReportsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND }}>
-        <Appbar.BackAction onPress={() => router.back()} color="#fff" />
-        <Appbar.Content title={t('reports.title')} titleStyle={styles.headerTitle} />
-        <Appbar.Action icon="calendar-clock" onPress={() => router.push('/(tabs)/more/reports/scheduled')} color="#fff" />
-        <Appbar.Action icon="export-variant" onPress={handleExport} color="#fff" disabled={sortedData.length === 0} />
-      </Appbar.Header>
+      <ScreenHeader
+        title={t('reports.title')}
+        onBack={() => router.back()}
+        actions={
+          <View style={{ flexDirection: 'row' }}>
+            <IconButton icon="calendar-clock" iconColor="#fff" onPress={() => router.push('/(tabs)/more/reports/scheduled')} />
+            <IconButton icon="export-variant" iconColor="#fff" onPress={handleExport} disabled={isPanel || sortedData.length === 0} />
+          </View>
+        }
+      />
+
+      {/* Topics + period stay pinned: one tap to switch topic, one tap to change the period */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll} contentContainerStyle={{ paddingHorizontal: spacing.sm }}>
+        {CATEGORIES.map((cat) => (
+          <Chip
+            key={cat.key}
+            selected={category === cat.key}
+            onPress={() => { setCategory(cat.key); setSearchQuery(''); }}
+            style={[styles.chip, category === cat.key && { backgroundColor: cat.color + '20', borderColor: cat.color, borderWidth: 1 }]}
+            textStyle={category === cat.key ? { color: cat.color, fontWeight: '700' } : { color: theme.colors.onSurfaceVariant }}
+            icon={() => (
+              <MaterialCommunityIcons
+                name={cat.icon as any}
+                size={16}
+                color={category === cat.key ? cat.color : theme.colors.onSurfaceVariant}
+              />
+            )}
+          >
+            {cat.label}
+          </Chip>
+        ))}
+      </ScrollView>
+      {category !== 'ai' ? <PeriodChips value={datePreset} onChange={setDatePreset} /> : null}
 
       <ScrollView
         ref={scrollRef}
@@ -1209,53 +1209,17 @@ export default function ReportsScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND]} />}
         showsVerticalScrollIndicator={false}
       >
-        {/* Category Tabs */}
-        {categoriesLoading ? (
-          <View style={{ padding: spacing.md, alignItems: 'center' }}>
-            <ActivityIndicator size="small" color={BRAND} />
-          </View>
+        {isPanel ? (
+          <>
+            {datePreset === 'all' && (category === 'daily_conversations' || category === 'botomations') ? (
+              <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant, textAlign: 'center', marginBottom: spacing.xs }}>
+                {t('reports.thisMonthShown', 'מוצג החודש הנוכחי - בחרו תקופה אחרת למעלה')}
+              </Text>
+            ) : null}
+            {renderPanel()}
+          </>
         ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
-            {CATEGORIES.map((cat) => (
-              <Chip
-                key={cat.key}
-                selected={category === cat.key}
-                onPress={() => { setCategory(cat.key); setSearchQuery(''); }}
-                style={[styles.chip, category === cat.key && { backgroundColor: cat.color + '20', borderColor: cat.color, borderWidth: 1 }]}
-                textStyle={category === cat.key ? { color: cat.color, fontWeight: '700' } : { color: theme.colors.onSurfaceVariant }}
-                icon={() => (
-                  <MaterialCommunityIcons
-                    name={cat.icon as any}
-                    size={16}
-                    color={category === cat.key ? cat.color : theme.colors.onSurfaceVariant}
-                  />
-                )}
-              >
-                {cat.label}
-              </Chip>
-            ))}
-          </ScrollView>
-        )}
-
-        {/* Date Range Presets */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
-          {DATE_PRESETS.map((preset) => (
-            <Chip
-              key={preset}
-              selected={datePreset === preset}
-              onPress={() => setDatePreset(preset)}
-              style={[
-                styles.dateChip,
-                datePreset === preset && { backgroundColor: BRAND + '15', borderColor: BRAND, borderWidth: 1 },
-              ]}
-              textStyle={datePreset === preset ? { color: BRAND, fontWeight: '600', fontSize: 12 } : { color: theme.colors.onSurfaceVariant, fontSize: 12 }}
-              compact
-            >
-              {datePresetLabel(preset)}
-            </Chip>
-          ))}
-        </ScrollView>
-
+        <>
         {/* Data Scope Toggle */}
         <View style={styles.controlsRow}>
           {canSeeAll && (
@@ -1388,6 +1352,9 @@ export default function ReportsScreen() {
               {t('reports.noData')}
             </Text>
           </View>
+        )}
+
+        </>
         )}
 
         <View style={{ height: spacing.xxl }} />

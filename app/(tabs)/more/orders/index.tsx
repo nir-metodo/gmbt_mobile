@@ -10,10 +10,9 @@ import {
 } from 'react-native';
 import {
   Text,
-  Searchbar,
   Chip,
   ActivityIndicator,
-  Appbar,
+  IconButton,
   FAB,
   Portal,
   Modal,
@@ -39,7 +38,13 @@ import {
 } from '../../../../services/api/orders';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
-import { formatDate } from '../../../../utils/formatters';
+import { formatDate, formatCurrency } from '../../../../utils/formatters';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { SummaryHeader } from '../../../../components/SummaryHeader';
+import { DocumentListItem } from '../../../../components/DocumentListItem';
+import { EmptyState } from '../../../../components/EmptyState';
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
 import { cacheEntities } from '../../../../services/entityCache';
@@ -99,7 +104,8 @@ export default function OrdersScreen() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchVisible, setSearchVisible] = useState(false);
+  const [sortField, setSortField] = useState<'date' | 'amount' | 'status'>('date');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
   const [statuses, setStatuses] = useState<OrderStatusConfig[]>(DEFAULT_ORDER_STATUSES);
@@ -235,17 +241,9 @@ export default function OrdersScreen() {
   // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
   const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
-  const filteredOrders = useMemo(() => {
+  // Search + advanced filters apply to everything (counts, totals, list); the status chip only narrows the list.
+  const baseList = useMemo(() => {
     let result = Array.isArray(orders) ? orders : [];
-    if (statusFilter !== 'all') {
-      result = result.filter((o) => {
-        const normalized = normalizeOrderStatus(o.status);
-        if (statusFilter === 'collected') {
-          return normalized === 'collected';
-        }
-        return normalized === statusFilter;
-      });
-    }
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.toLowerCase();
       result = result.filter(
@@ -271,18 +269,67 @@ export default function OrdersScreen() {
         String((o as any).customFields?.[key] ?? (o as any)[key] ?? '').toLowerCase().includes(needle),
       );
     });
+    return result;
+  }, [orders, debouncedSearch, filterSource, filterOwner, filterPayment, filterProduct, filterCustom]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const o of baseList) {
+      const s = normalizeOrderStatus(o.status);
+      c[s] = (c[s] || 0) + 1;
+    }
+    return c;
+  }, [baseList]);
+
+  const statusOrderIndex = useMemo(() => {
+    const m: Record<string, number> = {};
+    statuses.forEach((s, i) => { m[s.id] = s.order ?? i; });
+    return m;
+  }, [statuses]);
+
+  const filteredOrders = useMemo(() => {
+    const result = statusFilter === 'all'
+      ? [...baseList]
+      : baseList.filter((o) => normalizeOrderStatus(o.status) === statusFilter);
     return result.sort((a, b) => {
-      const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return bDate - aDate;
+      let cmp = 0;
+      if (sortField === 'amount') cmp = getOrderTotal(a) - getOrderTotal(b);
+      else if (sortField === 'status') {
+        cmp = (statusOrderIndex[normalizeOrderStatus(a.status)] ?? 99) - (statusOrderIndex[normalizeOrderStatus(b.status)] ?? 99);
+      } else {
+        cmp = (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      }
+      return sortDirection === 'desc' ? -cmp : cmp;
     });
-  }, [orders, statusFilter, debouncedSearch, filterSource, filterOwner, filterPayment, filterProduct, filterCustom]);
+  }, [baseList, statusFilter, sortField, sortDirection, statusOrderIndex]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visibleOrders, hasMore: ordersHasMore, loadMore: ordersLoadMore, loadAll: ordersLoadAll, count: ordersCount } = useWindowedList(filteredOrders, {
     pageSize: 30,
-    resetKey: `${statusFilter}|${debouncedSearch}|${filterSource}|${filterOwner}|${filterPayment}|${filterProduct}|${JSON.stringify(filterCustom)}`,
+    resetKey: `${statusFilter}|${debouncedSearch}|${sortField}|${sortDirection}|${filterSource}|${filterOwner}|${filterPayment}|${filterProduct}|${JSON.stringify(filterCustom)}`,
   });
+
+  const handleSort = useCallback((field: string) => {
+    if (field === sortField) setSortDirection((d) => (d === 'desc' ? 'asc' : 'desc'));
+    else { setSortField(field as 'date' | 'amount' | 'status'); setSortDirection('desc'); }
+  }, [sortField]);
+
+  // Open = still being worked on (not delivered / cancelled / refunded).
+  const summary = useMemo(() => {
+    let openTotal = 0;
+    let openCount = 0;
+    let doneTotal = 0;
+    for (const o of baseList) {
+      const s = normalizeOrderStatus(o.status);
+      if (s === 'cancelled' || s === 'refunded') continue;
+      if (s === 'delivered') doneTotal += getOrderTotal(o);
+      else { openTotal += getOrderTotal(o); openCount++; }
+    }
+    return [
+      { label: `${t('docs.openOrders', 'הזמנות פתוחות')} (${openCount})`, value: formatCurrency(openTotal), color: theme.colors.primary },
+      { label: t('docs.deliveredTotal', 'נמסרו'), value: formatCurrency(doneTotal), color: STATUS_COLORS.delivered },
+    ];
+  }, [baseList, t, theme.colors.primary]);
 
   const getStatusLabel = useCallback((statusId: string) => {
     const configured = statuses.find((s) => s.id === statusId);
@@ -342,6 +389,11 @@ export default function OrdersScreen() {
     handleStatusChange(item, toColumnId);
   }, [handleStatusChange]);
 
+  const createOrder = useCallback(
+    () => router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: 'new' } }),
+    [router],
+  );
+
   const openOrder = useCallback((order: Order) => {
     router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: order.id } });
   }, [router]);
@@ -349,64 +401,24 @@ export default function OrdersScreen() {
   const renderOrderCard = useCallback(
     ({ item }: { item: Order }) => {
       const normalizedStatus = normalizeOrderStatus(item.status);
-      const statusColor = getStatusColor(normalizedStatus, statuses);
-      const statusIcon = getStatusIcon(normalizedStatus, statuses);
-
+      const total = getOrderTotal(item);
+      const itemCount = item.items?.length ?? 0;
       return (
-        <Pressable
-          onPress={() => router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: item.id } })}
-          android_ripple={{ color: theme.colors.surfaceVariant }}
-          style={({ pressed }) => [
-            styles.card,
-            {
-              backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom?.cardBackground || theme.colors.surface,
-              borderColor: theme.colors.outlineVariant,
-            },
-          ]}
-        >
-          <View style={[styles.cardLeft, { borderStartColor: statusColor }]}>
-            <View style={[styles.cardHeader, { flexDirection }]}>
-              <Text variant="titleSmall" style={[styles.orderNumber, { color: theme.colors.onSurface, textAlign }]} numberOfLines={1}>
-                {item.orderNumber ? `#${item.orderNumber}` : `#${item.id.slice(0, 8)}`}
-              </Text>
-              <View style={[styles.statusBadge, { backgroundColor: `${statusColor}18` }]}>
-                <MaterialCommunityIcons name={statusIcon as any} size={13} color={statusColor} />
-                <Text variant="labelSmall" style={[styles.statusText, { color: statusColor }]}>
-                  {getStatusLabel(normalizedStatus)}
-                </Text>
-              </View>
-            </View>
-
-            {item.customerName ? (
-              <View style={[styles.metaRow, { flexDirection }]}>
-                <MaterialCommunityIcons name="account-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                <Text variant="bodySmall" style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]} numberOfLines={1}>
-                  {item.customerName}
-                </Text>
-              </View>
-            ) : null}
-
-            <View style={[styles.cardFooter, { flexDirection }]}>
-              {item.createdAt ? (
-                <View style={[styles.metaRow, { flexDirection }]}>
-                  <MaterialCommunityIcons name="calendar-outline" size={13} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}>
-                    {formatDate(item.createdAt)}
-                  </Text>
-                </View>
-              ) : null}
-
-              {getOrderTotal(item) > 0 ? (
-                <Text variant="titleSmall" style={[styles.total, { color: BRAND_COLOR }]}>
-                  {item.currency || '₪'}{getOrderTotal(item).toFixed(2)}
-                </Text>
-              ) : null}
-            </View>
-          </View>
-        </Pressable>
+        <DocumentListItem
+          title={item.customerName || (item.orderNumber ? `#${item.orderNumber}` : `#${item.id.slice(0, 8)}`)}
+          subtitle={[
+            item.customerName && item.orderNumber ? `#${item.orderNumber}` : '',
+            itemCount > 0 ? `${itemCount} ${t('orders.items')}` : '',
+          ].filter(Boolean).join(' · ')}
+          amount={total > 0 ? formatCurrency(total, item.currency || '₪') : ''}
+          statusLabel={getStatusLabel(normalizedStatus)}
+          statusColor={getStatusColor(normalizedStatus, statuses)}
+          date={item.createdAt ? formatDate(item.createdAt) : ''}
+          onPress={() => openOrder(item)}
+        />
       );
     },
-    [theme, router, flexDirection, textAlign, statuses, getStatusLabel],
+    [statuses, getStatusLabel, openOrder, t],
   );
 
   const renderKanbanCard = useCallback((item: Order) => {
@@ -452,15 +464,16 @@ export default function OrdersScreen() {
 
   const renderEmpty = useCallback(() => {
     if (loading) return null;
+    const filtering = orders.length > 0;
     return (
-      <View style={styles.emptyContainer}>
-        <MaterialCommunityIcons name="cart-outline" size={72} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.3 }} />
-        <Text variant="titleMedium" style={[styles.emptyTitle, { color: theme.colors.onSurface }]}>
-          {t('orders.noOrders')}
-        </Text>
-      </View>
+      <EmptyState
+        icon="cart-outline"
+        title={filtering ? t('common.noResults') : t('orders.noOrders')}
+        actionLabel={filtering ? undefined : t('orders.newOrder')}
+        onAction={filtering ? undefined : createOrder}
+      />
     );
-  }, [loading, theme, t]);
+  }, [loading, orders.length, t, createOrder]);
 
   if (loading && orders.length === 0) {
     return (
@@ -472,67 +485,61 @@ export default function OrdersScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
-        <Appbar.Content title={t('orders.title')} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 18 }} />
-        <Appbar.Action
-          icon={viewMode === 'kanban' ? 'view-list' : 'view-column'}
-          color="#FFF"
-          onPress={() => setViewMode((m) => (m === 'kanban' ? 'list' : 'kanban'))}
-        />
-        <Appbar.Action
-          icon={activeAdvancedCount > 0 ? 'filter-variant-plus' : 'filter-variant'}
-          color="#FFF"
-          onPress={() => setAdvancedVisible(true)}
-        />
-        <Appbar.Action
-          icon={searchVisible ? 'close' : 'magnify'}
-          color="#FFF"
-          onPress={() => { setSearchVisible(!searchVisible); if (searchVisible) setSearchQuery(''); }}
-        />
-        <Appbar.Action
-          icon="plus"
-          color="#FFF"
-          onPress={() => router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: 'new' } })}
-        />
-      </Appbar.Header>
+      <ScreenHeader
+        title={t('orders.title')}
+        onBack={() => router.back()}
+        actions={
+          <>
+            <IconButton
+              icon={viewMode === 'kanban' ? 'view-list' : 'view-column'}
+              iconColor={theme.custom.headerText}
+              size={22}
+              onPress={() => setViewMode((m) => (m === 'kanban' ? 'list' : 'kanban'))}
+            />
+            <View>
+              <IconButton
+                icon="filter-variant"
+                iconColor={theme.custom.headerText}
+                size={22}
+                onPress={() => setAdvancedVisible(true)}
+              />
+              {activeAdvancedCount > 0 ? <View style={[styles.activeDot, { backgroundColor: '#FFB300' }]} /> : null}
+            </View>
+          </>
+        }
+      />
 
-      {searchVisible && (
-        <View style={{ paddingHorizontal: 14, paddingVertical: 8, backgroundColor: theme.colors.surface }}>
-          <Searchbar
-            placeholder={t('orders.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={[styles.searchbar, { backgroundColor: theme.colors.surfaceVariant }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('orders.searchPlaceholder')}
+        sortOptions={viewMode === 'list' ? [
+          { key: 'date', label: t('quotes.sortByDate') },
+          { key: 'amount', label: t('quotes.sortByAmount') },
+          { key: 'status', label: t('quotes.sortByStatus') },
+        ] : undefined}
+        sortKey={sortField}
+        sortDir={sortDirection}
+        onSort={handleSort}
+      />
+
+      {viewMode === 'list' ? (
+        <>
+          <SummaryHeader items={summary} />
+          <StatusFilterBar
+            allLabel={t('common.all')}
+            allCount={baseList.length}
+            options={statusFilterOptions.filter((f) => f !== 'all').map((s) => ({
+              key: s,
+              label: getStatusLabel(s),
+              color: getStatusColor(s, statuses),
+              count: counts[s] || 0,
+            }))}
+            value={statusFilter}
+            onChange={setStatusFilter}
           />
-        </View>
-      )}
-
-      <View style={[styles.filtersRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection }]}>
-          {statusFilterOptions.map((f) => (
-            <Chip
-              key={f}
-              selected={statusFilter === f}
-              onPress={() => setStatusFilter(f)}
-              showSelectedOverlay
-              compact
-              style={[
-                styles.filterChip,
-                statusFilter === f
-                  ? { backgroundColor: theme.colors.primaryContainer }
-                  : { backgroundColor: theme.colors.surfaceVariant },
-              ]}
-              textStyle={[styles.filterChipText, statusFilter === f && { color: theme.colors.primary, fontWeight: '600' }]}
-            >
-              {f === 'all' ? t('common.all') : getStatusLabel(f)}
-            </Chip>
-          ))}
-        </ScrollView>
-      </View>
+        </>
+      ) : null}
 
       {error ? (
         <Pressable onPress={fetchOrders} style={[styles.errorBanner, { backgroundColor: theme.colors.errorContainer }]}>
@@ -577,7 +584,7 @@ export default function OrdersScreen() {
       <FAB
         icon="plus"
         label={t('orders.newOrder')}
-        onPress={() => router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: 'new' } })}
+        onPress={createOrder}
         style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFF"
       />
@@ -772,6 +779,7 @@ const styles = StyleSheet.create({
   },
   errorText: { flex: 1, fontSize: 13 },
   fab: { position: 'absolute', borderRadius: 16 },
+  activeDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4 },
   advancedModal: {
     marginHorizontal: 20,
     borderRadius: 18,

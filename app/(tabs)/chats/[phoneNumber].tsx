@@ -155,24 +155,32 @@ const ConversationCountdownBadge = React.memo(function ConversationCountdownBadg
 // entire screen (and the message FlashList) constantly while scrolling. Here it owns its own
 // `visible` state and exposes an imperative `setVisible`, so a scroll only re-renders this
 // ~38px button instead of the whole conversation.
-export type ScrollToBottomHandle = { setVisible: (v: boolean) => void };
+export type ScrollToBottomHandle = { setVisible: (v: boolean) => void; setCount: (n: number) => void };
 
 const ScrollToBottomButton = forwardRef<
   ScrollToBottomHandle,
   { onPress: () => void; style: any; backgroundColor: string; iconColor: string }
 >(({ onPress, style, backgroundColor, iconColor }, ref) => {
   const [visible, setVisible] = useState(false);
+  // New inbound messages that arrived while the user was scrolled up (WhatsApp-style unread badge).
+  const [count, setCount] = useState(0);
   useImperativeHandle(
     ref,
     () => ({
       setVisible: (v: boolean) => setVisible((prev) => (prev === v ? prev : v)),
+      setCount: (n: number) => setCount((prev) => (prev === n ? prev : n)),
     }),
     [],
   );
-  if (!visible) return null;
+  if (!visible && count === 0) return null;
   return (
     <Pressable onPress={onPress} style={[style, { backgroundColor }]}>
       <MaterialCommunityIcons name="chevron-down" size={22} color={iconColor} />
+      {count > 0 ? (
+        <View style={{ position: 'absolute', top: -8, minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: '#2e6155', alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{count > 99 ? '99+' : count}</Text>
+        </View>
+      ) : null}
     </Pressable>
   );
 });
@@ -520,6 +528,8 @@ export default function ChatConversationScreen() {
   // Create-task from chat now reuses the shared AddTaskSheet (same bottom sheet as the Lead flow),
   // so we only need a visibility flag here — title/time/reminder/assignee are handled inside the sheet.
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false);
+  // When a task is created from a long-pressed message, its text seeds the task title.
+  const [taskSeedText, setTaskSeedText] = useState('');
 
   // Name resolved from the contacts API when the chat isn't in the store yet (opened via push /
   // deep link before the chat list loaded) or when the store only has the phone number. Prevents
@@ -1722,10 +1732,23 @@ export default function ChatConversationScreen() {
     };
   }, [user?.organization, phoneNumber]);
 
+  // The chat store holds ONE open conversation (currentMessages / currentPhoneNumber) shared by every
+  // mounted instance of this screen. A notification tap while a chat is open pushes a SECOND instance
+  // on top of the first (the first stays mounted underneath). Anything this instance does to the
+  // store must therefore first check that the store is actually showing THIS chat — otherwise the
+  // hidden instance overwrites the visible chat's messages with its own (header = new contact,
+  // messages = previous chat).
+  const storeShowsThisChat = useCallback(() => {
+    const cur = useChatStore.getState().currentPhoneNumber;
+    return !cur || cur.replace(/\D/g, '') === String(phoneNumber || '').replace(/\D/g, '');
+  }, [phoneNumber]);
+
   // Reload messages + conversation status when app returns from background
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active' && user?.organization && phoneNumber) {
+        // Another chat was opened on top of this one (e.g. from a push) → it owns the store now.
+        if (!storeShowsThisChat()) return;
         WebSocketService.reconnectAll();
         // Throttle: skip the reload if we already fetched this chat within the last 15s.
         // Live updates arrive over WebSocket (reconnected just above), so a fresh getMessages
@@ -1739,12 +1762,14 @@ export default function ChatConversationScreen() {
       }
     });
     return () => subscription.remove();
-  }, [user?.organization, phoneNumber, loadMessages, fetchConversationStatus]);
+  }, [user?.organization, phoneNumber, loadMessages, fetchConversationStatus, storeShowsThisChat]);
 
   // Refresh conversation status when the screen gains focus (returning from a sub-screen,
-  // push notification, etc.). Messages are NOT reloaded here — the mount effect above already
-  // loads them (instantly from cache when available), and live updates arrive over WebSocket.
-  // Reloading here too caused a duplicate getMessages on every chat open.
+  // push notification, etc.). Messages are NOT reloaded here while the store still shows this
+  // chat — the mount effect above already loads them (instantly from cache when available), and
+  // live updates arrive over WebSocket. Reloading here too caused a duplicate getMessages on every
+  // chat open. If another chat took over the store while this one was covered (the chat that was
+  // pushed on top has since closed and cleared it), bring this chat's messages back.
   const didInitialFocus = useRef(false);
   useFocusEffect(
     useCallback(() => {
@@ -1754,9 +1779,13 @@ export default function ChatConversationScreen() {
         return;
       }
       if (user?.organization && phoneNumber) {
+        if (useChatStore.getState().currentPhoneNumber !== phoneNumber) {
+          lastMessagesFetchAtRef.current = Date.now();
+          loadMessages(user.organization, phoneNumber);
+        }
         fetchConversationStatus();
       }
-    }, [user?.organization, phoneNumber, fetchConversationStatus])
+    }, [user?.organization, phoneNumber, fetchConversationStatus, loadMessages])
   );
 
   // WebSocket for live messages
@@ -1883,6 +1912,29 @@ export default function ChatConversationScreen() {
   // a manual scrollToEnd here fought MVCP and produced the "jumps to old messages and back"
   // flicker, so it has been removed.
   const isNearBottomRef = useRef(true);
+
+  // Count inbound messages that arrive while the user is scrolled up, shown as a badge on the
+  // scroll-to-bottom button. Reset when the chat changes or the user returns to the bottom.
+  const newWhileAwayRef = useRef(0);
+  const lastSeenMsgIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    newWhileAwayRef.current = 0;
+    lastSeenMsgIdRef.current = null;
+    scrollBtnRef.current?.setCount(0);
+  }, [phoneNumber]);
+  useEffect(() => {
+    const last: any = currentMessages[currentMessages.length - 1];
+    const id = last ? String(last.messageId || '') : '';
+    if (!id) return;
+    if (lastSeenMsgIdRef.current === null) { lastSeenMsgIdRef.current = id; return; }
+    if (lastSeenMsgIdRef.current === id) return;
+    lastSeenMsgIdRef.current = id;
+    const inbound = (last.direction || '').toLowerCase() === 'inbound';
+    if (inbound && last.type !== 'internal' && last.type !== 'reaction' && !isNearBottomRef.current) {
+      newWhileAwayRef.current += 1;
+      scrollBtnRef.current?.setCount(newWhileAwayRef.current);
+    }
+  }, [currentMessages]);
 
   // Pre-cache media from ALL messages in the background (without blocking message rendering)
   const allMessages = useChatStore((s) => s.allMessages);
@@ -2338,6 +2390,52 @@ export default function ChatConversationScreen() {
     }
   }, [user?.organization, phoneNumber, user?.uID, user?.userId, t, sendFromNumberId, addOptimisticMedia, updateMessageStatus, scrollToNewest]);
 
+  // One-tap retry for a failed outbound message: drop the failed bubble and re-send it the same way
+  // it was first sent (text → sendMessage, picked media → sendPickedMedia).
+  const handleRetryMessage = useCallback((message: Message) => {
+    if (!user?.organization || !phoneNumber) return;
+    const m: any = message;
+    if (m.status !== 'failed' || !String(m.messageId || '').startsWith('temp_')) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const drop = () => useChatStore.setState((s) => ({
+      currentMessages: s.currentMessages.filter((x) => x.messageId !== m.messageId),
+      allMessages: s.allMessages.filter((x) => x.messageId !== m.messageId),
+    }));
+    const mediaUri: string = m.gmbt_mediaUrl || m.mediaUrl || '';
+    if (mediaUri && /^(file|content):/i.test(mediaUri)) {
+      const kind = String(m.type || m.messageType || '').toLowerCase();
+      const ext = (mediaUri.split('?')[0].split('.').pop() || '').toLowerCase();
+      const mimeByExt: Record<string, string> = {
+        jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+        mp4: 'video/mp4', mov: 'video/quicktime', '3gp': 'video/3gpp',
+        m4a: 'audio/mp4', mp3: 'audio/mpeg', ogg: 'audio/ogg', aac: 'audio/aac', amr: 'audio/amr', wav: 'audio/wav',
+        pdf: 'application/pdf', doc: 'application/msword', xls: 'application/vnd.ms-excel', txt: 'text/plain',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      };
+      const fallbackMime = kind === 'image' ? 'image/jpeg' : kind === 'video' ? 'video/mp4' : kind === 'audio' ? 'audio/mp4' : 'application/octet-stream';
+      drop();
+      sendPickedMedia(mediaUri, m.fileName || `file.${ext || 'bin'}`, mimeByExt[ext] || fallbackMime);
+      return;
+    }
+    const text = (m.text || m.body || '').trim();
+    if (!text) return;
+    drop();
+    sendMessage(
+      user.organization,
+      phoneNumber as string,
+      text,
+      user.fullname,
+      user.uID || user.userId || '',
+      m.contextMessageId || m.ContextMessageId || undefined,
+      activeWabaNumber || user.wabaNumber || '',
+      user.email || user.Email || '',
+      sendFromNumberId,
+    ).catch(() => {
+      Alert.alert(t('common.error'), t('chats.sendFailed', 'שליחת ההודעה נכשלה'));
+    });
+  }, [user, phoneNumber, sendPickedMedia, sendMessage, activeWabaNumber, sendFromNumberId, t]);
+
   const handleAttachment = useCallback(() => {
     setShowAttachSheet(true);
   }, []);
@@ -2646,6 +2744,11 @@ export default function ChatConversationScreen() {
     const { contentOffset } = e.nativeEvent;
     const distanceFromBottom = contentOffset.y; // inverted: 0 == pinned to newest
     isNearBottomRef.current = distanceFromBottom < 120;
+    // Back at the newest message → the "new messages" badge is read.
+    if (isNearBottomRef.current && newWhileAwayRef.current > 0) {
+      newWhileAwayRef.current = 0;
+      scrollBtnRef.current?.setCount(0);
+    }
     // Update the FAB via its imperative handle so toggling it does NOT re-render the screen.
     scrollBtnRef.current?.setVisible(distanceFromBottom > 400);
   }, []);
@@ -2783,12 +2886,25 @@ export default function ChatConversationScreen() {
         // Heuristic for "is this long enough to need a 'view more'": ~3 lines worth of text or
         // several explicit line breaks. Avoids fragile onTextLayout measurement inside FlashList.
         const isLongNote = !!entryText && (entryText.length > 140 || (entryText.match(/\n/g)?.length || 0) >= 3);
+        // Internal notes get a yellow "sticky note" look so they can never be mistaken for a message
+        // the customer can see; system/activity entries stay neutral.
+        const isNoteEntry = entryType === 'note';
         return (
-          <View style={[styles.timelineItem, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f0f4f8', borderColor: theme.colors.outline }]}>
+          <View style={[
+            styles.timelineItem,
+            isNoteEntry
+              ? { backgroundColor: theme.dark ? '#3E3500' : '#FFF8E1', borderColor: theme.dark ? '#FFE082' : '#FFB300' }
+              : { backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f0f4f8', borderColor: theme.colors.outline },
+          ]}>
             <View style={[styles.timelineIconWrap, { backgroundColor: `${iconColor}15` }]}>
               <MaterialCommunityIcons name={icon as any} size={16} color={iconColor} />
             </View>
             <View style={{ flex: 1 }}>
+              {isNoteEntry ? (
+                <Text style={{ fontSize: 10, fontWeight: '700', color: theme.dark ? '#FFE082' : '#8D6E63', marginBottom: 2 }}>
+                  {t('chats.internalNoteLabel', 'הערה פנימית · לא נראית ללקוח')}
+                </Text>
+              ) : null}
               {entryText ? (
                 <Text style={{ fontSize: 13, color: theme.colors.onSurface }} numberOfLines={noteExpanded ? undefined : 3}>{entryText}</Text>
               ) : null}
@@ -2834,10 +2950,11 @@ export default function ChatConversationScreen() {
           onSwipeToReply={handleSwipeToReply}
           wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
           onCancelScheduled={confirmCancelScheduled}
+          onRetry={handleRetryMessage}
         />
       );
     },
-    [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers, user?.organization, lang, router, confirmCancelScheduled, expandedNotes, toggleNoteExpanded],
+  [theme, handleMessageLongPress, handleMediaPress, handleQuotedPress, handleSwipeToReply, wabaNumbers, user?.organization, lang, router, confirmCancelScheduled, expandedNotes, toggleNoteExpanded, handleRetryMessage, t],
   );
 
   const keyExtractor = useCallback((item: ListItem) => {
@@ -2946,20 +3063,14 @@ export default function ChatConversationScreen() {
 
               {/* Tag / Note / Assign are all in the meta bar below — header is clean */}
 
+              {/* One-tap call (like WhatsApp). Media / timeline / the rest live in the ⋮ menu. */}
               <IconButton
-                icon="image-multiple-outline"
-                size={20}
+                icon={isInitiatingCall ? 'phone-in-talk' : 'phone'}
+                size={22}
                 iconColor={theme.custom.headerText}
-                onPress={() => setMediaGridVisible(true)}
-                accessibilityLabel={isRTL ? 'מדיה משותפת' : 'Shared media'}
-              />
-
-              <IconButton
-                icon="timeline-text-outline"
-                size={20}
-                iconColor={theme.custom.headerText}
-                onPress={() => setShowTimelineSheet(true)}
-                accessibilityLabel={isRTL ? 'ציר זמן' : 'Timeline'}
+                disabled={isInitiatingCall}
+                onPress={handleInitiateCall}
+                accessibilityLabel={t('chats.call', 'התקשר')}
               />
 
               <Menu
@@ -2976,9 +3087,34 @@ export default function ChatConversationScreen() {
                 contentStyle={{ backgroundColor: theme.colors.surface }}
               >
                 <Menu.Item
+                  leadingIcon="lightning-bolt"
+                  onPress={() => { setMenuVisible(false); handleQuickActionsPress(); }}
+                  title={t('chats.quickActions', 'פעולות מהירות')}
+                />
+                <Menu.Item
+                  leadingIcon="information-outline"
+                  onPress={() => {
+                    setMenuVisible(false);
+                    setContactInfoInitialTab('details');
+                    setShowContactInfoSheet(true);
+                  }}
+                  title={t('chats.contactInfo', 'פרטי שיחה')}
+                />
+                <Divider />
+                <Menu.Item
                   leadingIcon="magnify"
                   onPress={() => { setMenuVisible(false); setSearchVisible((v) => !v); if (searchVisible) setSearchQuery(''); }}
                   title={t('chats.search', 'חיפוש')}
+                />
+                <Menu.Item
+                  leadingIcon="image-multiple-outline"
+                  onPress={() => { setMenuVisible(false); setMediaGridVisible(true); }}
+                  title={t('chats.sharedMedia', 'מדיה משותפת')}
+                />
+                <Menu.Item
+                  leadingIcon="timeline-text-outline"
+                  onPress={() => { setMenuVisible(false); setShowTimelineSheet(true); }}
+                  title={t('chats.timeline', 'ציר זמן')}
                 />
                 <Menu.Item
                   leadingIcon={starredFilter ? 'star' : 'star-outline'}
@@ -2989,26 +3125,6 @@ export default function ChatConversationScreen() {
                     setSearchQuery('');
                   }}
                   title={starredFilter ? t('chats.allMessages', 'All Messages') : t('chats.starredMessages')}
-                />
-                <Menu.Item
-                  leadingIcon="lightning-bolt"
-                  onPress={() => { setMenuVisible(false); handleQuickActionsPress(); }}
-                  title={t('chats.quickActions', 'פעולות מהירות')}
-                />
-                <Menu.Item
-                  leadingIcon={isInitiatingCall ? 'phone-in-talk' : 'phone'}
-                  disabled={isInitiatingCall}
-                  onPress={() => { setMenuVisible(false); handleInitiateCall(); }}
-                  title={isRTL ? 'התקשר' : 'Call'}
-                />
-                <Menu.Item
-                  leadingIcon="information-outline"
-                  onPress={() => {
-                    setMenuVisible(false);
-                    setContactInfoInitialTab('details');
-                    setShowContactInfoSheet(true);
-                  }}
-                  title={t('chats.contactInfo', 'פרטי שיחה')}
                 />
               </Menu>
             </View>
@@ -3394,114 +3510,128 @@ export default function ChatConversationScreen() {
                 </ScrollView>
               </View>
             )}
-            {/* 💬 Internal message — always available, even when the WhatsApp window is CLOSED.
-                The inline @-mention composer lives in ChatInput (open-window only), so when closed we
-                route to the contact's internal-messages composer (works regardless of window state). */}
-            <Pressable
-              onPress={() => { setContactInfoInitialTab('internal'); setShowContactInfoSheet(true); }}
-              style={({ pressed }) => ({
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 6,
-                marginHorizontal: 12,
-                marginTop: 8,
-                paddingVertical: 9,
-                borderRadius: 10,
-                borderWidth: 1,
-                borderColor: '#7c3aed',
-                backgroundColor: pressed ? (theme.dark ? '#2e1065' : '#f5f3ff') : 'transparent',
-              })}
-            >
-              <MaterialCommunityIcons name="message-badge-outline" size={17} color="#7c3aed" />
-              <Text style={{ color: '#7c3aed', fontSize: 13, fontWeight: '700' }}>
-                {isRTL ? '💬 הודעה פנימית לצוות' : '💬 Internal message'}
-              </Text>
-            </Pressable>
+            {/* Window-closed panel: explains WHY free text is disabled, one primary action (pick a
+                template), and the secondary options as small chips. The internal-message chip stays
+                available because the @-mention composer (open-window only) can't be used here. */}
+            <View style={{
+              backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1',
+              borderTopWidth: 1,
+              borderTopColor: 'rgba(0,0,0,0.05)',
+              paddingHorizontal: 12,
+              paddingTop: 10,
+              paddingBottom: Math.max(insets.bottom, 8) + 4,
+              gap: 8,
+            }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {isStatusLoading
+                  ? <ActivityIndicator size="small" color={theme.colors.primary} />
+                  : <MaterialCommunityIcons name="lock-clock" size={20} color={theme.dark ? '#fbbf24' : '#b45309'} />}
+                <Text style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: theme.dark ? '#fde68a' : '#78350f' }}>
+                  {isStatusLoading
+                    ? t('chats.windowChecking', 'בודק את חלון השיחה...')
+                    : t('chats.windowClosedExplain', 'הלקוח לא כתב ב-24 השעות האחרונות, ולכן WhatsApp מאפשרת לשלוח רק תבנית מאושרת. אחרי שהלקוח יענה - אפשר יהיה לכתוב חופשי.')}
+                </Text>
+              </View>
 
-            <View style={[
-              styles.closedInlineBanner,
-              {
-                backgroundColor: theme.dark ? '#1a1a2e' : '#fff8e1',
-                gap: 8,
-                paddingBottom: Math.max(insets.bottom, 8) + 4,
-              },
-            ]}>
-              {/* ⚡ Send default template — greyed out when no default template is configured. We keep
-                  onPress active in that case (only block sending) so tapping it explains how to set one. */}
+              {/* 📄 Primary action — pick a template (opens modal with Quick/Manual tabs). Available
+                  immediately, independent of the conversation-status fetch. */}
               <Pressable
-                onPress={handleSendDefaultTemplate}
-                disabled={isSendingTemplate || isStatusLoading}
-                style={({ pressed }) => {
-                  const noDefault = hasDefaultTemplate === false;
-                  return {
+                onPress={handleOpenConversation}
+                accessibilityRole="button"
+                style={({ pressed }) => ({
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  backgroundColor: pressed ? '#245049' : '#2e6155',
+                  paddingVertical: 13,
+                  borderRadius: 12,
+                })}
+              >
+                <MaterialCommunityIcons name="card-text-outline" size={20} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>
+                  {t('chats.chooseTemplate', 'בחר תבנית לשליחה')}
+                </Text>
+              </Pressable>
+
+              {/* Secondary options — small chips */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {/* ⚡ Send default template — greyed out when no default template is configured. onPress stays
+                    active in that case (only sending is blocked) so tapping it explains how to set one. */}
+                <Pressable
+                  onPress={handleSendDefaultTemplate}
+                  disabled={isSendingTemplate || isStatusLoading}
+                  style={({ pressed }) => {
+                    const noDefault = hasDefaultTemplate === false;
+                    return {
+                      flex: 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 4,
+                      backgroundColor: noDefault
+                        ? (theme.dark ? '#3f3f46' : '#e5e7eb')
+                        : (pressed ? '#d97706' : '#f59e0b'),
+                      paddingVertical: 8,
+                      borderRadius: 18,
+                      opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : (noDefault ? 0.7 : 1),
+                    };
+                  }}
+                >
+                  {isSendingTemplate
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <MaterialCommunityIcons name="lightning-bolt" size={15} color={hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff'} />}
+                  <Text numberOfLines={1} style={{ color: hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff', fontSize: 12, fontWeight: '700' }}>
+                    {isSendingTemplate
+                      ? t('chats.sending', 'שולח...')
+                      : t('chats.defaultTemplateShort', 'ברירת מחדל')}
+                  </Text>
+                </Pressable>
+
+                {/* 🕐 Schedule message — independent of conversation-status fetch. */}
+                <Pressable
+                  onPress={handleOpenSchedule}
+                  style={({ pressed }) => ({
                     flex: 1,
                     flexDirection: 'row',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: 5,
-                    backgroundColor: noDefault
-                      ? (theme.dark ? '#3f3f46' : '#d1d5db')
-                      : (pressed ? '#d97706' : '#f59e0b'),
-                    paddingVertical: 11,
-                    borderRadius: 10,
-                    opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : (noDefault ? 0.7 : 1),
-                  };
-                }}
-              >
-                {isSendingTemplate
-                  ? <ActivityIndicator size="small" color="#fff" />
-                  : <MaterialCommunityIcons name="lightning-bolt" size={18} color={hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff'} />}
-                <Text style={{ color: hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff', fontSize: 13, fontWeight: '700' }}>
-                  {isSendingTemplate
-                    ? (isRTL ? 'שולח...' : 'Sending...')
-                    : (isRTL ? 'ברירת מחדל' : 'Default')}
-                </Text>
-              </Pressable>
+                    gap: 4,
+                    backgroundColor: pressed ? (theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6') : 'transparent',
+                    borderWidth: 1,
+                    borderColor: theme.dark ? '#52525b' : '#d1d5db',
+                    paddingVertical: 7,
+                    borderRadius: 18,
+                  })}
+                >
+                  <MaterialCommunityIcons name="clock-outline" size={15} color={theme.dark ? '#a1a1aa' : '#6b7280'} />
+                  <Text numberOfLines={1} style={{ color: theme.dark ? '#a1a1aa' : '#6b7280', fontSize: 12, fontWeight: '700' }}>
+                    {t('chats.scheduleShort', 'תזמן')}
+                  </Text>
+                </Pressable>
 
-              {/* 📄 Choose template (opens modal with Quick/Manual) — available immediately,
-                  independent of the conversation-status fetch, so the user can start composing fast. */}
-              <Pressable
-                onPress={handleOpenConversation}
-                style={({ pressed }) => ({
-                  flex: 1,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 5,
-                  backgroundColor: pressed ? '#245049' : '#2e6155',
-                  paddingVertical: 11,
-                  borderRadius: 10,
-                })}
-              >
-                <MaterialCommunityIcons name="card-text-outline" size={18} color="#fff" />
-                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
-                  {isRTL ? 'התחל שיחה' : 'Start Chat'}
-                </Text>
-              </Pressable>
-
-              {/* 🕐 Schedule message — available immediately, independent of conversation-status fetch. */}
-              <Pressable
-                onPress={handleOpenSchedule}
-                style={({ pressed }) => ({
-                  flex: 1,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 5,
-                  // Match web: schedule is an outline/white button (transparent bg, grey border+text).
-                  backgroundColor: pressed ? (theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6') : 'transparent',
-                  borderWidth: 1.5,
-                  borderColor: theme.dark ? '#52525b' : '#d1d5db',
-                  paddingVertical: 11,
-                  borderRadius: 10,
-                })}
-              >
-                <MaterialCommunityIcons name="clock-outline" size={18} color={theme.dark ? '#a1a1aa' : '#6b7280'} />
-                <Text style={{ color: theme.dark ? '#a1a1aa' : '#6b7280', fontSize: 13, fontWeight: '700' }}>
-                  {isRTL ? 'תזמן' : 'Schedule'}
-                </Text>
-              </Pressable>
+                {/* 💬 Internal message to the team */}
+                <Pressable
+                  onPress={() => { setContactInfoInitialTab('internal'); setShowContactInfoSheet(true); }}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 4,
+                    backgroundColor: pressed ? (theme.dark ? '#2e1065' : '#f5f3ff') : 'transparent',
+                    borderWidth: 1,
+                    borderColor: '#7c3aed',
+                    paddingVertical: 7,
+                    borderRadius: 18,
+                  })}
+                >
+                  <MaterialCommunityIcons name="message-badge-outline" size={15} color="#7c3aed" />
+                  <Text numberOfLines={1} style={{ color: '#7c3aed', fontSize: 12, fontWeight: '700' }}>
+                    {t('chats.internalMessageShort', 'הודעה לצוות')}
+                  </Text>
+                </Pressable>
+              </View>
             </View>
           </>
         ) : (
@@ -4276,6 +4406,24 @@ export default function ChatConversationScreen() {
                 </Text>
               </Pressable>
 
+              <Pressable
+                onPress={() => {
+                  const seed = (selectedMessage?.text || selectedMessage?.body || '').replace(/\s+/g, ' ').trim();
+                  setSelectedMessage(null);
+                  setTaskSeedText(seed);
+                  setShowCreateTaskModal(true);
+                }}
+                style={({ pressed }) => [
+                  styles.actionItem,
+                  pressed && { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+              >
+                <MaterialCommunityIcons name="clipboard-plus-outline" size={22} color={theme.colors.onSurface} />
+                <Text variant="bodyLarge" style={{ marginStart: 16, color: theme.colors.onSurface }}>
+                  {t('chats.createTaskFromMessage', 'צור משימה מהודעה')}
+                </Text>
+              </Pressable>
+
               {/* Reactions row */}
               <View style={styles.reactionsRow}>
                 {['👍', '❤️', '😂', '😮', '😢', '🙏', '✅', '🔥'].map((emoji) => (
@@ -4383,32 +4531,40 @@ export default function ChatConversationScreen() {
                 </Text>
                 <IconButton icon="close" size={20} onPress={() => setShowQuickActionsSheet(false)} />
               </View>
-              {[
-                { icon: 'note-edit-outline', label: isRTL ? 'הוסף הערה לציר זמן' : 'Add Timeline Note', color: '#795548', action: () => { setShowQuickActionsSheet(false); setShowAddNoteModal(true); } },
-                { icon: 'account-switch-outline', label: isRTL ? 'שייך בעלים' : 'Assign Owner', color: '#3F51B5', action: () => { setShowQuickActionsSheet(false); setShowAssignOwnerModal(true); } },
+              {/* Compact icon grid (same pattern as the attach sheet) — every CRM action in one tap from here.
+                  Lead / case swap between "create" and "open" depending on whether the contact already has one. */}
+              <View style={styles.attachGrid}>
+              {([
+                { icon: 'note-edit-outline', label: t('chats.addNote', 'הערה פנימית'), color: '#795548', action: () => { setShowQuickActionsSheet(false); setShowAddNoteModal(true); } },
+                { icon: 'account-switch-outline', label: t('chats.assignOwner', 'שייך אחראי'), color: '#3F51B5', action: () => { setShowQuickActionsSheet(false); setShowAssignOwnerModal(true); } },
+                chatStatus === 'Closed'
+                  ? { icon: 'lock-open-variant-outline', label: t('chats.reopenConversation', 'פתח מחדש'), color: '#16a34a', action: () => { setShowQuickActionsSheet(false); handleChangeStatus('Open'); } }
+                  : { icon: 'check-circle-outline', label: t('chats.closeConversation', 'סגור שיחה'), color: '#607D8B', action: () => { setShowQuickActionsSheet(false); handleChangeStatus('Closed'); } },
+                { icon: 'tag-plus-outline', label: t('chats.addTagShort', 'הוסף תיוג'), color: '#009688', action: () => { setShowQuickActionsSheet(false); setShowAddTagInline(true); } },
+                { icon: 'clipboard-check-outline', label: t('tasks.addTask', 'הוסף משימה'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setTaskSeedText(''); setShowCreateTaskModal(true); } },
+                activeLead
+                  ? { icon: 'account-star-outline', label: t('chats.openLead', 'פתח ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); openLeadRecord(); } }
+                  : { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
+                activeCase
+                  ? { icon: 'ticket-confirmation-outline', label: t('chats.openCase', 'פתח פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); openCaseRecord(); } }
+                  : { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
                 { icon: 'clock-outline', label: t('chats.scheduleMessage', 'תזמן הודעה'), color: '#607D8B', action: () => { setShowQuickActionsSheet(false); setShowScheduleModal(true); } },
-                { icon: 'clipboard-check-outline', label: t('tasks.addTask'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setShowCreateTaskModal(true); } },
-                { icon: 'image-multiple', label: isRTL ? 'מדיה' : 'Media', color: '#7C4DFF', action: () => { setShowQuickActionsSheet(false); setMediaPanelVisible(true); } },
-                { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
-                { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
-              ].map((item) => (
+                { icon: 'image-multiple', label: t('chats.mediaLibrary', 'מדיה'), color: '#7C4DFF', action: () => { setShowQuickActionsSheet(false); setMediaPanelVisible(true); } },
+              ] as { icon: string; label: string; color: string; action: () => void }[]).map((item) => (
                 <Pressable
                   key={item.label}
                   onPress={item.action}
-                  style={({ pressed }) => [
-                    styles.templateItem,
-                    { flexDirection: 'row', alignItems: 'center' },
-                    pressed && { backgroundColor: theme.colors.surfaceVariant },
-                  ]}
+                  style={({ pressed }) => [styles.attachOption, { width: 84 }, pressed && { opacity: 0.7 }]}
                 >
-                  <View style={[styles.quickActionIcon, { backgroundColor: `${item.color}20` }]}>
-                    <MaterialCommunityIcons name={item.icon as any} size={22} color={item.color} />
+                  <View style={[styles.attachOptionIcon, { backgroundColor: `${item.color}22`, elevation: 0, shadowOpacity: 0 }]}>
+                    <MaterialCommunityIcons name={item.icon as any} size={26} color={item.color} />
                   </View>
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginStart: 12 }}>
+                  <Text style={[styles.attachOptionLabel, { color: theme.colors.onSurface }]} numberOfLines={2}>
                     {item.label}
                   </Text>
                 </Pressable>
               ))}
+              </View>
             </Pressable>
           </Pressable>
         </Modal>
@@ -4470,7 +4626,7 @@ export default function ChatConversationScreen() {
             and the task auto-links to this contact. Bottom sheet, not a centered modal. */}
         <AddTaskSheet
           visible={showCreateTaskModal}
-          onDismiss={() => setShowCreateTaskModal(false)}
+          onDismiss={() => { setShowCreateTaskModal(false); setTaskSeedText(''); }}
           organization={user?.organization || ''}
           user={user}
           relatedPhone={phoneNumber as string}
@@ -4479,7 +4635,9 @@ export default function ChatConversationScreen() {
             entityId: phoneNumber as string,
             entityName: contactName,
           }}
-          defaultTitle={contactName ? `${t('contacts.phoneCall', 'שיחת טלפון')} - ${contactName}` : undefined}
+          defaultTitle={taskSeedText
+            ? taskSeedText.slice(0, 80)
+            : (contactName ? `${t('contacts.phoneCall', 'שיחת טלפון')} - ${contactName}` : undefined)}
         />
 
         {/* Add Note Modal — keyboard-safe bottom sheet */}

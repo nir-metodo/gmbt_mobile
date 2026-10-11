@@ -2,7 +2,52 @@ import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { Contact } from '../../types';
 
+// Saved contact views are stored server-side (Firestore `Organization/{org}/ContactViews`) and are
+// shared with the web Contacts screen: `filters` = { owners, keys, advancedFilters, mobile? }.
+const CONTACT_VIEW_ENDPOINTS = {
+  GET: '/api/Webhooks/GetContactViews',
+  SAVE: '/api/Webhooks/SaveContactView',
+  DELETE: '/api/Webhooks/DeleteContactView',
+};
+
+export interface ContactView {
+  id: string;
+  name: string;
+  filters: any;
+  userId?: string;
+  visibility?: 'personal' | 'shared' | 'selected' | string;
+  sharedWithUserIds?: string[];
+  locked?: boolean;
+  createdOn?: string;
+}
+
 export const contactsApi = {
+  async getViews(organization: string, userId?: string): Promise<ContactView[]> {
+    const response = await axiosInstance.post(CONTACT_VIEW_ENDPOINTS.GET, { organization, userId: userId || '' });
+    const raw = response.data;
+    // The backend returns a bare array, or { success:false } on error (treated as "keep cache").
+    if (!Array.isArray(raw)) throw new Error(raw?.message || 'GetContactViews failed');
+    return raw.filter((v: any) => v && v.id && v.name) as ContactView[];
+  },
+
+  // Creates (no id) or updates (id) a view. Returns the view id.
+  async saveView(organization: string, viewData: Partial<ContactView>): Promise<string> {
+    const response = await axiosInstance.post(CONTACT_VIEW_ENDPOINTS.SAVE, { organization, viewData });
+    const data = response.data;
+    if (data?.Success === false || data?.success === false) {
+      throw new Error(data?.Message || data?.message || 'SaveContactView failed');
+    }
+    return String(data?.Data || data?.data || viewData.id || '');
+  },
+
+  async deleteView(organization: string, viewId: string): Promise<void> {
+    const response = await axiosInstance.post(CONTACT_VIEW_ENDPOINTS.DELETE, { organization, viewId });
+    const data = response.data;
+    if (data?.Success === false || data?.success === false) {
+      throw new Error(data?.Message || data?.message || 'DeleteContactView failed');
+    }
+  },
+
   async getAll(
     organization: string,
     options?: { userId?: string; dataVisibility?: string; pageSize?: number; pageNumber?: number; modifiedSince?: string },

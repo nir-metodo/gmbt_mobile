@@ -51,6 +51,9 @@ import {
 import { NoteAttachmentRow, type NoteAttachment } from '../../../../components/NoteAttachmentRow';
 import AddTaskSheet from '../../../../components/AddTaskSheet';
 import type { Case } from '../../../../types';
+import { HeaderMenu } from '../../../../components/HeaderMenu';
+import { StickySaveBar } from '../../../../components/StickySaveBar';
+import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
 
 const PRIORITY_COLORS: Record<string, string> = {
   low: '#4CAF50',
@@ -354,10 +357,10 @@ export default function CaseDetailScreen() {
         contactName: formContactName.trim() || undefined,
         contactPhone: formContactPhone.trim() || undefined,
         dueDate: formDueDate.trim() || undefined,
-        tags: formTags.trim() || undefined,
+        tags: (formTags.trim() || undefined) as any,
         notes: formNotes.trim() || undefined,
         ...buildFollowUpPayload(),
-        customFields: formDynamicFields,
+        ...({ customFields: formDynamicFields } as any),
         ...formDynamicFields,
       }, user?.fullname, user?.userId || user?.uID || '');
       Alert.alert(
@@ -389,10 +392,10 @@ export default function CaseDetailScreen() {
         contactPhone: formContactPhone.trim() || undefined,
         contactId: formContactId || undefined,
         dueDate: formDueDate.trim() || undefined,
-        tags: formTags.trim() || undefined,
+        tags: (formTags.trim() || undefined) as any,
         notes: formNotes.trim() || undefined,
         ...buildFollowUpPayload(),
-        customFields: formDynamicFields,
+        ...({ customFields: formDynamicFields } as any),
         ...formDynamicFields,
       }, user?.fullname, user?.userId || user?.uID || '');
       setEditModalVisible(false);
@@ -457,21 +460,101 @@ export default function CaseDetailScreen() {
     }
   }, [user, caseData, noteText, noteAttachment, t, fetchTimeline]);
 
+  const caseStatusLabel = useCallback(
+    (st: string) => t(`cases.status_${st}`, { defaultValue: st.charAt(0).toUpperCase() + st.slice(1).replace(/_/g, ' ') }),
+    [t],
+  );
+
+  // One tap, optimistic, rolled back on failure.
   const handleStatusChange = useCallback(
     async (newStatus: string) => {
       if (!user?.organization || !caseData) return;
+      const prevStatus = caseData.status;
+      if (prevStatus === newStatus) return;
+      setCaseData((c) => (c ? { ...c, status: newStatus as any } : c));
       try {
         await casesApi.update(user.organization, caseData.id, {
           status: newStatus,
           ...(newStatus === 'resolved' ? { resolvedAt: new Date().toISOString() } : {}),
         }, user?.fullname);
-        await fetchCase();
+        fetchCase();
       } catch (err: any) {
+        setCaseData((c) => (c ? { ...c, status: prevStatus } : c));
         Alert.alert(t('common.error'), err.message || t('errors.generic'));
       }
     },
-    [user?.organization, caseData, fetchCase, t],
+    [user?.organization, user?.fullname, caseData, fetchCase, t],
   );
+
+  const handlePriorityChange = useCallback(
+    async (newPriority: Case['priority']) => {
+      if (!user?.organization || !caseData || caseData.priority === newPriority) return;
+      const prevPriority = caseData.priority;
+      setCaseData((c) => (c ? { ...c, priority: newPriority } : c));
+      try {
+        await casesApi.update(user.organization, caseData.id, { priority: newPriority }, user?.fullname);
+        fetchCase();
+      } catch (err: any) {
+        setCaseData((c) => (c ? { ...c, priority: prevPriority } : c));
+        Alert.alert(t('common.error'), err.message || t('errors.generic'));
+      }
+    },
+    [user?.organization, user?.fullname, caseData, fetchCase, t],
+  );
+
+  // ── Inline title/description editing with a contextual save bar ──
+  const [inlineTitle, setInlineTitle] = useState(cachedCase?.title || '');
+  const [inlineDesc, setInlineDesc] = useState(cachedCase?.description || '');
+  const [savingInline, setSavingInline] = useState(false);
+  const inlineDirty = !!caseData && !isNew
+    && (inlineTitle !== (caseData.title || '') || inlineDesc !== (caseData.description || ''));
+  const inlineDirtyRef = useRef(false);
+  inlineDirtyRef.current = inlineDirty;
+  useEffect(() => {
+    if (caseData && !inlineDirtyRef.current) {
+      setInlineTitle(caseData.title || '');
+      setInlineDesc(caseData.description || '');
+    }
+  }, [caseData?.id, caseData?.title, caseData?.description]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSaveInline = useCallback(async () => {
+    if (!user?.organization || !caseData) return;
+    if (!inlineTitle.trim()) {
+      Alert.alert(t('common.error'), t('cases.titleRequired', 'יש להזין כותרת'));
+      return;
+    }
+    setSavingInline(true);
+    try {
+      await casesApi.update(user.organization, caseData.id, {
+        title: inlineTitle.trim(),
+        description: inlineDesc.trim() || undefined,
+      }, user?.fullname, user?.userId || user?.uID || '');
+      await fetchCase();
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err.message || t('errors.generic'));
+    } finally {
+      setSavingInline(false);
+    }
+  }, [user, caseData, inlineTitle, inlineDesc, fetchCase, t]);
+
+  const discardInline = useCallback(() => {
+    if (!caseData) return;
+    setInlineTitle(caseData.title || '');
+    setInlineDesc(caseData.description || '');
+  }, [caseData]);
+
+  // Next step in the case life-cycle drives the one prominent action.
+  const normalizedCaseStatus = (caseData?.status || '').toLowerCase().replace(/\s+/g, '_');
+  const nextCaseStatus: string | null =
+    ['open', 'pending', 'escalated', 'on_hold'].includes(normalizedCaseStatus) ? 'in_progress'
+      : normalizedCaseStatus === 'in_progress' ? 'resolved'
+        : normalizedCaseStatus === 'resolved' ? 'closed'
+          : null;
+  const nextCaseLabel: Record<string, string> = {
+    in_progress: t('cases.startWorking', 'התחל טיפול'),
+    resolved: t('cases.markResolved', 'סמן כנפתרה'),
+    closed: t('cases.closeCase', 'סגור פנייה'),
+  };
 
   const renderFollowUpSection = (cardStyle: any) => (
     <View style={cardStyle}>
@@ -854,20 +937,16 @@ export default function CaseDetailScreen() {
             numberOfLines={1}
             style={[styles.headerTitleText, { flex: 1, textAlign }]}
           >
-            {caseData.title}
+            {t('cases.caseLabel', 'פנייה')}
           </Text>
-          <IconButton
-            icon="pencil"
+          <HeaderMenu
             iconColor={theme.custom.headerText}
-            size={22}
-            onPress={openEditModal}
-          />
-          <IconButton
-            icon="delete-outline"
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={handleDelete}
-            loading={deleting}
+            items={[
+              { key: 'edit', title: t('cases.editAllFields', 'עריכת כל השדות'), icon: 'form-select', onPress: openEditModal },
+              { key: 'note', title: t('leads.addNote', 'הוסף הערה'), icon: 'note-plus-outline', onPress: () => setNoteModalVisible(true) },
+              { key: 'task', title: t('tasks.addTask', 'הוסף משימה'), icon: 'clipboard-check-outline', onPress: () => setAddTaskVisible(true) },
+              { key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true, dividerBefore: true },
+            ]}
           />
         </View>
       </View>
@@ -935,46 +1014,7 @@ export default function CaseDetailScreen() {
           );
         })()}
 
-        {/* Priority & Status banner */}
-        <View
-          style={[
-            styles.bannerCard,
-            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-          ]}
-        >
-          <View style={[styles.bannerRow, { flexDirection }]}>
-            <View style={[styles.bannerItem, { alignItems: 'flex-start' }]}>
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                {t('cases.priority')}
-              </Text>
-              <View style={[styles.priorityBadge, { backgroundColor: `${priorityColor}18` }]}>
-                <MaterialCommunityIcons
-                  name={PRIORITY_ICONS[caseData.priority] as any}
-                  size={16}
-                  color={priorityColor}
-                />
-                <Text style={[styles.priorityBadgeText, { color: priorityColor }]}>
-                  {t(`tasks.${caseData.priority}`)}
-                </Text>
-              </View>
-            </View>
-
-            <View style={[styles.bannerItem, { alignItems: 'flex-start' }]}>
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                {t('cases.status')}
-              </Text>
-              <Chip
-                compact
-                textStyle={[styles.statusChipText, { color: statusColor }]}
-                style={[styles.statusChip, { backgroundColor: `${statusColor}18` }]}
-              >
-                {caseData.status}
-              </Chip>
-            </View>
-          </View>
-        </View>
-
-        {/* Status selector */}
+        {/* Status + priority: one tap each, saved immediately */}
         <View
           style={[
             styles.sectionCard,
@@ -986,14 +1026,14 @@ export default function CaseDetailScreen() {
           </Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={[styles.statusRow, { flexDirection }]}>
-              {STATUS_OPTIONS.map((s) => {
-                const sc = getStatusColor(s);
-                const active = caseData.status.toLowerCase().replace(/\s+/g, '_') === s;
+              {STATUS_OPTIONS.map((st) => {
+                const sc = getStatusColor(st);
+                const active = caseData.status.toLowerCase().replace(/\s+/g, '_') === st;
                 return (
                   <Chip
-                    key={s}
+                    key={st}
                     selected={active}
-                    onPress={() => handleStatusChange(s)}
+                    onPress={() => handleStatusChange(st)}
                     compact
                     style={[
                       styles.statusSelectChip,
@@ -1001,39 +1041,71 @@ export default function CaseDetailScreen() {
                         ? { backgroundColor: `${sc}20`, borderColor: sc, borderWidth: 1.5 }
                         : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
                     ]}
-                    textStyle={[
-                      { fontSize: 12 },
-                      active && { color: sc, fontWeight: '700' },
-                    ]}
+                    textStyle={[{ fontSize: 12 }, active && { color: sc, fontWeight: '700' }]}
                     icon={active ? 'check' : undefined}
                   >
-                    {s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ')}
+                    {caseStatusLabel(st)}
                   </Chip>
                 );
               })}
             </View>
           </ScrollView>
+
+          <Text variant="labelLarge" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign, marginTop: 14 }]}>
+            {t('cases.priority')}
+          </Text>
+          <View style={[styles.statusRow, { flexDirection }]}>
+            {(['low', 'medium', 'high', 'urgent'] as const).map((p) => {
+              const pc = PRIORITY_COLORS[p] || PRIORITY_COLORS.medium;
+              const active = caseData.priority === p;
+              return (
+                <Chip
+                  key={p}
+                  selected={active}
+                  onPress={() => handlePriorityChange(p)}
+                  compact
+                  style={[
+                    styles.statusSelectChip,
+                    active
+                      ? { backgroundColor: `${pc}20`, borderColor: pc, borderWidth: 1.5 }
+                      : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
+                  ]}
+                  textStyle={[{ fontSize: 12 }, active && { color: pc, fontWeight: '700' }]}
+                  icon={active ? 'check' : undefined}
+                >
+                  {t(`tasks.${p}`)}
+                </Chip>
+              );
+            })}
+          </View>
         </View>
 
-        {/* Description */}
-        {caseData.description ? (
-          <View
-            style={[
-              styles.sectionCard,
-              { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
-            ]}
-          >
-            <Text variant="labelLarge" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign }]}>
-              {t('cases.description')}
-            </Text>
-            <Text
-              variant="bodyMedium"
-              style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign }}
-            >
-              {caseData.description}
-            </Text>
-          </View>
-        ) : null}
+        {/* Title + description: edited in place; a save bar appears only when changed */}
+        <View
+          style={[
+            styles.sectionCard,
+            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+          ]}
+        >
+          <TextInput
+            mode="outlined"
+            label={t('cases.caseTitle', 'כותרת')}
+            value={inlineTitle}
+            onChangeText={setInlineTitle}
+            style={{ textAlign }}
+            activeOutlineColor={theme.colors.primary}
+          />
+          <TextInput
+            mode="outlined"
+            label={t('cases.description')}
+            value={inlineDesc}
+            onChangeText={setInlineDesc}
+            multiline
+            numberOfLines={3}
+            style={{ marginTop: 10, textAlign }}
+            activeOutlineColor={theme.colors.primary}
+          />
+        </View>
 
         {/* Detail fields */}
         <View
@@ -1235,7 +1307,7 @@ export default function CaseDetailScreen() {
               {t('common.create', 'Created')}:
             </Text>
             <Text variant="labelSmall" style={{ color: theme.colors.onSurface }}>
-              {formatDate(caseData.createdAt)} • {formatRelativeTime(caseData.createdAt, lang)}
+              {formatDate(caseData.createdAt || '')} • {formatRelativeTime(caseData.createdAt || '', lang)}
             </Text>
           </View>
 
@@ -1415,6 +1487,20 @@ export default function CaseDetailScreen() {
           setContactLookupVisible(false);
         }}
         onDismiss={() => setContactLookupVisible(false)}
+      />
+
+      <StickySaveBar
+        visible={inlineDirty}
+        saving={savingInline}
+        onSave={handleSaveInline}
+        onDiscard={discardInline}
+      />
+      <PrimaryActionBar
+        visible={!inlineDirty && !!nextCaseStatus}
+        label={nextCaseStatus ? nextCaseLabel[nextCaseStatus] : ''}
+        icon="arrow-right-circle-outline"
+        color={nextCaseStatus ? getStatusColor(nextCaseStatus) : undefined}
+        onPress={() => { if (nextCaseStatus) handleStatusChange(nextCaseStatus); }}
       />
 
       {/* Edit Modal */}
@@ -1931,6 +2017,7 @@ const styles = StyleSheet.create({
   bodyContent: {
     padding: 16,
     gap: 12,
+    paddingBottom: 130,
   },
   slaBadge: {
     flexDirection: 'row',

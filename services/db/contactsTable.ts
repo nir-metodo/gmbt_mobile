@@ -18,6 +18,21 @@ export const CONTACTS_TABLE: TableDef = {
     { name: 'keysText', type: 'TEXT' },
     { name: 'createdOn', type: 'TEXT', index: true },
     { name: 'modifiedOn', type: 'TEXT', index: true },
+    // Consent: 1 = agreed, 0 = opted out / not agreed, NULL = no record (mirrors contact.consent).
+    {
+      name: 'consent',
+      type: 'INTEGER',
+      backfill: {
+        value: "CASE WHEN json_extract(data,'$.consent') IN (1,'true') THEN 1 ELSE 0 END",
+        where: "json_extract(data,'$.consent') IS NOT NULL",
+      },
+    },
+    // 0 only when the contact is explicitly unread (isRead === false); everything else counts as read.
+    {
+      name: 'isRead',
+      type: 'INTEGER',
+      backfill: { value: '0', where: "json_extract(data,'$.isRead') IN (0,'false')" },
+    },
   ],
   ftsColumns: ['name', 'phoneNumber', 'email', 'keysText'],
 };
@@ -58,6 +73,9 @@ export function mapContactRow(c: any): MappedRow | null {
       keysText: buildKeysText(c.keys),
       createdOn: c.createdOn || '',
       modifiedOn: c.modifiedOn || c.lastMessageTime || c.createdOn || '',
+      consent:
+        c.consent === true || c.consent === 'true' ? 1 : c.consent === false || c.consent === 'false' ? 0 : null,
+      isRead: c.isRead === false || c.isRead === 'false' ? 0 : 1,
     },
     data: c as Contact,
     updatedAt: Date.now(),

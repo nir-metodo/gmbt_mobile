@@ -29,6 +29,9 @@ import { esignatureApi } from '../../../../services/api/esignature';
 import { formatDate, withAlpha } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import type { ESignatureDocument, ESignatureSigner } from '../../../../types';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { HeaderMenu } from '../../../../components/HeaderMenu';
+import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#FF9800',
@@ -73,14 +76,14 @@ export default function ESignatureDetailScreen() {
       if (result) {
         setDocument(result);
       } else {
-        const all = await esignatureApi.getDocuments(user.organization);
+        const all = await esignatureApi.getDocuments(user.organization, 'all', null);
         const found = (Array.isArray(all) ? all : []).find((d) => d.id === id || d.documentId === id);
         if (found) setDocument(found);
         else setError(t('common.noResults'));
       }
     } catch (err: any) {
       try {
-        const all = await esignatureApi.getDocuments(user.organization);
+        const all = await esignatureApi.getDocuments(user.organization, 'all', null);
         const found = (Array.isArray(all) ? all : []).find((d) => d.id === id || d.documentId === id);
         if (found) setDocument(found);
         else setError(err.message || t('errors.generic'));
@@ -283,35 +286,21 @@ export default function ESignatureDetailScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 4 },
-        ]}
-      >
-        <View style={[styles.headerRow, { flexDirection }]}>
-          <IconButton
-            icon={isRTL ? 'arrow-right' : 'arrow-left'}
+      <ScreenHeader
+        title={document.documentName || document.title}
+        onBack={() => router.back()}
+        actions={
+          <HeaderMenu
             iconColor={theme.custom.headerText}
-            size={24}
-            onPress={() => router.back()}
+            items={[
+              { key: 'share', title: t('common.share', 'שתף'), icon: 'share-variant', onPress: handleShareDocument },
+              { key: 'view', title: t('esignature.viewDocument'), icon: 'file-document-outline', onPress: handleViewDocument, hidden: !(document.documentUrl || document.originalFileUrl) },
+              { key: 'cancel', title: t('esignature.cancelDocument'), icon: 'cancel', onPress: handleCancelDocument, hidden: !isPending, destructive: true, dividerBefore: true },
+              { key: 'delete', title: t('esignature.deleteDocument'), icon: 'delete-outline', onPress: handleDeleteDocument, destructive: true, dividerBefore: !isPending },
+            ]}
           />
-          <Text
-            variant="titleMedium"
-            numberOfLines={1}
-            style={[styles.headerTitleText, { flex: 1, textAlign }]}
-          >
-            {document.documentName || document.title}
-          </Text>
-          <IconButton
-            icon="share-variant"
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={handleShareDocument}
-          />
-        </View>
-      </View>
+        }
+      />
 
       <ScrollView
         style={styles.body}
@@ -401,21 +390,6 @@ export default function ESignatureDetailScreen() {
             </>
           ) : null}
 
-          {/* Status */}
-          <Divider style={{ marginVertical: 10, backgroundColor: theme.colors.outlineVariant }} />
-          <View style={[styles.infoRow, { flexDirection }]}>
-            <View style={[styles.detailIcon, { backgroundColor: `${statusColor}18` }]}>
-              <MaterialCommunityIcons name={statusIcon as any} size={20} color={statusColor} />
-            </View>
-            <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                {t('esignature.status')}
-              </Text>
-              <Text variant="bodyMedium" style={{ color: statusColor, fontWeight: '600' }}>
-                {t(`esignature.${document.status}`)}
-              </Text>
-            </View>
-          </View>
         </View>
 
         {/* Signers List */}
@@ -561,84 +535,26 @@ export default function ESignatureDetailScreen() {
           </Pressable>
         ) : null}
 
-        {/* Download signed document */}
-        {isSigned && document.signedFileUrl ? (
-          <Pressable
-            onPress={handleDownloadSigned}
-            style={[
-              styles.previewCard,
-              { backgroundColor: theme.custom.cardBackground, borderColor: '#4CAF5040' },
-            ]}
-          >
-            <View style={[styles.previewInner, { flexDirection }]}>
-              <View style={[styles.previewIcon, { backgroundColor: '#4CAF5015' }]}>
-                <MaterialCommunityIcons name="download" size={28} color="#4CAF50" />
-              </View>
-              <View style={{ flex: 1, gap: 2 }}>
-                <Text variant="titleSmall" style={{ color: '#4CAF50', fontWeight: '600', textAlign }}>
-                  {t('esignature.downloadSigned')}
-                </Text>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                  {t('esignature.downloadSignedDesc')}
-                </Text>
-              </View>
-              <MaterialCommunityIcons
-                name="download"
-                size={22}
-                color="#4CAF50"
-              />
-            </View>
-          </Pressable>
-        ) : null}
-
-        {/* Actions */}
-        <View style={styles.actionsContainer}>
-          {isPending && (
-            <Button
-              mode="contained"
-              icon="bell-ring"
-              onPress={handleSendReminder}
-              loading={actionLoading === 'reminder'}
-              disabled={!!actionLoading}
-              style={[styles.actionButton, { backgroundColor: '#FF9800' }]}
-              textColor="#FFFFFF"
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('esignature.sendReminder')}
-            </Button>
-          )}
-
-          {isPending && (
-            <Button
-              mode="outlined"
-              icon="cancel"
-              onPress={handleCancelDocument}
-              loading={actionLoading === 'cancel'}
-              disabled={!!actionLoading}
-              style={[styles.actionButton, { borderColor: '#F44336' }]}
-              textColor="#F44336"
-              contentStyle={styles.actionButtonContent}
-            >
-              {t('esignature.cancelDocument')}
-            </Button>
-          )}
-
-          <Button
-            mode="outlined"
-            icon="delete"
-            onPress={handleDeleteDocument}
-            loading={actionLoading === 'delete'}
-            disabled={!!actionLoading}
-            style={[styles.actionButton, { borderColor: theme.colors.error }]}
-            textColor={theme.colors.error}
-            contentStyle={styles.actionButtonContent}
-          >
-            {t('esignature.deleteDocument')}
-          </Button>
-        </View>
-
-        <View style={{ height: insets.bottom + 24 }} />
+        <View style={{ height: insets.bottom + 110 }} />
       </ScrollView>
+
+      {isPending ? (
+        <PrimaryActionBar
+          label={t('esignature.sendReminder')}
+          icon="bell-ring"
+          color="#FF9800"
+          loading={actionLoading === 'reminder'}
+          disabled={!!actionLoading}
+          onPress={handleSendReminder}
+        />
+      ) : isSigned && (document.signedFileUrl || document.documentUrl) ? (
+        <PrimaryActionBar
+          label={t('esignature.downloadSigned')}
+          icon="download"
+          color="#4CAF50"
+          onPress={handleDownloadSigned}
+        />
+      ) : null}
     </View>
   );
 }
@@ -738,6 +654,7 @@ const styles = StyleSheet.create({
     gap: 4,
     marginTop: 2,
   },
+  signerActionBtn: { borderRadius: 8 },
   signerActions: {
     gap: 8,
     marginTop: 10,

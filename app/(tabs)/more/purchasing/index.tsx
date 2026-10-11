@@ -37,7 +37,12 @@ import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowe
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { purchaseOrdersApi, PurchaseOrder } from '../../../../services/api/purchaseOrders';
 import { suppliersApi, Supplier } from '../../../../services/api/suppliers';
-import { formatDate, withAlpha } from '../../../../utils/formatters';
+import { formatDate, withAlpha, formatCurrency } from '../../../../utils/formatters';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { StatusFilterBar } from '../../../../components/StatusFilterBar';
+import { DocumentListItem } from '../../../../components/DocumentListItem';
+import { EmptyState } from '../../../../components/EmptyState';
 import { borderRadius } from '../../../../constants/theme';
 import { appCache } from '../../../../services/cache';
 
@@ -196,9 +201,9 @@ export default function PurchasingScreen() {
   // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
   const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
-  const filtered = useMemo(() => {
+  // Search applies to counts + list; the status chip only narrows the list.
+  const baseList = useMemo(() => {
     let result = Array.isArray(orders) ? orders : [];
-    if (statusFilter !== 'all') result = result.filter(o => o.status === statusFilter);
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.toLowerCase();
       result = result.filter(o =>
@@ -207,12 +212,23 @@ export default function PurchasingScreen() {
         o.notes?.toLowerCase().includes(q),
       );
     }
+    return result;
+  }, [orders, debouncedSearch]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const o of baseList) c[o.status] = (c[o.status] || 0) + 1;
+    return c;
+  }, [baseList]);
+
+  const filtered = useMemo(() => {
+    const result = statusFilter === 'all' ? [...baseList] : baseList.filter(o => o.status === statusFilter);
     return result.sort((a, b) => {
       const aD = a.createdOn ? new Date(a.createdOn).getTime() : 0;
       const bD = b.createdOn ? new Date(b.createdOn).getTime() : 0;
       return bD - aD;
     });
-  }, [orders, statusFilter, debouncedSearch]);
+  }, [baseList, statusFilter]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visiblePOs, hasMore: poHasMore, loadMore: poLoadMore, loadAll: poLoadAll, count: poCount } = useWindowedList(filtered, {
@@ -220,90 +236,29 @@ export default function PurchasingScreen() {
     resetKey: `${statusFilter}|${debouncedSearch}`,
   });
 
-  const renderCard = useCallback(({ item }: { item: PurchaseOrder }) => {
-    const color = STATUS_COLORS[item.status] || '#9E9E9E';
-    const icon = STATUS_ICONS[item.status] || 'file-document-outline';
-    return (
-      <Pressable
-        onLongPress={() => {
-          Alert.alert(
-            item.supplierName || t('purchasing.purchaseOrder'),
-            '',
-            [
-              { text: t('common.cancel'), style: 'cancel' },
-              ...(['draft', 'ordered', 'partial', 'received', 'cancelled'].map(s => ({
-                text: s === 'draft' ? t('purchasing.statusDraft') : s === 'ordered' ? t('purchasing.statusOrdered') : s === 'partial' ? t('purchasing.statusPartial') : s === 'received' ? t('purchasing.statusReceived') : t('purchasing.statusCancelled'),
-                onPress: () => handleStatusChange(item, s),
-              }))),
-              { text: t('common.delete'), style: 'destructive', onPress: () => handleDelete(item) },
-            ],
-          );
-        }}
-        android_ripple={{ color: theme.colors.surfaceVariant }}
-        style={({ pressed }) => [
-          styles.card,
-          {
-            backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom?.cardBackground || theme.colors.surface,
-            borderColor: theme.colors.outlineVariant,
-          },
-        ]}
-      >
-        <View style={[styles.cardBar, { backgroundColor: color }]} />
-        <View style={styles.cardBody}>
-          <View style={[styles.cardHeader, { flexDirection }]}>
-            <View style={{ flex: 1, gap: 2 }}>
-              <Text variant="titleSmall" style={[{ color: theme.colors.onSurface, fontWeight: '700', textAlign }]} numberOfLines={1}>
-                {item.supplierName || t('purchasing.noSupplier')}
-              </Text>
-              {item.poNumber ? (
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>
-                  #{item.poNumber}
-                </Text>
-              ) : null}
-            </View>
-            <View style={[styles.statusBadge, { backgroundColor: withAlpha(color, 0.094) }]}>
-              <MaterialCommunityIcons name={icon as any} size={13} color={color} />
-              <Text variant="labelSmall" style={{ color, fontWeight: '600', fontSize: 11 }}>
-                {item.status === 'draft' ? 'טיוטה' : item.status === 'ordered' ? 'הוזמן' : item.status === 'partial' ? 'חלקי' : item.status === 'received' ? 'התקבל' : item.status === 'cancelled' ? 'בוטל' : item.status}
-              </Text>
-            </View>
-          </View>
+  const statusLabel = useCallback((st: string) => (
+    st === 'draft' ? t('purchasing.statusDraft')
+      : st === 'ordered' ? t('purchasing.statusOrdered')
+        : st === 'partial' ? t('purchasing.statusPartial')
+          : st === 'received' ? t('purchasing.statusReceived')
+            : st === 'cancelled' ? t('purchasing.statusCancelled')
+              : st
+  ), [t]);
 
-          <Divider style={{ marginVertical: 8, backgroundColor: theme.colors.outlineVariant }} />
+  // No detail screen exists for purchase orders: tapping opens ONE sheet with one-tap status changes + delete.
+  const [actionOrder, setActionOrder] = useState<PurchaseOrder | null>(null);
 
-          <View style={[styles.cardMeta, { flexDirection }]}>
-            {item.createdOn ? (
-              <View style={[styles.metaRow, { flexDirection }]}>
-                <MaterialCommunityIcons name="calendar-outline" size={13} color={theme.colors.onSurfaceVariant} />
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {formatDate(item.createdOn)}
-                </Text>
-              </View>
-            ) : null}
-            {item.expectedDate ? (
-              <View style={[styles.metaRow, { flexDirection }]}>
-                <MaterialCommunityIcons name="truck-delivery-outline" size={13} color={theme.colors.onSurfaceVariant} />
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {formatDate(item.expectedDate)}
-                </Text>
-              </View>
-            ) : null}
-            {item.total != null && item.total > 0 ? (
-              <Text variant="titleSmall" style={{ color: BRAND_COLOR, fontWeight: '700' }}>
-                {item.currency || '₪'}{Number(item.total).toFixed(2)}
-              </Text>
-            ) : null}
-          </View>
-
-          {item.notes ? (
-            <Text variant="bodySmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, textAlign }}>
-              {item.notes}
-            </Text>
-          ) : null}
-        </View>
-      </Pressable>
-    );
-  }, [theme, flexDirection, textAlign, t, handleStatusChange, handleDelete]);
+  const renderCard = useCallback(({ item }: { item: PurchaseOrder }) => (
+    <DocumentListItem
+      title={item.supplierName || t('purchasing.noSupplier')}
+      subtitle={[item.poNumber ? `#${item.poNumber}` : '', item.notes || ''].filter(Boolean).join(' · ')}
+      amount={item.total != null && item.total > 0 ? formatCurrency(Number(item.total), item.currency || '₪') : ''}
+      statusLabel={statusLabel(item.status)}
+      statusColor={STATUS_COLORS[item.status] || '#9E9E9E'}
+      date={item.expectedDate ? `${t('purchasing.expected', 'צפוי')} ${formatDate(item.expectedDate)}` : item.createdOn ? formatDate(item.createdOn) : ''}
+      onPress={() => setActionOrder(item)}
+    />
+  ), [t, statusLabel]);
 
   if (loading && orders.length === 0) {
     return (
@@ -315,53 +270,26 @@ export default function PurchasingScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        <Appbar.BackAction onPress={() => router.back()} color="#FFF" />
-        <Appbar.Content title={t('more.purchasing') || 'רכש'} titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 18 }} />
-        <Appbar.Action
-          icon={searchVisible ? 'close' : 'magnify'}
-          color="#FFF"
-          onPress={() => { setSearchVisible(!searchVisible); if (searchVisible) setSearchQuery(''); }}
-        />
-        <Appbar.Action icon="plus" color="#FFF" onPress={() => setCreateVisible(true)} />
-      </Appbar.Header>
+      <ScreenHeader title={t('more.purchasing') || 'רכש'} onBack={() => router.back()} color={BRAND_COLOR} />
 
-      {searchVisible && (
-        <View style={{ paddingHorizontal: 14, paddingVertical: 8, backgroundColor: theme.colors.surface }}>
-          <Searchbar
-            placeholder={t('purchasing.search')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={[styles.searchbar, { backgroundColor: theme.colors.surfaceVariant }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
-          />
-        </View>
-      )}
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('purchasing.search')}
+      />
 
-      {/* Status filter chips */}
-      <View style={[styles.filtersRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filtersScroll, { flexDirection }]}>
-          {STATUS_FILTERS.map((f) => {
-            const chipColor = f === 'all' ? BRAND_COLOR : (STATUS_COLORS[f] || BRAND_COLOR);
-            const isActive = statusFilter === f;
-            const label = f === 'all' ? t('common.all') : f === 'draft' ? t('purchasing.statusDraft') : f === 'ordered' ? t('purchasing.statusOrdered') : f === 'partial' ? t('purchasing.statusPartial') : f === 'received' ? t('purchasing.statusReceived') : t('purchasing.statusCancelled');
-            return (
-              <Chip
-                key={f}
-                selected={isActive}
-                onPress={() => setStatusFilter(f)}
-                compact
-                style={[styles.filterChip, isActive ? { backgroundColor: `${chipColor}20`, borderColor: chipColor, borderWidth: 1 } : { backgroundColor: theme.colors.surfaceVariant }]}
-                textStyle={[{ fontSize: 12 }, isActive && { color: chipColor, fontWeight: '600' }]}
-              >
-                {label}
-              </Chip>
-            );
-          })}
-        </ScrollView>
-      </View>
+      <StatusFilterBar
+        allLabel={t('common.all')}
+        allCount={baseList.length}
+        options={STATUS_FILTERS.filter((f) => f !== 'all').map((st) => ({
+          key: st,
+          label: statusLabel(st),
+          color: STATUS_COLORS[st] || BRAND_COLOR,
+          count: counts[st] || 0,
+        }))}
+        value={statusFilter}
+        onChange={(k) => setStatusFilter(k as StatusFilter)}
+      />
 
       {error ? (
         <Pressable onPress={fetchOrders} style={[styles.errorBanner, { backgroundColor: theme.colors.errorContainer }]}>
@@ -392,15 +320,57 @@ export default function PurchasingScreen() {
         showsVerticalScrollIndicator={false}
         ListEmptyComponent={
           loading ? null : (
-            <View style={styles.emptyContainer}>
-              <MaterialCommunityIcons name="cart-arrow-down" size={72} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.3 }} />
-              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginTop: 12 }}>
-                {t('purchasing.noPOs')}
-              </Text>
-            </View>
+            <EmptyState
+              icon="cart-arrow-down"
+              title={orders.length > 0 ? t('common.noResults') : t('purchasing.noPOs')}
+              actionLabel={orders.length > 0 ? undefined : t('purchasing.newPO')}
+              onAction={orders.length > 0 ? undefined : () => setCreateVisible(true)}
+            />
           )
         }
       />
+
+      <Portal>
+        <Modal
+          visible={!!actionOrder}
+          onDismiss={() => setActionOrder(null)}
+          contentContainerStyle={{ marginHorizontal: 24, borderRadius: 16, padding: 20, backgroundColor: theme.colors.surface }}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 4, textAlign }}>
+            {actionOrder?.supplierName || t('purchasing.purchaseOrder')}
+          </Text>
+          {actionOrder?.poNumber ? (
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, textAlign }}>#{actionOrder.poNumber}</Text>
+          ) : null}
+          {(['draft', 'ordered', 'partial', 'received', 'cancelled'] as const).map((st) => {
+            const c = STATUS_COLORS[st] || '#9E9E9E';
+            const current = actionOrder?.status === st;
+            return (
+              <Pressable
+                key={st}
+                disabled={current}
+                onPress={() => { const o = actionOrder; setActionOrder(null); if (o) handleStatusChange(o, st); }}
+                style={({ pressed }) => [
+                  { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 10 },
+                  { backgroundColor: current ? withAlpha(c, 0.12) : pressed ? theme.colors.surfaceVariant : 'transparent' },
+                ]}
+              >
+                <MaterialCommunityIcons name={(STATUS_ICONS[st] || 'file-document-outline') as any} size={20} color={c} />
+                <Text style={{ flex: 1, color: current ? c : theme.colors.onSurface, fontWeight: current ? '700' : '400' }}>{statusLabel(st)}</Text>
+                {current ? <MaterialCommunityIcons name="check" size={20} color={c} /> : null}
+              </Pressable>
+            );
+          })}
+          <Divider style={{ marginVertical: 8 }} />
+          <Pressable
+            onPress={() => { const o = actionOrder; setActionOrder(null); if (o) handleDelete(o); }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12 }}
+          >
+            <MaterialCommunityIcons name="delete-outline" size={20} color="#F44336" />
+            <Text style={{ color: '#F44336', fontWeight: '600' }}>{t('common.delete')}</Text>
+          </Pressable>
+        </Modal>
+      </Portal>
 
       <FAB
         icon="plus"

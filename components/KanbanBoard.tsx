@@ -4,6 +4,7 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
+  RefreshControl,
   LayoutChangeEvent,
   useWindowDimensions,
 } from 'react-native';
@@ -25,8 +26,11 @@ import * as Haptics from 'expo-haptics';
 import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../hooks/useAppTheme';
 import { useRTL } from '../hooks/useRTL';
+import { withAlpha } from '../utils/formatters';
 
-const CARD_HEIGHT = 80;
+const COLUMN_GAP = 10;
+// Cards rendered per column before a 'show more' footer — keeps the board fast with thousands of leads.
+const PAGE_CARDS = 25;
 // Auto-scroll tuning: how close to an edge (px) triggers scrolling, and px per ~16ms tick.
 const EDGE_ZONE = 72;
 const SCROLL_STEP = 16;
@@ -36,6 +40,8 @@ export interface KanbanColumn<T = any> {
   title: string;
   color: string;
   icon?: string;
+  /** Short summary shown under the title (e.g. total value of the column). */
+  subtitle?: string;
   items: T[];
 }
 
@@ -46,6 +52,8 @@ interface KanbanBoardProps<T> {
   keyExtractor: (item: T) => string;
   emptyLabel?: string;
   columnWidth?: number;
+  refreshing?: boolean;
+  onRefresh?: () => void;
 }
 
 export function KanbanBoard<T>({
@@ -55,13 +63,17 @@ export function KanbanBoard<T>({
   keyExtractor,
   emptyLabel = 'אין פריטים',
   columnWidth: columnWidthProp,
+  refreshing = false,
+  onRefresh,
 }: KanbanBoardProps<T>) {
   const theme = useAppTheme();
   const { flexDirection, isRTL } = useRTL();
   const { t } = useTranslation();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLandscape = windowWidth > windowHeight;
-  const columnWidth = columnWidthProp ?? (isLandscape ? windowWidth * 0.35 : windowWidth * 0.72);
+  const columnWidth = columnWidthProp ?? (isLandscape ? windowWidth * 0.35 : windowWidth * 0.8);
+  const [containerHeight, setContainerHeight] = useState(0);
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
 
   const [dragging, setDragging] = useState<{ item: T; fromColumnId: string } | null>(null);
   const [highlightColumn, setHighlightColumn] = useState<string | null>(null);
@@ -233,7 +245,14 @@ export function KanbanBoard<T>({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.container}
         onScroll={(e) => { scrollOffset.current = e.nativeEvent.contentOffset.x; }}
-        onLayout={(e) => { containerWidth.current = e.nativeEvent.layout.width; }}
+        onLayout={(e) => {
+          containerWidth.current = e.nativeEvent.layout.width;
+          setContainerHeight(e.nativeEvent.layout.height);
+        }}
+        // Snap column-by-column so the board pages instead of free-scrolling.
+        snapToInterval={columnWidth + COLUMN_GAP}
+        snapToAlignment="start"
+        decelerationRate="fast"
         onContentSizeChange={(w) => { contentWidth.current = w; }}
         scrollEventThrottle={16}
         scrollEnabled={!dragging}
@@ -243,15 +262,15 @@ export function KanbanBoard<T>({
           return (
             <View
               key={column.id}
-              style={[styles.column, { width: columnWidth }]}
+              style={[styles.column, { width: columnWidth }, containerHeight > 0 && { height: Math.max(220, containerHeight - 24) }]}
               onLayout={(e) => handleColumnLayout(column.id, e)}
             >
               <View
                 style={[
                   styles.columnHeader,
                   {
-                    backgroundColor: `${column.color}15`,
-                    borderBottomColor: column.color,
+                    backgroundColor: withAlpha(column.color, 0.1),
+                    borderTopColor: column.color,
                   },
                   isHighlighted && styles.columnHighlight,
                 ]}
@@ -264,14 +283,25 @@ export function KanbanBoard<T>({
                       color={column.color}
                     />
                   )}
-                  <Text
-                    variant="labelLarge"
-                    style={{ color: column.color, fontWeight: '700', flex: 1 }}
-                    numberOfLines={1}
-                  >
-                    {column.title}
-                  </Text>
-                  <View style={[styles.badge, { backgroundColor: `${column.color}25` }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      variant="labelLarge"
+                      style={{ color: column.color, fontWeight: '700' }}
+                      numberOfLines={1}
+                    >
+                      {column.title}
+                    </Text>
+                    {column.subtitle ? (
+                      <Text
+                        variant="labelSmall"
+                        style={{ color: theme.colors.onSurfaceVariant, marginTop: 1 }}
+                        numberOfLines={1}
+                      >
+                        {column.subtitle}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <View style={[styles.badge, { backgroundColor: withAlpha(column.color, 0.2) }]}>
                     <Text variant="labelSmall" style={{ color: column.color, fontWeight: '700' }}>
                       {column.items.length}
                     </Text>
@@ -290,9 +320,13 @@ export function KanbanBoard<T>({
                 contentContainerStyle={styles.columnContent}
                 showsVerticalScrollIndicator={false}
                 scrollEnabled={!dragging}
+                nestedScrollEnabled
+                refreshControl={onRefresh ? (
+                  <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[theme.colors.primary]} tintColor={theme.colors.primary} />
+                ) : undefined}
               >
                 {isHighlighted && (
-                  <View style={[styles.dropZone, { borderColor: column.color, backgroundColor: `${column.color}12` }]}>
+                  <View style={[styles.dropZone, { borderColor: column.color, backgroundColor: withAlpha(column.color, 0.07) }]}>
                     <MaterialCommunityIcons name="tray-arrow-down" size={22} color={column.color} />
                     <Text style={[styles.dropZoneText, { color: column.color }]}>
                       {t('kanban.dropHere', isRTL ? 'גרור ושחרר כאן' : 'Drag & drop here')}
@@ -308,8 +342,18 @@ export function KanbanBoard<T>({
                     </View>
                   ) : null
                 ) : (
-                  column.items.map((item) => renderDraggableCard(item, column.id))
+                  column.items.slice(0, visibleCounts[column.id] ?? PAGE_CARDS).map((item) => renderDraggableCard(item, column.id))
                 )}
+                {column.items.length > (visibleCounts[column.id] ?? PAGE_CARDS) ? (
+                  <Pressable
+                    onPress={() => setVisibleCounts((prev) => ({ ...prev, [column.id]: (prev[column.id] ?? PAGE_CARDS) + PAGE_CARDS }))}
+                    style={[styles.showMore, { backgroundColor: withAlpha(column.color, 0.12) }]}
+                  >
+                    <Text style={{ color: column.color, fontSize: 12, fontWeight: '700' }}>
+                      {t('kanban.showMore', isRTL ? 'הצג עוד' : 'Show more')} ({column.items.length - (visibleCounts[column.id] ?? PAGE_CARDS)})
+                    </Text>
+                  </Pressable>
+                ) : null}
               </ScrollView>
             </View>
           );
@@ -339,8 +383,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.02)',
   },
   columnHeader: {
-    padding: 12,
-    borderBottomWidth: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderTopWidth: 4,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  showMore: {
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
   },
   columnHeaderInner: {
     alignItems: 'center',
@@ -359,7 +411,6 @@ const styles = StyleSheet.create({
   },
   columnBody: {
     flex: 1,
-    maxHeight: 500,
   },
   columnContent: {
     padding: 8,

@@ -24,6 +24,7 @@ import {
   IconButton,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
@@ -33,11 +34,15 @@ import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowe
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { suppliersApi, Supplier } from '../../../../services/api/suppliers';
 import { borderRadius } from '../../../../constants/theme';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { ListToolbar } from '../../../../components/ListToolbar';
+import { EmptyState } from '../../../../components/EmptyState';
 import { appCache } from '../../../../services/cache';
 
 const BRAND_COLOR = '#7C3AED';
 
 export default function SuppliersScreen() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
@@ -235,23 +240,13 @@ export default function SuppliersScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: BRAND_COLOR }} mode="center-aligned">
-        {searchVisible ? (
-          <Searchbar
-            placeholder={t('common.search')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            style={styles.searchBar}
-            autoFocus
-            onIconPress={() => { setSearchVisible(false); setSearchQuery(''); }}
-          />
-        ) : (
-          <>
-            <Appbar.Content title={t('more.suppliers')} titleStyle={styles.headerTitle} />
-            <Appbar.Action icon="magnify" color="#fff" onPress={() => setSearchVisible(true)} />
-          </>
-        )}
-      </Appbar.Header>
+      <ScreenHeader title={t('more.suppliers')} onBack={() => router.back()} />
+
+      <ListToolbar
+        query={searchQuery}
+        onChangeQuery={setSearchQuery}
+        placeholder={t('common.search')}
+      />
 
       {error ? (
         <View style={styles.centered}>
@@ -277,10 +272,14 @@ export default function SuppliersScreen() {
           onEndReached={supHasMore ? supLoadMore : undefined}
           onEndReachedThreshold={0.4}
           ListEmptyComponent={
-            <View style={styles.centered}>
-              <MaterialCommunityIcons name="store-off-outline" size={48} color={theme.colors.onSurfaceVariant} />
-              <Text style={{ marginTop: 12, color: theme.colors.onSurfaceVariant }}>{t('common.noResults')}</Text>
-            </View>
+            loading ? null : (
+              <EmptyState
+                icon="store-outline"
+                title={suppliers.length > 0 ? t('common.noResults') : t('more.suppliers')}
+                actionLabel={suppliers.length > 0 ? undefined : t('common.create')}
+                onAction={suppliers.length > 0 ? undefined : openCreate}
+              />
+            )
           }
         />
       )}

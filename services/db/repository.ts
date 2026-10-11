@@ -14,6 +14,10 @@ export interface ColumnDef {
   name: string;
   type?: ColumnType;
   index?: boolean;
+  // Used only when the column is added to an already-existing table (schema migration): rows that
+  // are already cached get `SET <col> = backfill.value WHERE backfill.where`, both SQL expressions
+  // over the stored `data` JSON. Rows not matched stay NULL until the next sync rewrites them.
+  backfill?: { value: string; where: string };
 }
 
 export interface TableDef {
@@ -40,13 +44,25 @@ export interface QueryOptions {
 }
 
 const ensured = new Set<string>();
+const ensuring = new Map<string, Promise<void>>();
 
 function ftsTable(name: string): string {
   return `${name}_fts`;
 }
 
-export async function ensureTable(def: TableDef): Promise<void> {
-  if (ensured.has(def.name)) return;
+// Concurrent callers (list + sync + store) share one in-flight setup so a schema migration
+// (ALTER TABLE) can never run twice at once.
+export function ensureTable(def: TableDef): Promise<void> {
+  if (ensured.has(def.name)) return Promise.resolve();
+  let p = ensuring.get(def.name);
+  if (!p) {
+    p = ensureTableInner(def).finally(() => ensuring.delete(def.name));
+    ensuring.set(def.name, p);
+  }
+  return p;
+}
+
+async function ensureTableInner(def: TableDef): Promise<void> {
   const db = await getDb();
 
   const colDefs = def.columns
@@ -62,6 +78,28 @@ export async function ensureTable(def: TableDef): Promise<void> {
       updatedAt INTEGER NOT NULL DEFAULT 0
     );`,
   );
+
+  // Forward migration: CREATE TABLE IF NOT EXISTS never alters an existing table, so columns added
+  // to a TableDef after users already have the cache are added here (once) and optionally backfilled.
+  try {
+    const existing = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${def.name});`);
+    const have = new Set(existing.map((r) => r.name));
+    for (const c of def.columns) {
+      if (have.has(c.name)) continue;
+      await db.execAsync(`ALTER TABLE ${def.name} ADD COLUMN ${c.name} ${c.type || 'TEXT'};`);
+      if (c.backfill) {
+        try {
+          await db.execAsync(
+            `UPDATE ${def.name} SET ${c.name} = ${c.backfill.value} WHERE ${c.backfill.where};`,
+          );
+        } catch {
+          // JSON functions unavailable - the next sync rewrites the rows with the column filled.
+        }
+      }
+    }
+  } catch {
+    // best-effort; a failed migration surfaces as a query error the caller already tolerates
+  }
 
   for (const c of def.columns) {
     if (c.index) {

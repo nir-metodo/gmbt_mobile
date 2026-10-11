@@ -77,6 +77,7 @@ interface MessageBubbleProps {
   onSwipeToReply?: (message: Message) => void;
   wabaNumbers?: WabaNumberInfo[];
   onCancelScheduled?: (scheduledMessageId: string) => void;
+  onRetry?: (message: Message) => void;
 }
 
 const SWIPE_THRESHOLD = 60;
@@ -93,6 +94,7 @@ function MessageBubbleInner({
   onSwipeToReply,
   wabaNumbers,
   onCancelScheduled,
+  onRetry,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isInternal = message.type === 'internal';
@@ -356,6 +358,23 @@ function MessageBubbleInner({
       case 'read':
         return <MaterialCommunityIcons name="check-all" size={size} color="#53bdeb" />;
       case 'failed':
+        // One-tap retry (WhatsApp-style): the red icon + label is the retry button.
+        if (onRetry) {
+          return (
+            <Pressable
+              onPress={() => onRetry(message)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel={t('chats.retrySend', 'לא נשלח - הקש לניסיון חוזר')}
+              style={{ flexDirection: 'row', alignItems: 'center', marginStart: 4 }}
+            >
+              <MaterialCommunityIcons name="alert-circle" size={size} color="#ef4444" />
+              <Text style={{ color: '#ef4444', fontSize: 11, fontWeight: '700', marginStart: 2 }}>
+                {t('chats.retryShort', 'נסה שוב')}
+              </Text>
+            </Pressable>
+          );
+        }
         return <MaterialCommunityIcons name="alert-circle-outline" size={size} color="#ef4444" />;
       default:
         return null;

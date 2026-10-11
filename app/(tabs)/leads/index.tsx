@@ -4,7 +4,6 @@ import {
   StyleSheet,
   Pressable,
   RefreshControl,
-  Animated,
   ScrollView,
   Alert,
   Linking,
@@ -12,7 +11,7 @@ import {
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton, Snackbar } from 'react-native-paper';
+import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton, Snackbar, Menu } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../components/KanbanBoard';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -28,7 +27,7 @@ import axiosInstance from '../../../services/api/axiosInstance';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { getDataVisibility } from '../../../constants/permissions';
-import { formatCurrency, formatDate, getInitials, withAlpha } from '../../../utils/formatters';
+import { formatCurrency, formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../utils/formatters';
 import { placeSmartCall } from '../../../utils/phoneCall';
 import { spacing, borderRadius } from '../../../constants/theme';
 import type { Lead, LeadStage } from '../../../types';
@@ -83,6 +82,58 @@ interface SavedView {
 }
 
 const LeadDivider = () => <Divider />;
+
+// yyyy-MM-dd in local time (the backend interprets dateFrom/dateTo as Israel-local days).
+function ymd(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// Resolve an advanced-filter date preset into the dateFrom/dateTo the backend actually understands.
+function presetToRange(preset: string): { dateFrom?: string; dateTo?: string } {
+  if (!preset) return {};
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  switch (preset) {
+    case 'Today':
+      return { dateFrom: ymd(start), dateTo: ymd(start) };
+    case 'This Week': {
+      const from = new Date(start);
+      from.setDate(start.getDate() - start.getDay()); // week starts Sunday (Israel)
+      return { dateFrom: ymd(from), dateTo: ymd(start) };
+    }
+    case 'This Month':
+      return { dateFrom: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), dateTo: ymd(start) };
+    case 'Last Month':
+      return {
+        dateFrom: ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)),
+        dateTo: ymd(new Date(now.getFullYear(), now.getMonth(), 0)),
+      };
+    case 'This Year':
+      return { dateFrom: ymd(new Date(now.getFullYear(), 0, 1)), dateTo: ymd(start) };
+    default:
+      return {};
+  }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STALE_DAYS = 7;
+const OTHER_COLUMN_ID = '__other';
+
+// Sum lead values per currency symbol (a column / list can mix currencies).
+function summarizeValue(leads: Lead[]): string {
+  const totals = new Map<string, number>();
+  leads.forEach((l) => {
+    const v = Number(l.value);
+    if (!v || v <= 0) return;
+    const cur = l.currency ?? '₪';
+    totals.set(cur, (totals.get(cur) || 0) + v);
+  });
+  return Array.from(totals.entries())
+    .map(([cur, sum]) => `${cur}${Math.round(sum).toLocaleString('he-IL')}`)
+    .join(' · ');
+}
 
 // Single-select chip group used by the advanced filter to let users pick from the
 // distinct values that actually exist in the org's leads (UTM, campaign, source...).
@@ -194,12 +245,87 @@ function LeadTaskBadge({
   );
 }
 
+const OWNER_COLORS = ['#2e6155', '#3b82f6', '#9C27B0', '#f59e0b', '#06b6d4', '#ef4444', '#8b5cf6', '#10b981'];
+
+// Compact owner avatar (initials on a stable per-name color); a dashed placeholder when unassigned.
+function OwnerAvatar({ name, theme, size = 22 }: { name?: string; theme: any; size?: number }) {
+  if (!name) {
+    return (
+      <View style={{ width: size, height: size, borderRadius: size / 2, borderWidth: 1, borderStyle: 'dashed', borderColor: theme.colors.outline, alignItems: 'center', justifyContent: 'center' }}>
+        <MaterialCommunityIcons name="account-outline" size={size * 0.62} color={theme.colors.onSurfaceVariant} />
+      </View>
+    );
+  }
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return (
+    <Avatar.Text
+      size={size}
+      label={getInitials(name)}
+      style={{ backgroundColor: OWNER_COLORS[hash % OWNER_COLORS.length] }}
+      labelStyle={{ fontSize: size * 0.42, lineHeight: size * 0.5, color: '#fff' }}
+    />
+  );
+}
+
+// One-tap filter pill used by the quick-filter row.
+function QuickChip({
+  theme,
+  icon,
+  label,
+  color,
+  active,
+  onPress,
+  count,
+  caret,
+  disabled,
+}: {
+  theme: any;
+  icon: string;
+  label: string;
+  color: string;
+  active?: boolean;
+  onPress: () => void;
+  count?: number;
+  caret?: boolean;
+  disabled?: boolean;
+}) {
+  const fg = active ? color : theme.colors.onSurfaceVariant;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={[
+        styles.quickChip,
+        {
+          backgroundColor: active ? withAlpha(color, 0.14) : theme.colors.surfaceVariant,
+          borderColor: active ? color : 'transparent',
+          opacity: disabled ? 0.6 : 1,
+        },
+      ]}
+    >
+      <MaterialCommunityIcons name={icon as any} size={14} color={fg} />
+      <Text style={{ fontSize: 12, fontWeight: active ? '700' : '500', color: fg }} numberOfLines={1}>
+        {label}
+      </Text>
+      {count != null && count > 0 ? (
+        <View style={{ backgroundColor: color, borderRadius: 8, minWidth: 16, paddingHorizontal: 4, alignItems: 'center' }}>
+          <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{count}</Text>
+        </View>
+      ) : null}
+      {caret ? <MaterialCommunityIcons name="chevron-down" size={14} color={fg} /> : null}
+    </Pressable>
+  );
+}
+
 export default function LeadsListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
   const { t } = useTranslation();
+  // Inline he/en strings for the new UI (no i18n file changes).
+  const tr = useCallback((he: string, en: string) => (isRTL ? he : en), [isRTL]);
 
   const user = useAuthStore((s) => s.user);
   const organization = user?.organization ?? '';
@@ -242,9 +368,13 @@ export default function LeadsListScreen() {
   const [filterOptions, setFilterOptions] = useState<Record<string, string[]>>({});
 
   // ── UI state ────────────────────────────────────────────────────────────────
-  const [searchVisible, setSearchVisible] = useState(false);
   const [advancedFilterVisible, setAdvancedFilterVisible] = useState(false);
-  const searchAnim = useRef(new Animated.Value(0)).current;
+  const [moreMenuVisible, setMoreMenuVisible] = useState(false);
+  const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  const [stageFilterVisible, setStageFilterVisible] = useState(false);
+  // One-tap client-side quick filters (combine with saved views / advanced filter / task chips).
+  type QuickFilterKey = 'hot' | 'today' | 'unassigned' | 'highValue' | 'stale';
+  const [quickFilters, setQuickFilters] = useState<QuickFilterKey[]>([]);
   const [stagePickerLead, setStagePickerLead] = useState<Lead | null>(null);
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
   const fetchingRef = useRef(false);
@@ -354,19 +484,20 @@ export default function LeadsListScreen() {
   // ── Build filter object for API ─────────────────────────────────────────────
   const buildFilters = useCallback(() => ({
     searchTerm: debouncedSearch.trim(),
-    stages: selectedStage ? [selectedStage] : [],
+    // Stage + owner are filtered client-side: the backend matches stages by stageId and owners by
+    // ownerId, while the UI picks stage NAMES / free-text owner names (so server filtering matched nothing).
     sources: filterSource.trim() ? [filterSource.trim()] : [],
-    owners: filterOwner.trim() ? [filterOwner.trim()] : [],
     statuses: filterStatus ? [filterStatus] : [],
     priorities: filterPriority ? [filterPriority] : [],
-    dateRangePreset: filterDateRange || '',
+    // The backend ignores dateRangePreset (it only reads dateFrom/dateTo), so resolve the preset here.
+    ...presetToRange(filterDateRange),
     utmSource: filterUtmSource.trim(),
     utmMedium: filterUtmMedium.trim(),
     utmCampaign: filterUtmCampaign.trim(),
     campaignId: filterCampaignId.trim(),
     formId: filterFormId.trim(),
     adId: filterAdId.trim(),
-  }), [debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId]);
+  }), [debouncedSearch, filterSource, filterStatus, filterPriority, filterDateRange, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId]);
 
   // Attribution filters rendered as selectable chips, but only when the org's leads
   // actually contain values for that field (sections with no data stay hidden).
@@ -379,25 +510,35 @@ export default function LeadsListScreen() {
     { key: 'adId', label: t('leads.adId', 'Ad ID'), value: filterAdId, set: setFilterAdId },
   ];
 
+  // Data scope sent with every request: "Mine" and own-only roles are enforced server-side.
+  const requestScope = useCallback(() => {
+    const ownOnly = filterMine || getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own';
+    return {
+      dataVisibility: ownOnly ? 'own' : 'seeAll',
+      userId: ownOnly ? (user?.uID || user?.userId || '') : '',
+    };
+  }, [filterMine, user]);
+
+  // Monotonic request id: a newer request (filter change / refresh / load-all) supersedes any
+  // in-flight one so a slow earlier response can never overwrite fresher data.
+  const requestSeqRef = useRef(0);
+
   // ── Fetch a page ────────────────────────────────────────────────────────────
   const fetchPage = useCallback(async (pageNum: number, reset: boolean) => {
-    if (!organization || fetchingRef.current) return;
+    if (!organization) return;
+    // Load-more calls are serialised; a reset (filter change / refresh) always runs and wins.
+    if (!reset && fetchingRef.current) return;
+    const seq = reset ? ++requestSeqRef.current : requestSeqRef.current;
     fetchingRef.current = true;
-    if (reset) setIsLoading(true); else setLoadingMore(true);
+    if (reset) { setIsLoading(true); setLoadingMore(false); setLoadingAll(false); } else setLoadingMore(true);
     try {
       const result = await leadsApi.getAll(organization, {
         page: pageNum,
         pageSize: PAGE_SIZE,
         filters: buildFilters(),
-        dataVisibility: filterMine
-          ? 'own'
-          : getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own'
-            ? 'own'
-            : 'seeAll',
-        userId: (filterMine || getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own')
-          ? (user?.uID || user?.userId || '')
-          : '',
+        ...requestScope(),
       });
+      if (seq !== requestSeqRef.current) return; // superseded
       const newItems = result.data ?? [];
       const total = result.total ?? 0;
       setTotalCount(total);
@@ -413,33 +554,32 @@ export default function LeadsListScreen() {
     } catch {
       /* keep existing data on error */
     } finally {
-      fetchingRef.current = false;
-      if (reset) setIsLoading(false); else setLoadingMore(false);
+      if (seq === requestSeqRef.current) {
+        fetchingRef.current = false;
+        if (reset) setIsLoading(false); else setLoadingMore(false);
+      }
     }
-  }, [organization, buildFilters, filterMine, user]);
+  }, [organization, buildFilters, requestScope]);
 
   // ── Load EVERYTHING in one request ──────────────────────────────────────────
   // The web has a "load all" action; mirror it here. A single large-pageSize request
   // (the lead store already uses pageSize 5000) is reliable, unlike firing many
-  // paged requests in parallel (which the fetchingRef guard would drop). This is also
-  // what the Kanban board needs: it can only group/drag leads that are actually loaded.
+  // paged requests in parallel. This is also what the Kanban board and every client-side
+  // filter (stage, owner, quick chips, task buckets) need: they only see loaded leads.
   const fetchAll = useCallback(async () => {
-    if (!organization || loadingAll) return;
+    if (!organization) return;
+    const seq = ++requestSeqRef.current;
+    fetchingRef.current = true;
     setLoadingAll(true);
+    setLoadingMore(false);
     try {
       const result = await leadsApi.getAll(organization, {
         page: 1,
         pageSize: 5000,
         filters: buildFilters(),
-        dataVisibility: filterMine
-          ? 'own'
-          : getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own'
-            ? 'own'
-            : 'seeAll',
-        userId: (filterMine || getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'leads') === 'own')
-          ? (user?.uID || user?.userId || '')
-          : '',
+        ...requestScope(),
       });
+      if (seq !== requestSeqRef.current) return; // superseded
       const all = result.data ?? [];
       const total = result.total ?? all.length;
       setTotalCount(total);
@@ -451,9 +591,13 @@ export default function LeadsListScreen() {
     } catch {
       /* keep existing data on error */
     } finally {
-      setLoadingAll(false);
+      if (seq === requestSeqRef.current) {
+        fetchingRef.current = false;
+        setLoadingAll(false);
+        setIsLoading(false);
+      }
     }
-  }, [organization, loadingAll, buildFilters, filterMine, user]);
+  }, [organization, buildFilters, requestScope]);
 
   // ── Debounced search ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -461,23 +605,35 @@ export default function LeadsListScreen() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  // Client-side filters / the Board need the WHOLE dataset in memory: a plain page-1 reset would
+  // shrink the pool to the first 30 leads and make them look empty/broken. So while any of them
+  // is active we load everything instead of paging.
+  const needsAll =
+    !!taskQuickFilter ||
+    viewMode === 'pipeline' ||
+    !!selectedStage ||
+    !!filterOwner.trim() ||
+    unseenOnly ||
+    quickFilters.length > 0;
+
   // ── Initial load & filter change → reset ───────────────────────────────────
   useEffect(() => {
     if (!organization) return;
-    // A task quick-filter (today/upcoming/overdue/with-tasks) is a CLIENT-side filter over the
-    // loaded leads, so it needs the WHOLE dataset in memory. A plain fetchPage(1) reset here would
-    // shrink the pool back to the first page and make the filter look empty/broken — reload all
-    // leads instead while a task filter is active.
-    if (taskQuickFilter) {
+    if (needsAll) {
       fetchAll();
     } else {
       fetchPage(1, true);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organization, needsAll, debouncedSearch, filterSource, filterStatus, filterPriority, filterDateRange, filterMine, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId]);
+
+  // Pipeline stages (colors / won / auto-quote config) only depend on the org.
+  useEffect(() => {
+    if (!organization) return;
     leadsApi.getPipelineSettings(organization)
       .then((res) => { if (res.stages.length > 0) setPipelineStages(res.stages); })
       .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization, debouncedSearch, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterMine, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId]);
+  }, [organization]);
 
   // Load distinct filter values that exist in the org's leads (for selectable filters)
   useEffect(() => {
@@ -596,25 +752,18 @@ export default function LeadsListScreen() {
       setTaskQuickFilter(null);
       return;
     }
+    // Combines with the other filters (Mine, quick chips, saved view, advanced). The full lead
+    // dataset is loaded by the needsAll effect as soon as a task filter is active.
     setTaskQuickFilter(type);
-    setActiveViewId('__all');
-    setFilterMine(false);
-    setUnseenOnly(false);
-    setSelectedStage(null);
     setTaskFilterLoading(true);
     try {
       // Always recompute the task→lead buckets from fresh task data on tap, so the filter
       // reflects the latest statuses/due dates (not a stale snapshot from screen mount).
-      const tasksRefresh = fetchActiveTasksForCards();
-      // Load the WHOLE lead dataset in one request so the client-side task filter can match
-      // every lead (a partial page load is why the tab could look empty). Mirrors the web,
-      // which raises pageSize to "all" when a task filter is active.
-      await fetchAll();
-      await tasksRefresh;
+      await fetchActiveTasksForCards();
     } finally {
       setTaskFilterLoading(false);
     }
-  }, [taskQuickFilter, fetchAll, fetchActiveTasksForCards]);
+  }, [taskQuickFilter, fetchActiveTasksForCards]);
 
   useEffect(() => {
     fetchActiveTasksForCards();
@@ -647,23 +796,22 @@ export default function LeadsListScreen() {
         return;
       }
       if (organization) {
-        // Keep the full dataset loaded when a task quick-filter is active so returning from a lead
-        // detail doesn't collapse the pool to page 1 and empty out the filtered list.
-        if (taskQuickFilter) {
+        // Keep the full dataset loaded when a client-side filter / the Board is active so returning
+        // from a lead detail doesn't collapse the pool to page 1 and empty out the filtered list.
+        if (needsAll) {
           fetchAll();
         } else {
           fetchPage(1, true);
         }
         fetchActiveTasksForCards();
       }
-    }, [organization, fetchPage, fetchAll, fetchActiveTasksForCards, taskQuickFilter])
+    }, [organization, fetchPage, fetchAll, fetchActiveTasksForCards, needsAll])
   );
 
   const loadSavedView = useCallback((view: SavedView) => {
     const viewData = view.ViewData || {};
     const filters = viewData.filters || {};
     setActiveViewId(view.id);
-    setFilterMine(false);
     setUnseenOnly(false);
     setTaskQuickFilter(null);
     setSelectedStage(filters.stage ?? null);
@@ -678,7 +826,10 @@ export default function LeadsListScreen() {
     setFilterCampaignId(filters.campaignId ?? '');
     setFilterFormId(filters.formId ?? '');
     setFilterAdId(filters.adId ?? '');
-    if (viewData.searchTerm) setSearchQuery(viewData.searchTerm);
+    // Quick chips / "Mine" are saved with the view too (older views simply don't have them).
+    setQuickFilters(Array.isArray(filters.quick) ? filters.quick : []);
+    setFilterMine(!!filters.mine);
+    setSearchQuery(viewData.searchTerm ?? '');
   }, []);
 
   const clearAllFilters = useCallback(() => {
@@ -698,6 +849,7 @@ export default function LeadsListScreen() {
     setFilterAdId('');
     setFilterMine(false);
     setUnseenOnly(false);
+    setQuickFilters([]);
     setSearchQuery('');
   }, []);
 
@@ -718,6 +870,8 @@ export default function LeadsListScreen() {
           campaignId: filterCampaignId,
           formId: filterFormId,
           adId: filterAdId,
+          quick: quickFilters,
+          mine: filterMine,
         },
         searchTerm: searchQuery,
       };
@@ -740,12 +894,13 @@ export default function LeadsListScreen() {
           UserId: user?.uID || user?.userId,
         };
         setSavedViews((prev) => [...prev, newView]);
+        setActiveViewId(newView.id);
       }
     } catch {}
     setShowSaveViewModal(false);
     setNewViewName('');
     setSaveViewVisibility('personal');
-  }, [newViewName, organization, user, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId, searchQuery, userIsAdmin, saveViewVisibility]);
+  }, [newViewName, organization, user, quickFilters, filterMine, selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId, searchQuery, userIsAdmin, saveViewVisibility]);
 
   const deleteSavedView = useCallback(async (viewId: string) => {
     if (!organization) return;
@@ -767,13 +922,77 @@ export default function LeadsListScreen() {
     fetchPage(page + 1, false);
   }, [hasMore, loadingMore, isLoading, page, fetchPage]);
 
-  // Base lead list for the pipeline/kanban view, honoring the active task quick-filter so
-  // overdue/upcoming/today filtering applies to the board too (not just the list).
-  const pipelineLeads = useMemo(() => {
-    if (!taskQuickFilter) return leads;
-    const ids = taskFilterSets[taskQuickFilter];
-    return leads.filter((l) => ids.has(l.id));
-  }, [leads, taskQuickFilter, taskFilterSets]);
+  const parseTs = useCallback((val: any): number => {
+    if (!val) return 0;
+    if (typeof val === 'number') return val;
+    if (val._seconds) return val._seconds * 1000;
+    if (val.seconds) return val.seconds * 1000;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  }, []);
+
+  const createdTs = useCallback((l: any) => parseTs(l.createdOn || l.CreatedOn || l.createdAt), [parseTs]);
+  // Last activity = last modification, falling back to creation.
+  const lastActivityTs = useCallback(
+    (l: any) => parseTs(l.modifiedOn || l.ModifiedOn || l.updatedOn || l.UpdatedOn || l.updatedAt) || createdTs(l),
+    [parseTs, createdTs],
+  );
+
+  // Won / lost leads are "closed" — never flagged as stale.
+  const isClosedLead = useCallback((lead: Lead) => {
+    const s = pipelineStages.find(
+      (st) => st.id === lead.stageId || st.name === lead.stageName || st.name === lead.stage || st.id === lead.stageName,
+    );
+    if (s) return !!(s.isWon || s.isLost);
+    return /closed|won|lost/i.test(lead.stageName || lead.stage || '');
+  }, [pipelineStages]);
+
+  // "High value" chip threshold: top quartile of the loaded leads' values, rounded to 2 significant digits.
+  const highValueThreshold = useMemo(() => {
+    const vals = leads.map((l) => Number(l.value) || 0).filter((v) => v > 0).sort((a, b) => a - b);
+    if (vals.length < 4) return 10000;
+    const q = vals[Math.floor(vals.length * 0.75)];
+    const mag = Math.pow(10, Math.max(0, String(Math.round(q)).length - 2));
+    return Math.max(1, Math.round(q / mag) * mag);
+  }, [leads]);
+
+  // Distinct owner names in the loaded leads — drives the advanced-filter owner picker.
+  const ownerOptions = useMemo(() => {
+    const set = new Set<string>();
+    leads.forEach((l) => { const n = (l as any).ownerName; if (n) set.add(String(n)); });
+    if (filterOwner.trim()) set.add(filterOwner.trim());
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [leads, filterOwner]);
+
+  // Every client-side filter (unseen, task bucket, owner, quick chips) applied to the loaded leads.
+  // Shared by the List and the Board so both always show the same set.
+  const baseLeads = useMemo(() => {
+    const ownerQ = filterOwner.trim().toLowerCase();
+    const now = Date.now();
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayMs = todayStart.getTime();
+    const taskIds = taskQuickFilter ? taskFilterSets[taskQuickFilter] : null;
+    const hot = quickFilters.includes('hot');
+    const today = quickFilters.includes('today');
+    const unassigned = quickFilters.includes('unassigned');
+    const highValue = quickFilters.includes('highValue');
+    const stale = quickFilters.includes('stale');
+    return leads.filter((l: any) => {
+      if (unseenOnly && seenLeadIds.has(l.id)) return false;
+      if (taskIds && !taskIds.has(l.id)) return false;
+      if (ownerQ && !`${l.ownerName || ''} ${l.ownerId || ''} ${l.owner || ''}`.toLowerCase().includes(ownerQ)) return false;
+      if (hot && !(l.priority === 'high' || Number(l.score) >= 4)) return false;
+      if (today && createdTs(l) < todayMs) return false;
+      if (unassigned && (l.ownerId || l.ownerName || l.owner)) return false;
+      if (highValue && !(Number(l.value) >= highValueThreshold)) return false;
+      if (stale && (isClosedLead(l) || now - lastActivityTs(l) < STALE_DAYS * DAY_MS)) return false;
+      return true;
+    });
+  }, [leads, unseenOnly, seenLeadIds, taskQuickFilter, taskFilterSets, filterOwner, quickFilters, highValueThreshold, createdTs, lastActivityTs, isClosedLead]);
+
+  // Board leads: same filters as the list (the Board's columns ARE the stages, so no stage filter).
+  const pipelineLeads = baseLeads;
 
   // ── Pipeline view grouping (uses loaded leads) ──────────────────────────────
   const leadsByStage = useMemo(() => {
@@ -786,23 +1005,10 @@ export default function LeadsListScreen() {
     return grouped;
   }, [pipelineLeads, getLeadStageName]);
 
-  const parseTs = useCallback((val: any): number => {
-    if (!val) return 0;
-    if (typeof val === 'number') return val;
-    if (val._seconds) return val._seconds * 1000;
-    if (val.seconds) return val.seconds * 1000;
-    const d = new Date(val);
-    return isNaN(d.getTime()) ? 0 : d.getTime();
-  }, []);
-
   const filteredLeads = useMemo(() => {
-    let result = [...leads];
-    if (selectedStage) result = result.filter((lead) => getLeadStageName(lead) === selectedStage);
-    if (unseenOnly) result = result.filter((lead) => !seenLeadIds.has(lead.id));
-    if (taskQuickFilter) {
-      const ids = taskFilterSets[taskQuickFilter];
-      result = result.filter((lead) => ids.has(lead.id));
-    }
+    const result = selectedStage
+      ? baseLeads.filter((lead) => getLeadStageName(lead) === selectedStage)
+      : [...baseLeads];
 
     result.sort((a: any, b: any) => {
       let aVal: any, bVal: any;
@@ -811,8 +1017,8 @@ export default function LeadsListScreen() {
         bVal = parseTs(b.createdOn || b.CreatedOn || b.createdAt);
       } else if (sortKey === 'modifiedOn') {
         // Fall back to createdOn when a lead has no modifiedOn so it still orders sensibly.
-        aVal = parseTs(a.modifiedOn || a.ModifiedOn || a.updatedOn || a.UpdatedOn || a.updatedAt) || parseTs(a.createdOn || a.CreatedOn || a.createdAt);
-        bVal = parseTs(b.modifiedOn || b.ModifiedOn || b.updatedOn || b.UpdatedOn || b.updatedAt) || parseTs(b.createdOn || b.CreatedOn || b.createdAt);
+        aVal = lastActivityTs(a);
+        bVal = lastActivityTs(b);
       } else if (sortKey === 'title') {
         aVal = (a.title || '').toLowerCase();
         bVal = (b.title || '').toLowerCase();
@@ -839,17 +1045,14 @@ export default function LeadsListScreen() {
     });
 
     return result;
-  }, [leads, selectedStage, getLeadStageName, unseenOnly, seenLeadIds, sortKey, sortDir, parseTs, taskQuickFilter, taskFilterSets]);
+  }, [baseLeads, selectedStage, getLeadStageName, sortKey, sortDir, parseTs, lastActivityTs]);
 
   // Order each Kanban column newest-first (by last-modified, falling back to created), so a
   // card just dragged into a column — whose timestamp we bump on move — appears at the top.
   const sortByRecency = useCallback((arr: Lead[]) => {
-    const recency = (l: any) => Math.max(
-      parseTs(l.modifiedOn || l.ModifiedOn || l.updatedOn || l.UpdatedOn || l.updatedAt),
-      parseTs(l.createdOn || l.CreatedOn || l.createdAt),
-    );
+    const recency = (l: any) => Math.max(lastActivityTs(l), createdTs(l));
     return [...arr].sort((a, b) => recency(b) - recency(a));
-  }, [parseTs]);
+  }, [lastActivityTs, createdTs]);
 
   const kanbanColumns = useMemo<KanbanColumn<Lead>[]>(() => {
     // When the real pipeline is loaded, build columns keyed by the stable stage id and
@@ -857,48 +1060,83 @@ export default function LeadsListScreen() {
     // lead. Grouping by display name alone hid every lead whose stored stage didn't map
     // back to a name key (custom pipelines), leaving the board empty.
     if (pipelineStages.length > 0) {
-      return pipelineStages.map((s) => ({
-        id: s.id,
-        title: STAGE_I18N[s.name] ? t(STAGE_I18N[s.name]) : s.name,
-        color: s.color ?? stageColorMap[s.id] ?? theme.colors.primary,
-        items: sortByRecency(pipelineLeads.filter(
+      const matched = new Set<string>();
+      const cols: KanbanColumn<Lead>[] = pipelineStages.map((s) => {
+        const items = sortByRecency(pipelineLeads.filter(
           (l) =>
             l.stageId === s.id ||
             l.stageName === s.name ||
             l.stage === s.name ||
             l.stageName === s.id ||
             l.stage === s.id,
-        )),
-      }));
+        ));
+        items.forEach((l) => matched.add(l.id));
+        return {
+          id: s.id,
+          title: STAGE_I18N[s.name] ? t(STAGE_I18N[s.name]) : s.name,
+          color: s.color ?? stageColorMap[s.id] ?? theme.colors.primary,
+          subtitle: summarizeValue(items) || '—',
+          items,
+        };
+      });
+      // Leads whose stored stage no longer exists in the pipeline would otherwise be invisible on the board.
+      const orphans = pipelineLeads.filter((l) => !matched.has(l.id));
+      if (orphans.length > 0) {
+        cols.push({
+          id: OTHER_COLUMN_ID,
+          title: tr('ללא שלב', 'No stage'),
+          color: '#9ca3af',
+          subtitle: summarizeValue(orphans) || '—',
+          items: sortByRecency(orphans),
+        });
+      }
+      return cols;
     }
     // No pipeline settings loaded → fall back to the default keys grouped by display name.
-    return DEFAULT_STAGE_KEYS.map((stage) => ({
-      id: stage,
-      title: t(STAGE_I18N[stage] ?? stage),
-      color: stageColorMap[stage] ?? theme.colors.primary,
-      items: sortByRecency(leadsByStage.get(stage) ?? []),
-    }));
-  }, [pipelineStages, pipelineLeads, stageKeys, stageColorMap, leadsByStage, t, theme.colors.primary, sortByRecency]);
+    return DEFAULT_STAGE_KEYS.map((stage) => {
+      const items = sortByRecency(leadsByStage.get(stage) ?? []);
+      return {
+        id: stage,
+        title: t(STAGE_I18N[stage] ?? stage),
+        color: stageColorMap[stage] ?? theme.colors.primary,
+        subtitle: summarizeValue(items) || '—',
+        items,
+      };
+    });
+  }, [pipelineStages, pipelineLeads, stageColorMap, leadsByStage, t, tr, theme.colors.primary, sortByRecency]);
 
-  const toggleSearch = useCallback(() => {
-    const willShow = !searchVisible;
-    if (willShow) {
-      setSearchVisible(true);
-      Animated.timing(searchAnim, { toValue: 1, duration: 220, useNativeDriver: false }).start();
-    } else {
-      Animated.timing(searchAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(() => {
-        setSearchVisible(false);
-        setSearchQuery('');
-      });
-    }
-  }, [searchVisible, searchAnim]);
+  // Totals line (count + currency-aware value) for whatever the active view currently shows.
+  const visibleLeads = viewMode === 'pipeline' ? pipelineLeads : filteredLeads;
+  const totalsSummary = useMemo(() => summarizeValue(visibleLeads), [visibleLeads]);
+
+  // Number of active filters (everything except free-text search) → badge on the filter button.
+  const activeFilterCount = useMemo(() => {
+    const flags = [
+      selectedStage, filterSource, filterOwner.trim(), filterStatus, filterPriority, filterDateRange,
+      filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId,
+    ].filter(Boolean).length;
+    return flags + quickFilters.length + (filterMine ? 1 : 0) + (unseenOnly ? 1 : 0) + (taskQuickFilter ? 1 : 0);
+  }, [selectedStage, filterSource, filterOwner, filterStatus, filterPriority, filterDateRange, filterUtmSource, filterUtmMedium, filterUtmCampaign, filterCampaignId, filterFormId, filterAdId, quickFilters, filterMine, unseenOnly, taskQuickFilter]);
+
+  const hasAnyFilter = activeFilterCount > 0 || !!searchQuery.trim();
+
+  const toggleQuickFilter = useCallback((key: QuickFilterKey) => {
+    setQuickFilters((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  }, []);
+
+  // Switching between List and Board. The Board's columns are the stages, so a list stage filter is dropped.
+  const switchView = useCallback((mode: 'list' | 'pipeline') => {
+    if (mode === viewMode) return;
+    if (mode === 'pipeline') setSelectedStage(null);
+    setViewMode(mode);
+  }, [viewMode, setViewMode]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    // Preserve the full dataset when a task quick-filter is active (a page-1 reset would empty it).
-    await Promise.all([taskQuickFilter ? fetchAll() : fetchPage(1, true), fetchActiveTasksForCards()]);
+    // Preserve the full dataset when a client-side filter / the Board is active (a page-1 reset would empty it).
+    await Promise.all([needsAll ? fetchAll() : fetchPage(1, true), fetchActiveTasksForCards()]);
     setRefreshing(false);
-  }, [fetchPage, fetchAll, fetchActiveTasksForCards, taskQuickFilter]);
+  }, [fetchPage, fetchAll, fetchActiveTasksForCards, needsAll]);
 
   const openLead = useCallback(
     (lead: Lead) => {
@@ -972,6 +1210,7 @@ export default function LeadsListScreen() {
   );
 
   const handleKanbanMove = useCallback((item: Lead, _fromColumnId: string, toColumnId: string) => {
+    if (toColumnId === OTHER_COLUMN_ID) return; // read-only "no stage" bucket — can't move a lead into it
     handleStageChange(item, toColumnId);
   }, [handleStageChange]);
 
@@ -1062,9 +1301,34 @@ export default function LeadsListScreen() {
     }
   }, [organization, user, t]);
 
+  const callLead = useCallback((lead: Lead) => {
+    const phone = lead.contactPhone || lead.phoneNumber || '';
+    if (!phone) return;
+    placeSmartCall({
+      phoneNumber: phone,
+      organization,
+      user,
+      relatedTo: { type: 'lead', entityId: lead.id || '', entityName: lead.title },
+      leadId: lead.id || '',
+      customerName: lead.contactName,
+    });
+  }, [organization, user]);
+
+  // "Last activity" label (modified → created), e.g. "לפני 3 ימים" / "3 days ago".
+  const activityLabel = useCallback((lead: Lead): string => {
+    const ts = lastActivityTs(lead);
+    return ts ? formatRelativeTime(new Date(ts).toISOString(), isRTL ? 'he' : 'en') : '';
+  }, [lastActivityTs, isRTL]);
+
   const renderLeadItem = useCallback(
     ({ item }: { item: Lead; index?: number }) => {
-      const isMyLead = (item as any).ownerId === (user?.uID || user?.userId);
+      const stageName = getLeadStageName(item);
+      const sColor = stageColor(stageName);
+      const phone = item.contactPhone || item.phoneNumber || '';
+      const company = (item as any).companyName as string | undefined;
+      const sub = [company || item.contactName, phone].filter(Boolean).join('  ·  ');
+      const task = leadTaskMap.get(item.id);
+      const activity = activityLabel(item);
       return (
       <Pressable
         onPress={() => openLead(item)}
@@ -1076,53 +1340,139 @@ export default function LeadsListScreen() {
           {
             backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
             flexDirection,
-            paddingEnd: 14,
           },
         ]}
       >
-        <View style={[styles.stageStripe, {
-          backgroundColor: stageColor(getLeadStageName(item)),
-          borderTopRightRadius: isRTL ? 0 : 2,
-          borderBottomRightRadius: isRTL ? 0 : 2,
-          borderTopLeftRadius: isRTL ? 2 : 0,
-          borderBottomLeftRadius: isRTL ? 2 : 0,
-        }]} />
+        <View style={[styles.stageStripe, { backgroundColor: sColor }]} />
 
         <View style={styles.leadBody}>
+          {/* Row 1: name + value */}
           <View style={[styles.leadTop, { flexDirection }]}>
-            {/* Unseen dot */}
-            {!seenLeadIds.has(item.id) && (
-              <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: '#ef4444', alignSelf: 'center', marginEnd: 4, flexShrink: 0 }} />
-            )}
-            {/* Stage color dot */}
-            <View
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                backgroundColor: stageColor(getLeadStageName(item)),
-                alignSelf: 'center',
-                marginEnd: 6,
-                flexShrink: 0,
-              }}
-            />
+            {!seenLeadIds.has(item.id) && <View style={styles.unseenDot} />}
             <Text
-              variant="titleMedium"
+              variant="titleSmall"
               numberOfLines={1}
-              style={{ color: theme.colors.onSurface, fontWeight: '600', flex: 1, textAlign }}
+              style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}
             >
               {item.title}
             </Text>
             {item.value != null && item.value > 0 ? (
-              <Text
-                variant="titleSmall"
-                style={{ color: theme.colors.primary, fontWeight: '700', marginEnd: 6 }}
-              >
+              <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700' }}>
                 {formatCurrency(item.value, item.currency ?? '₪')}
               </Text>
             ) : null}
+          </View>
+
+          {/* Row 2: company / contact · phone, last activity */}
+          <View style={[styles.leadTop, { flexDirection }]}>
+            <Text
+              variant="bodySmall"
+              numberOfLines={1}
+              style={{ color: theme.colors.onSurfaceVariant, flex: 1, textAlign }}
+            >
+              {sub || ' '}
+            </Text>
+            {activity ? (
+              <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }} numberOfLines={1}>
+                {activity}
+              </Text>
+            ) : null}
+          </View>
+
+          {/* Row 3: stage pill, signals, owner */}
+          <View style={[styles.leadBottom, { flexDirection }]}>
+            <View style={[styles.stagePill, { backgroundColor: withAlpha(sColor, 0.16) }]}>
+              <Text style={{ fontSize: 11, fontWeight: '600', color: sColor }} numberOfLines={1}>
+                {stageName}
+              </Text>
+            </View>
+            {task ? <LeadTaskBadge info={task} t={t} formatDate={formatDate} /> : null}
             {(item as any).score ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1, backgroundColor: withAlpha(scoreColor((item as any).score), 0.16), borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1, marginEnd: 4 }}>
+              <View style={[styles.signalChip, { backgroundColor: withAlpha(scoreColor((item as any).score), 0.16) }]}>
+                <MaterialCommunityIcons name="fire" size={12} color={scoreColor((item as any).score)} />
+                <Text style={{ fontSize: 10, fontWeight: '700', color: scoreColor((item as any).score) }}>{Number((item as any).score)}</Text>
+              </View>
+            ) : null}
+            {item.priority ? (
+              <MaterialCommunityIcons name="flag" size={14} color={PRIORITY_COLORS[item.priority] || theme.colors.onSurfaceVariant} />
+            ) : null}
+            {item.source ? (
+              <Text variant="labelSmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, flexShrink: 1 }}>
+                {item.source}
+              </Text>
+            ) : null}
+            <View style={{ flex: 1 }} />
+            <OwnerAvatar name={(item as any).ownerName} theme={theme} />
+          </View>
+        </View>
+
+        {phone ? (
+          <Pressable
+            onPress={() => callLead(item)}
+            hitSlop={6}
+            style={[styles.callBtn, { backgroundColor: withAlpha(theme.colors.primary, 0.1) }]}
+          >
+            <MaterialCommunityIcons name="phone-outline" size={18} color={theme.colors.primary} />
+          </Pressable>
+        ) : null}
+      </Pressable>
+    );},
+    [theme, flexDirection, textAlign, openLead, stageColor, t, getLeadStageName, seenLeadIds, leadTaskMap, activityLabel, callLead],
+  );
+
+  // Board card: name, value, priority/score, owner, age + task/overdue hint. Dragging (long-press) is
+  // handled by KanbanBoard; the ⇄ button is the visible alternative that opens the stage picker.
+  const renderBoardCard = useCallback(
+    (item: Lead) => {
+      const stageName = getLeadStageName(item);
+      const task = leadTaskMap.get(item.id);
+      const company = (item as any).companyName as string | undefined;
+      const lastTs = lastActivityTs(item);
+      const stale = !!lastTs && Date.now() - lastTs > STALE_DAYS * DAY_MS && !isClosedLead(item);
+      const sub = company || item.contactName || '';
+      return (
+        <Pressable
+          onPress={() => openLead(item)}
+          style={({ pressed }) => [
+            styles.pipelineCard,
+            {
+              backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
+              borderStartColor: stageColor(stageName),
+              borderStartWidth: 3,
+            },
+          ]}
+        >
+          <View style={[styles.leadTop, { flexDirection }]}>
+            {!seenLeadIds.has(item.id) && <View style={styles.unseenDot} />}
+            <Text
+              variant="titleSmall"
+              numberOfLines={1}
+              style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}
+            >
+              {item.title}
+            </Text>
+            <Pressable
+              onPress={() => setStagePickerLead(item)}
+              hitSlop={8}
+              style={[styles.moveBtn, { backgroundColor: theme.colors.surfaceVariant }]}
+              accessibilityLabel={tr('העבר שלב', 'Move stage')}
+            >
+              <MaterialCommunityIcons name="swap-horizontal" size={16} color={theme.colors.onSurfaceVariant} />
+            </Pressable>
+          </View>
+          {sub ? (
+            <Text variant="bodySmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 2 }}>
+              {sub}
+            </Text>
+          ) : null}
+          <View style={[styles.leadTop, { flexDirection, marginTop: 6 }]}>
+            {item.value != null && item.value > 0 ? (
+              <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700', flex: 1, textAlign }}>
+                {formatCurrency(item.value, item.currency ?? '₪')}
+              </Text>
+            ) : <View style={{ flex: 1 }} />}
+            {(item as any).score ? (
+              <View style={[styles.signalChip, { backgroundColor: withAlpha(scoreColor((item as any).score), 0.16) }]}>
                 <MaterialCommunityIcons name="fire" size={12} color={scoreColor((item as any).score)} />
                 <Text style={{ fontSize: 10, fontWeight: '700', color: scoreColor((item as any).score) }}>{Number((item as any).score)}</Text>
               </View>
@@ -1131,177 +1481,24 @@ export default function LeadsListScreen() {
               <MaterialCommunityIcons name="flag" size={14} color={PRIORITY_COLORS[item.priority] || theme.colors.onSurfaceVariant} />
             ) : null}
           </View>
-
-          <View style={[styles.leadMeta, { flexDirection }]}>
-            {item.contactName ? (
-              <View style={[styles.metaChip, { flexDirection }]}>
-                <MaterialCommunityIcons name="account-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
-                  {item.contactName}
+          <View style={[styles.leadBottom, { flexDirection, marginTop: 8 }]}>
+            {task ? (
+              <LeadTaskBadge info={task} t={t} formatDate={formatDate} />
+            ) : lastTs ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                <MaterialCommunityIcons name="history" size={12} color={stale ? '#ef4444' : theme.colors.onSurfaceVariant} />
+                <Text style={{ fontSize: 10, color: stale ? '#ef4444' : theme.colors.onSurfaceVariant, fontWeight: stale ? '700' : '400' }}>
+                  {activityLabel(item)}
                 </Text>
               </View>
             ) : null}
-            {(item as any).companyName ? (
-              <View style={[styles.metaChip, { flexDirection }]}>
-                <MaterialCommunityIcons name="office-building-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
-                  {(item as any).companyName}
-                </Text>
-              </View>
-            ) : null}
-            {(item.createdOn || item.createdAt) ? (
-              <View style={[styles.metaChip, { flexDirection }]}>
-                <MaterialCommunityIcons name="calendar-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
-                  {formatDate(item.createdOn || item.createdAt || '')}
-                </Text>
-              </View>
-            ) : null}
+            <View style={{ flex: 1 }} />
+            <OwnerAvatar name={(item as any).ownerName} theme={theme} />
           </View>
-
-          <View style={[styles.leadBottom, { flexDirection }]}>
-            <Chip
-              compact
-              textStyle={{ fontSize: 11, color: stageColor(getLeadStageName(item)), fontWeight: '600', lineHeight: 16 }}
-              style={{ backgroundColor: withAlpha(stageColor(getLeadStageName(item)), 0.21), minHeight: 28 }}
-            >
-              {getLeadStageName(item)}
-            </Chip>
-            {leadTaskMap.get(item.id) ? (
-              <LeadTaskBadge info={leadTaskMap.get(item.id)!} t={t} formatDate={formatDate} />
-            ) : null}
-            {(item as any).status ? (
-              <Chip
-                compact
-                textStyle={{ fontSize: 10, color: theme.colors.onSurfaceVariant, lineHeight: 14 }}
-                style={{ backgroundColor: theme.colors.surfaceVariant, minHeight: 24 }}
-              >
-                {(item as any).status}
-              </Chip>
-            ) : null}
-            {item.source ? (
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                {item.source}
-              </Text>
-            ) : null}
-            {(item as any).ownerName ? (
-              <View style={[{ flexDirection, alignItems: 'center', gap: 2 }]}>
-                <MaterialCommunityIcons name="account-tie-outline" size={12} color={theme.colors.onSurfaceVariant} />
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {(item as any).ownerName}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-
-          {/* Quick dialer */}
-          {(item.contactPhone || item.phoneNumber) ? (
-            <Pressable
-              onPress={(e) => {
-                e.stopPropagation?.();
-                const phone = item.contactPhone || item.phoneNumber || '';
-                placeSmartCall({
-                  phoneNumber: phone,
-                  organization,
-                  user,
-                  relatedTo: { type: 'lead', entityId: item.id || '', entityName: item.title },
-                  leadId: item.id || '',
-                  customerName: item.contactName,
-                });
-              }}
-              style={[styles.quickDialRow, { flexDirection }]}
-              hitSlop={4}
-            >
-              <MaterialCommunityIcons name="phone-outline" size={13} color={theme.colors.primary} />
-              <Text variant="labelSmall" style={{ color: theme.colors.primary, marginStart: 4 }}>
-                {item.contactPhone || item.phoneNumber}
-              </Text>
-            </Pressable>
-          ) : null}
-
-          {/* Take ownership */}
-          {!isMyLead && (
-            <Pressable
-              onPress={(e) => { e.stopPropagation?.(); handleTakeOwnership(item); }}
-              style={[styles.quickDialRow, { flexDirection, marginTop: 4 }]}
-              hitSlop={4}
-            >
-              <MaterialCommunityIcons name="account-arrow-left" size={13} color={theme.colors.tertiary || '#FF9800'} />
-              <Text variant="labelSmall" style={{ color: theme.colors.tertiary || '#FF9800', marginStart: 4, fontWeight: '600' }}>
-                {t('leads.takeOwnership', 'קח בעלות')}
-              </Text>
-            </Pressable>
-          )}
-        </View>
-
-        <MaterialCommunityIcons
-          name={isRTL ? 'chevron-left' : 'chevron-right'}
-          size={20}
-          color={theme.colors.onSurfaceVariant}
-          style={{ opacity: 0.4, alignSelf: 'center' }}
-        />
-      </Pressable>
-    );},
-    [theme, isRTL, flexDirection, textAlign, openLead, stageColor, t, user, handleTakeOwnership, getLeadStageName, seenLeadIds, leadTaskMap],
-  );
-
-  const renderPipelineCard = useCallback(
-    (lead: Lead) => (
-      <Pressable
-        key={lead.id}
-        onPress={() => openLead(lead)}
-        onLongPress={() => setStagePickerLead(lead)}
-        delayLongPress={400}
-        style={({ pressed }) => [
-          styles.pipelineCard,
-          {
-            backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
-            borderStartColor: stageColor(getLeadStageName(lead)),
-            borderStartWidth: 3,
-          },
-        ]}
-      >
-        <Text
-          variant="titleSmall"
-          numberOfLines={1}
-          style={{ color: theme.colors.onSurface, fontWeight: '600' }}
-        >
-          {lead.title}
-        </Text>
-        {lead.contactName ? (
-          <View style={[styles.pipelineCardMeta, { flexDirection }]}>
-            <MaterialCommunityIcons
-              name="account-outline"
-              size={14}
-              color={theme.colors.onSurfaceVariant}
-            />
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
-              {lead.contactName}
-            </Text>
-          </View>
-        ) : null}
-        {lead.value != null && lead.value > 0 ? (
-          <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700', marginTop: 4 }}>
-            {formatCurrency(lead.value, lead.currency ?? '₪')}
-          </Text>
-        ) : null}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-          {leadTaskMap.get(lead.id) ? (
-            <LeadTaskBadge info={leadTaskMap.get(lead.id)!} t={t} formatDate={formatDate} />
-          ) : null}
-          {(lead as any).score ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1, backgroundColor: withAlpha(scoreColor((lead as any).score), 0.16), borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 }}>
-              <MaterialCommunityIcons name="fire" size={12} color={scoreColor((lead as any).score)} />
-              <Text style={{ fontSize: 10, fontWeight: '700', color: scoreColor((lead as any).score) }}>{Number((lead as any).score)}</Text>
-            </View>
-          ) : null}
-          {lead.priority ? (
-            <MaterialCommunityIcons name="flag" size={14} color={PRIORITY_COLORS[lead.priority] || theme.colors.onSurfaceVariant} />
-          ) : null}
-        </View>
-      </Pressable>
-    ),
-    [theme, flexDirection, openLead, stageColor, getLeadStageName, leadTaskMap, t],
+        </Pressable>
+      );
+    },
+    [theme, flexDirection, textAlign, openLead, stageColor, getLeadStageName, leadTaskMap, t, tr, seenLeadIds, lastActivityTs, isClosedLead, activityLabel],
   );
 
   const renderEmpty = useCallback(
@@ -1316,25 +1513,46 @@ export default function LeadsListScreen() {
         <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginTop: 12 }}>
           {t('leads.noLeads')}
         </Text>
-        <Text
-          variant="bodyMedium"
-          style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 4 }}
-        >
-          {t('leads.addLead')}
-        </Text>
+        {hasAnyFilter ? (
+          <Button mode="outlined" icon="filter-remove-outline" onPress={clearAllFilters} style={{ marginTop: 12 }}>
+            {tr('נקה סינונים', 'Clear filters')}
+          </Button>
+        ) : (
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 4 }}
+          >
+            {t('leads.addLead')}
+          </Text>
+        )}
       </View>
     ),
-    [theme, t],
+    [theme, t, tr, hasAnyFilter, clearAllFilters],
   );
 
-  const searchHeight = searchAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 56],
-  });
+  const sortOptions = [
+    { key: 'createdOn' as SortKey, label: t('leads.sortCreated', 'נוצר ב'), icon: 'calendar-plus' },
+    { key: 'modifiedOn' as SortKey, label: t('leads.sortUpdated', 'עודכן ב'), icon: 'calendar-edit' },
+    { key: 'title' as SortKey, label: t('leads.name', 'שם'), icon: 'sort-alphabetical-variant' },
+    { key: 'value' as SortKey, label: t('leads.value', 'סכום'), icon: 'cash' },
+    { key: 'priority' as SortKey, label: t('leads.priority', 'עדיפות'), icon: 'flag' },
+    { key: 'score' as SortKey, label: t('leads.score', 'דירוג'), icon: 'fire' },
+    { key: 'stageName' as SortKey, label: t('leads.stage', 'שלב'), icon: 'view-column' },
+  ];
+  const activeSortLabel = sortOptions.find((o) => o.key === sortKey)?.label ?? '';
+
+  const unseenCount = useMemo(() => leads.filter((l) => !seenLeadIds.has(l.id)).length, [leads, seenLeadIds]);
+
+  const taskChips: { type: TaskQuickFilter; icon: string; label: string; color: string }[] = [
+    { type: 'today', icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
+    { type: 'upcoming', icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
+    { type: 'overdue', icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
+    { type: 'withTasks', icon: 'clipboard-clock-outline', label: t('leads.leadsWithTasks', 'לידים עם משימות'), color: '#2e6155' },
+  ];
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background, flexDirection: 'column' }]}>
-      {/* Header */}
+      {/* Header: title · List|Board switch · filter · overflow  (3 controls max) */}
       <View
         style={[
           styles.header,
@@ -1342,158 +1560,129 @@ export default function LeadsListScreen() {
         ]}
       >
         <Text style={styles.headerTitle}>{t('leads.title')}</Text>
+
+        <View style={[styles.segment, { flexDirection }]}>
+          {([
+            { key: 'list' as const, icon: 'format-list-bulleted', label: tr('רשימה', 'List') },
+            { key: 'pipeline' as const, icon: 'view-column-outline', label: tr('לוח', 'Board') },
+          ]).map((seg) => {
+            const active = viewMode === seg.key;
+            return (
+              <Pressable
+                key={seg.key}
+                onPress={() => switchView(seg.key)}
+                style={[styles.segmentItem, { flexDirection }, active && styles.segmentItemActive]}
+              >
+                <MaterialCommunityIcons name={seg.icon as any} size={16} color={active ? theme.custom.headerBackground : '#FFF'} />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: active ? theme.custom.headerBackground : '#FFF' }}>
+                  {seg.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
         <View style={[styles.headerActions, { flexDirection }]}>
-          {hasMore && (
-          <Pressable
-            onPress={() => {
-              const allPages = Math.ceil(totalCount / PAGE_SIZE);
-              for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
-            }}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name="download"
-              size={24}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
-          )}
-          <Pressable
-            onPress={() => setViewMode(viewMode === 'list' ? 'pipeline' : 'list')}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name={viewMode === 'list' ? 'view-column-outline' : 'format-list-bulleted'}
-              size={24}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
           <Pressable
             onPress={() => setAdvancedFilterVisible(true)}
             hitSlop={8}
             style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
           >
-            <MaterialCommunityIcons
-              name="filter-variant"
-              size={24}
-              color={theme.custom.headerText}
-            />
+            <MaterialCommunityIcons name="filter-variant" size={24} color={theme.custom.headerText} />
+            {activeFilterCount > 0 ? (
+              <View style={styles.filterBadge}>
+                <Text style={styles.filterBadgeText}>{activeFilterCount}</Text>
+              </View>
+            ) : null}
           </Pressable>
-          <Pressable
-            onPress={toggleSearch}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
+          <Menu
+            visible={moreMenuVisible}
+            onDismiss={() => setMoreMenuVisible(false)}
+            anchor={
+              <Pressable
+                onPress={() => setMoreMenuVisible(true)}
+                hitSlop={8}
+                style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
+              >
+                <MaterialCommunityIcons name="dots-vertical" size={24} color={theme.custom.headerText} />
+              </Pressable>
+            }
           >
-            <MaterialCommunityIcons
-              name={searchVisible ? 'close' : 'magnify'}
-              size={24}
-              color={theme.custom.headerText}
+            <Menu.Item
+              leadingIcon="bookmark-plus-outline"
+              title={tr('שמור תצוגה נוכחית', 'Save current view')}
+              onPress={() => { setMoreMenuVisible(false); setShowSaveViewModal(true); }}
             />
-          </Pressable>
+            {hasAnyFilter ? (
+              <Menu.Item
+                leadingIcon="filter-remove-outline"
+                title={tr('נקה את כל הסינונים', 'Clear all filters')}
+                onPress={() => { setMoreMenuVisible(false); clearAllFilters(); }}
+              />
+            ) : null}
+            <Menu.Item
+              leadingIcon="eye-check-outline"
+              title={t('leads.markAllSeen', 'סמן הכול כנצפה')}
+              onPress={() => { setMoreMenuVisible(false); markAllLeadsSeen(); }}
+            />
+            {hasMore ? (
+              <Menu.Item
+                leadingIcon="download"
+                title={t('common.loadAll', 'טען הכול')}
+                onPress={() => { setMoreMenuVisible(false); fetchAll(); }}
+              />
+            ) : null}
+            <Menu.Item
+              leadingIcon="refresh"
+              title={tr('רענן', 'Refresh')}
+              onPress={() => { setMoreMenuVisible(false); onRefresh(); }}
+            />
+          </Menu>
         </View>
       </View>
 
-      {/* Search */}
-      {searchVisible ? (
-        <Animated.View
-          style={[
-            styles.searchWrap,
-            {
-              height: searchHeight,
-              opacity: searchAnim,
-              backgroundColor: theme.custom.headerBackground,
-            },
-          ]}
-        >
-          <Searchbar
-            placeholder={t('leads.searchPlaceholder')}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            returnKeyType="search"
-            style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
-            iconColor={theme.colors.onSurfaceVariant}
-            autoFocus
-          />
-        </Animated.View>
-      ) : null}
+      {/* Search — always visible, one field */}
+      <View style={[styles.searchWrap, { backgroundColor: theme.custom.headerBackground }]}>
+        <Searchbar
+          placeholder={t('leads.searchPlaceholder')}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          returnKeyType="search"
+          style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
+          inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left', minHeight: 0 }}
+          iconColor={theme.colors.onSurfaceVariant}
+        />
+      </View>
 
-      {/* Saved Views Tabs */}
+      {/* Views: the primary way to switch (All · New · saved views · save current) */}
       <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.viewsScroll, { flexDirection }]}>
-          {(() => {
-            // "All" is only the active tab when no task quick-filter is applied, so while a
-            // task filter (today/upcoming/overdue/with-tasks) is active this tab is visibly
-            // un-selected — giving the user an obvious one-tap way back to every lead.
-            const allActive = activeViewId === '__all' && !taskQuickFilter;
-            return (
-              <Pressable
-                onPress={clearAllFilters}
-                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, allActive && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
-              >
-                {taskQuickFilter && (
-                  <MaterialCommunityIcons name="close-circle" size={14} color={theme.colors.primary} />
-                )}
-                <Text style={[styles.viewTabText, { color: allActive ? theme.colors.primary : (taskQuickFilter ? theme.colors.primary : theme.colors.onSurfaceVariant) }]}>
-                  {t('leads.viewAll', 'הכל')}
-                </Text>
-              </Pressable>
-            );
-          })()}
           <Pressable
-            onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setUnseenOnly(false); setTaskQuickFilter(null); }}
-            style={[styles.viewTab, activeViewId === '__mine' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+            onPress={clearAllFilters}
+            style={[styles.viewTab, activeViewId === '__all' && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
           >
-            <Text style={[styles.viewTabText, { color: activeViewId === '__mine' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
-              {t('leads.viewMine', 'שלי')}
+            <Text style={[styles.viewTabText, { color: activeViewId === '__all' ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('leads.viewAll', 'הכל')}
             </Text>
           </Pressable>
           <Pressable
-            onPress={() => { setActiveViewId('__new'); setUnseenOnly(true); setFilterMine(false); setSelectedStage(null); setTaskQuickFilter(null); }}
+            onPress={() => {
+              if (activeViewId === '__new') { setUnseenOnly(false); setActiveViewId('__all'); }
+              else { setActiveViewId('__new'); setUnseenOnly(true); }
+            }}
             style={[styles.viewTab, activeViewId === '__new' && { borderBottomColor: '#ef4444', borderBottomWidth: 2 }]}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
               <Text style={[styles.viewTabText, { color: activeViewId === '__new' ? '#ef4444' : theme.colors.onSurfaceVariant }]}>
                 {t('leads.viewNew', 'חדשים')}
               </Text>
-              {leads.filter((l) => !seenLeadIds.has(l.id)).length > 0 && (
+              {unseenCount > 0 && (
                 <View style={{ backgroundColor: '#ef4444', borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
-                  <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>
-                    {leads.filter((l) => !seenLeadIds.has(l.id)).length}
-                  </Text>
+                  <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{unseenCount}</Text>
                 </View>
               )}
             </View>
           </Pressable>
-          {([
-            { type: 'today' as TaskQuickFilter, icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
-            { type: 'upcoming' as TaskQuickFilter, icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
-            { type: 'overdue' as TaskQuickFilter, icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
-            { type: 'withTasks' as TaskQuickFilter, icon: 'clipboard-clock-outline', label: t('leads.leadsWithTasks', 'לידים עם משימות'), color: '#2e6155' },
-          ]).map(({ type, icon, label, color }) => {
-            const isActive = taskQuickFilter === type;
-            const count = taskFilterSets[type].size;
-            return (
-              <Pressable
-                key={type}
-                onPress={() => applyTaskFilter(type)}
-                disabled={taskFilterLoading}
-                style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }, isActive && { borderBottomColor: color, borderBottomWidth: 2 }]}
-              >
-                <MaterialCommunityIcons name={icon as any} size={14} color={isActive ? color : theme.colors.onSurfaceVariant} />
-                <Text style={[styles.viewTabText, { color: isActive ? color : theme.colors.onSurfaceVariant, maxWidth: 160 }]} numberOfLines={1}>
-                  {label}
-                </Text>
-                {count > 0 && (
-                  <View style={{ backgroundColor: color, borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
-                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{count}</Text>
-                  </View>
-                )}
-              </Pressable>
-            );
-          })}
           {savedViews.filter((v) => {
             const vis = v.Visibility || 'personal';
             if (vis === 'shared') return true;
@@ -1519,112 +1708,124 @@ export default function LeadsListScreen() {
               </Text>
             </Pressable>
           ))}
-          <Pressable onPress={() => setShowSaveViewModal(true)} style={styles.viewTab}>
-            <MaterialCommunityIcons name="plus" size={18} color={theme.colors.primary} />
+          <Pressable
+            onPress={() => setShowSaveViewModal(true)}
+            style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}
+          >
+            <MaterialCommunityIcons name="bookmark-plus-outline" size={18} color={theme.colors.primary} />
+            {hasAnyFilter ? (
+              <Text style={[styles.viewTabText, { color: theme.colors.primary }]}>{tr('שמור תצוגה', 'Save view')}</Text>
+            ) : null}
           </Pressable>
         </ScrollView>
       </View>
 
-      {/* Stage filter chips */}
-      {viewMode === 'list' ? (
-        <View style={{ height: 40, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}>
+      {/* One-tap quick filters (combine with the view, the advanced filter and each other) */}
+      <View style={{ backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={[
-            styles.stageFilters,
-            { paddingStart: 14, paddingEnd: 14 },
-          ]}
-          style={{ flex: 1 }}
+          contentContainerStyle={[styles.quickRow, { flexDirection }]}
         >
-          <Chip
-            selected={selectedStage === null}
-            onPress={() => setSelectedStage(null)}
-            showSelectedOverlay
-            compact
-            style={[
-              styles.stageChip,
-              selectedStage === null
-                ? { backgroundColor: theme.colors.primaryContainer }
-                : { backgroundColor: theme.colors.surfaceVariant },
-            ]}
-            textStyle={[
-              styles.stageChipText,
-              selectedStage === null && { color: theme.colors.primary, fontWeight: '600' },
-            ]}
-          >
-            {t('common.all')}
-          </Chip>
-          {stageKeys.map((stage) => {
-            const isSelected = selectedStage === stage;
-            const color = stageColor(stage);
-            return (
-              <Chip
-                key={stage}
-                selected={isSelected}
-                onPress={() => setSelectedStage(isSelected ? null : stage)}
-                showSelectedOverlay
-                compact
-                style={[
-                  styles.stageChip,
-                  isSelected
-                    ? { backgroundColor: withAlpha(color, 0.12) }
-                    : { backgroundColor: theme.colors.surfaceVariant },
-                ]}
-                textStyle={[
-                  styles.stageChipText,
-                  isSelected && { color, fontWeight: '600' },
-                ]}
-              >
-                {t(STAGE_I18N[stage] ?? stage)}
-              </Chip>
-            );
-          })}
-        </ScrollView>
-        </View>
-      ) : null}
-
-      {/* Sort bar */}
-      {viewMode === 'list' && (
-        <View style={{ flexDirection, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth, gap: 6, alignItems: 'center' }}>
-          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('leads.sortBy', 'מיין לפי:')}</Text>
-          {([
-            { key: 'createdOn' as SortKey, label: t('leads.sortCreated', 'נוצר ב'), icon: 'calendar-plus' },
-            { key: 'modifiedOn' as SortKey, label: t('leads.sortUpdated', 'עודכן ב'), icon: 'calendar-edit' },
-            { key: 'title' as SortKey, label: t('leads.name', 'שם'), icon: 'sort-alphabetical-variant' },
-            { key: 'value' as SortKey, label: t('leads.value', 'סכום'), icon: 'cash' },
-            { key: 'priority' as SortKey, label: t('leads.priority', 'עדיפות'), icon: 'flag' },
-            { key: 'score' as SortKey, label: t('leads.score', 'דירוג'), icon: 'fire' },
-            { key: 'stageName' as SortKey, label: t('leads.stage', 'שלב'), icon: 'view-column' },
-          ] as const).map((opt) => (
-            <Pressable
-              key={opt.key}
-              onPress={() => {
-                if (sortKey === opt.key) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
-                else { setSortKey(opt.key); setSortDir(['createdOn', 'modifiedOn', 'value', 'priority', 'score'].includes(opt.key) ? 'desc' : 'asc'); }
-              }}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: sortKey === opt.key ? withAlpha(theme.colors.primary, 0.1) : 'transparent' }}
-            >
-              <MaterialCommunityIcons name={opt.icon as any} size={14} color={sortKey === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant} />
-              <Text style={{ fontSize: 11, color: sortKey === opt.key ? theme.colors.primary : theme.colors.onSurfaceVariant, fontWeight: sortKey === opt.key ? '600' : '400' }}>
-                {opt.label}
-              </Text>
-              {sortKey === opt.key && (
-                <MaterialCommunityIcons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={theme.colors.primary} />
-              )}
-            </Pressable>
+          {hasAnyFilter ? (
+            <QuickChip
+              theme={theme}
+              icon="close-circle"
+              label={`${tr('נקה', 'Clear')}${activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}`}
+              color="#ef4444"
+              active
+              onPress={clearAllFilters}
+            />
+          ) : null}
+          <QuickChip theme={theme} icon="account-check-outline" label={tr('שלי', 'Mine')} color={theme.colors.primary} active={filterMine} onPress={() => setFilterMine((v) => !v)} />
+          <QuickChip theme={theme} icon="fire" label={tr('חמים', 'Hot')} color="#f97316" active={quickFilters.includes('hot')} onPress={() => toggleQuickFilter('hot')} />
+          <QuickChip theme={theme} icon="calendar-today" label={tr('היום', 'Today')} color="#3b82f6" active={quickFilters.includes('today')} onPress={() => toggleQuickFilter('today')} />
+          <QuickChip theme={theme} icon="account-off-outline" label={tr('ללא בעלים', 'Unassigned')} color="#8b5cf6" active={quickFilters.includes('unassigned')} onPress={() => toggleQuickFilter('unassigned')} />
+          <QuickChip
+            theme={theme}
+            icon="cash"
+            label={`${tr('מעל', 'Over')} ${formatCurrency(highValueThreshold, '₪').replace(/\.00$/, '')}`}
+            color="#16a34a"
+            active={quickFilters.includes('highValue')}
+            onPress={() => toggleQuickFilter('highValue')}
+          />
+          <QuickChip theme={theme} icon="clock-alert-outline" label={tr(`לא עודכן ${STALE_DAYS} ימים`, `Stale ${STALE_DAYS}d`)} color="#ef4444" active={quickFilters.includes('stale')} onPress={() => toggleQuickFilter('stale')} />
+          {viewMode === 'list' ? (
+            <QuickChip
+              theme={theme}
+              icon="view-column-outline"
+              label={selectedStage ? (STAGE_I18N[selectedStage] ? t(STAGE_I18N[selectedStage]) : selectedStage) : tr('שלב', 'Stage')}
+              color={selectedStage ? stageColor(selectedStage) : theme.colors.primary}
+              active={!!selectedStage}
+              caret
+              onPress={() => setStageFilterVisible(true)}
+            />
+          ) : null}
+          <View style={[styles.quickDivider, { backgroundColor: theme.colors.outline }]} />
+          {taskChips.map(({ type, icon, label, color }) => (
+            <QuickChip
+              key={type}
+              theme={theme}
+              icon={icon}
+              label={label}
+              color={color}
+              active={taskQuickFilter === type}
+              count={taskFilterSets[type].size}
+              disabled={taskFilterLoading}
+              onPress={() => applyTaskFilter(type)}
+            />
           ))}
-        </View>
-      )}
+        </ScrollView>
+      </View>
+
+      {/* Summary line: count · total value  +  sort (list) */}
+      <View style={[styles.summaryRow, { flexDirection, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+        <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, flexShrink: 1 }} numberOfLines={1}>
+          <Text style={{ fontWeight: '700', color: theme.colors.onSurface }}>
+            {hasMore && !needsAll ? `${leads.length} / ${totalCount}` : visibleLeads.length}
+          </Text>
+          {` ${tr('לידים', 'leads')}`}
+          {totalsSummary ? `  ·  ${totalsSummary}` : ''}
+        </Text>
+        <View style={{ flex: 1 }} />
+        {viewMode === 'list' ? (
+          <Menu
+            visible={sortMenuVisible}
+            onDismiss={() => setSortMenuVisible(false)}
+            anchor={
+              <Pressable onPress={() => setSortMenuVisible(true)} hitSlop={6} style={[styles.sortBtn, { flexDirection }]}>
+                <MaterialCommunityIcons name="sort" size={16} color={theme.colors.primary} />
+                <Text style={{ fontSize: 12, color: theme.colors.primary, fontWeight: '600' }}>{activeSortLabel}</Text>
+                <MaterialCommunityIcons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={theme.colors.primary} />
+              </Pressable>
+            }
+          >
+            {sortOptions.map((opt) => (
+              <Menu.Item
+                key={opt.key}
+                leadingIcon={opt.icon}
+                trailingIcon={sortKey === opt.key ? (sortDir === 'asc' ? 'arrow-up' : 'arrow-down') : undefined}
+                title={opt.label}
+                titleStyle={sortKey === opt.key ? { color: theme.colors.primary, fontWeight: '700' } : undefined}
+                onPress={() => {
+                  setSortMenuVisible(false);
+                  if (sortKey === opt.key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+                  else { setSortKey(opt.key); setSortDir(['createdOn', 'modifiedOn', 'value', 'priority', 'score'].includes(opt.key) ? 'desc' : 'asc'); }
+                }}
+              />
+            ))}
+          </Menu>
+        ) : null}
+      </View>
 
       {/* Unseen banner */}
       {activeViewId === '__new' && (
         <View style={{ flexDirection, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#fef2f2', alignItems: 'center', gap: 8 }}>
           <Text style={{ color: '#ef4444', fontSize: 12, fontWeight: '600' }}>●</Text>
           <Text style={{ color: '#dc2626', fontSize: 12, flex: 1 }}>
-            {filteredLeads.length} {t('leads.unseenLeads', 'לידים שלא נצפו')}
+            {visibleLeads.length} {t('leads.unseenLeads', 'לידים שלא נצפו')}
           </Text>
-          {filteredLeads.length > 0 && (
+          {visibleLeads.length > 0 && (
             <Pressable onPress={markAllLeadsSeen} style={{ paddingHorizontal: 10, paddingVertical: 4, backgroundColor: '#fee2e2', borderRadius: 8 }}>
               <Text style={{ color: '#dc2626', fontSize: 11, fontWeight: '600' }}>{t('leads.markAllSeen', 'סמן הכול כנצפה')}</Text>
             </Pressable>
@@ -1647,22 +1848,20 @@ export default function LeadsListScreen() {
           ListFooterComponent={
             loadingMore ? (
               <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
-            ) : totalCount > 0 ? (
+            ) : hasMore ? (
               <View style={{ alignItems: 'center', paddingVertical: 12, gap: 8 }}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
                   {leads.length} / {totalCount}
                 </Text>
-                {hasMore && (
-                  <View style={{ flexDirection: 'row', gap: 8 }}>
-                    <Pressable onPress={() => fetchPage(page + 1, false)} disabled={loadingAll} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer, opacity: loadingAll ? 0.5 : 1 }}>
-                      <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadMore', 'טען עוד')}</Text>
-                    </Pressable>
-                    <Pressable onPress={fetchAll} disabled={loadingAll} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surfaceVariant, opacity: loadingAll ? 0.7 : 1 }}>
-                      {loadingAll && <ActivityIndicator size={12} color={theme.colors.onSurfaceVariant} />}
-                      <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>{t('common.loadAll', 'טען הכול')}</Text>
-                    </Pressable>
-                  </View>
-                )}
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable onPress={() => fetchPage(page + 1, false)} disabled={loadingAll} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer, opacity: loadingAll ? 0.5 : 1 }}>
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadMore', 'טען עוד')}</Text>
+                  </Pressable>
+                  <Pressable onPress={fetchAll} disabled={loadingAll} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surfaceVariant, opacity: loadingAll ? 0.7 : 1 }}>
+                    {loadingAll && <ActivityIndicator size={12} color={theme.colors.onSurfaceVariant} />}
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>{t('common.loadAll', 'טען הכול')}</Text>
+                  </Pressable>
+                </View>
               </View>
             ) : null
           }
@@ -1680,65 +1879,17 @@ export default function LeadsListScreen() {
         />
       ) : (
         <View style={{ flex: 1 }}>
-          {hasMore && (
-            <Pressable onPress={fetchAll} disabled={loadingAll} style={{ flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6, marginTop: 8, marginBottom: 4, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer, opacity: loadingAll ? 0.7 : 1 }}>
-              {loadingAll ? <ActivityIndicator size={12} color={theme.colors.onPrimaryContainer} /> : <MaterialCommunityIcons name="download" size={14} color={theme.colors.onPrimaryContainer} />}
-              <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadAll', 'טען הכול')} ({leads.length}/{totalCount})</Text>
-            </Pressable>
-          )}
+          {loadingAll ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginTop: 6 }} />
+          ) : null}
           <KanbanBoard
-          columns={kanbanColumns}
-          keyExtractor={(item) => item.id}
-          onMoveItem={handleKanbanMove}
-          emptyLabel={t('leads.noLeads')}
-          renderCard={(item) => (
-            <Pressable
-              onPress={() => openLead(item)}
-              style={({ pressed }) => [
-                styles.pipelineCard,
-                {
-                  backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
-                  borderStartColor: stageColor(getLeadStageName(item)),
-                  borderStartWidth: 3,
-                },
-              ]}
-            >
-              <Text
-                variant="titleSmall"
-                numberOfLines={1}
-                style={{ color: theme.colors.onSurface, fontWeight: '600' }}
-              >
-                {item.title}
-              </Text>
-              {item.contactName ? (
-                <View style={[styles.pipelineCardMeta, { flexDirection }]}>
-                  <MaterialCommunityIcons name="account-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginStart: 4 }}>
-                    {item.contactName}
-                  </Text>
-                </View>
-              ) : null}
-              {item.value != null && item.value > 0 ? (
-                <Text variant="titleSmall" style={{ color: theme.colors.primary, fontWeight: '700', marginTop: 4 }}>
-                  {formatCurrency(item.value, item.currency ?? '₪')}
-                </Text>
-              ) : null}
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-                {leadTaskMap.get(item.id) ? (
-                  <LeadTaskBadge info={leadTaskMap.get(item.id)!} t={t} formatDate={formatDate} />
-                ) : null}
-                {(item as any).score ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1, backgroundColor: withAlpha(scoreColor((item as any).score), 0.16), borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 }}>
-                    <MaterialCommunityIcons name="fire" size={12} color={scoreColor((item as any).score)} />
-                    <Text style={{ fontSize: 10, fontWeight: '700', color: scoreColor((item as any).score) }}>{Number((item as any).score)}</Text>
-                  </View>
-                ) : null}
-                {item.priority ? (
-                  <MaterialCommunityIcons name="flag" size={14} color={PRIORITY_COLORS[item.priority] || theme.colors.onSurfaceVariant} />
-                ) : null}
-              </View>
-            </Pressable>
-          )}
+            columns={kanbanColumns}
+            keyExtractor={(item) => item.id}
+            onMoveItem={handleKanbanMove}
+            emptyLabel={tr('אין לידים בשלב זה', 'No leads in this stage')}
+            renderCard={renderBoardCard}
+            refreshing={refreshing}
+            onRefresh={onRefresh}
           />
         </View>
       )}
@@ -1764,16 +1915,25 @@ export default function LeadsListScreen() {
           </Text>
 
           <ScrollView showsVerticalScrollIndicator={false} style={{ flexShrink: 1 }}>
-            <PaperInput
-              label={t('leads.owner', 'Owner')}
-              value={filterOwner}
-              onChangeText={setFilterOwner}
-              mode="outlined"
-              style={{ marginBottom: 12 }}
-              outlineColor={theme.colors.outline}
-              activeOutlineColor={theme.colors.primary}
-              left={<PaperInput.Icon icon="account-outline" />}
-            />
+            {ownerOptions.length > 0 ? (
+              <>
+                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, marginTop: 4 }}>
+                  {t('leads.owner', 'Owner')}
+                </Text>
+                <OptionChips options={ownerOptions} value={filterOwner} onChange={setFilterOwner} theme={theme} />
+              </>
+            ) : (
+              <PaperInput
+                label={t('leads.owner', 'Owner')}
+                value={filterOwner}
+                onChangeText={setFilterOwner}
+                mode="outlined"
+                style={{ marginBottom: 12 }}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={theme.colors.primary}
+                left={<PaperInput.Icon icon="account-outline" />}
+              />
+            )}
 
             {filterOptions.source && filterOptions.source.length > 0 ? (
               <>
@@ -1939,13 +2099,37 @@ export default function LeadsListScreen() {
             {t('leads.moveStage')}
           </Text>
           {stagePickerLead ? (
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 16 }}>
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12 }}>
               {stagePickerLead.title}
             </Text>
           ) : null}
+          {/* Secondary lead actions live here (long-press / ⇄) instead of cluttering every row */}
+          {stagePickerLead ? (
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              {(stagePickerLead.contactPhone || stagePickerLead.phoneNumber) ? (
+                <Chip
+                  icon="phone-outline"
+                  compact
+                  onPress={() => { const l = stagePickerLead; setStagePickerLead(null); if (l) callLead(l); }}
+                >
+                  {tr('התקשר', 'Call')}
+                </Chip>
+              ) : null}
+              {(stagePickerLead as any).ownerId !== (user?.uID || user?.userId) ? (
+                <Chip
+                  icon="account-arrow-left"
+                  compact
+                  onPress={() => { const l = stagePickerLead; setStagePickerLead(null); if (l) handleTakeOwnership(l); }}
+                >
+                  {t('leads.takeOwnership', 'קח בעלות')}
+                </Chip>
+              ) : null}
+            </View>
+          ) : null}
+          <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator={false}>
           {stageKeys.map((stage) => {
             const color = stageColor(stage);
-            const isCurrent = stagePickerLead?.stageName === stage || stagePickerLead?.stage === stage;
+            const isCurrent = !!stagePickerLead && getLeadStageName(stagePickerLead) === stage;
             return (
               <Pressable
                 key={stage}
@@ -1979,6 +2163,7 @@ export default function LeadsListScreen() {
               </Pressable>
             );
           })}
+          </ScrollView>
           <Button
             mode="text"
             onPress={() => setStagePickerLead(null)}
@@ -1987,6 +2172,41 @@ export default function LeadsListScreen() {
           >
             {t('common.cancel')}
           </Button>
+        </Modal>
+      </Portal>
+
+      {/* Stage filter (list view) */}
+      <Portal>
+        <Modal
+          visible={stageFilterVisible}
+          onDismiss={() => setStageFilterVisible(false)}
+          contentContainerStyle={[styles.stageModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}>
+            {tr('סינון לפי שלב', 'Filter by stage')}
+          </Text>
+          <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+            {[null, ...stageKeys].map((stage) => {
+              const color = stage ? stageColor(stage) : theme.colors.primary;
+              const isSelected = selectedStage === stage;
+              return (
+                <Pressable
+                  key={stage ?? '__all'}
+                  onPress={() => { setSelectedStage(stage); setStageFilterVisible(false); }}
+                  style={({ pressed }) => [
+                    styles.stageOption,
+                    { backgroundColor: isSelected ? withAlpha(color, 0.12) : pressed ? theme.colors.surfaceVariant : 'transparent' },
+                  ]}
+                >
+                  <View style={[styles.stageOptionDot, { backgroundColor: color }]} />
+                  <Text variant="bodyMedium" style={{ flex: 1, color: isSelected ? color : theme.colors.onSurface, fontWeight: isSelected ? '700' : '400' }}>
+                    {stage ? t(STAGE_I18N[stage] ?? stage) : t('common.all')}
+                  </Text>
+                  {isSelected ? <MaterialCommunityIcons name="check" size={20} color={color} /> : null}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </Modal>
       </Portal>
 
@@ -2142,12 +2362,63 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 22, fontWeight: '700', color: '#FFF' },
   headerActions: { alignItems: 'center', gap: 4 },
   headerBtn: { padding: 4 },
+  filterBadge: {
+    position: 'absolute',
+    top: -2,
+    end: -2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  segment: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 16,
+    padding: 2,
+    gap: 2,
+  },
+  segmentItem: {
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  segmentItemActive: { backgroundColor: '#FFF' },
   searchWrap: {
     paddingHorizontal: 14,
-    overflow: 'hidden',
     justifyContent: 'center',
-    paddingBottom: 2,
+    paddingTop: 4,
+    paddingBottom: 10,
   },
+  quickRow: { paddingHorizontal: 14, paddingVertical: 8, gap: 6, alignItems: 'center' },
+  quickChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+  },
+  quickDivider: { width: StyleSheet.hairlineWidth, height: 18, marginHorizontal: 2 },
+  summaryRow: {
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  sortBtn: { alignItems: 'center', gap: 4, paddingVertical: 2 },
+  unseenDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#ef4444', marginEnd: 6 },
+  stagePill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, maxWidth: 140 },
+  signalChip: { flexDirection: 'row', alignItems: 'center', gap: 1, borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 },
+  callBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
+  moveBtn: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginStart: 6 },
   searchbar: { height: 40, borderRadius: 20, elevation: 0 },
   viewsRow: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -2178,9 +2449,10 @@ const styles = StyleSheet.create({
   listContent: { paddingTop: 4, paddingBottom: 100 },
   leadRow: {
     alignItems: 'stretch',
-    paddingTop: 10,
-    paddingBottom: 10,
-    gap: 14,
+    paddingTop: 8,
+    paddingBottom: 8,
+    paddingEnd: 12,
+    gap: 10,
     overflow: 'hidden',
   },
   quickDialRow: {
@@ -2194,11 +2466,11 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 2,
     borderBottomRightRadius: 2,
   },
-  leadBody: { flex: 1, gap: 4 },
-  leadTop: { alignItems: 'center', justifyContent: 'space-between' },
+  leadBody: { flex: 1, gap: 3 },
+  leadTop: { alignItems: 'center', gap: 6 },
   leadMeta: { alignItems: 'center', gap: 12, marginTop: 2 },
   metaChip: { alignItems: 'center' },
-  leadBottom: { alignItems: 'center', justifyContent: 'space-between', marginTop: 6 },
+  leadBottom: { alignItems: 'center', gap: 6, marginTop: 2 },
   pipelineContainer: {
     paddingHorizontal: 8,
     paddingTop: 0,

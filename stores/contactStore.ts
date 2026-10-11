@@ -3,7 +3,6 @@ import type { Contact } from '../types';
 import { contactsApi } from '../services/api/contacts';
 import {
   queryPage,
-  searchFts,
   upsertMany,
   deleteById,
   getById,
@@ -17,24 +16,25 @@ import {
   contactId,
 } from '../services/db/contactsTable';
 import { syncContacts } from '../services/sync/contactsSync';
+import {
+  EMPTY_FILTERS,
+  BUILTIN_VIEW_FILTERS,
+  buildContactWhere,
+  buildContactOrder,
+  type BuiltInViewId,
+  type ContactFilterState,
+  type ContactSort,
+} from '../services/contactFilters';
 
-// Contacts are now backed by SQLite (see services/db). The store holds only the current visible
-// window (or search results), never the whole table - so a list of 50k contacts opens instantly
-// from disk, scrolls with constant memory, and searches via FTS across the entire dataset.
+// Contacts are backed by SQLite (see services/db). The store holds only the current visible
+// window (filtered / searched page), never the whole table - so a list of 50k contacts opens
+// instantly from disk, scrolls with constant memory, and searches/filters run as SQL against the
+// entire cached dataset (see services/contactFilters.ts for the WHERE builder).
 
 const PAGE_SIZE = 50;
-const SEARCH_LIMIT = 100;
 
-export type ContactSort = 'name' | 'createdOn' | 'modifiedOn' | '';
-export type ContactMode = 'all' | 'myContacts' | 'recent';
-
-interface ContactFilters {
-  tag: string | null;
-  ownerName: string;
-  status: string;
-  mode: ContactMode;
-  sortBy: ContactSort;
-}
+export type { ContactSort };
+export type ContactFilters = ContactFilterState;
 
 interface Facets {
   tags: string[];
@@ -42,11 +42,25 @@ interface Facets {
   statuses: string[];
 }
 
+// Live counts for the built-in view tabs (a tab is hidden when its count is 0).
+export type ViewCounts = Record<BuiltInViewId, number>;
+const EMPTY_VIEW_COUNTS: ViewCounts = {
+  __all: 0,
+  __mine: 0,
+  __unassigned: 0,
+  __new: 0,
+  __unread: 0,
+  __optedout: 0,
+};
+
 interface ContactState {
   contacts: Contact[];
   isLoading: boolean;
   isLoadingMore: boolean;
   hasMore: boolean;
+  // Rows matching the current search + filters across the WHOLE cached table (not just the window).
+  totalCount: number;
+  viewCounts: ViewCounts;
   searchQuery: string;
   selectedContact: Contact | null;
   filters: ContactFilters;
@@ -58,12 +72,18 @@ interface ContactState {
 
   loadContacts: (organization: string, userId?: string, dataVisibility?: string) => Promise<void>;
   loadMore: () => Promise<void>;
-  reloadWindow: () => Promise<void>;
+  // `reset` = the query changed (search/filters): start again from the first page instead of
+  // preserving how far the user had scrolled.
+  reloadWindow: (reset?: boolean) => Promise<void>;
   refreshFacets: () => Promise<void>;
+  refreshViewCounts: () => Promise<void>;
   ensureFacets: (organization: string) => Promise<void>;
   setSearchQuery: (query: string) => void;
+  // Who "Mine" refers to. Separate from loadContacts' userId, which is only set for own-data scopes.
+  setCurrentUserId: (userId: string) => void;
   setSelectedContact: (contact: Contact | null) => void;
   setFilters: (partial: Partial<ContactFilters>) => void;
+  replaceFilters: (filters: ContactFilters) => void;
   createContact: (organization: string, contact: Partial<Contact>, userId?: string, userName?: string) => Promise<Contact>;
   updateContact: (organization: string, contact: Partial<Contact>, userId?: string, userName?: string) => Promise<void>;
   deleteContact: (organization: string, contactId: string) => Promise<void>;
@@ -71,50 +91,18 @@ interface ContactState {
   getContactById: (id: string) => Promise<Contact | null>;
 }
 
-const DEFAULT_FILTERS: ContactFilters = {
-  tag: null,
-  ownerName: '',
-  status: '',
-  mode: 'all',
-  sortBy: '',
-};
-
 function buildQuery(state: ContactState): {
   where: string;
   params: (string | number | null)[];
   orderBy: string;
 } {
-  const where: string[] = ['organization = ?'];
-  const params: (string | number | null)[] = [state.organization];
-
-  if (state.scopeOwnerId) {
-    where.push('ownerId = ?');
-    params.push(state.scopeOwnerId);
-  }
-  const f = state.filters;
-  if (f.mode === 'myContacts' && state.currentUserId) {
-    where.push('ownerId = ?');
-    params.push(state.currentUserId);
-  }
-  if (f.tag) {
-    where.push('keysText LIKE ?');
-    params.push(`%#${f.tag}#%`);
-  }
-  if (f.ownerName) {
-    where.push('ownerName = ?');
-    params.push(f.ownerName);
-  }
-  if (f.status) {
-    where.push('LOWER(status) = ?');
-    params.push(f.status.toLowerCase());
-  }
-
-  let orderBy = 'modifiedOn DESC';
-  if (f.sortBy === 'name') orderBy = 'name COLLATE NOCASE ASC';
-  else if (f.sortBy === 'createdOn') orderBy = 'createdOn DESC';
-  else if (f.sortBy === 'modifiedOn' || f.mode === 'recent') orderBy = 'modifiedOn DESC';
-
-  return { where: where.join(' AND '), params, orderBy };
+  const { where, params } = buildContactWhere(state.filters, {
+    organization: state.organization,
+    scopeOwnerId: state.scopeOwnerId,
+    currentUserId: state.currentUserId,
+    search: state.searchQuery,
+  });
+  return { where, params, orderBy: buildContactOrder(state.filters.sortBy) };
 }
 
 async function fetchWindow(
@@ -123,21 +111,22 @@ async function fetchWindow(
   offset: number,
 ): Promise<Contact[]> {
   const { where, params, orderBy } = buildQuery(state);
-  if (state.searchQuery.trim()) {
-    // FTS ranks by relevance; pagination/offset isn't meaningful, so we cap at SEARCH_LIMIT.
-    return searchFts<Contact>(CONTACTS_TABLE, state.searchQuery, { where, params, limit });
-  }
   return queryPage<Contact>(CONTACTS_TABLE, { where, params, orderBy, limit, offset });
 }
+
+// Guards against out-of-order results while the user types / toggles filters quickly.
+let reloadSeq = 0;
 
 export const useContactStore = create<ContactState>((set, get) => ({
   contacts: [],
   isLoading: false,
   isLoadingMore: false,
   hasMore: false,
+  totalCount: 0,
+  viewCounts: { ...EMPTY_VIEW_COUNTS },
   searchQuery: '',
   selectedContact: null,
-  filters: { ...DEFAULT_FILTERS },
+  filters: { ...EMPTY_FILTERS },
   facets: { tags: [], owners: [], statuses: [] },
 
   organization: '',
@@ -179,30 +168,42 @@ export const useContactStore = create<ContactState>((set, get) => ({
       });
   },
 
-  reloadWindow: async () => {
+  reloadWindow: async (reset = false) => {
     const state = get();
-    const isSearch = state.searchQuery.trim().length > 0;
-    // Preserve how many rows the user has already scrolled through on a background refresh.
-    const limit = isSearch ? SEARCH_LIMIT : Math.max(PAGE_SIZE, state.contacts.length);
+    const seq = ++reloadSeq;
+    // Preserve how many rows the user has already scrolled through on a background refresh
+    // (sync landing / realtime update), but start over when the search or filters changed.
+    const limit = reset ? PAGE_SIZE : Math.max(PAGE_SIZE, state.contacts.length);
     try {
-      const rows = await fetchWindow(state, limit, 0);
+      const { where, params } = buildQuery(state);
+      const [rows, total] = await Promise.all([
+        fetchWindow(state, limit, 0),
+        countRows(CONTACTS_TABLE, where, params),
+      ]);
+      if (seq !== reloadSeq) return; // a newer query superseded this one
       set({
         contacts: rows,
+        totalCount: total,
         isLoading: false,
-        hasMore: !isSearch && rows.length >= limit,
+        hasMore: rows.length >= limit && rows.length < total,
       });
     } catch {
-      set({ isLoading: false });
+      if (seq === reloadSeq) set({ isLoading: false });
     }
   },
 
   loadMore: async () => {
     const state = get();
-    if (state.searchQuery.trim() || !state.hasMore || state.isLoadingMore) return;
+    if (!state.hasMore || state.isLoadingMore) return;
+    const seq = reloadSeq;
     set({ isLoadingMore: true });
     const offset = state.contacts.length;
     try {
       const rows = await fetchWindow(state, PAGE_SIZE, offset);
+      if (seq !== reloadSeq) {
+        set({ isLoadingMore: false });
+        return; // the query changed while paging; the fresh window already replaced the list
+      }
       set({
         contacts: [...get().contacts, ...rows],
         isLoadingMore: false,
@@ -234,11 +235,38 @@ export const useContactStore = create<ContactState>((set, get) => ({
     } catch {
       // keep previous facets on failure
     }
+    get().refreshViewCounts();
+  },
+
+  refreshViewCounts: async () => {
+    const { organization, scopeOwnerId, currentUserId } = get();
+    if (!organization) return;
+    try {
+      const ids = Object.keys(BUILTIN_VIEW_FILTERS) as BuiltInViewId[];
+      const counts = await Promise.all(
+        ids.map((id) => {
+          if (id === '__mine' && !currentUserId) return Promise.resolve(0);
+          const { where, params } = buildContactWhere(BUILTIN_VIEW_FILTERS[id], {
+            organization,
+            scopeOwnerId,
+            currentUserId,
+          });
+          return countRows(CONTACTS_TABLE, where, params);
+        }),
+      );
+      const next = { ...EMPTY_VIEW_COUNTS };
+      ids.forEach((id, i) => {
+        next[id] = counts[i];
+      });
+      set({ viewCounts: next });
+    } catch {
+      // keep previous counts
+    }
   },
 
   // Lightweight: make sure org tag facets are available even when the Contacts tab was never
   // opened (so tag autocomplete works from the chat screen). Sets the org if missing, then reads
-  // distinct tags from the on-device DB — no network sync, unlike loadContacts.
+  // distinct tags from the on-device DB - no network sync, unlike loadContacts.
   ensureFacets: async (organization) => {
     if (!organization) return;
     if (get().organization !== organization) set({ organization });
@@ -248,19 +276,31 @@ export const useContactStore = create<ContactState>((set, get) => ({
   setSearchQuery: (query) => {
     if (query === get().searchQuery) return;
     set({ searchQuery: query });
+    get().reloadWindow(true);
+  },
+
+  setCurrentUserId: (userId) => {
+    if (!userId || userId === get().currentUserId) return;
+    set({ currentUserId: userId });
     get().reloadWindow();
+    get().refreshViewCounts();
   },
 
   setSelectedContact: (contact) => set({ selectedContact: contact }),
 
   setFilters: (partial) => {
     set({ filters: { ...get().filters, ...partial } });
-    get().reloadWindow();
+    get().reloadWindow(true);
+  },
+
+  replaceFilters: (filters) => {
+    set({ filters: { ...EMPTY_FILTERS, ...filters } });
+    get().reloadWindow(true);
   },
 
   createContact: async (organization, contact, userId, userName) => {
     const result = await contactsApi.create(organization, contact, userId, userName);
-    // CreateNewContact returns a FirestoreResponse { Success, Message, Data } — the saved record
+    // CreateNewContact returns a FirestoreResponse { Success, Message, Data } - the saved record
     // (incl. the resolved owner) is in Data. Merge it, and fall back to the creator so the new row
     // shows its owner immediately, even if the backend response is sparse.
     const data = (result && (result.Data || result.data)) || {};
@@ -272,7 +312,7 @@ export const useContactStore = create<ContactState>((set, get) => ({
       id: data.id || contact.phoneNumber || contactId(contact),
     } as Contact;
     await upsertMany(CONTACTS_TABLE, [newContact], mapContactRow);
-    set((state) => ({ contacts: [newContact, ...state.contacts] }));
+    set((state) => ({ contacts: [newContact, ...state.contacts], totalCount: state.totalCount + 1 }));
     get().refreshFacets();
     return newContact;
   },
@@ -307,9 +347,14 @@ export const useContactStore = create<ContactState>((set, get) => ({
       throw new Error(res?.Message || res?.error || 'Delete failed');
     }
     await deleteById(CONTACTS_TABLE, id);
-    set((state) => ({
-      contacts: state.contacts.filter((c) => c.id !== id && c.phoneNumber !== id),
-    }));
+    set((state) => {
+      const next = state.contacts.filter((c) => c.id !== id && c.phoneNumber !== id);
+      return {
+        contacts: next,
+        totalCount: Math.max(0, state.totalCount - (state.contacts.length - next.length)),
+      };
+    });
+    get().refreshViewCounts();
   },
 
   addOrUpdateContact: (contact) => {

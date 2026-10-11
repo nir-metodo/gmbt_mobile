@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Lead } from '../types';
 import { leadsApi } from '../services/api/leads';
 import { readList, cacheList, removeFromCache } from '../services/db/genericCache';
@@ -34,6 +35,8 @@ interface LeadState {
   getFilteredLeads: () => Lead[];
   getLeadsByStage: () => Map<string, Lead[]>;
 }
+
+const VIEW_MODE_KEY = 'leads_view_mode';
 
 export const useLeadStore = create<LeadState>((set, get) => ({
   leads: [],
@@ -110,7 +113,11 @@ export const useLeadStore = create<LeadState>((set, get) => ({
 
   setSearchQuery: (query) => set({ searchQuery: query }),
   setSelectedStage: (stage) => set({ selectedStage: stage }),
-  setViewMode: (mode) => set({ viewMode: mode }),
+  setViewMode: (mode) => {
+    set({ viewMode: mode });
+    // Persist so the List/Board choice survives app restarts.
+    AsyncStorage.setItem(VIEW_MODE_KEY, mode).catch(() => {});
+  },
   setSelectedLead: (lead) => set({ selectedLead: lead }),
 
   getFilteredLeads: () => {
@@ -126,7 +133,10 @@ export const useLeadStore = create<LeadState>((set, get) => ({
           l.title?.toLowerCase().includes(query) ||
           l.contactName?.toLowerCase().includes(query) ||
           l.phoneNumber?.includes(query) ||
-          l.email?.toLowerCase().includes(query)
+          (l as any).email?.toLowerCase().includes(query) ||
+          l.companyName?.toLowerCase().includes(query) ||
+          l.source?.toLowerCase().includes(query) ||
+          l.notes?.toLowerCase().includes(query)
       );
     }
     return filtered;
@@ -144,3 +154,10 @@ export const useLeadStore = create<LeadState>((set, get) => ({
     return grouped;
   },
 }));
+
+// Restore the persisted List/Board choice once at startup.
+AsyncStorage.getItem(VIEW_MODE_KEY)
+  .then((v) => {
+    if (v === 'list' || v === 'pipeline') useLeadStore.setState({ viewMode: v });
+  })
+  .catch(() => {});

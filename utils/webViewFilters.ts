@@ -5,6 +5,8 @@
  * built-in views themselves. Keep the semantics identical to the web.
  */
 
+import { getConversationWaiting, MessageSlaConfig } from './messageSla';
+
 export type WebViewFilters = {
   openConversations: boolean;
   myConversations: boolean;
@@ -14,6 +16,7 @@ export type WebViewFilters = {
   alsoInclude: string[];
   alsoIncludeStatus: string[];
   inactiveDays: number;
+  activeWithinDays: number;
   lastMsgFrom: string;
   lastMsgTo: string;
   internalMessages: boolean;
@@ -27,12 +30,16 @@ export type WebViewFilters = {
   caseStage: string[];
   logic: 'AND' | 'OR';
   facetOps: Record<string, 'AND' | 'OR'>;
-  /** Mobile-only extra (web has no equivalent): 'active7' | 'active30' | 'inactive7' | 'inactive30'. */
+  /**
+   * Mobile-only in-memory extra (legacy mobile-saved views may still carry it): 'active7' | 'active30' |
+   * 'inactive7' | 'inactive30'. NEVER persisted — toPersistableWebFilters() translates it to the web's
+   * activeWithinDays / inactiveDays so the view also works on the web.
+   */
   activityFilter: string;
 };
 
 const ALSO_ELIGIBLE_FACETS = ['unassigned', 'myConversations', 'unread', 'notReviewedByHuman', 'openConversations', 'internalMessages', 'botOwned'];
-const ALWAYS_AND_FACETS = new Set(['status', 'category', 'owner', 'contactGroup', 'leadStage', 'caseStage', 'inactiveDays', 'lastMsgFrom', 'lastMsgTo']);
+const ALWAYS_AND_FACETS = new Set(['status', 'category', 'owner', 'contactGroup', 'leadStage', 'caseStage', 'inactiveDays', 'activeWithinDays', 'lastMsgFrom', 'lastMsgTo']);
 
 // The system "bot" owners (Gambot + Gambot AI) — same ids as the web.
 const GAMBOT_OWNER_IDS = ['gambot', 'gambot-ai', 'Tfyt1ZdPsGN5gMty8XQa3YrP22g1', '4Y1MxCp8x1UkYc1y1dkRkKzQiflK'];
@@ -50,6 +57,7 @@ export function normalizeWebFilters(raw: any): WebViewFilters {
     alsoInclude: Array.isArray(f.alsoInclude) ? f.alsoInclude.filter((k: string) => ALSO_ELIGIBLE_FACETS.includes(k)) : [],
     alsoIncludeStatus: Array.isArray(f.alsoIncludeStatus) ? f.alsoIncludeStatus.filter((s: string) => ['Open', 'In Process', 'Closed'].includes(s)) : [],
     inactiveDays: Number(f.inactiveDays) > 0 ? Number(f.inactiveDays) : 0,
+    activeWithinDays: Number(f.activeWithinDays) > 0 ? Number(f.activeWithinDays) : 0,
     lastMsgFrom: typeof f.lastMsgFrom === 'string' ? f.lastMsgFrom : '',
     lastMsgTo: typeof f.lastMsgTo === 'string' ? f.lastMsgTo : '',
     internalMessages: !!f.internalMessages,
@@ -74,7 +82,7 @@ export function hasWebFilterConstraints(f: WebViewFilters | null): boolean {
   if (!f) return false;
   return !!(
     f.openConversations || f.myConversations || f.unassigned || f.botOwned || f.slaBreached ||
-    f.alsoInclude.length || f.inactiveDays || f.lastMsgFrom || f.lastMsgTo || f.internalMessages ||
+    f.alsoInclude.length || f.inactiveDays || f.activeWithinDays || f.lastMsgFrom || f.lastMsgTo || f.internalMessages ||
     f.unread || f.notReviewedByHuman || f.category.length || f.status.length || f.owner.length ||
     f.contactGroup.length || f.leadStage.length || f.caseStage.length || f.activityFilter
   );
@@ -87,6 +95,33 @@ export function decodeOverridesMap(map: any): Record<string, any> {
     const key = k.startsWith('builtin_') ? `__${k.slice('builtin_'.length)}__` : k;
     out[key] = map[k];
   });
+  return out;
+}
+
+/** Inverse of decodeOverridesMap — "__mine__" → "builtin_mine" (Sidebar.js encodeOverridesMap). */
+export function encodeOverridesMap(map: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  Object.keys(map || {}).forEach((k) => {
+    const m = /^__(.+)__$/.exec(k);
+    out[m ? `builtin_${m[1]}` : k] = map[k];
+  });
+  return out;
+}
+
+/**
+ * The exact key set the web's normalizeFilters() emits (nothing mobile-only), so a view / override saved
+ * from the app is read by the web 1:1. The mobile-only `activityFilter` is translated into the web's
+ * activeWithinDays / inactiveDays instead of being persisted.
+ */
+export function toPersistableWebFilters(f: WebViewFilters): Record<string, any> {
+  const { activityFilter, ...rest } = f;
+  const out: Record<string, any> = { ...rest };
+  const m = /^(active|inactive)(\d+)$/.exec(activityFilter || '');
+  if (m) {
+    const days = Number(m[2]);
+    if (m[1] === 'active' && !(out.activeWithinDays > 0)) out.activeWithinDays = days;
+    if (m[1] === 'inactive' && !(out.inactiveDays > 0)) out.inactiveDays = days;
+  }
   return out;
 }
 
@@ -118,7 +153,31 @@ type Ctx = {
   meId: string;
   contactLeadMap?: Record<string, { stageId: string }>;
   contactCaseMap?: Record<string, { stageId: string }[]>;
+  /** Chat response-SLA config — needed by the "בחריגה" (slaBreached) facet, same as the web. */
+  messageSla?: MessageSlaConfig | null;
 };
+
+// Phone → map lookup tolerant of local-vs-international formats (0501234567 ↔ 972501234567) via the
+// last 9 digits, like the web's lookupByPhone/phoneKeyVariants.
+const last9 = (d: string) => (d.length > 9 ? d.slice(-9) : d);
+function makePhoneLookup<T>(map?: Record<string, T>): (c: any) => T | undefined {
+  if (!map) return () => undefined;
+  let idx: Record<string, T> | null = null;
+  return (c) => {
+    const d = phoneDigits(c);
+    if (!d) return undefined;
+    if (map[d]) return map[d];
+    if (!idx) {
+      idx = {};
+      Object.keys(map).forEach((k) => { idx![last9(k)] = map[k]; });
+    }
+    return idx[last9(d)];
+  };
+}
+
+// "yyyy-MM-dd" must be read as the user's LOCAL day (new Date('2026-10-07') is UTC midnight).
+const localDayStart = (ymd: string) => new Date(`${ymd}T00:00:00`).getTime();
+const localDayEnd = (ymd: string) => new Date(`${ymd}T23:59:59.999`).getTime();
 
 /** Builds the chat predicate for a view's filters, or null when nothing is constrained. */
 export function buildWebFilterPredicate(f: WebViewFilters | null, ctx: Ctx): ((c: any) => boolean) | null {
@@ -165,18 +224,33 @@ export function buildWebFilterPredicate(f: WebViewFilters | null, ctx: Ctx): ((c
       return (Date.now() - t) / 86400000 >= f.inactiveDays;
     });
   }
+  if (f.activeWithinDays > 0) {
+    add('activeWithinDays', (c) => {
+      const t = lastMsgTs(c);
+      if (t === null) return false;
+      return (Date.now() - t) / 86400000 <= f.activeWithinDays;
+    });
+  }
   if (f.lastMsgFrom) {
     add('lastMsgFrom', (c) => {
       const t = lastMsgTs(c);
-      const from = new Date(f.lastMsgFrom).getTime();
-      return t !== null && !Number.isNaN(from) && t >= from;
+      if (t === null) return false;
+      const from = localDayStart(f.lastMsgFrom);
+      if (Number.isNaN(from) || t < from) return false;
+      if (!f.lastMsgTo) {
+        const endOfToday = new Date();
+        endOfToday.setHours(23, 59, 59, 999);
+        return t <= endOfToday.getTime();
+      }
+      return true;
     });
   }
   if (f.lastMsgTo) {
     add('lastMsgTo', (c) => {
       const t = lastMsgTs(c);
-      const to = new Date(f.lastMsgTo).getTime();
-      return t !== null && !Number.isNaN(to) && t <= to + 86400000 - 1;
+      if (t === null) return false;
+      const to = localDayEnd(f.lastMsgTo);
+      return !Number.isNaN(to) && t <= to;
     });
   }
   if (f.activityFilter) {
@@ -200,16 +274,22 @@ export function buildWebFilterPredicate(f: WebViewFilters | null, ctx: Ctx): ((c
     });
   }
   if (f.leadStage.length) {
+    const leadOf = makePhoneLookup(ctx.contactLeadMap);
     add('leadStage', (c) => {
-      const stageId = c?.leadStageId || c?.leadStage || ctx.contactLeadMap?.[phoneDigits(c)]?.stageId || '';
+      const stageId = c?.leadStageId || c?.leadStage || leadOf(c)?.stageId || '';
       return !!stageId && f.leadStage.includes(stageId);
     });
   }
   if (f.caseStage.length) {
+    const casesOf = makePhoneLookup(ctx.contactCaseMap);
     add('caseStage', (c) => {
-      const arr = ctx.contactCaseMap?.[phoneDigits(c)];
+      const arr = casesOf(c);
       return !!arr && arr.some((ci) => f.caseStage.includes(ci.stageId));
     });
+  }
+  // "בחריגה" — conversation-response SLA breached (same computation as the row's waiting badge).
+  if (f.slaBreached) {
+    add('slaBreached', (c) => getConversationWaiting(c, ctx.messageSla)?.level === 'breach');
   }
   // Additive "כלול גם" buckets — always OR'd on top of the AND group.
   f.alsoInclude.forEach((k) => {

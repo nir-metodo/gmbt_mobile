@@ -11,7 +11,9 @@ import {
   FlatList,
   Share,
   Linking,
+  BackHandler,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Text,
   ActivityIndicator,
@@ -46,10 +48,29 @@ import { catalogApi, type CatalogCustomColumn, type CatalogFieldsConfig } from '
 import { Image } from 'expo-image';
 import type { Contact } from '../../../../types';
 import { borderRadius } from '../../../../constants/theme';
-import { formatDate } from '../../../../utils/formatters';
+import { formatDate, formatCurrency } from '../../../../utils/formatters';
+import { currencySymbol } from '../../../../utils/currency';
 import * as Clipboard from 'expo-clipboard';
+import { useDirtyTracker } from '../../../../hooks/useDirtyTracker';
+import { ScreenHeader } from '../../../../components/ScreenHeader';
+import { HeaderMenu } from '../../../../components/HeaderMenu';
+import { StickySaveBar } from '../../../../components/StickySaveBar';
+import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
+import { CollapsibleSection } from '../../../../components/CollapsibleSection';
 
 const BRAND_COLOR = '#2e6155';
+
+/** Unpaid balance of an issued tax invoice / tax-invoice-receipt (mirrors the web's getOpenBalance). */
+function getOpenBalance(inv: Invoice): number {
+  if (!inv.isLocked) return 0;
+  if (inv.type !== 'tax_invoice' && inv.type !== 'combined') return 0;
+  if (inv.status === 'cancelled') return 0;
+  const total = Number(inv.total) || 0;
+  const balance = inv.balanceDue != null
+    ? Number(inv.balanceDue)
+    : total - (Number(inv.paidAmount) || 0) - (Number(inv.creditedAmount) || 0);
+  return balance > 0.001 ? balance : 0;
+}
 
 // ── Catalog picker helpers (mirror the Catalog screen so the "from catalog" picker shows the same
 // title + columns configured in the web Catalog → Columns settings) ─────────────────────────────
@@ -119,6 +140,7 @@ export default function InvoiceDetailScreen() {
   const { flexDirection, textAlign, isRTL } = useRTL();
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
+  const insets = useSafeAreaInsets();
 
   const isNew = id === 'new';
 
@@ -147,6 +169,8 @@ export default function InvoiceDetailScreen() {
   const [formPaymentMethod, setFormPaymentMethod] = useState('');
   const [formNotes, setFormNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [issuing, setIssuing] = useState(false);
+  const [creatingReceipt, setCreatingReceipt] = useState(false);
 
   // Type/payment menus
   const [typeMenuVisible, setTypeMenuVisible] = useState(false);
@@ -186,24 +210,74 @@ export default function InvoiceDetailScreen() {
   const getStatusLabel = (status: string) => INVOICE_STATUSES.find((s) => s.key === status)?.labelHe || status;
   const getStatusColor = (status: string) => INVOICE_STATUSES.find((s) => s.key === status)?.color || '#9E9E9E';
 
+  // Dirty tracking: the Save bar appears only when a draft actually changed (no "Edit" button).
+  const formSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        ty: formType, cn: formContactName, cp: formContactPhone, ce: formContactEmail, cc: formContactCompany,
+        d: formDate, dd: formDueDate, cu: formCurrency, v: formVatRate, di: formDiscount, pm: formPaymentMethod, n: formNotes,
+        it: formItems.map((i) => [i.description, i.quantity, i.unitPrice]),
+      }),
+    [formType, formContactName, formContactPhone, formContactEmail, formContactCompany, formDate, formDueDate, formCurrency, formVatRate, formDiscount, formPaymentMethod, formNotes, formItems],
+  );
+  const { dirty, markClean } = useDirtyTracker(formSnapshot);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  // Fill the editable form from a saved draft.
+  const loadInvoiceIntoForm = useCallback((inv: Invoice) => {
+    setFormType(inv.type || 'tax_invoice');
+    setFormContactName(inv.contactName || '');
+    setFormContactPhone(inv.contactPhone || '');
+    setFormContactEmail(inv.contactEmail || '');
+    setFormContactCompany(inv.contactCompany || '');
+    setFormDate(inv.date ? String(inv.date).slice(0, 10) : today);
+    setFormDueDate(inv.dueDate ? String(inv.dueDate).slice(0, 10) : due30);
+    setFormCurrency(inv.currency || 'ILS');
+    setFormVatRate(String(inv.vatRate ?? 18));
+    setFormDiscount(String(inv.discount ?? 0));
+    setFormPaymentMethod(inv.paymentMethod || '');
+    setFormNotes(inv.notes || '');
+    setFormItems(inv.items && inv.items.length > 0 ? inv.items.map((it) => ({ ...it })) : [emptyItem()]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Put a server invoice into state and (for a draft with no unsaved edits) into the form.
+  const applyServerInvoice = useCallback((inv: Invoice) => {
+    setInvoice(inv);
+    if (!inv.isLocked && !dirtyRef.current) {
+      loadInvoiceIntoForm(inv);
+      markClean();
+    }
+  }, [loadInvoiceIntoForm, markClean]);
+
   // ── Fetch invoice ─────────────────────────────────────────────────
   const fetchInvoice = useCallback(async () => {
     if (!user?.organization || isNew) { setLoading(false); return; }
     try {
       setError(null);
       const data = await invoicesApi.getById(user.organization, id);
-      setInvoice(data);
+      if (data) applyServerInvoice(data);
       cacheEntity('invoices', data);
     } catch (err: any) {
       setError(err.message || t('errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, id, isNew, t]);
+  }, [user?.organization, id, isNew, t, applyServerInvoice]);
 
   useEffect(() => {
     fetchInvoice();
   }, [fetchInvoice]);
+
+  // Cached list item → fill the draft form instantly.
+  useEffect(() => {
+    if (cachedInvoice && !cachedInvoice.isLocked) {
+      loadInvoiceIntoForm(cachedInvoice);
+      markClean();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Prefill from source quote ──────────────────────────────────────
   useEffect(() => {
@@ -350,18 +424,23 @@ export default function InvoiceDetailScreen() {
   const updateItem = (idx: number, field: keyof InvoiceItem, value: string | number) =>
     setFormItems((prev) => prev.map((it, i) => (i === idx ? { ...it, [field]: value } : it)));
 
-  // ── Save invoice ──────────────────────────────────────────────────
+  const leaveScreen = useCallback(() => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/more/invoices');
+  }, [router]);
+
+  // ── Save (create a draft, or update the draft in place) ───────────
   const handleSave = useCallback(async () => {
     if (!user?.organization) return;
     if (!formContactName.trim() && !formContactPhone.trim()) {
-      Alert.alert(t('common.error'), 'יש להזין שם לקוח או טלפון');
+      Alert.alert(t('common.error'), t('invoices.customerRequired', 'יש להזין שם לקוח או טלפון'));
       return;
     }
     setSaving(true);
     try {
-      const payload: Partial<Invoice> = {
+      const discountValue = parseFloat(formDiscount) || 0;
+      const payload: Partial<Invoice> & Record<string, any> = {
         type: formType,
-        status: 'draft',
         date: formDate,
         dueDate: formDueDate,
         currency: formCurrency,
@@ -371,21 +450,44 @@ export default function InvoiceDetailScreen() {
         contactEmail: formContactEmail.trim(),
         contactCompany: formContactCompany.trim(),
         items: formItems,
-        subtotal: totals.subtotalAfterDiscount,
+        // Same field semantics as the web form (subtotal before discount; fixed discount in currency).
+        subtotal: totals.subtotal,
+        discount: discountValue,
+        discountType: 'fixed',
+        discountAmount: discountValue,
+        afterDiscount: totals.subtotalAfterDiscount,
         vatAmount: totals.vatAmount,
+        taxAmount: totals.vatAmount,
         total: totals.total,
-        discount: parseFloat(formDiscount) || 0,
         paymentMethod: formPaymentMethod,
         notes: formNotes.trim(),
-        relatedQuoteId: prefillRelatedQuoteId || undefined,
       };
-      const result = await invoicesApi.create(user.organization, payload, user.uID || user.userId, user.fullname);
-      const newId = result?.invoice?.id || result?.id || result?.invoiceId;
-      if (newId) {
-        router.replace({ pathname: '/(tabs)/more/invoices/[id]', params: { id: newId } });
-      } else {
-        if (router.canGoBack()) router.back();
-        else router.replace('/(tabs)/more/invoices');
+      if (isNew) {
+        const result = await invoicesApi.create(
+          user.organization,
+          { ...payload, status: 'draft', relatedQuoteId: prefillRelatedQuoteId || undefined },
+          user.uID || user.userId,
+          user.fullname,
+        );
+        const newId = result?.invoice?.id || result?.id || result?.invoiceId || (result?.success ? result?.message : undefined);
+        if (result && result.success === false) throw new Error(result.message || 'save_failed');
+        if (newId) {
+          router.replace({ pathname: '/(tabs)/more/invoices/[id]', params: { id: newId } });
+        } else {
+          leaveScreen();
+        }
+      } else if (invoice) {
+        const result = await invoicesApi.update(
+          user.organization,
+          id,
+          { ...invoice, ...payload, status: invoice.status },
+          user.uID || user.userId,
+          user.fullname,
+        );
+        const ok = result?.Success ?? result?.success ?? true;
+        if (ok === false) throw new Error(result?.Message || result?.message || 'save_failed');
+        markClean();
+        await fetchInvoice();
       }
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
@@ -393,10 +495,139 @@ export default function InvoiceDetailScreen() {
       setSaving(false);
     }
   }, [
-    user, formType, formDate, formDueDate, formCurrency, formVatRate, formContactName,
+    user, isNew, invoice, id, formType, formDate, formDueDate, formCurrency, formVatRate, formContactName,
     formContactPhone, formContactEmail, formContactCompany, formItems, formDiscount,
-    formPaymentMethod, formNotes, totals, prefillRelatedQuoteId, router, t,
+    formPaymentMethod, formNotes, totals, prefillRelatedQuoteId, router, leaveScreen, markClean, fetchInvoice, t,
   ]);
+
+  // Throw away unsaved edits and restore the draft from the server copy.
+  const discardChanges = useCallback(() => {
+    if (!invoice) return;
+    loadInvoiceIntoForm(invoice);
+    setSelectedContact(null);
+    markClean();
+  }, [invoice, loadInvoiceIntoForm, markClean]);
+
+  // ── Issue the draft (finalize + lock) — same endpoint & rules as the web "Issue" button ──
+  const handleIssue = useCallback(() => {
+    if (!user?.organization || !invoice || !id) return;
+    const hasRealItems = (invoice.items || []).some((it) => (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0) !== 0);
+    if (!hasRealItems) {
+      Alert.alert(t('common.error'), t('invoices.needItems', 'לא ניתן להפיק מסמך ללא פריטים. הוסיפו לפחות פריט אחד עם סכום.'));
+      return;
+    }
+    Alert.alert(
+      t('invoices.issue', 'הפק מסמך'),
+      t('invoices.issueConfirm', 'להפיק את המסמך? לאחר הפקה לא ניתן לערוך.'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('invoices.issue', 'הפק מסמך'),
+          onPress: async () => {
+            setIssuing(true);
+            try {
+              const res = await invoicesApi.issue(user.organization, id, user.uID || user.userId, user.fullname);
+              const ok = res?.Success ?? res?.success;
+              const msg = res?.Message ?? res?.message;
+              if (ok) {
+                const alloc = res?.allocation;
+                if (alloc && !alloc.approved) {
+                  Alert.alert(
+                    t('invoices.issuedTitle', 'המסמך הופק'),
+                    t('invoices.noAllocation', 'המסמך הופק, אך רשות המסים לא החזירה מספר הקצאה. ניתן לבקש מספר הקצאה מהמחשב.'),
+                  );
+                }
+                await fetchInvoice();
+              } else if (res?.notConnected) {
+                Alert.alert(
+                  t('common.error'),
+                  t('invoices.notConnected', 'נדרש חיבור לרשות המסים לקבלת מספר הקצאה. חברו את העסק בהגדרות החשבוניות.'),
+                );
+              } else {
+                Alert.alert(t('common.error'), msg || t('errors.generic'));
+              }
+            } catch (err: any) {
+              Alert.alert(t('common.error'), err.message || t('errors.generic'));
+            } finally {
+              setIssuing(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [user, invoice, id, fetchInvoice, t]);
+
+  // ── Share / copy the public link (issued documents) ────────────────
+  const publicInvoiceUrl = invoice
+    ? `https://www.gambot.co.il/invoice?org=${encodeURIComponent(user?.organization || '')}&id=${encodeURIComponent(invoice.id || '')}`
+    : '';
+
+  const handleShare = useCallback(async () => {
+    if (!invoice) return;
+    const label = `${DOCUMENT_TYPES.find((d) => d.key === invoice.type)?.labelHe || invoice.type}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}`;
+    try {
+      await Share.share({
+        message: `${label}\n${invoice.contactName ? `${t('invoices.customer', 'לקוח')}: ${invoice.contactName}\n` : ''}${t('invoices.total', 'סה"כ')}: ${formatCurrency(Number(invoice.total || 0), currencySymbol(invoice.currency))}\n\n${publicInvoiceUrl}`,
+      });
+    } catch { /* user cancelled */ }
+  }, [invoice, publicInvoiceUrl, t]);
+
+  const handleCopyLink = useCallback(async () => {
+    if (!invoice) return;
+    await Clipboard.setStringAsync(publicInvoiceUrl);
+    Alert.alert(t('docs.linkCopied', 'הקישור הועתק'), t('invoices.linkCopiedDesc', 'קישור לצפייה בחשבונית הועתק ללוח'));
+  }, [invoice, publicInvoiceUrl, t]);
+
+  // ── "Mark paid" = issue a receipt for the open balance (legal way to record a payment) ──
+  const handleMarkPaid = useCallback(() => {
+    if (!user?.organization || !invoice || !id) return;
+    const balance = getOpenBalance(invoice);
+    Alert.alert(
+      t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'),
+      `${t('invoices.receiptConfirm', 'ייווצרת קבלה כטיוטה על יתרת החשבונית')}: ${formatCurrency(balance, currencySymbol(invoice.currency))}`,
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.confirm'),
+          onPress: async () => {
+            setCreatingReceipt(true);
+            try {
+              const res = await invoicesApi.createDocumentFrom(user.organization, id, 'receipt', 0, user.uID || user.userId, user.fullname);
+              if (res?.success && res?.message) {
+                router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: res.message } });
+              } else {
+                Alert.alert(t('common.error'), res?.error || res?.message || t('errors.generic'));
+              }
+            } catch (err: any) {
+              Alert.alert(t('common.error'), err.message || t('errors.generic'));
+            } finally {
+              setCreatingReceipt(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [user, invoice, id, router, t]);
+
+  // ── Leaving the screen never silently drops edits ─────────────────
+  const hasUnsavedNew = isNew && (!!formContactName.trim() || !!formContactPhone.trim() || formItems.some((i) => (i.description || '').trim()));
+  const handleBack = useCallback(() => {
+    if (!dirty && !hasUnsavedNew) { leaveScreen(); return; }
+    Alert.alert(
+      t('docs.unsavedTitle', 'שינויים שלא נשמרו'),
+      t('docs.unsavedMessage', 'לצאת בלי לשמור את השינויים?'),
+      [
+        { text: t('docs.keepEditing', 'המשך עריכה'), style: 'cancel' },
+        { text: t('docs.exitWithoutSaving', 'צא בלי לשמור'), style: 'destructive', onPress: leaveScreen },
+      ],
+    );
+  }, [dirty, hasUnsavedNew, leaveScreen, t]);
+
+  useEffect(() => {
+    if (!dirty && !hasUnsavedNew) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { handleBack(); return true; });
+    return () => sub.remove();
+  }, [dirty, hasUnsavedNew, handleBack]);
 
   // ══ Delete (drafts only — mirrors web isLocked gating) ════════════
   const handleDelete = useCallback(() => {
@@ -448,26 +679,33 @@ export default function InvoiceDetailScreen() {
     );
   }
 
-  // ══ CREATE MODE ═══════════════════════════════════════════════════
-  if (isNew) {
+  // ══ NEW / DRAFT: one editable screen — no separate "Edit" mode ═══════
+  const editable = isNew || (!!invoice && !invoice.isLocked);
+  if (editable) {
     const docColor = getDocColor(formType);
     return (
       <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-        <Appbar.Header style={{ backgroundColor: docColor }} mode="center-aligned">
-          <Appbar.Action icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} color="#FFF" />
-          <Appbar.Content title="חשבונית חדשה" titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 17 }} />
-          <Appbar.Action icon="content-save-outline" color="#FFF" onPress={handleSave} disabled={saving} />
-        </Appbar.Header>
+        <ScreenHeader
+          color={docColor}
+          title={isNew ? t('invoices.newInvoice', 'חשבונית חדשה') : `${getDocLabel(formType)} · ${t('invoices.draft', 'טיוטה')}`}
+          onBack={handleBack}
+          actions={
+            !isNew ? (
+              <HeaderMenu
+                items={[{ key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true }]}
+              />
+            ) : null
+          }
+        />
 
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
-          <ScrollView contentContainerStyle={styles.createScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-
-            {/* ── סוג מסמך ── */}
+          <ScrollView
+            contentContainerStyle={[styles.createScroll, { paddingBottom: 120 + insets.bottom }]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Customer (+ document type) */}
             <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-              <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
-                📄 סוג מסמך
-              </Text>
-              <Divider style={{ marginBottom: 14 }} />
               <Menu
                 visible={typeMenuVisible}
                 onDismiss={() => setTypeMenuVisible(false)}
@@ -491,15 +729,6 @@ export default function InvoiceDetailScreen() {
                   />
                 ))}
               </Menu>
-            </View>
-
-            {/* ── פרטי לקוח ── */}
-            <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-              <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
-                👤 פרטי לקוח
-              </Text>
-              <Divider style={{ marginBottom: 14 }} />
-
               {/* Contact lookup */}
               {selectedContact ? (
                 <TouchableOpacity
@@ -548,59 +777,6 @@ export default function InvoiceDetailScreen() {
               <TextInput label="טלפון" value={formContactPhone} onChangeText={setFormContactPhone}
                 mode="outlined" keyboardType="phone-pad" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
                 right={<TextInput.Icon icon="phone-outline" />} />
-              <TextInput label="אימייל" value={formContactEmail} onChangeText={setFormContactEmail}
-                mode="outlined" keyboardType="email-address" autoCapitalize="none" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="email-outline" />} />
-              <TextInput label="חברה / עסק" value={formContactCompany} onChangeText={setFormContactCompany}
-                mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
-                right={<TextInput.Icon icon="domain" />} />
-            </View>
-
-            {/* ── פרטי מסמך ── */}
-            <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-              <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
-                📋 פרטי מסמך
-              </Text>
-              <Divider style={{ marginBottom: 14 }} />
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <TextInput label="תאריך" value={formDate} onChangeText={setFormDate}
-                  mode="outlined" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR}
-                  placeholder="YYYY-MM-DD" />
-                <TextInput label="תאריך פירעון" value={formDueDate} onChangeText={setFormDueDate}
-                  mode="outlined" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR}
-                  placeholder="YYYY-MM-DD" />
-              </View>
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <TextInput label='מע"מ %' value={formVatRate} onChangeText={setFormVatRate}
-                  mode="outlined" keyboardType="decimal-pad" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR} />
-                <TextInput label="מטבע" value={formCurrency} onChangeText={setFormCurrency}
-                  mode="outlined" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR} />
-              </View>
-              <Menu
-                visible={paymentMenuVisible}
-                onDismiss={() => setPaymentMenuVisible(false)}
-                anchor={
-                  <Pressable
-                    onPress={() => setPaymentMenuVisible(true)}
-                    style={[styles.selectorBtn, { borderColor: theme.colors.outline, backgroundColor: theme.colors.surface, flexDirection }]}
-                  >
-                    <MaterialCommunityIcons name="credit-card-outline" size={18} color={theme.colors.onSurfaceVariant} />
-                    <Text style={{ color: formPaymentMethod ? theme.colors.onSurface : theme.colors.onSurfaceVariant, flex: 1 }}>
-                      {formPaymentMethod ? PAYMENT_METHODS.find((p) => p.key === formPaymentMethod)?.label || formPaymentMethod : 'שיטת תשלום (אופציונלי)'}
-                    </Text>
-                    <MaterialCommunityIcons name="chevron-down" size={20} color={theme.colors.onSurfaceVariant} />
-                  </Pressable>
-                }
-              >
-                {PAYMENT_METHODS.map((p) => (
-                  <Menu.Item
-                    key={p.key}
-                    title={p.label}
-                    onPress={() => { setFormPaymentMethod(p.key); setPaymentMenuVisible(false); }}
-                    leadingIcon={formPaymentMethod === p.key ? 'check' : undefined}
-                  />
-                ))}
-              </Menu>
             </View>
 
             {/* ── פריטים ── */}
@@ -681,30 +857,76 @@ export default function InvoiceDetailScreen() {
               </View>
             </View>
 
-            {/* ── הערות ── */}
-            <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-              <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
-                📝 הערות
-              </Text>
-              <Divider style={{ marginBottom: 14 }} />
+            {/* Everything else, behind ONE collapsed row */}
+            <CollapsibleSection hint={t('invoices.moreHint', 'תאריכים, מע"מ, מטבע, תשלום, הערות, אימייל')}>
+              <TextInput label="אימייל" value={formContactEmail} onChangeText={setFormContactEmail}
+                mode="outlined" keyboardType="email-address" autoCapitalize="none" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
+                right={<TextInput.Icon icon="email-outline" />} />
+              <TextInput label="חברה / עסק" value={formContactCompany} onChangeText={setFormContactCompany}
+                mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
+                right={<TextInput.Icon icon="domain" />} />
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TextInput label="תאריך" value={formDate} onChangeText={setFormDate}
+                  mode="outlined" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR}
+                  placeholder="YYYY-MM-DD" />
+                <TextInput label="תאריך פירעון" value={formDueDate} onChangeText={setFormDueDate}
+                  mode="outlined" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR}
+                  placeholder="YYYY-MM-DD" />
+              </View>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TextInput label='מע"מ %' value={formVatRate} onChangeText={setFormVatRate}
+                  mode="outlined" keyboardType="decimal-pad" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR} />
+                <TextInput label="מטבע" value={formCurrency} onChangeText={setFormCurrency}
+                  mode="outlined" style={[styles.formInput, { flex: 1, textAlign }]} activeOutlineColor={BRAND_COLOR} />
+              </View>
+              <Menu
+                visible={paymentMenuVisible}
+                onDismiss={() => setPaymentMenuVisible(false)}
+                anchor={
+                  <Pressable
+                    onPress={() => setPaymentMenuVisible(true)}
+                    style={[styles.selectorBtn, { borderColor: theme.colors.outline, backgroundColor: theme.colors.surface, flexDirection }]}
+                  >
+                    <MaterialCommunityIcons name="credit-card-outline" size={18} color={theme.colors.onSurfaceVariant} />
+                    <Text style={{ color: formPaymentMethod ? theme.colors.onSurface : theme.colors.onSurfaceVariant, flex: 1 }}>
+                      {formPaymentMethod ? PAYMENT_METHODS.find((p) => p.key === formPaymentMethod)?.label || formPaymentMethod : 'שיטת תשלום (אופציונלי)'}
+                    </Text>
+                    <MaterialCommunityIcons name="chevron-down" size={20} color={theme.colors.onSurfaceVariant} />
+                  </Pressable>
+                }
+              >
+                {PAYMENT_METHODS.map((p) => (
+                  <Menu.Item
+                    key={p.key}
+                    title={p.label}
+                    onPress={() => { setFormPaymentMethod(p.key); setPaymentMenuVisible(false); }}
+                    leadingIcon={formPaymentMethod === p.key ? 'check' : undefined}
+                  />
+                ))}
+              </Menu>
               <TextInput label="הערות לחשבונית..." value={formNotes} onChangeText={setFormNotes}
                 mode="outlined" multiline numberOfLines={3} style={[styles.formInput, { textAlign }]}
                 activeOutlineColor={BRAND_COLOR} />
-            </View>
-
-            <Button
-              mode="contained"
-              onPress={handleSave}
-              loading={saving}
-              disabled={saving}
-              style={[styles.saveButton, { backgroundColor: docColor }]}
-              textColor="#FFF"
-              contentStyle={{ paddingVertical: 6 }}
-              icon="content-save-outline"
-            >
-              שמור חשבונית
-            </Button>
+            </CollapsibleSection>
           </ScrollView>
+
+          <StickySaveBar
+            visible={isNew || dirty}
+            saving={saving}
+            onSave={handleSave}
+            onDiscard={!isNew && dirty ? discardChanges : undefined}
+            saveLabel={isNew ? t('invoices.saveDraft', 'שמור טיוטה') : undefined}
+            color={docColor}
+          />
+          {!isNew && !dirty ? (
+            <PrimaryActionBar
+              label={t('invoices.issue', 'הפק מסמך')}
+              icon="check-decagram"
+              color={docColor}
+              loading={issuing}
+              onPress={handleIssue}
+            />
+          ) : null}
         </KeyboardAvoidingView>
 
         {/* Contact Picker Modal */}
@@ -714,7 +936,7 @@ export default function InvoiceDetailScreen() {
             onDismiss={() => { setContactPickerVisible(false); setContactSearch(''); setContactResults([]); }}
             contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
           >
-            <View style={[styles.inventoryHeader, { flexDirection }]}>
+            <View style={[styles.modalHeader, { flexDirection }]}>
               <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
                 חפש איש קשר
               </Text>
@@ -863,193 +1085,153 @@ export default function InvoiceDetailScreen() {
     );
   }
 
-  // ══ VIEW MODE ═════════════════════════════════════════════════════
+  // ══ ISSUED DOCUMENT: read-only (legally locked) with ONE next-step button ══
   if (!invoice) return null;
 
   const docColor = getDocColor(invoice.type);
   const statusColor = getStatusColor(invoice.status);
+  const sym = currencySymbol(invoice.currency);
+  const money = (n: number | undefined | null) => formatCurrency(Number(n || 0), sym);
+  const openBalance = getOpenBalance(invoice);
+  const overdue = invoice.status === 'overdue';
+
+  let primary: { label: string; icon: string; color: string; run: () => void; loading?: boolean } | null = null;
+  if (invoice.status === 'issued') {
+    primary = { label: t('invoices.sendToCustomer', 'שלח ללקוח'), icon: 'send', color: docColor, run: handleShare };
+  } else if ((invoice.status === 'sent' || overdue) && openBalance > 0) {
+    primary = { label: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', color: '#16a34a', run: handleMarkPaid, loading: creatingReceipt };
+  } else if (invoice.status === 'paid') {
+    primary = { label: t('invoices.share', 'שתף'), icon: 'share-variant', color: docColor, run: handleShare };
+  }
+
+  const discountAmount = Number((invoice as any).discountAmount ?? 0);
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      <Appbar.Header style={{ backgroundColor: docColor }} mode="center-aligned">
-        <Appbar.Action icon={isRTL ? 'arrow-right' : 'arrow-left'} onPress={() => router.back()} color="#FFF" />
-        <Appbar.Content
-          title={`${getDocLabel(invoice.type)}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}`}
-          titleStyle={{ color: '#FFF', fontWeight: '700', fontSize: 16 }}
-        />
-        <Appbar.Action icon="share-variant" color="#FFF" onPress={async () => {
-          const publicUrl = `https://www.gambot.co.il/invoice?org=${encodeURIComponent(user?.organization || '')}&id=${encodeURIComponent(invoice.id || '')}`;
-          try {
-            await Share.share({
-              message: `${getDocLabel(invoice.type)}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}\n${invoice.contactName ? `לקוח: ${invoice.contactName}\n` : ''}סה"כ: ₪${Number(invoice.total || 0).toFixed(2)}\n\n${publicUrl}`,
-            });
-          } catch {}
-        }} />
-        <Appbar.Action icon="link-variant" color="#FFF" onPress={async () => {
-          const publicUrl = `https://www.gambot.co.il/invoice?org=${encodeURIComponent(user?.organization || '')}&id=${encodeURIComponent(invoice.id || '')}`;
-          await Clipboard.setStringAsync(publicUrl);
-          Alert.alert('הקישור הועתק', 'קישור לצפייה בחשבונית הועתק ללוח');
-        }} />
-        {!(invoice as any).isLocked ? (
-          <Menu
-            visible={headerMenuVisible}
-            onDismiss={() => setHeaderMenuVisible(false)}
-            anchor={
-              <Appbar.Action icon="dots-vertical" color="#FFF" onPress={() => setHeaderMenuVisible(true)} />
-            }
-          >
-            <Menu.Item
-              onPress={handleDelete}
-              title={t('common.delete')}
-              leadingIcon="delete-outline"
-              titleStyle={{ color: '#F44336' }}
-            />
-          </Menu>
-        ) : null}
-      </Appbar.Header>
+      <ScreenHeader
+        color={docColor}
+        title={`${getDocLabel(invoice.type)}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}`}
+        onBack={() => router.back()}
+        actions={
+          <HeaderMenu
+            items={[
+              { key: 'share', title: t('invoices.share', 'שתף'), icon: 'share-variant', onPress: handleShare },
+              { key: 'link', title: t('docs.copyLink', 'העתק קישור'), icon: 'link-variant', onPress: handleCopyLink },
+              { key: 'receipt', title: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', onPress: handleMarkPaid, hidden: openBalance <= 0 || primary?.icon === 'cash-check' },
+            ]}
+          />
+        }
+      />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Status */}
-        <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-          <View style={[{ flexDirection, justifyContent: 'space-between', alignItems: 'center' }]}>
-            <View>
-              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>סטטוס</Text>
-              <Chip style={{ backgroundColor: `${statusColor}15`, marginTop: 4, alignSelf: 'flex-start' }}
-                textStyle={{ color: statusColor, fontWeight: '700' }}>
-                {getStatusLabel(invoice.status)}
-              </Chip>
-            </View>
-            <Chip style={{ backgroundColor: `${docColor}15` }} textStyle={{ color: docColor, fontWeight: '600', fontSize: 11 }}>
-              {getDocLabel(invoice.type)}
-            </Chip>
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: 120 + insets.bottom }]} showsVerticalScrollIndicator={false}>
+        {/* Amount + status at a glance */}
+        <View style={[styles.section, { backgroundColor: theme.colors.surface, alignItems: 'center', gap: 6 }]}>
+          <Text style={{ color: docColor, fontSize: 30, fontWeight: '800' }}>{money(invoice.total)}</Text>
+          <View style={{ backgroundColor: `${statusColor}20`, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
+            <Text style={{ color: statusColor, fontWeight: '700', fontSize: 12 }}>{getStatusLabel(invoice.status)}</Text>
           </View>
-        </View>
-
-        {/* Client Info */}
-        <Pressable
-          style={[styles.section, { backgroundColor: theme.colors.surface }]}
-          onPress={() => {
-            const navId = invoice.contactId || invoice.contactPhone;
-            if (navId) {
-              router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: navId } });
-            }
-          }}
-          disabled={!invoice.contactId && !invoice.contactPhone}
-        >
-          <View style={[{ flexDirection, alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }]}>
-            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, marginBottom: 0 }]}>לקוח</Text>
-            {(invoice.contactId || invoice.contactPhone) ? (
-              <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={18} color={BRAND_COLOR} />
+          {openBalance > 0 ? (
+            <Text variant="bodyMedium" style={{ color: overdue ? '#dc2626' : theme.colors.onSurface, fontWeight: '600' }}>
+              {t('invoices.balanceDue', 'יתרה לתשלום')}: {money(openBalance)}
+            </Text>
+          ) : null}
+          <View style={{ flexDirection, gap: 16, marginTop: 2 }}>
+            {invoice.date ? (
+              <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                {t('invoices.issueDate', 'הוצאה')}: {formatDate(invoice.date)}
+              </Text>
+            ) : null}
+            {invoice.dueDate ? (
+              <Text variant="labelMedium" style={{ color: overdue ? '#dc2626' : theme.colors.onSurfaceVariant, fontWeight: overdue ? '700' : '400' }}>
+                {t('invoices.dueDate', 'פירעון')}: {formatDate(invoice.dueDate)}
+              </Text>
             ) : null}
           </View>
-          <Divider style={{ marginBottom: 12 }} />
-          {invoice.contactName ? (
-            <View style={[{ flexDirection, alignItems: 'center', marginBottom: 8, gap: 8 }]}>
-              <MaterialCommunityIcons name="account-outline" size={16} color={theme.colors.onSurfaceVariant} />
-              <Text variant="bodyMedium" style={{ color: invoice.contactId ? BRAND_COLOR : theme.colors.onSurface, fontWeight: invoice.contactId ? '600' : '400' }}>
-                {invoice.contactName}
-              </Text>
-            </View>
-          ) : null}
-          {invoice.contactPhone ? (
-            <View style={[{ flexDirection, alignItems: 'center', marginBottom: 8, gap: 8 }]}>
-              <MaterialCommunityIcons name="phone-outline" size={16} color={theme.colors.onSurfaceVariant} />
-              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>{invoice.contactPhone}</Text>
-            </View>
-          ) : null}
-          {invoice.contactEmail ? (
-            <View style={[{ flexDirection, alignItems: 'center', marginBottom: 8, gap: 8 }]}>
-              <MaterialCommunityIcons name="email-outline" size={16} color={theme.colors.onSurfaceVariant} />
-              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>{invoice.contactEmail}</Text>
-            </View>
-          ) : null}
-          {invoice.contactCompany ? (
-            <View style={[{ flexDirection, alignItems: 'center', marginBottom: 8, gap: 8 }]}>
-              <MaterialCommunityIcons name="domain" size={16} color={theme.colors.onSurfaceVariant} />
-              <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>{invoice.contactCompany}</Text>
-            </View>
-          ) : null}
-        </Pressable>
-
-        {/* Dates */}
-        <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-          <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>תאריכים</Text>
-          <Divider style={{ marginBottom: 12 }} />
-          {invoice.date ? (
-            <View style={[{ flexDirection, justifyContent: 'space-between', marginBottom: 8 }]}>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>תאריך הוצאה</Text>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>{formatDate(invoice.date)}</Text>
-            </View>
-          ) : null}
-          {invoice.dueDate ? (
-            <View style={[{ flexDirection, justifyContent: 'space-between', marginBottom: 8 }]}>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>תאריך פירעון</Text>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>{formatDate(invoice.dueDate)}</Text>
-            </View>
-          ) : null}
         </View>
 
-        {/* Items */}
-        {invoice.items && invoice.items.length > 0 ? (
-          <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-              פריטים ({invoice.items.length})
-            </Text>
-            <Divider style={{ marginBottom: 12 }} />
-            <ScrollView
-              style={{ maxHeight: invoice.items.length > 8 ? 320 : undefined }}
-              nestedScrollEnabled
-              showsVerticalScrollIndicator={invoice.items.length > 8}
-            >
-              {invoice.items.map((item, idx) => (
-                <View key={idx} style={[{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: idx < invoice.items!.length - 1 ? StyleSheet.hairlineWidth : 0, borderBottomColor: theme.colors.outlineVariant }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>{item.description}</Text>
-                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>×{item.quantity}</Text>
-                  </View>
-                  <Text variant="bodyMedium" style={{ color: docColor, fontWeight: '700' }}>
-                    ₪{((item.unitPrice || 0) * (item.quantity || 0)).toFixed(2)}
-                  </Text>
-                </View>
-              ))}
-            </ScrollView>
-          </View>
+        {/* Customer */}
+        {(invoice.contactName || invoice.contactPhone || invoice.contactEmail || invoice.contactCompany) ? (
+          <Pressable
+            style={[styles.section, { backgroundColor: theme.colors.surface, gap: 8 }]}
+            onPress={() => {
+              const navId = invoice.contactId || invoice.contactPhone;
+              if (navId) router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: navId } });
+            }}
+            disabled={!invoice.contactId && !invoice.contactPhone}
+          >
+            {[
+              { icon: 'account-outline', value: invoice.contactName, strong: true },
+              { icon: 'phone-outline', value: invoice.contactPhone },
+              { icon: 'email-outline', value: invoice.contactEmail },
+              { icon: 'domain', value: invoice.contactCompany },
+            ].filter((r) => !!r.value).map((r) => (
+              <View key={r.icon} style={{ flexDirection, alignItems: 'center', gap: 8 }}>
+                <MaterialCommunityIcons name={r.icon as any} size={16} color={theme.colors.onSurfaceVariant} />
+                <Text variant="bodyMedium" style={{ flex: 1, textAlign, color: r.strong && invoice.contactId ? BRAND_COLOR : theme.colors.onSurface, fontWeight: r.strong ? '600' : '400' }}>
+                  {r.value}
+                </Text>
+              </View>
+            ))}
+          </Pressable>
         ) : null}
 
-        {/* Totals */}
-        {invoice.total != null ? (
+        {/* Items + totals */}
+        {invoice.items && invoice.items.length > 0 ? (
           <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>סיכום</Text>
-            <Divider style={{ marginBottom: 12 }} />
-            {invoice.subtotal != null && (
-              <View style={[{ flexDirection, justifyContent: 'space-between', marginBottom: 6 }]}>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>ביניים</Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>₪{Number(invoice.subtotal).toFixed(2)}</Text>
+            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
+              {t('invoices.items', 'פריטים')} ({invoice.items.length})
+            </Text>
+            {invoice.items.map((item, idx) => (
+              <View
+                key={idx}
+                style={{ flexDirection, justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderTopWidth: idx > 0 ? StyleSheet.hairlineWidth : 0, borderTopColor: theme.colors.outlineVariant }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>{item.description}</Text>
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>×{item.quantity}</Text>
+                </View>
+                <Text variant="bodyMedium" style={{ color: docColor, fontWeight: '700' }}>
+                  {money((item.unitPrice || 0) * (item.quantity || 0))}
+                </Text>
               </View>
-            )}
-            {invoice.vatAmount != null && (
-              <View style={[{ flexDirection, justifyContent: 'space-between', marginBottom: 6 }]}>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>מע"מ ({invoice.vatRate || 18}%)</Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>₪{Number(invoice.vatAmount).toFixed(2)}</Text>
-              </View>
-            )}
+            ))}
             <Divider style={{ marginVertical: 8 }} />
-            <View style={[{ flexDirection, justifyContent: 'space-between' }]}>
-              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>סה"כ</Text>
-              <Text variant="titleSmall" style={{ color: docColor, fontWeight: '700' }}>₪{Number(invoice.total).toFixed(2)}</Text>
+            {invoice.subtotal != null ? (
+              <View style={[styles.totalRow, { flexDirection }]}>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('invoices.subtotal', 'ביניים')}</Text>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>{money(invoice.subtotal)}</Text>
+              </View>
+            ) : null}
+            {discountAmount > 0 ? (
+              <View style={[styles.totalRow, { flexDirection }]}>
+                <Text variant="bodySmall" style={{ color: '#dc2626' }}>{t('invoices.discount', 'הנחה')}</Text>
+                <Text variant="bodySmall" style={{ color: '#dc2626' }}>-{money(discountAmount)}</Text>
+              </View>
+            ) : null}
+            {invoice.vatAmount != null ? (
+              <View style={[styles.totalRow, { flexDirection }]}>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('invoices.vat', 'מע"מ')} ({invoice.vatRate ?? 18}%)</Text>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurface }}>{money(invoice.vatAmount)}</Text>
+              </View>
+            ) : null}
+            <View style={[styles.totalRow, { flexDirection, marginTop: 4 }]}>
+              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>{t('invoices.total', 'סה"כ')}</Text>
+              <Text variant="titleSmall" style={{ color: docColor, fontWeight: '700' }}>{money(invoice.total)}</Text>
             </View>
           </View>
         ) : null}
 
-        {/* Notes */}
         {invoice.notes ? (
           <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
-            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>הערות</Text>
-            <Divider style={{ marginBottom: 12 }} />
-            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22 }}>{invoice.notes}</Text>
+            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>{t('invoices.notes', 'הערות')}</Text>
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign }}>{invoice.notes}</Text>
           </View>
         ) : null}
       </ScrollView>
+
+      {primary ? (
+        <PrimaryActionBar label={primary.label} icon={primary.icon} color={primary.color} loading={primary.loading} onPress={primary.run} />
+      ) : null}
     </View>
   );
 }
