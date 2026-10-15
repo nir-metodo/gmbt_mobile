@@ -16,6 +16,7 @@ import { ListPaginationFooter } from '../../../../components/ListPaginationFoote
 import { formatDate, formatCurrency, withAlpha } from '../../../../utils/formatters';
 import type { Quote } from '../../../../types';
 import { currencySymbol } from '../../../../utils/currency';
+import { getInvoiceParamsForStage } from '../../../../utils/quoteInvoiceStage';
 import { ScreenHeader } from '../../../../components/ScreenHeader';
 import { ListToolbar } from '../../../../components/ListToolbar';
 import { StatusFilterBar } from '../../../../components/StatusFilterBar';
@@ -222,9 +223,13 @@ export default function QuotesListScreen() {
       } catch (err: any) {
         Alert.alert(t('common.error'), err.message || t('errors.generic'));
         setQuotes((prev) => prev.map((q) => (q.id === quote.id ? { ...q, status: quote.status } : q)));
+        return;
       }
+      // Quote Settings → "invoice from stage": open a pre-filled invoice draft for the new stage.
+      const invoiceParams = await getInvoiceParamsForStage(user.organization, quote, newStatus);
+      if (invoiceParams) router.push({ pathname: '/(tabs)/more/invoices/[id]', params: invoiceParams as any });
     },
-    [user, t],
+    [user, router, t],
   );
 
   const handleSort = useCallback((field: string) => {

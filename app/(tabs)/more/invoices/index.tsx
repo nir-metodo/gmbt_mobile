@@ -244,7 +244,7 @@ export default function InvoicesScreen() {
 
       <FAB
         icon="plus"
-        label={t('invoices.newInvoice', 'חשבונית חדשה')}
+        label={t('invoices.newTaxInvoice', 'חשבונית מס חדשה')}
         onPress={createInvoice}
         style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFF"

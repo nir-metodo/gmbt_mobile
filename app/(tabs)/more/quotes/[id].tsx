@@ -43,6 +43,7 @@ import { contactsApi } from '../../../../services/api/contacts';
 import { usersApi } from '../../../../services/api/users';
 import { formatDate, formatCurrency, getInitials } from '../../../../utils/formatters';
 import { placeSmartCall } from '../../../../utils/phoneCall';
+import { getInvoiceParamsForStage } from '../../../../utils/quoteInvoiceStage';
 import { borderRadius } from '../../../../constants/theme';
 import type { Quote, QuoteItem, Contact, OrgUser } from '../../../../types';
 import { useDirtyTracker } from '../../../../hooks/useDirtyTracker';
@@ -721,13 +722,16 @@ export default function QuoteDetailScreen() {
       );
       cacheEntity('quotes', { ...quote, status: newStatus as Quote['status'] });
       fetchQuoteTimeline();
+      // Quote Settings → "invoice from stage": open a pre-filled invoice draft for the new stage.
+      const invoiceParams = await getInvoiceParamsForStage(user.organization, quote, newStatus);
+      if (invoiceParams) router.push({ pathname: '/(tabs)/more/invoices/[id]', params: invoiceParams as any });
     } catch (err: any) {
       setQuote((q) => (q ? { ...q, status: prevStatus } : q));
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
     } finally {
       setStatusSaving(false);
     }
-  }, [user, quote, id, fetchQuoteTimeline, t]);
+  }, [user, quote, id, fetchQuoteTimeline, router, t]);
 
   const handleDelete = useCallback(() => {
     Alert.alert(

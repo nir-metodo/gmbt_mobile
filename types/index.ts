@@ -349,6 +349,9 @@ export interface Quote {
   sentAt?: string;
   viewCount?: number;
   lastViewedAt?: string;
+  /** Set by the backend when an invoice was issued from this quote. */
+  invoiceGeneratedId?: string;
+  invoiceDocumentNumber?: string;
 }
 
 export interface QuoteItem {

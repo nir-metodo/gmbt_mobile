@@ -56,6 +56,7 @@ import { ScreenHeader } from '../../../../components/ScreenHeader';
 import { HeaderMenu } from '../../../../components/HeaderMenu';
 import { StickySaveBar } from '../../../../components/StickySaveBar';
 import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
+import { InvoicePreviewModal } from '../../../../components/InvoicePreviewModal';
 import { CollapsibleSection } from '../../../../components/CollapsibleSection';
 
 const BRAND_COLOR = '#2e6155';
@@ -129,12 +130,14 @@ function calcTotals(items: InvoiceItem[], discount = 0, vatRate = 18) {
 
 export default function InvoiceDetailScreen() {
   const router = useRouter();
-  const { id, prefillContactName, prefillContactPhone, prefillRelatedQuoteId } =
+  const { id, prefillContactName, prefillContactPhone, prefillRelatedQuoteId, prefillType } =
     useLocalSearchParams<{
       id: string;
       prefillContactName?: string;
       prefillContactPhone?: string;
       prefillRelatedQuoteId?: string;
+      /** Document type from Quote Settings → "invoice from stage" (tax_invoice / combined / receipt / transaction). */
+      prefillType?: string;
     }>();
   const theme = useAppTheme();
   const { flexDirection, textAlign, isRTL } = useRTL();
@@ -155,7 +158,13 @@ export default function InvoiceDetailScreen() {
   const today = new Date().toISOString().split('T')[0];
   const due30 = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
 
-  const [formType, setFormType] = useState('tax_invoice');
+  const [formType, setFormType] = useState(
+    prefillType && DOCUMENT_TYPES.some((d) => d.key === prefillType) ? prefillType : 'tax_invoice',
+  );
+  // Source quote (set while prefilling) → the backend marks the quote as "invoice generated" on issue.
+  const [sourceQuote, setSourceQuote] = useState<{ id: string; number: string; leadId?: string; leadTitle?: string } | null>(null);
+  const [branding, setBranding] = useState<any>(null);
+  const [previewVisible, setPreviewVisible] = useState(false);
   const [formContactName, setFormContactName] = useState(prefillContactName || '');
   const [formContactPhone, setFormContactPhone] = useState(prefillContactPhone || '');
   const [formContactEmail, setFormContactEmail] = useState('');
@@ -286,17 +295,37 @@ export default function InvoiceDetailScreen() {
       try {
         const quoteData = await quotesApi.getById(user.organization, prefillRelatedQuoteId);
         if (quoteData) {
+          // One invoice per quote: if it was already issued, offer the existing one instead of a duplicate.
+          if (quoteData.invoiceGeneratedId) {
+            const existingNum = quoteData.invoiceDocumentNumber || quoteData.invoiceGeneratedId;
+            Alert.alert(
+              t('invoices.alreadyGeneratedTitle', 'כבר הופקה חשבונית'),
+              `${t('invoices.alreadyGenerated', 'כבר הופקה חשבונית מהצעת מחיר זו')} (${existingNum})`,
+              [
+                { text: t('common.cancel'), style: 'cancel', onPress: () => router.back() },
+                {
+                  text: t('invoices.openExisting', 'פתח את הקיימת'),
+                  onPress: () => router.replace({ pathname: '/(tabs)/more/invoices/[id]', params: { id: quoteData.invoiceGeneratedId as string } }),
+                },
+              ],
+              { cancelable: false },
+            );
+            return;
+          }
+          setSourceQuote({ id: prefillRelatedQuoteId, number: quoteData.quoteNumber || '', leadId: quoteData.leadId, leadTitle: quoteData.leadTitle });
           if (quoteData.contactName) setFormContactName(quoteData.contactName);
           if (quoteData.contactPhone) setFormContactPhone(quoteData.contactPhone);
           if (quoteData.contactEmail) setFormContactEmail(quoteData.contactEmail);
           if (quoteData.contactCompany) setFormContactCompany(quoteData.contactCompany);
           if (quoteData.currency) setFormCurrency(quoteData.currency);
           if (quoteData.tax != null) setFormVatRate(String(quoteData.tax));
-          if (quoteData.discount != null) setFormDiscount(String(quoteData.discount));
+          // The invoice form uses a fixed discount; a percent discount on the quote is carried over as its computed amount.
+          const quoteDiscount = quoteData.discountType === 'percent' ? quoteData.discountAmount : (quoteData.discountAmount ?? quoteData.discount);
+          if (quoteDiscount != null) setFormDiscount(String(quoteDiscount));
           if (quoteData.notes) setFormNotes(quoteData.notes);
           if (Array.isArray(quoteData.items) && quoteData.items.length > 0) {
             setFormItems(quoteData.items.map((it: any) => ({
-              description: it.description || '',
+              description: it.description || it.name || '',
               quantity: it.quantity || 1,
               unitPrice: it.unitPrice || 0,
             })));
@@ -306,7 +335,13 @@ export default function InvoiceDetailScreen() {
         console.warn('Failed to prefill from quote:', err);
       }
     })();
-  }, [isNew, prefillRelatedQuoteId, user?.organization]);
+  }, [isNew, prefillRelatedQuoteId, user?.organization, router, t]);
+
+  // Company branding (logo, name, colour, bank details) for the document preview.
+  useEffect(() => {
+    if (!user?.organization) return;
+    invoicesApi.getBranding(user.organization).then(setBranding).catch(() => {});
+  }, [user?.organization]);
 
   // ── Contact search ────────────────────────────────────────────────
   const handleContactSearch = useCallback((text: string) => {
@@ -444,7 +479,8 @@ export default function InvoiceDetailScreen() {
         date: formDate,
         dueDate: formDueDate,
         currency: formCurrency,
-        vatRate: parseFloat(formVatRate) || 18,
+        // 0% (VAT-exempt) must stay 0 — `|| 18` silently turned it into 18 on the saved document.
+        vatRate: Number.isFinite(parseFloat(formVatRate)) ? parseFloat(formVatRate) : 18,
         contactName: formContactName.trim(),
         contactPhone: formContactPhone.trim(),
         contactEmail: formContactEmail.trim(),
@@ -465,7 +501,20 @@ export default function InvoiceDetailScreen() {
       if (isNew) {
         const result = await invoicesApi.create(
           user.organization,
-          { ...payload, status: 'draft', relatedQuoteId: prefillRelatedQuoteId || undefined },
+          {
+            ...payload,
+            status: 'draft',
+            // Same link the web form saves: on issue the backend stamps invoiceGeneratedId on the source quote.
+            ...(sourceQuote
+              ? {
+                  sourceDocumentId: sourceQuote.id,
+                  sourceDocumentType: 'quote',
+                  sourceDocumentNumber: sourceQuote.number,
+                  // Keep the CRM link so the invoice stays associated with the lead.
+                  ...(sourceQuote.leadId ? { leadId: sourceQuote.leadId, leadTitle: sourceQuote.leadTitle } : {}),
+                }
+              : {}),
+          },
           user.uID || user.userId,
           user.fullname,
         );
@@ -497,7 +546,7 @@ export default function InvoiceDetailScreen() {
   }, [
     user, isNew, invoice, id, formType, formDate, formDueDate, formCurrency, formVatRate, formContactName,
     formContactPhone, formContactEmail, formContactCompany, formItems, formDiscount,
-    formPaymentMethod, formNotes, totals, prefillRelatedQuoteId, router, leaveScreen, markClean, fetchInvoice, t,
+    formPaymentMethod, formNotes, totals, sourceQuote, router, leaveScreen, markClean, fetchInvoice, t,
   ]);
 
   // Throw away unsaved edits and restore the draft from the server copy.
@@ -690,12 +739,41 @@ export default function InvoiceDetailScreen() {
           title={isNew ? t('invoices.newInvoice', 'חשבונית חדשה') : `${getDocLabel(formType)} · ${t('invoices.draft', 'טיוטה')}`}
           onBack={handleBack}
           actions={
-            !isNew ? (
-              <HeaderMenu
-                items={[{ key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true }]}
-              />
-            ) : null
+            <>
+              <IconButton icon="eye-outline" iconColor={theme.custom.headerText} size={22} onPress={() => setPreviewVisible(true)} />
+              {!isNew ? (
+                <HeaderMenu
+                  items={[{ key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true }]}
+                />
+              ) : null}
+            </>
           }
+        />
+
+        <InvoicePreviewModal
+          visible={previewVisible}
+          onDismiss={() => setPreviewVisible(false)}
+          branding={branding}
+          doc={{
+            type: formType,
+            status: 'draft',
+            isDraft: true,
+            documentNumber: invoice?.documentNumber,
+            date: formDate,
+            dueDate: formDueDate,
+            currency: formCurrency,
+            vatRate: Number.isFinite(parseFloat(formVatRate)) ? parseFloat(formVatRate) : 18,
+            contactName: formContactName,
+            contactPhone: formContactPhone,
+            contactEmail: formContactEmail,
+            contactCompany: formContactCompany,
+            items: formItems,
+            subtotal: totals.subtotal,
+            discountAmount: parseFloat(formDiscount) || 0,
+            vatAmount: totals.vatAmount,
+            total: totals.total,
+            notes: formNotes,
+          }}
         />
 
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
@@ -1113,6 +1191,8 @@ export default function InvoiceDetailScreen() {
         title={`${getDocLabel(invoice.type)}${invoice.documentNumber ? ` #${invoice.documentNumber}` : ''}`}
         onBack={() => router.back()}
         actions={
+          <>
+          <IconButton icon="eye-outline" iconColor={theme.custom.headerText} size={22} onPress={() => setPreviewVisible(true)} />
           <HeaderMenu
             items={[
               { key: 'share', title: t('invoices.share', 'שתף'), icon: 'share-variant', onPress: handleShare },
@@ -1120,7 +1200,34 @@ export default function InvoiceDetailScreen() {
               { key: 'receipt', title: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', onPress: handleMarkPaid, hidden: openBalance <= 0 || primary?.icon === 'cash-check' },
             ]}
           />
+          </>
         }
+      />
+
+      <InvoicePreviewModal
+        visible={previewVisible}
+        onDismiss={() => setPreviewVisible(false)}
+        branding={branding}
+        doc={{
+          type: invoice.type,
+          status: invoice.status,
+          documentNumber: invoice.documentNumber,
+          date: invoice.date,
+          dueDate: invoice.dueDate,
+          currency: invoice.currency,
+          vatRate: invoice.vatRate,
+          contactName: invoice.contactName,
+          contactPhone: invoice.contactPhone,
+          contactEmail: invoice.contactEmail,
+          contactCompany: invoice.contactCompany,
+          items: invoice.items || [],
+          subtotal: invoice.subtotal,
+          discountAmount,
+          vatAmount: invoice.vatAmount,
+          total: invoice.total,
+          notes: invoice.notes,
+          allocationNumber: invoice.allocationNumber,
+        }}
       />
 
       <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: 120 + insets.bottom }]} showsVerticalScrollIndicator={false}>
