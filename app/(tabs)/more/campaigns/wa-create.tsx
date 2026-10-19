@@ -30,6 +30,7 @@ import {
   formatRunAt,
   formatWabaDailyLimit,
   formatWhen,
+  cleanButtonValue,
   getCachedCampaign,
   isBodyQuery,
   mappingFromQuery,
@@ -92,6 +93,8 @@ export default function WaCreateScreen() {
   const [count, setCount] = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
   const [maps, setMaps] = useState<Record<number, VarMapping>>({});
+  // Dynamic URL-button values, keyed by the query name (button{B}_dynamic_var{N}).
+  const [btnMaps, setBtnMaps] = useState<Record<string, VarMapping>>({});
   const [warnings, setWarnings] = useState<Array<{ severity: string; message: string; label: string }>>([]);
   const [fromNumberId, setFromNumberId] = useState('');
   const [mode, setMode] = useState<Mode>('draft');
@@ -152,6 +155,11 @@ export default function WaCreateScreen() {
             if (n != null) m[n] = mappingFromQuery(q);
           });
           setMaps(m);
+          const bm: Record<string, VarMapping> = {};
+          qs.filter((q: any) => q?.buttonType === 'URL_DYNAMIC' && !q.hidden && q.Variable).forEach((q: any) => {
+            bm[String(q.Variable)] = mappingFromQuery(q);
+          });
+          setBtnMaps(bm);
           const cf = src.ContactFilters;
           if (cf && Array.isArray(cf.filters)) {
             setRows(cf.filters.map((f: any) => filterToRow(f, rowId.current++)));
@@ -213,7 +221,10 @@ export default function WaCreateScreen() {
     if (key === tplId) return;
     setTplId(key);
     // Variable mapping belongs to the template — start clean unless this is the duplicated template.
-    if (!(source && campaignTemplateId(source) === key)) setMaps({});
+    if (!(source && campaignTemplateId(source) === key)) {
+      setMaps({});
+      setBtnMaps({});
+    }
   };
 
   // ───────────── derived: audience ─────────────
@@ -260,11 +271,26 @@ export default function WaCreateScreen() {
       return { ...prev, [n]: { ...cur, ...patch } };
     });
 
+  // Dynamic URL buttons: the ones the sender must fill (tracked buttons are auto-attributed to the phone).
+  const buttonVars = info?.buttonVars || [];
+  const inputButtonVars = buttonVars.filter((b) => !b.hidden);
+  const missingButtonVars = lockVariables
+    ? []
+    : inputButtonVars.filter((b) => {
+        const m = btnMaps[b.Variable];
+        return !m || (m.source === 'text' && !m.value.trim()) || (m.source === 'column' && !m.value);
+      });
+  const setBtnMap = (key: string, patch: Partial<VarMapping>) =>
+    setBtnMaps((prev) => {
+      const cur: VarMapping = prev[key] || { source: 'text', value: '' };
+      return { ...prev, [key]: { ...cur, ...patch } };
+    });
+
   const queries = useMemo(() => {
     if (lockVariables) return Array.isArray(source?.templateVariableQuery) ? source!.templateVariableQuery! : [];
     const keepExisting = source && campaignTemplateId(source) === tplId ? source.templateVariableQuery : [];
-    return mergeQueries(keepExisting, bodyVars, maps, info?.bodyHints || {});
-  }, [lockVariables, source, tplId, bodyVars, maps, info]);
+    return mergeQueries(keepExisting, bodyVars, maps, info?.bodyHints || {}, buttonVars, btnMaps);
+  }, [lockVariables, source, tplId, bodyVars, maps, info, buttonVars, btnMaps]);
 
   // Server-side sanity check of the column mappings (empty columns etc.) — advisory only.
   useEffect(() => {
@@ -298,6 +324,24 @@ export default function WaCreateScreen() {
     });
     return text;
   }, [info, bodyVars, maps]);
+
+  // Link each URL button opens, with the sender's value merged in (shown under the button in the preview).
+  const buttonUrls = useMemo(() => {
+    if (!info) return [] as string[];
+    return info.buttons.map((b, i) => {
+      if (b.type !== 'URL' || !b.url) return '';
+      let url = String(b.originalUrl || b.url);
+      buttonVars
+        .filter((bv) => bv.buttonIndex === i + 1)
+        .forEach((bv) => {
+          if (bv.hidden) return;
+          const m = btnMaps[bv.Variable];
+          const val = !m ? '' : m.source === 'column' ? (m.value ? `‹${m.value.replace(/^firstword:/i, '')}›` : '') : cleanButtonValue(bv, m.value);
+          if (val) url = url.replace(new RegExp(`\\{+${bv.variableIndex}\\}+`), val);
+        });
+      return url;
+    });
+  }, [info, buttonVars, btnMaps]);
 
   // ───────────── derived: delivery ─────────────
   const scheduled = mode === 'once' || mode === 'weekly';
@@ -334,7 +378,11 @@ export default function WaCreateScreen() {
       return '';
     }
     if (s === 1) return lockAudience || rowsValid ? '' : L('השלם את כל תנאי הסינון', 'Complete every filter condition');
-    if (s === 2) return missingVars.length ? L('מלא את כל המשתנים', 'Fill in every variable') : '';
+    if (s === 2) {
+      if (missingVars.length) return L('מלא את כל המשתנים', 'Fill in every variable');
+      if (missingButtonVars.length) return L('הזן את הקישור של הכפתור', 'Enter the button link');
+      return '';
+    }
     if (s === 3) return scheduleError;
     return '';
   };
@@ -533,6 +581,38 @@ export default function WaCreateScreen() {
     { key: 'weekly', label: L('תזמון שבועי', 'Repeat weekly'), icon: 'calendar-sync', hint: L('חוזר בימים שתבחר', 'Repeats on the weekdays you pick') },
   ];
 
+  // Preview of the chosen template, shown right under it in the list.
+  const previewBlock =
+    info && selTpl && !lockTemplate ? (
+      <View style={{ gap: 8 }}>
+        {info.unsupported.length ? (
+          <Notice
+            kind="error"
+            text={L(
+              `התבנית כוללת ${info.unsupported.join(', ')} – את סוג התבנית הזה אפשר להגדיר רק באתר.`,
+              `This template includes ${info.unsupported.join(', ')} — that kind of template can only be set up on the web.`,
+            )}
+          />
+        ) : null}
+        {tplPending ? (
+          <Notice
+            kind="warn"
+            text={L(
+              'התבנית עדיין ממתינה לאישור Meta. אפשר לשמור כטיוטה או לתזמן, אך לא לשלוח עכשיו.',
+              'This template is still pending Meta approval. You can save a draft or schedule it, but not send now.',
+            )}
+          />
+        ) : null}
+        {inputButtonVars.length > 0 || bodyVars.length > 0 ? (
+          <Notice
+            kind="info"
+            text={L('התבנית כוללת משתנים – תמלא אותם בשלב "משתנים".', 'This template has variables — you fill them in the "Variables" step.')}
+          />
+        ) : null}
+        <TemplateBubble info={info} mediaUrl={mediaUrl} he={he} buttonUrls={buttonUrls} />
+      </View>
+    ) : null;
+
   const saveLabel =
     mode === 'draft'
       ? L('שמור טיוטה', 'Save draft')
@@ -636,8 +716,8 @@ export default function WaCreateScreen() {
                       const pending = String(t.status || '').toUpperCase() !== 'APPROVED';
                       const bodyPreview = analyzeTemplate(t, he).bodyText;
                       return (
+                        <React.Fragment key={key}>
                         <Pressable
-                          key={key}
                           onPress={() => selectTemplate(t)}
                           style={[
                             styles.tplRow,
@@ -663,8 +743,12 @@ export default function WaCreateScreen() {
                             {[t.category, t.language].filter(Boolean).join(' · ')}
                           </Text>
                         </Pressable>
+                        {/* Preview right under the chosen template (not at the bottom of a long list). */}
+                        {on ? previewBlock : null}
+                        </React.Fragment>
                       );
                     })}
+                    {tplId && !filteredTemplates.some((t) => templateKey(t) === tplId) ? previewBlock : null}
                     {approvedTemplates.length > filteredTemplates.length ? (
                       <Text style={{ color: sub, fontSize: 11.5, textAlign: 'center' }}>
                         {L(`מוצגות ${filteredTemplates.length} – השתמש בחיפוש`, `Showing ${filteredTemplates.length} — use search`)}
@@ -675,29 +759,6 @@ export default function WaCreateScreen() {
               </Section>
             )}
 
-            {!lockTemplate && info && selTpl ? (
-              <Section title={L('תצוגה מקדימה', 'Preview')} icon="eye-outline">
-                {info.unsupported.length ? (
-                  <Notice
-                    kind="error"
-                    text={L(
-                      `התבנית כוללת ${info.unsupported.join(', ')} – את סוג התבנית הזה אפשר להגדיר רק באתר.`,
-                      `This template includes ${info.unsupported.join(', ')} — that kind of template can only be set up on the web.`,
-                    )}
-                  />
-                ) : null}
-                {tplPending ? (
-                  <Notice
-                    kind="warn"
-                    text={L(
-                      'התבנית עדיין ממתינה לאישור Meta. אפשר לשמור כטיוטה או לתזמן, אך לא לשלוח עכשיו.',
-                      'This template is still pending Meta approval. You can save a draft or schedule it, but not send now.',
-                    )}
-                  />
-                ) : null}
-                <TemplateBubble info={info} mediaUrl={mediaUrl} he={he} />
-              </Section>
-            ) : null}
           </>
         ) : null}
 
@@ -845,7 +906,7 @@ export default function WaCreateScreen() {
                 kind="info"
                 text={L('משתני ההודעה נשמרים כפי שהם בקמפיין המקורי.', "The message variables are kept as in the original campaign.")}
               />
-            ) : bodyVars.length === 0 ? (
+            ) : bodyVars.length === 0 && inputButtonVars.length === 0 ? (
               <Notice kind="ok" text={L('לתבנית אין משתנים – אפשר להמשיך.', 'This template has no variables — you can continue.')} />
             ) : (
               <>
@@ -878,12 +939,46 @@ export default function WaCreateScreen() {
                     </Section>
                   );
                 })}
+                {inputButtonVars.map((bv) => {
+                  const m = btnMaps[bv.Variable] || { source: 'text' as VarSource, value: '' };
+                  const missing = missingButtonVars.includes(bv);
+                  const title = `${L('קישור לכפתור', 'Button link')}${bv.buttonText ? ` · ${bv.buttonText}` : ''}`;
+                  return (
+                    <Section key={bv.Variable} title={title} icon="link-variant">
+                      {bv.prefix ? (
+                        <Text style={{ color: sub, fontSize: 12, textAlign, writingDirection: 'ltr' }} numberOfLines={2}>
+                          {bv.prefix}…
+                        </Text>
+                      ) : null}
+                      <ChipGroup
+                        options={(['text', 'column'] as VarSource[]).map((s) => ({ key: s, label: sourceLabel(s) }))}
+                        selected={[m.source === 'column' ? 'column' : 'text']}
+                        onToggle={(k) => setBtnMap(bv.Variable, { source: k as VarSource, value: '' })}
+                      />
+                      {m.source !== 'column' ? (
+                        <TextInput
+                          mode="outlined"
+                          dense
+                          value={m.value}
+                          error={missing}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          keyboardType="url"
+                          onChangeText={(v) => setBtnMap(bv.Variable, { value: v.replace(/[\n\r\t]/g, ' ') })}
+                          placeholder={bv.isTrackingDestination ? 'https://…' : bv.prefix ? L('החלק שאחרי הכתובת (או קישור מלא)', 'The part after the address (or a full link)') : 'https://…'}
+                        />
+                      ) : (
+                        <Picker options={columnOptions} value={m.value} onChange={(k) => setBtnMap(bv.Variable, { value: k })} placeholder={L('בחר שדה איש קשר', 'Pick a contact field')} />
+                      )}
+                    </Section>
+                  );
+                })}
                 {warnings.map((w, i) => (
                   <Notice key={i} kind={/error|high/i.test(w.severity) ? 'error' : 'warn'} text={`${w.label ? `${w.label}: ` : ''}${w.message}`} />
                 ))}
                 {info ? (
                   <Section title={L('תצוגה מקדימה', 'Preview')} icon="eye-outline">
-                    <TemplateBubble info={info} bodyText={previewBody} mediaUrl={mediaUrl} he={he} />
+                    <TemplateBubble info={info} bodyText={previewBody} mediaUrl={mediaUrl} he={he} buttonUrls={buttonUrls} />
                     <Text style={{ color: sub, fontSize: 11.5, textAlign }}>
                       {L('‹שדה› יוחלף בערך של כל נמען בעת השליחה.', '‹field› is replaced with each recipient\'s value when sending.')}
                     </Text>
@@ -1021,6 +1116,17 @@ export default function WaCreateScreen() {
                     .map((n) => {
                       const m = maps[n];
                       return `{{${n}}} = ${m?.source === 'phone' ? L('טלפון', 'phone') : m?.source === 'column' ? m.value : `"${m?.value || ''}"`}`;
+                    })
+                    .join('\n')}
+                />
+              ) : null}
+              {!lockVariables && inputButtonVars.length > 0 ? (
+                <ReviewLine
+                  label={L('קישורי כפתורים', 'Button links')}
+                  value={inputButtonVars
+                    .map((bv) => {
+                      const m = btnMaps[bv.Variable];
+                      return `${bv.buttonText || `#${bv.buttonIndex}`} = ${m?.source === 'column' ? m.value : buttonUrls[bv.buttonIndex - 1] || `"${m?.value || ''}"`}`;
                     })
                     .join('\n')}
                 />

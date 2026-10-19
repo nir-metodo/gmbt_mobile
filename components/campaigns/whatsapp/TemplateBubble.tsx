@@ -11,6 +11,8 @@ interface Props {
   /** Body with the sample recipient's values merged in (falls back to the raw template body). */
   bodyText?: string;
   mediaUrl?: string;
+  /** Per-button link (index = button position) shown under a URL button's label. */
+  buttonUrls?: string[];
   /** Hebrew / English labels inside the bubble. */
   he: boolean;
 }
@@ -22,7 +24,7 @@ const BUTTON_ICON: Record<string, string> = {
 };
 
 /** Renders a WhatsApp-style bubble of an approved template (header / body / footer / buttons). */
-export default function TemplateBubble({ info, bodyText, mediaUrl, he }: Props) {
+export default function TemplateBubble({ info, bodyText, mediaUrl, buttonUrls, he }: Props) {
   const theme = useAppTheme();
   const { textAlign, flexDirection, writingDirection } = useRTL();
   const [imgFailed, setImgFailed] = useState(false);
@@ -61,11 +63,18 @@ export default function TemplateBubble({ info, bodyText, mediaUrl, he }: Props) 
       {info.buttons.length > 0 && (
         <View style={styles.buttons}>
           {info.buttons.map((b, i) => (
-            <View key={i} style={[styles.button, { flexDirection, backgroundColor: theme.custom?.chatBubbleIn || '#fff' }]}>
-              <MaterialCommunityIcons name={(BUTTON_ICON[b.type] || 'gesture-tap') as any} size={16} color="#0a7cff" />
-              <Text style={styles.buttonText} numberOfLines={1}>
-                {b.text || b.type}
-              </Text>
+            <View key={i} style={[styles.button, { backgroundColor: theme.custom?.chatBubbleIn || '#fff' }]}>
+              <View style={[styles.buttonRow, { flexDirection }]}>
+                <MaterialCommunityIcons name={(BUTTON_ICON[b.type] || 'gesture-tap') as any} size={16} color="#0a7cff" />
+                <Text style={styles.buttonText} numberOfLines={1}>
+                  {b.text || b.type}
+                </Text>
+              </View>
+              {buttonUrls?.[i] ? (
+                <Text style={[styles.buttonUrl, { color: sub }]} numberOfLines={2}>
+                  {buttonUrls[i]}
+                </Text>
+              ) : null}
             </View>
           ))}
         </View>
@@ -84,6 +93,8 @@ const styles = StyleSheet.create({
   body: { fontSize: 14, lineHeight: 20, color: '#111' },
   footer: { fontSize: 12, color: 'rgba(0,0,0,0.5)' },
   buttons: { marginTop: 6, gap: 4 },
-  button: { borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', gap: 6 },
+  button: { borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', gap: 2 },
+  buttonRow: { alignItems: 'center', justifyContent: 'center', gap: 6 },
+  buttonUrl: { fontSize: 11, writingDirection: 'ltr', textAlign: 'center' },
   buttonText: { color: '#0a7cff', fontSize: 14, fontWeight: '600' },
 });

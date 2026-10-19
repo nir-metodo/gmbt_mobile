@@ -71,6 +71,7 @@ export const ENDPOINTS = {
   MOVE_LEAD_STAGE: '/api/Webhooks/MoveLeadStage',
   DELETE_LEAD: '/api/Webhooks/DeleteLead',
   GET_PIPELINE_SETTINGS: '/api/Webhooks/GetPipelineSettings',
+  SAVE_PIPELINE_SETTINGS: '/api/Webhooks/SavePipelineSettings',
   GET_LEAD_FORM_SETTINGS: '/api/Webhooks/GetLeadFormSettings',
   GET_LEAD_VIEWS: '/api/Webhooks/GetLeadViews',
   SAVE_LEAD_VIEW: '/api/Webhooks/SaveLeadView',
@@ -142,6 +143,11 @@ export const ENDPOINTS = {
 
   // Document Templates (used as a source for e-signature requests)
   DOC_TEMPLATES_GET_ALL: '/api/Webhooks/DocTemplates_GetAll',
+
+  // Results of web forms + document-template forms/signed documents (the "submissions" viewer)
+  WEBFORMS_GET_SUBMISSIONS: '/api/Webhooks/WebForms_GetSubmissions',
+  WEBFORMS_SUBMISSION_PDF: '/api/Webhooks/WebForms_SubmissionPdf',
+  DOC_TEMPLATES_GET_SUBMISSIONS: '/api/Webhooks/DocTemplates_GetSubmissions',
 
   // Users
   GET_USERS: '/api/Webhooks/GetAllUsersByOrg',
@@ -230,6 +236,7 @@ export const ENDPOINTS = {
   UPDATE_MEDIA_FOLDER: '/api/Webhooks/UpdateMediaFolder',
   DELETE_MEDIA_FILE: '/api/Webhooks/DeleteMediaFile',
   DELETE_MEDIA_FOLDER: '/api/Webhooks/DeleteMediaFolder',
+  GET_MEDIA_SHARE_LINKS: '/api/Webhooks/GetMediaShareLinks',
 
   // Internal Messages
   GET_INTERNAL_MESSAGES: '/api/Webhooks/GetAllInternalMessages',

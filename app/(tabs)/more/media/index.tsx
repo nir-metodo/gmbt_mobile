@@ -51,6 +51,16 @@ const GRID_GAP = 8;
 const GRID_COLUMNS = 3;
 const GRID_ITEM_SIZE = (SCREEN_WIDTH - 32 - GRID_GAP * (GRID_COLUMNS - 1)) / GRID_COLUMNS;
 
+// "Copy link" choices (same as the web media manager): permanent link or a temporary one that expires.
+const COPY_LINK_OPTIONS: { hours: number; he: string; en: string; icon: string }[] = [
+  { hours: 0, he: 'קבוע (לא פג)', en: 'Permanent (never expires)', icon: 'infinity' },
+  { hours: 1, he: 'שעה אחת', en: '1 hour', icon: 'timer-outline' },
+  { hours: 6, he: '6 שעות', en: '6 hours', icon: 'timer-outline' },
+  { hours: 24, he: '24 שעות', en: '24 hours', icon: 'timer-outline' },
+  { hours: 72, he: '3 ימים', en: '3 days', icon: 'timer-outline' },
+  { hours: 168, he: '7 ימים', en: '7 days', icon: 'timer-outline' },
+];
+
 const FOLDER_COLORS = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316'];
 
 const TYPE_FILTERS = ['all', 'image', 'video', 'audio', 'document'] as const;
@@ -118,6 +128,7 @@ export default function MediaScreen() {
   const [fabOpen, setFabOpen] = useState(false);
   const [fileMenuVisible, setFileMenuVisible] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<MediaFile | null>(null);
+  const [copyTarget, setCopyTarget] = useState<MediaFile | null>(null); // file whose "copy link" menu is open
   const imageScrollRef = useRef<ScrollView>(null);
 
   const fetchData = useCallback(async () => {
@@ -275,16 +286,77 @@ export default function MediaScreen() {
   const handleShare = useCallback(async (item: MediaFile) => {
     if (!item.url) return;
     try {
-      await Share.share({ url: item.url, message: item.url, title: item.name });
+      // share the PERMANENT link (the listed URL is a signed URL that dies after a few hours)
+      const link = (await mediaApi.getShareLink(org, item.url)) || item.url;
+      await Share.share({ url: link, message: link, title: item.name });
     } catch {
       // cancelled
     }
+  }, [org]);
+
+  // "Copy link" opens a menu: permanent link or a temporary link that expires after N hours.
+  const handleCopyLink = useCallback((file: MediaFile) => {
+    if (!file?.url) return;
+    setCopyTarget(file);
   }, []);
 
-  const handleCopyLink = useCallback(async (url: string) => {
-    await Clipboard.setStringAsync(url);
+  const doCopyLink = useCallback(async (file: MediaFile, ttlHours: number) => {
+    setCopyTarget(null);
+    const link = await mediaApi.getShareLink(org, file.url, ttlHours);
+    if (!link) {
+      Alert.alert(
+        t('common.error'),
+        isRTL ? 'לא ניתן ליצור קישור זמני כרגע. נסה שוב מאוחר יותר.' : 'Could not create a temporary link right now. Please try again later.',
+      );
+      return;
+    }
+    await Clipboard.setStringAsync(link);
     Alert.alert(t('media.linkCopied'));
-  }, [t]);
+  }, [org, t, isRTL]);
+
+  const renderCopySheet = () => (
+    <RNModal
+      visible={!!copyTarget}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setCopyTarget(null)}
+      statusBarTranslucent
+    >
+      <Pressable style={styles.copySheetBackdrop} onPress={() => setCopyTarget(null)}>
+        <Pressable
+          onPress={() => {}}
+          style={[styles.copySheet, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleSmall" style={{ color: theme.colors.onSurface, marginBottom: 4, textAlign: isRTL ? 'right' : 'left' }}>
+            {t('media.copyLink') || (isRTL ? 'העתק קישור' : 'Copy link')}
+          </Text>
+          {COPY_LINK_OPTIONS.map((opt) => (
+            <Pressable
+              key={opt.hours}
+              onPress={() => copyTarget && doCopyLink(copyTarget, opt.hours)}
+              style={({ pressed }) => [
+                styles.copySheetRow,
+                { flexDirection: isRTL ? 'row-reverse' : 'row', backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent' },
+              ]}
+            >
+              <MaterialCommunityIcons name={opt.icon as any} size={20} color={opt.hours === 0 ? BRAND_COLOR : theme.colors.onSurfaceVariant} />
+              <Text
+                variant="bodyMedium"
+                style={{ color: theme.colors.onSurface, marginHorizontal: 12, fontWeight: opt.hours === 0 ? '700' : '400' }}
+              >
+                {isRTL ? opt.he : opt.en}
+              </Text>
+            </Pressable>
+          ))}
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: isRTL ? 'right' : 'left' }}>
+            {isRTL
+              ? 'קישור זמני מפסיק לעבוד אחרי הזמן שנבחר. לשימוש במייל / באתר בחר קבוע.'
+              : 'A temporary link stops working after the chosen time. For e-mail / websites choose permanent.'}
+          </Text>
+        </Pressable>
+      </Pressable>
+    </RNModal>
+  );
 
   const currentFolder = useMemo(() => {
     return folders.find((f) => f.id === currentFolderId);
@@ -365,7 +437,7 @@ export default function MediaScreen() {
               <MaterialCommunityIcons name="share-variant" size={16} color={theme.colors.onSurface} />
               <Text variant="bodySmall" style={{ marginStart: 8, color: theme.colors.onSurface }}>{t('media.share') || 'שתף'}</Text>
             </Pressable>
-            <Pressable style={styles.fileMenuItem} onPress={() => { handleCopyLink(item.url); setFileMenuVisible(null); }}>
+            <Pressable style={styles.fileMenuItem} onPress={() => { handleCopyLink(item); setFileMenuVisible(null); }}>
               <MaterialCommunityIcons name="link" size={16} color={theme.colors.onSurface} />
               <Text variant="bodySmall" style={{ marginStart: 8, color: theme.colors.onSurface }}>{t('media.copyLink')}</Text>
             </Pressable>
@@ -418,7 +490,7 @@ export default function MediaScreen() {
 
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <IconButton icon="share-variant" size={18} onPress={() => handleShare(item)} />
-            <IconButton icon="link" size={18} onPress={() => handleCopyLink(item.url)} />
+            <IconButton icon="link" size={18} onPress={() => handleCopyLink(item)} />
             <IconButton icon="delete-outline" size={18} iconColor="#E63946" onPress={() => handleDeleteFile(item.id)} />
           </View>
         </Pressable>
@@ -671,15 +743,17 @@ export default function MediaScreen() {
               {previewFile?.uploadedByName ? `  ·  ${previewFile.uploadedByName}` : ''}
             </Text>
             <TouchableOpacity
-              onPress={() => previewFile?.url && handleCopyLink(previewFile.url)}
+              onPress={() => previewFile?.url && handleCopyLink(previewFile)}
               style={styles.lightboxCopyBtn}
             >
               <MaterialCommunityIcons name="link" size={16} color="#fff" />
               <Text style={{ color: '#fff', fontSize: 13, marginStart: 6 }}>{t('media.copyLink') || 'העתק קישור'}</Text>
             </TouchableOpacity>
           </View>
+          {previewFile ? renderCopySheet() : null}
         </View>
       </RNModal>
+      {!previewFile ? renderCopySheet() : null}
 
       <Portal>
         <Modal
@@ -891,6 +965,25 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     borderRadius: 8,
     padding: 2,
+  },
+  // Copy-link menu
+  copySheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  copySheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+  },
+  copySheetRow: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 10,
   },
   // Lightbox
   lightboxBg: {

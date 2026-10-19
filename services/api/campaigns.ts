@@ -67,7 +67,18 @@ export interface WaTemplateComponent {
   format?: string;
   text?: string;
   example?: { body_text?: string[][]; header_text?: string[]; header_handle?: string[] };
-  buttons?: Array<{ type: string; text?: string; url?: string; phone_number?: string; example?: string[] }>;
+  buttons?: Array<{
+    type: string;
+    text?: string;
+    url?: string;
+    phone_number?: string;
+    example?: string[];
+    /** Real destination of a click-tracked button (url is then our /track wrapper). */
+    originalUrl?: string;
+    trackClicks?: boolean;
+    isStaticWithTracking?: boolean;
+    isTrackingDestination?: boolean;
+  }>;
 }
 
 export interface WaTemplate {

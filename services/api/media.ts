@@ -86,6 +86,29 @@ export const mediaApi = {
     return response.data;
   },
 
+  /**
+   * Link to copy/share for a library file. The URL the library lists is a short-lived signed URL, so we ask the
+   * server for the PERMANENT share link (ttlHours omitted/0) or a temporary one that expires after ttlHours (1..168).
+   * Returns null only when a temporary link was requested and the server could not create it.
+   */
+  async getShareLink(organization: string, url: string, ttlHours = 0): Promise<string | null> {
+    if (!url) return null;
+    try {
+      const response = await axiosInstance.post(ENDPOINTS.GET_MEDIA_SHARE_LINKS, {
+        Org: organization,
+        urls: [url],
+        ttlHours,
+      });
+      const link = response.data?.links?.[url];
+      if (response.data?.success && link) return link;
+    } catch {
+      // fall through to the stored URL
+    }
+    // A temporary link can't be produced client-side - never hand back the permanent raw URL for it.
+    if (ttlHours > 0) return null;
+    return url.replace(/\?X-Goog-[^\s]*$/, '');
+  },
+
   async deleteFile(organization: string, fileId: string): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.DELETE_MEDIA_FILE, {
       organization,

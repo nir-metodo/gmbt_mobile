@@ -302,8 +302,75 @@ export interface TemplateInfo {
   bodyVars: number[];
   /** Example label for each {{N}} (from components.body.example), used as a hint. */
   bodyHints: Record<number, string>;
+  /** Dynamic URL-button variables (ported from TemplatesHandler) — `hidden` ones are filled automatically. */
+  buttonVars: ButtonVar[];
   /** Reasons why creating a campaign with this template needs the web app (empty = fully supported). */
   unsupported: string[];
+}
+
+/** One dynamic URL-button placeholder ({{n}} inside a button URL). */
+export interface ButtonVar {
+  /** Query key the backend recognises: button{B}_dynamic_var{N}. */
+  Variable: string;
+  buttonIndex: number;
+  variableIndex: string;
+  buttonText: string;
+  originalUrl: string;
+  /** Tracked button whose destination the sender types (link or per-recipient segment). */
+  isTrackingDestination: boolean;
+  preTrackingUrl: string | null;
+  /** Auto-filled with the recipient's phone (click tracking) — no input for the sender. */
+  hidden: boolean;
+  /** Fixed part of the URL before {{n}}, shown next to the input. */
+  prefix: string;
+}
+
+const PLACEHOLDER = /\{+\d+\}+/;
+
+/** Same classification TemplatesHandler.js uses when it builds the URL_DYNAMIC queries of a button. */
+export function extractButtonVars(buttons: NonNullable<WaTemplateComponent['buttons']>): ButtonVar[] {
+  const out: ButtonVar[] = [];
+  buttons.forEach((button, buttonIndex) => {
+    const buttonUrl = String(button?.url || '');
+    if (!buttonUrl || !buttonUrl.includes('{')) return;
+    const vars = [...buttonUrl.matchAll(/\{(\d+)\}/g)].map((m) => m[1]);
+    vars.forEach((variableIndex) => {
+      const trueUrl = String(button.originalUrl || buttonUrl);
+      const hasDynamicDest = /[?&]dest=\{+\d+\}+/i.test(buttonUrl) && !/[?&]c=\{+\d+\}+/i.test(trueUrl);
+      const isGambotTrackUrl = /webhooks\/track/i.test(buttonUrl) || /[?&]btn=.*[?&]dest=/i.test(buttonUrl);
+      const hasStaticTrackParam = /[?&]c=\{+\d+\}+/i.test(trueUrl);
+      const isStaticTracking =
+        !hasDynamicDest &&
+        !!(button.isStaticWithTracking || button.trackClicks || hasStaticTrackParam || (isGambotTrackUrl && PLACEHOLDER.test(buttonUrl)));
+      const isGambotTrackingDest = hasDynamicDest && isGambotTrackUrl;
+      const trackingDestVaries = isGambotTrackingDest && PLACEHOLDER.test(trueUrl);
+      const base = {
+        Variable: `button${buttonIndex + 1}_dynamic_var${variableIndex}`,
+        buttonIndex: buttonIndex + 1,
+        variableIndex,
+        buttonText: String(button.text || ''),
+      };
+      if (trackingDestVaries) {
+        out.push({ ...base, originalUrl: trueUrl, isTrackingDestination: true, preTrackingUrl: trueUrl, hidden: false, prefix: trueUrl.split('{{')[0] });
+      } else if (isStaticTracking || isGambotTrackingDest) {
+        out.push({ ...base, originalUrl: trueUrl, isTrackingDestination: false, preTrackingUrl: null, hidden: true, prefix: '' });
+      } else {
+        const isTracking = !!(
+          button.isTrackingDestination ||
+          (isGambotTrackUrl && /dest=\{\{?\d+\}?\}/i.test(buttonUrl))
+        );
+        out.push({
+          ...base,
+          originalUrl: buttonUrl,
+          isTrackingDestination: isTracking,
+          preTrackingUrl: isTracking ? button.originalUrl || null : null,
+          hidden: isTracking,
+          prefix: isTracking ? '' : buttonUrl.split('{{')[0],
+        });
+      }
+    });
+  });
+  return out;
 }
 
 export function getBodyVarIndicesFromText(text: string): number[] {
@@ -334,9 +401,6 @@ export function analyzeTemplate(t: WaTemplate | null | undefined, he: boolean): 
   if (header && headerFormat === 'LOCATION') {
     unsupported.push(he ? 'כותרת מיקום' : 'a location header');
   }
-  if (buttons.some((b) => b.type === 'URL' && /\{\{\d+\}\}/.test(b.url || ''))) {
-    unsupported.push(he ? 'כפתור קישור דינמי' : 'a dynamic URL button');
-  }
   if (buttons.some((b) => b.type === 'COPY_CODE' || b.type === 'OTP' || b.type === 'FLOW' || b.type === 'MPM' || b.type === 'CATALOG')) {
     unsupported.push(he ? 'כפתור מיוחד (קוד/Flow/קטלוג)' : 'a special button (code/Flow/catalog)');
   }
@@ -355,6 +419,7 @@ export function analyzeTemplate(t: WaTemplate | null | undefined, he: boolean): 
     footerText: footer?.text || '',
     bodyVars,
     bodyHints,
+    buttonVars: extractButtonVars(buttons),
     unsupported,
   };
 }
@@ -436,10 +501,49 @@ export function mergeQueries(
   bodyVars: number[],
   maps: Record<number, VarMapping>,
   hints: Record<number, string>,
+  buttonVars: ButtonVar[] = [],
+  btnMaps: Record<string, VarMapping> = {},
 ): any[] {
-  const keep = (existing || []).filter((q) => !isBodyQuery(q));
+  const isButtonUrlQuery = (q: any) => q?.buttonType === 'URL_DYNAMIC' || /^button\d+_dynamic_var\d+/.test(String(q?.Variable || ''));
+  // URL-button queries are rebuilt from the template + the sender's values, like body queries.
+  const keep = (existing || []).filter((q) => !isBodyQuery(q) && !isButtonUrlQuery(q));
   const body = bodyVars.map((n) => buildBodyQuery(n, hints[n], maps[n] || { source: 'text', value: '' }));
-  return [...keep, ...body].map((q, i) => ({ ...q, index: i + 1 }));
+  const buttons = buttonVars.map((bv) => buildButtonQuery(bv, btnMaps[bv.Variable] || { source: 'text', value: '' }));
+  return [...keep, ...body, ...buttons].map((q, i) => ({ ...q, index: i + 1 }));
+}
+
+/** Value the sender typed for a URL button: a full URL that starts with the fixed prefix is cut down to the dynamic part. */
+export function cleanButtonValue(bv: ButtonVar, raw: string): string {
+  const v = String(raw || '').replace(/[\n\r\t]/g, ' ').trim();
+  if (!bv.isTrackingDestination && bv.prefix && v.startsWith(bv.prefix)) return v.substring(bv.prefix.length);
+  return v;
+}
+
+/** Same shape TemplatesHandler stores for a dynamic URL button (the backend recognises `button{B}_dynamic_var{N}`). */
+export function buildButtonQuery(bv: ButtonVar, m: VarMapping) {
+  const phone = bv.hidden;
+  const col = !phone && m.source === 'column';
+  return {
+    index: 0,
+    Variable: bv.Variable,
+    dataSource1: phone ? 'recipient_phone' : col ? 'data_source1_recipientSource' : 'data_source1_HardCoded',
+    parameters_hardCoded_Text: !phone && m.source === 'text' ? cleanButtonValue(bv, m.value) : '',
+    parameters_ContactsColumns_Select: col ? m.value : '',
+    buttonType: 'URL_DYNAMIC',
+    buttonIndex: bv.buttonIndex,
+    originalUrl: bv.originalUrl,
+    variableIndex: bv.variableIndex,
+    isTrackingDestination: bv.isTrackingDestination,
+    preTrackingUrl: bv.preTrackingUrl,
+    hidden: bv.hidden,
+    table1: '',
+    field1: [] as string[],
+    conditionOperator: '',
+    dataSource2: '',
+    table2: '',
+    field2: [] as string[],
+    retrieveFields: [] as string[],
+  };
 }
 
 // ───────────────────────────── per-recipient preview ─────────────────────────────

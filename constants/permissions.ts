@@ -28,6 +28,8 @@ export const PERMISSION_FEATURES = {
   employees: 'employees',
   invoices: 'invoices',
   emailInbox: 'emailInbox',
+  webForms: 'webForms',
+  documentTemplates: 'documentTemplates',
 } as const;
 
 export type PermissionFeature = keyof typeof PERMISSION_FEATURES;

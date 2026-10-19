@@ -184,6 +184,7 @@ export default function TasksMoreScreen() {
   const [orgUsersLoading, setOrgUsersLoading] = useState(false);
   const [userPickerExpanded, setUserPickerExpanded] = useState(false);
   const [formTaskType, setFormTaskType] = useState<string>('general');
+  const [formDetailsExpanded, setFormDetailsExpanded] = useState(false); // description / type / linked record
 
   // Linked entity: pick a type (contact / lead), then pick the specific record.
   const [formRelatedEntityType, setFormRelatedEntityType] = useState<'' | 'contact' | 'lead'>('');
@@ -396,6 +397,7 @@ export default function TasksMoreScreen() {
     setFormAssignedToId(user?.uID || user?.userId || '');
     setUserPickerExpanded(false);
     setFormTaskType('general');
+    setFormDetailsExpanded(false);
     setFormRelatedEntityType('');
     setFormRelatedLeadName('');
     setFormRelatedLeadId('');
@@ -1140,8 +1142,7 @@ export default function TasksMoreScreen() {
           onDismiss={() => { setCreateModalVisible(false); resetForm(); }}
           contentContainerStyle={[styles.modalContainer, { backgroundColor: theme.colors.surface }]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={80}>
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <KeyboardAvoidingView style={{ flexShrink: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={80}>
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                   {t('tasks.addTask')}
@@ -1149,23 +1150,12 @@ export default function TasksMoreScreen() {
                 <IconButton icon="close" size={22} onPress={() => { setCreateModalVisible(false); resetForm(); }} />
               </View>
 
+            <ScrollView style={{ flexShrink: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <TextInput
                 label={t('tasks.taskTitle')}
                 value={formTitle}
                 onChangeText={setFormTitle}
                 mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-              />
-
-              <TextInput
-                label={t('tasks.description')}
-                value={formDescription}
-                onChangeText={setFormDescription}
-                mode="outlined"
-                multiline
-                numberOfLines={3}
                 style={[styles.formInput, { textAlign }]}
                 outlineColor={theme.colors.outline}
                 activeOutlineColor={BRAND_COLOR}
@@ -1193,32 +1183,6 @@ export default function TasksMoreScreen() {
                     ]}
                   >
                     {t(`tasks.${p}`)}
-                  </Chip>
-                ))}
-              </View>
-
-              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('tasks.taskType')}
-              </Text>
-              <View style={[styles.priorityRow, { flexDirection }]}>
-                {TASK_TYPES.map((tt) => (
-                  <Chip
-                    key={tt}
-                    selected={formTaskType === tt}
-                    onPress={() => setFormTaskType(tt)}
-                    compact
-                    style={[
-                      styles.priorityChip,
-                      formTaskType === tt
-                        ? { backgroundColor: `${BRAND_COLOR}20`, borderColor: BRAND_COLOR, borderWidth: 1 }
-                        : { backgroundColor: theme.colors.surfaceVariant },
-                    ]}
-                    textStyle={[
-                      styles.priorityChipText,
-                      formTaskType === tt && { color: BRAND_COLOR, fontWeight: '600' },
-                    ]}
-                  >
-                    {t(`tasks.${tt}`)}
                   </Chip>
                 ))}
               </View>
@@ -1364,6 +1328,61 @@ export default function TasksMoreScreen() {
                 </View>
               )}
 
+              {/* Additional details - collapsed by default (same idea as the web task form and the quick-add sheet) */}
+              <Pressable
+                onPress={() => setFormDetailsExpanded((v) => !v)}
+                style={[styles.detailsToggle, { flexDirection }]}
+              >
+                <MaterialCommunityIcons
+                  name={formDetailsExpanded ? 'chevron-down' : (isRTL ? 'chevron-left' : 'chevron-right')}
+                  size={20}
+                  color={BRAND_COLOR}
+                />
+                <Text style={{ color: BRAND_COLOR, fontWeight: '700' }}>
+                  {isRTL ? '\u05E4\u05E8\u05D8\u05D9\u05DD \u05E0\u05D5\u05E1\u05E4\u05D9\u05DD' : 'Additional details'}
+                </Text>
+              </Pressable>
+
+              {formDetailsExpanded && (
+                <View>
+              <TextInput
+                label={t('tasks.description')}
+                value={formDescription}
+                onChangeText={setFormDescription}
+                mode="outlined"
+                multiline
+                numberOfLines={3}
+                style={[styles.formInput, { textAlign }]}
+                outlineColor={theme.colors.outline}
+                activeOutlineColor={BRAND_COLOR}
+              />
+
+              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
+                {t('tasks.taskType')}
+              </Text>
+              <View style={[styles.priorityRow, { flexDirection }]}>
+                {TASK_TYPES.map((tt) => (
+                  <Chip
+                    key={tt}
+                    selected={formTaskType === tt}
+                    onPress={() => setFormTaskType(tt)}
+                    compact
+                    style={[
+                      styles.priorityChip,
+                      formTaskType === tt
+                        ? { backgroundColor: `${BRAND_COLOR}20`, borderColor: BRAND_COLOR, borderWidth: 1 }
+                        : { backgroundColor: theme.colors.surfaceVariant },
+                    ]}
+                    textStyle={[
+                      styles.priorityChipText,
+                      formTaskType === tt && { color: BRAND_COLOR, fontWeight: '600' },
+                    ]}
+                  >
+                    {t(`tasks.${tt}`)}
+                  </Chip>
+                ))}
+              </View>
+
               {/* Linked entity: choose a type, then pick the record */}
               <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
                 {t('tasks.relatedTo', 'רשומה מקושרת')}
@@ -1439,6 +1458,10 @@ export default function TasksMoreScreen() {
                 </Pressable>
               )}
 
+                </View>
+              )}
+            </ScrollView>
+
               <View style={[styles.modalActions, { flexDirection }]}>
                 <Button
                   mode="outlined"
@@ -1459,7 +1482,6 @@ export default function TasksMoreScreen() {
                   {t('common.create')}
                 </Button>
               </View>
-            </ScrollView>
           </KeyboardAvoidingView>
         </Modal>
       </Portal>
@@ -1669,6 +1691,7 @@ const styles = StyleSheet.create({
     maxHeight: '85%',
     padding: 20,
   },
+  detailsToggle: { alignItems: 'center', gap: 6, paddingVertical: 10, marginBottom: 6 },
   modalHeader: {
     alignItems: 'center',
     justifyContent: 'space-between',

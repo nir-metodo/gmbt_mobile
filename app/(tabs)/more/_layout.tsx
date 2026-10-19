@@ -12,6 +12,7 @@ export default function MoreLayout() {
       <Stack.Screen name="cases" />
       <Stack.Screen name="quotes" />
       <Stack.Screen name="esignature" />
+      <Stack.Screen name="submissions" />
       <Stack.Screen name="reports" />
       <Stack.Screen name="dashboard" />
       <Stack.Screen name="campaigns" />

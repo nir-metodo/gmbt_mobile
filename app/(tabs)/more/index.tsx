@@ -25,6 +25,7 @@ interface MenuItem {
   color: string;
   adminOnly?: boolean;
   permission?: string;
+  permissionAny?: string[]; // visible when the user has ANY of these permissions
   featureKey?: string; // org-level feature toggle key
   featureDefault?: boolean; // default if toggle not set
   requiresTelephony?: boolean; // only show when org telephony is enabled
@@ -78,6 +79,7 @@ const MENU_SECTIONS: MenuSection[] = [
     items: [
       { key: 'dashboard', icon: 'chart-bar', labelKey: 'more.dashboard', route: '/(tabs)/more/dashboard', color: BRAND_COLOR, permission: 'dashboard' },
       { key: 'reports', icon: 'chart-box-outline', labelKey: 'more.reports', route: '/(tabs)/more/reports', color: '#6366f1', permission: 'reports' },
+      { key: 'submissions', icon: 'clipboard-text-outline', labelKey: 'more.submissions', route: '/(tabs)/more/submissions', color: '#0d9488', permissionAny: ['webForms', 'documentTemplates'] },
     ],
   },
   {
@@ -114,6 +116,7 @@ export default function MoreScreen() {
         if (item.adminOnly && user?.SecurityRole?.toLowerCase() !== 'admin') return false;
         if (item.requiresTelephony && !telephonyEnabled) return false;
         if (item.permission && !hasPermission(user?.Permissions, user?.SecurityRole, item.permission as any)) return false;
+        if (item.permissionAny && !item.permissionAny.some((p) => hasPermission(user?.Permissions, user?.SecurityRole, p as any))) return false;
         if (item.featureKey) {
           const enabled = orgFeatureToggles[item.featureKey] ?? item.featureDefault ?? true;
           if (!enabled) return false;

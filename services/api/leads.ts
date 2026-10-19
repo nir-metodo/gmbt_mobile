@@ -30,6 +30,8 @@ export interface LeadFilters {
 /** Distinct values that exist in the org's leads, keyed by field name. */
 export type LeadFilterOptions = Record<string, string[]>;
 
+export interface LeadCustomSource { value: string; label?: string; labelHe?: string; labelEn?: string }
+
 export const leadsApi = {
   async getAll(
     organization: string,
@@ -144,7 +146,7 @@ export const leadsApi = {
     return response.data;
   },
 
-  async getPipelineSettings(organization: string): Promise<{ stages: LeadStage[]; enableProductCatalog?: boolean; syncCatalogToValue?: boolean; enableQuoteFromLeadForm?: boolean }> {
+  async getPipelineSettings(organization: string): Promise<{ stages: LeadStage[]; enableProductCatalog?: boolean; syncCatalogToValue?: boolean; enableQuoteFromLeadForm?: boolean; customSources?: LeadCustomSource[] }> {
     const response = await axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, {
       organization,
     });
@@ -159,7 +161,29 @@ export const leadsApi = {
       syncCatalogToValue: !!raw?.syncCatalogToValue,
       // Controls whether the "Create Quote" action shows inside the lead form (web parity).
       enableQuoteFromLeadForm: !!raw?.enableQuoteFromLeadForm,
+      // Org-defined lead sources (Settings -> Sales funnel on the web). Merged with the built-in list in the lead form.
+      customSources: Array.isArray(raw?.customSources) ? raw.customSources : [],
     };
+  },
+
+  /**
+   * Adds a lead source for the WHOLE organization (same place the web's "Lead sources" setting writes to).
+   * SavePipelineSettings overwrites the settings document, so we re-read the current settings and send them
+   * back with the new source appended. Returns the updated custom-source list.
+   */
+  async addCustomSource(organization: string, name: string): Promise<LeadCustomSource[]> {
+    const value = name.trim();
+    const current = await axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, { organization });
+    const raw = (current.data && typeof current.data === 'object' && !Array.isArray(current.data)) ? current.data : {};
+    const existing: LeadCustomSource[] = Array.isArray(raw.customSources) ? raw.customSources : [];
+    if (existing.some((s) => String(s.value).toLowerCase() === value.toLowerCase())) return existing;
+    const customSources = [...existing, { value, label: value, labelHe: value, labelEn: value }];
+    const res = await axiosInstance.post(ENDPOINTS.SAVE_PIPELINE_SETTINGS, {
+      organization,
+      settings: { ...raw, customSources },
+    });
+    if (res.data && res.data.success === false) throw new Error(res.data.message || 'Save failed');
+    return customSources;
   },
 
   async getCatalogItems(organization: string): Promise<any[]> {

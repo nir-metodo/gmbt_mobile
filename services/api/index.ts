@@ -6,6 +6,7 @@ export { tasksApi } from './tasks';
 export { casesApi } from './cases';
 export { quotesApi } from './quotes';
 export { esignatureApi } from './esignature';
+export { submissionsApi } from './submissions';
 export { usersApi } from './users';
 export { phoneCallsApi } from './phoneCalls';
 export { mediaApi } from './media';

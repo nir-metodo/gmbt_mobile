@@ -45,6 +45,7 @@ import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
 import { useChatStore } from '../../../stores/chatStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { useContactStore } from '../../../stores/contactStore';
+import { useLeadStore } from '../../../stores/leadStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import {
@@ -978,6 +979,23 @@ export default function ChatConversationScreen() {
   }) || contactLeads[0] || null;
   const activeCase = contactCases[0] || null;
 
+  // A lead/case record can carry the RAW stage id as its stageName (e.g. "new" for a freshly created lead),
+  // while the org defined a friendly/translated name for that stage ("שלב חדש"). Always show the stage's
+  // configured name (matched by id, then by name); fall back to what the record stores only if not found.
+  const resolveStageName = (stages: any[], rec: any): string => {
+    if (!rec) return '';
+    const id = String(rec.stageId || rec.StageId || '').toLowerCase();
+    const nm = String(rec.stageName || rec.stage || '').toLowerCase();
+    const hit =
+      (id && stages.find((s: any) => String(s.id || s.Id || '').toLowerCase() === id)) ||
+      (nm && stages.find((s: any) => String(s.id || s.Id || '').toLowerCase() === nm)) ||
+      (nm && stages.find((s: any) => String(s.name || s.Name || s.stageName || '').toLowerCase() === nm)) ||
+      null;
+    return hit ? String(hit.name || hit.Name || hit.stageName || '') : '';
+  };
+  const activeLeadStageLabel = resolveStageName(pipelineStages, activeLead) || activeLead?.stageName || activeLead?.stage || '';
+  const activeCaseStageLabel = resolveStageName(caseStages, activeCase) || activeCase?.stageName || activeCase?.stage || '';
+
   const handleMoveLeadStage = useCallback(async (stage: any) => {
     setShowLeadStageMenu(false);
     if (!user?.organization || !activeLead) return;
@@ -1021,6 +1039,9 @@ export default function ChatConversationScreen() {
   const openLeadRecord = useCallback(() => {
     if (!activeLead?.id) return;
     setShowLeadStageMenu(false);
+    // The lead screen resolves the record from the lead store; hand it over the record we already
+    // loaded for this contact so it opens even when the Leads list was never loaded in this session.
+    useLeadStore.getState().setSelectedLead(activeLead as any);
     router.push({ pathname: '/(tabs)/leads/[id]', params: { id: activeLead.id } } as any);
   }, [activeLead, router]);
 
@@ -3167,7 +3188,13 @@ export default function ChatConversationScreen() {
         {/* Message mode indicator - removed internal notes UI per user request */}
 
         {/* Status / Category bar */}
-        <View style={[styles.chatMetaBar, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant || 'rgba(0,0,0,0.06)' }]}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          style={[styles.chatMetaBarScroll, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant || 'rgba(0,0,0,0.06)' }]}
+          contentContainerStyle={styles.chatMetaBar}
+        >
           {/* Owner chip — shows the conversation owner (or "unassigned"); tap to assign */}
           <Pressable
             onPress={() => setShowAssignOwnerModal(true)}
@@ -3225,10 +3252,10 @@ export default function ChatConversationScreen() {
               visible={showLeadStageMenu}
               onDismiss={() => setShowLeadStageMenu(false)}
               anchor={
-                <Pressable onPress={() => setShowLeadStageMenu(true)} style={[styles.metaChip, { backgroundColor: '#dcfce7', maxWidth: 150 }]}>
+                <Pressable onPress={() => setShowLeadStageMenu(true)} style={[styles.metaChip, { backgroundColor: '#dcfce7', maxWidth: 240 }]}>
                   <MaterialCommunityIcons name="account-star-outline" size={12} color="#16a34a" />
                   <Text style={{ fontSize: 11, fontWeight: '600', color: '#16a34a', marginStart: 4 }} numberOfLines={1}>
-                    {activeLead.stageName || activeLead.stage || (isRTL ? 'ליד' : 'Lead')}
+                    {activeLeadStageLabel || (isRTL ? 'ליד' : 'Lead')}
                   </Text>
                   <MaterialCommunityIcons name="chevron-down" size={14} color="#16a34a" style={{ marginStart: 2 }} />
                 </Pressable>
@@ -3254,10 +3281,10 @@ export default function ChatConversationScreen() {
               visible={showCaseStageMenu}
               onDismiss={() => setShowCaseStageMenu(false)}
               anchor={
-                <Pressable onPress={() => setShowCaseStageMenu(true)} style={[styles.metaChip, { backgroundColor: '#f3e8ff', maxWidth: 150 }]}>
+                <Pressable onPress={() => setShowCaseStageMenu(true)} style={[styles.metaChip, { backgroundColor: '#f3e8ff', maxWidth: 240 }]}>
                   <MaterialCommunityIcons name="ticket-outline" size={12} color="#9333ea" />
                   <Text style={{ fontSize: 11, fontWeight: '600', color: '#9333ea', marginStart: 4 }} numberOfLines={1}>
-                    {activeCase.stageName || activeCase.stage || (isRTL ? 'פנייה' : 'Case')}
+                    {activeCaseStageLabel || (isRTL ? 'פנייה' : 'Case')}
                   </Text>
                   <MaterialCommunityIcons name="chevron-down" size={14} color="#9333ea" style={{ marginStart: 2 }} />
                 </Pressable>
@@ -3278,7 +3305,7 @@ export default function ChatConversationScreen() {
           )}
 
           {/* Tags row — horizontal chips + "add tag" chip */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginStart: 4, flexShrink: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginStart: 4 }}>
             {(chat?.tags || []).map((tag) => (
               <Pressable
                 key={tag}
@@ -3298,9 +3325,9 @@ export default function ChatConversationScreen() {
               <MaterialCommunityIcons name="plus" size={12} color="#009688" />
               <Text style={{ fontSize: 10, fontWeight: '600', color: '#009688', marginStart: 2 }}>{isRTL ? 'הוסף תיוג' : 'Add Tag'}</Text>
             </Pressable>
-          </ScrollView>
+          </View>
           {/* Note / Assign moved to the Quick Actions sheet (⚡) to remove header duplicates */}
-        </View>
+        </ScrollView>
 
         {/* Inline tag entry — full-width row below meta bar */}
         {showAddTagInline && (
@@ -5445,13 +5472,17 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: 'rgba(0,0,0,0.05)',
   },
+  // The meta bar scrolls horizontally so lead stage / case stage / tags are never hidden off-screen.
+  chatMetaBarScroll: {
+    flexGrow: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   chatMetaBar: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 6,
     gap: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   metaChip: {
     flexDirection: 'row',

@@ -208,6 +208,20 @@ export default function LeadDetailScreen() {
     [leadFromStore, selectedLead, id, isNew],
   );
 
+  // Opened by id (chat, push notification, task, dashboard…) while the lead isn't in memory — e.g. the Leads
+  // tab was never opened this session. Load the list so the record can resolve, and stop the spinner with a
+  // "not found" state if it still can't be found instead of loading forever.
+  const loadLeadsIntoStore = useLeadStore((s) => s.loadLeads);
+  const [leadLookupDone, setLeadLookupDone] = useState(false);
+  useEffect(() => {
+    if (isNew || lead || !organization) return;
+    let cancelled = false;
+    loadLeadsIntoStore(organization)
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLeadLookupDone(true); });
+    return () => { cancelled = true; };
+  }, [isNew, lead, organization, id, loadLeadsIntoStore]);
+
   const [menuVisible, setMenuVisible] = useState(false);
   const [stagePickerVisible, setStagePickerVisible] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -243,6 +257,11 @@ export default function LeadDetailScreen() {
   // Whether the org enabled the in-form "Create Quote" action (sales-funnel setting; web parity).
   const [enableQuoteFromLeadForm, setEnableQuoteFromLeadForm] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
+  // Org-defined lead sources + the inline "add source" row (org-wide or just this lead)
+  const [customSources, setCustomSources] = useState<{ value: string; label?: string; labelHe?: string; labelEn?: string }[]>([]);
+  const [addingSource, setAddingSource] = useState(false);
+  const [newSourceText, setNewSourceText] = useState('');
+  const [savingSource, setSavingSource] = useState(false);
 
   // Payment / clearing state
   const [clearingEnabled, setClearingEnabled] = useState(false);
@@ -348,6 +367,7 @@ export default function LeadDetailScreen() {
         // Mirror the web lead form: the in-form "Create Quote" action only shows when the org
         // enabled it in the sales-funnel (pipeline) settings.
         setEnableQuoteFromLeadForm(!!res.enableQuoteFromLeadForm);
+        setCustomSources(res.customSources || []);
       })
       .catch(() => {});
   }, [organization]);
@@ -897,7 +917,18 @@ export default function LeadDetailScreen() {
     return (
       <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
         <Stack.Screen options={{ headerShown: false }} />
-        <ActivityIndicator size="large" color={theme.colors.primary} />
+        {leadLookupDone ? (
+          <>
+            <Text variant="titleMedium" style={{ marginBottom: 12, color: theme.colors.onSurface }}>
+              {t('leads.notFound', 'הליד לא נמצא')}
+            </Text>
+            <Button mode="contained" onPress={() => router.back()}>
+              {t('common.back', 'חזרה')}
+            </Button>
+          </>
+        ) : (
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        )}
       </View>
     );
   }
@@ -1395,6 +1426,45 @@ export default function LeadDetailScreen() {
     </>
   );
 
+  // Source options = built-in list + the org's custom sources + the lead's current value (if it is neither).
+  const sourceChoices: { value: string; label: string; custom: boolean }[] = (() => {
+    const out: { value: string; label: string; custom: boolean }[] = LEAD_SOURCES.map((v) => ({ value: v, label: v, custom: false }));
+    customSources.forEach((cs) => {
+      if (!cs?.value || out.some((o) => o.value.toLowerCase() === String(cs.value).toLowerCase())) return;
+      out.push({ value: cs.value, label: (lang === 'he' ? (cs.labelHe || cs.label) : (cs.labelEn || cs.label)) || cs.value, custom: true });
+    });
+    const cur = String(form.source || '').trim();
+    if (cur && !out.some((o) => o.value.toLowerCase() === cur.toLowerCase())) out.push({ value: cur, label: cur, custom: true });
+    return out;
+  })();
+
+  const closeAddSource = () => { setAddingSource(false); setNewSourceText(''); };
+
+  // Only this lead: just set the value on the lead (free text, saved with the lead).
+  const addSourceForThisLead = () => {
+    const v = newSourceText.trim();
+    if (!v) return;
+    setForm((prev) => ({ ...prev, source: v }));
+    closeAddSource();
+  };
+
+  // Whole organization: store it in the org's custom sources (available to every lead / user), then select it.
+  const addSourceForOrg = async () => {
+    const v = newSourceText.trim();
+    if (!v || !organization) return;
+    setSavingSource(true);
+    try {
+      const updated = await leadsApi.addCustomSource(organization, v);
+      setCustomSources(updated);
+      setForm((prev) => ({ ...prev, source: v }));
+      closeAddSource();
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err?.message || (lang === 'he' ? 'הוספת המקור נכשלה' : 'Could not add the source'));
+    } finally {
+      setSavingSource(false);
+    }
+  };
+
   const fmSource = (
     <>
               <View style={[styles.formSectionCard, { backgroundColor: theme.colors.surface }]}>
@@ -1403,24 +1473,18 @@ export default function LeadDetailScreen() {
                   <MaterialCommunityIcons name="source-branch" size={18} color="#2e6155" />
                   <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.source')}</Text>
                 </View>
-              <Text
-                variant="labelMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
-              >
-                {t('leads.source')}
-              </Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={[styles.formStageRow, { flexDirection }]}
               >
-                {LEAD_SOURCES.map((src) => {
-                  const isSelected = form.source === src;
+                {sourceChoices.map((src) => {
+                  const isSelected = (form.source || '').toLowerCase() === src.value.toLowerCase();
                   return (
                     <Chip
-                      key={src}
+                      key={src.value}
                       selected={isSelected}
-                      onPress={() => setForm((prev) => ({ ...prev, source: isSelected ? '' : src }))}
+                      onPress={() => setForm((prev) => ({ ...prev, source: isSelected ? '' : src.value }))}
                       compact
                       style={[
                         styles.formStageChip,
@@ -1434,11 +1498,59 @@ export default function LeadDetailScreen() {
                         fontWeight: isSelected ? '600' : '400',
                       }}
                     >
-                      {src}
+                      {src.label}
                     </Chip>
                   );
                 })}
+                <Chip
+                  icon="plus"
+                  compact
+                  onPress={() => setAddingSource((v) => !v)}
+                  style={[styles.formStageChip, { backgroundColor: withAlpha('#2e6155', 0.1) }]}
+                  textStyle={{ fontSize: 12, color: '#2e6155', fontWeight: '600' }}
+                >
+                  {lang === 'he' ? 'הוספת מקור' : 'Add source'}
+                </Chip>
               </ScrollView>
+
+              {addingSource ? (
+                <View style={{ marginTop: 12 }}>
+                  <TextInput
+                    value={newSourceText}
+                    onChangeText={setNewSourceText}
+                    placeholder={lang === 'he' ? 'שם המקור החדש' : 'New source name'}
+                    placeholderTextColor={theme.colors.onSurfaceVariant}
+                    autoFocus
+                    style={[styles.catalogSearchInput, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', color: theme.colors.onSurface, borderColor: theme.colors.outline, textAlign }]}
+                  />
+                  <View style={{ flexDirection, gap: 8, marginTop: 8 }}>
+                    <Button
+                      mode="contained"
+                      compact
+                      onPress={addSourceForOrg}
+                      loading={savingSource}
+                      disabled={!newSourceText.trim() || savingSource}
+                      buttonColor="#2e6155"
+                      textColor="#FFFFFF"
+                      style={{ flex: 1 }}
+                    >
+                      {lang === 'he' ? 'לכל הארגון' : 'For the whole org'}
+                    </Button>
+                    <Button
+                      mode="outlined"
+                      compact
+                      onPress={addSourceForThisLead}
+                      disabled={!newSourceText.trim() || savingSource}
+                      style={{ flex: 1 }}
+                    >
+                      {lang === 'he' ? 'רק לליד הזה' : 'Only this lead'}
+                    </Button>
+                  </View>
+                  <Pressable onPress={closeAddSource} style={{ alignSelf: 'center', paddingVertical: 8 }}>
+                    <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12 }}>{lang === 'he' ? 'ביטול' : 'Cancel'}</Text>
+                  </Pressable>
+                </View>
+              ) : null}
               </View>
     </>
   );
@@ -2054,10 +2166,12 @@ export default function LeadDetailScreen() {
             `form` and persisted through the sticky Save / Discard bar below. */}
         {!isNew && lead ? (
           <View style={{ paddingHorizontal: 16 }}>
-            {fmDetails}
-            {fmSource}
-            {fmAdditional}
+            {/* Order: contact (above) -> products -> source -> title/value -> the rest. The title is already shown
+                in the screen header and is rarely edited, so it sits with the value instead of leading the form. */}
             {fmCatalog}
+            {fmSource}
+            {fmDetails}
+            {fmAdditional}
             {fmCustom}
             {fmMoreBlock}
           </View>
