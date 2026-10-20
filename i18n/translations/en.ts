@@ -891,7 +891,7 @@ export default {
     calViewMonth: 'Month',
     calViewWeek: 'Week',
     calViewList: 'List',
-    submissions: 'Forms & documents results',
+    submissions: 'Forms & documents',
   },
   submissions: {
     title: 'Forms & documents results',

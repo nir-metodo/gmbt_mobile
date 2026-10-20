@@ -893,7 +893,7 @@ export default {
     calViewMonth: 'חודש',
     calViewWeek: 'שבוע',
     calViewList: 'רשימה',
-    submissions: 'תוצאות טפסים ומסמכים',
+    submissions: 'טפסים ומסמכים',
   },
   submissions: {
     title: 'תוצאות טפסים ומסמכים',
