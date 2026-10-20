@@ -58,6 +58,7 @@ import {
   conversationStatusLabel,
   conversationStatusColors,
 } from '../../../utils/conversationStatus';
+import { numId, numLabel, numIsPrimary, getPrimaryNumberId, inferMessageNumberId } from '../../../utils/wabaNumbers';
 
 import WebSocketService from '../../../services/websocket';
 import { MessageBubble } from '../../../components/chat/MessageBubble';
@@ -668,8 +669,37 @@ export default function ChatConversationScreen() {
     return '';
   }, [currentMessages]);
 
-  // The WABA number this specific contact's conversation belongs to.
-  const contactWabaId = chat?.lastFromNumberId || chat?.wabaPhoneNumberId || messagesWabaId || '';
+  // The WABA number this specific contact's conversation belongs to. Mirrors the web: the number the
+  // contact last used (lastFromNumberId / newest of wabaPhoneNumberIds / newest message). A tag that
+  // points at a retired number (WABA re-created) or no tag at all means the PRIMARY line.
+  const contactWabaId = useMemo(() => {
+    if (allWabaNumbers.length <= 1) {
+      return chat?.lastFromNumberId || chat?.wabaPhoneNumberId || messagesWabaId || '';
+    }
+    const tags = Array.isArray(chat?.wabaPhoneNumberIds) ? chat!.wabaPhoneNumberIds! : [];
+    const raw = chat?.lastFromNumberId || chat?.wabaPhoneNumberId
+      || (tags.length > 0 ? tags[tags.length - 1] : '') || messagesWabaId || '';
+    if (raw && allWabaNumbers.some((n) => numId(n) === raw)) return String(raw);
+    return getPrimaryNumberId(allWabaNumbers);
+  }, [allWabaNumbers, chat?.lastFromNumberId, chat?.wabaPhoneNumberId, chat?.wabaPhoneNumberIds, messagesWabaId]);
+
+  // The number the user is looking at / sending from. Defaults to the conversation's own number;
+  // an explicit pick (menu chip, composer chip, or the number the list was filtered on) wins and
+  // sticks for this chat. Previously the sync effect below forced it back to the contact's number
+  // on every change, so switching to the other number never took effect.
+  const [manualNumberPick, setManualNumberPick] = useState<{ phone: string; id: string } | null>(null);
+  const viewedNumberId = useMemo(() => {
+    if (
+      manualNumberPick && manualNumberPick.phone === phoneNumber &&
+      wabaNumbers.some((n) => numId(n) === manualNumberPick.id)
+    ) return manualNumberPick.id;
+    return contactWabaId;
+  }, [manualNumberPick, phoneNumber, wabaNumbers, contactWabaId]);
+
+  // Per-number message filter (web parity): '' = all numbers.
+  const [numberFilter, setNumberFilter] = useState('');
+  const [showNumberMenu, setShowNumberMenu] = useState(false);
+  const [numberLiveMap, setNumberLiveMap] = useState<Record<string, boolean>>({});
 
   // fromNumberId to use when sending/scheduling templates. Mirrors the web: only send an
   // explicit PhoneNumberId for multi-number orgs (and only when it's a real, resolvable id).
@@ -687,38 +717,54 @@ export default function ChatConversationScreen() {
     return '';
   }, [allWabaNumbers, activeWabaNumber]);
 
+  // A number the list was filtered on (navigation param) becomes the initial pick for this chat.
   useEffect(() => {
-    // 1. Explicit number passed via navigation (e.g. from a number-filtered list).
-    if (defaultWabaNumber && wabaNumbers.some((n) => (n.PhoneNumberId || n.phoneNumberId) === defaultWabaNumber)) {
-      setActiveWabaNumber(defaultWabaNumber);
+    if (!defaultWabaNumber || !phoneNumber) return;
+    if (!wabaNumbers.some((n) => numId(n) === defaultWabaNumber)) return;
+    setManualNumberPick((prev) => (prev && prev.phone === phoneNumber ? prev : { phone: phoneNumber as string, id: defaultWabaNumber }));
+  }, [defaultWabaNumber, phoneNumber, wabaNumbers]);
+
+  // Keep the shared activeWabaNumber (used for sending) in sync with the number being viewed.
+  // Critical: without this the global value stays stuck on the previous contact's number.
+  useEffect(() => {
+    if (viewedNumberId) {
+      if (viewedNumberId !== activeWabaNumber) setActiveWabaNumber(viewedNumberId);
       return;
     }
-    // 2. Auto-detect THIS contact's associated number (mirrors web ChatContainer).
-    //    Critical: without this the global activeWabaNumber stays stuck on the previous
-    //    contact's number, so the conversation-status query is sent with the wrong
-    //    fromNumberId and the backend replies "not live" → every chat shows as closed.
-    if (contactWabaId && wabaNumbers.some((n) => (n.PhoneNumberId || n.phoneNumberId) === contactWabaId)) {
-      if (contactWabaId !== activeWabaNumber) setActiveWabaNumber(contactWabaId);
-      return;
-    }
-    // 3. Fall back to the user's assigned / first number only when nothing is selected yet.
+    // Nothing resolved yet: fall back to the PRIMARY line (like the web), then assigned / first.
     if (!activeWabaNumber) {
-      if (assignedNums.length > 0) {
+      const primaryId = getPrimaryNumberId(wabaNumbers);
+      if (primaryId) {
+        setActiveWabaNumber(primaryId);
+      } else if (assignedNums.length > 0) {
         setActiveWabaNumber(assignedNums[0]);
       } else if (wabaNumbers.length > 0) {
-        setActiveWabaNumber(wabaNumbers[0].PhoneNumberId || wabaNumbers[0].phoneNumberId || user?.wabaNumber || '');
+        setActiveWabaNumber(numId(wabaNumbers[0]) || user?.wabaNumber || '');
       } else if (user?.wabaNumber) {
         setActiveWabaNumber(user.wabaNumber);
       }
     }
-  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers, defaultWabaNumber, contactWabaId]);
+  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers, viewedNumberId, assignedNums]);
 
   const [conversationLive, setConversationLive] = useState<boolean | null>(null);
   const [recipientReplied24h, setRecipientReplied24h] = useState<boolean | null>(null);
   const [conversationExpiresAt, setConversationExpiresAt] = useState<string | null>(null);
   const [isFreeEntryPoint, setIsFreeEntryPoint] = useState(false);
   const [freeWindowExpiresAt, setFreeWindowExpiresAt] = useState<string | null>(null);
-  const [countdownNow, setCountdownNow] = useState(Date.now());
+
+  // Explicit number switch (web parity): the pick sticks for this chat, and the open/closed state
+  // is re-evaluated for the chosen number — a number this contact never wrote to is a CLOSED
+  // conversation (template only) until they reply.
+  const handlePickNumber = useCallback((id: string) => {
+    if (!id || !phoneNumber) return;
+    setManualNumberPick({ phone: phoneNumber as string, id });
+    setActiveWabaNumber(id);
+    setConversationLive(null);
+    setRecipientReplied24h(null);
+    setConversationExpiresAt(null);
+    setIsFreeEntryPoint(false);
+    setFreeWindowExpiresAt(null);
+  }, [phoneNumber, setActiveWabaNumber]);  const [countdownNow, setCountdownNow] = useState(Date.now());
   // Which inline timeline notes are expanded ("view more"). Keyed by the list item id so many
   // can be open at once across the recycling list.
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(() => new Set());
@@ -746,6 +792,9 @@ export default function ChatConversationScreen() {
   const phoneTrackRef = useRef(phoneNumber);
   if (phoneTrackRef.current !== phoneNumber) {
     phoneTrackRef.current = phoneNumber;
+    setNumberFilter('');
+    setShowNumberMenu(false);
+    setNumberLiveMap({});
     setConversationLive(null);
     setRecipientReplied24h(null);
     setConversationExpiresAt(null);
@@ -779,8 +828,9 @@ export default function ChatConversationScreen() {
     // it (the intermittent "shows template buttons on an open chat" bug). When contactWabaId
     // isn't resolved yet we send undefined and let the backend resolve by phone (same as the
     // single-number path), then refetch once contactWabaId loads (it's in this cb's deps).
+    // viewedNumberId = the contact's own number by default, or the number the user switched to.
     const fromNumberId = wabaNumbers.length > 1
-      ? (contactWabaId || undefined)
+      ? (viewedNumberId || undefined)
       : undefined;
     chatsApi.getConversationStatus(user.organization, phoneNumber as string, fromNumberId).then((res) => {
       if (requestId !== statusRequestIdRef.current) return; // ignore stale responses
@@ -811,7 +861,7 @@ export default function ChatConversationScreen() {
       setConversationLive((prev) => (prev !== null ? prev : false));
       setRecipientReplied24h((prev) => (prev !== null ? prev : false));
     });
-  }, [user?.organization, phoneNumber, activeWabaNumber, contactWabaId, wabaNumbers.length]);
+  }, [user?.organization, phoneNumber, activeWabaNumber, viewedNumberId, wabaNumbers.length]);
 
   useEffect(() => {
     fetchConversationStatus();
@@ -1888,7 +1938,7 @@ export default function ChatConversationScreen() {
           // contact's number. Prefer contactWabaId (the conversation's own number) over
           // the global activeWabaNumber, which may still hold the previous chat's value.
           const msgFromNumberId = msgs[0]?.fromNumberId || msgs[0]?.wabaPhoneNumberId || msgs[0]?.phoneNumberId || '';
-          const expectedWaba = contactWabaId || activeWabaNumber;
+          const expectedWaba = viewedNumberId || activeWabaNumber;
           if (!expectedWaba || !msgFromNumberId || msgFromNumberId === expectedWaba) {
             // Invalidate any in-flight status request so a slower API response can't
             // override this confirmed-live state with stale data (mirrors web).
@@ -1925,7 +1975,7 @@ export default function ChatConversationScreen() {
       ws.close();
       wsRef.current = null;
     };
-  }, [user?.organization, phoneNumber, addMessage, updateMessage, markAsRead, activeWabaNumber, contactWabaId]);
+  }, [user?.organization, phoneNumber, addMessage, updateMessage, markAsRead, activeWabaNumber, viewedNumberId]);
 
   // Tracks whether the viewport is currently pinned near the newest message. Used only to
   // decide when to reveal the scroll-to-bottom FAB. Auto-scrolling on new messages is handled
@@ -2056,6 +2106,41 @@ export default function ChatConversationScreen() {
     return extras.length ? [...timelineEntries, ...extras] : timelineEntries;
   }, [timelineEntries, localTimeline]);
 
+  // Numbers this conversation actually used (sent from / received to), with message counts — feeds the
+  // number filter. Retired ids collapse to primary, like the list.
+  const numbersInConversation = useMemo(() => {
+    if (allWabaNumbers.length <= 1) return [] as { num: WabaNumberInfo; count: number }[];
+    const known = new Set(allWabaNumbers.map(numId));
+    const primaryId = getPrimaryNumberId(allWabaNumbers);
+    const counts = new Map<string, number>();
+    currentMessages.forEach((m: any) => {
+      if (m.type === 'internal' || m.isInternalMessage === true || m.type === 'reaction') return;
+      let nid = inferMessageNumberId(m, allWabaNumbers);
+      if (!nid) return;
+      if (!known.has(nid) && primaryId) nid = primaryId;
+      counts.set(nid, (counts.get(nid) || 0) + 1);
+    });
+    return allWabaNumbers
+      .filter((n) => counts.has(numId(n)))
+      .map((n) => ({ num: n, count: counts.get(numId(n)) || 0 }));
+  }, [currentMessages, allWabaNumbers]);
+
+  // When the number menu opens, check which numbers have an OPEN conversation with this contact.
+  useEffect(() => {
+    if (!showNumberMenu || !user?.organization || !phoneNumber || wabaNumbers.length <= 1) return;
+    let cancelled = false;
+    wabaNumbers.forEach((n) => {
+      const id = numId(n);
+      if (!id) return;
+      chatsApi.getConversationStatus(user.organization, phoneNumber as string, id).then((res) => {
+        if (cancelled) return;
+        const live = res?.IsConversationLive ?? res?.IsConversationLiveByPhoneNumber ?? res?.isConversationLive ?? res?.isLive;
+        setNumberLiveMap((prev) => ({ ...prev, [id]: live === true || live === 'true' }));
+      }).catch(() => {});
+    });
+    return () => { cancelled = true; };
+  }, [showNumberMenu, user?.organization, phoneNumber, wabaNumbers]);
+
   // Build list data with date separators + timeline entries, oldest→newest (data[0] = top). The
   // view is pinned to the newest message by maintainVisibleContentPosition.startRenderingFromBottom.
   const listData = useMemo<ListItem[]>(() => {
@@ -2067,6 +2152,18 @@ export default function ChatConversationScreen() {
     }
     if (starredFilter) {
       msgs = msgs.filter((m) => m.isStarred === true);
+    }
+    // Per-number filter: only messages sent FROM / received TO the chosen number. Messages that
+    // can't be attributed to any number (legacy) stay visible; a retired number id counts as primary.
+    if (numberFilter && allWabaNumbers.length > 1) {
+      const known = new Set(allWabaNumbers.map(numId));
+      const primaryId = getPrimaryNumberId(allWabaNumbers);
+      msgs = msgs.filter((m) => {
+        let nid = inferMessageNumberId(m, allWabaNumbers);
+        if (!nid) return true;
+        if (!known.has(nid) && primaryId) nid = primaryId;
+        return nid === numberFilter;
+      });
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -2197,7 +2294,7 @@ export default function ChatConversationScreen() {
     // rendered bottom-up by the inverted list.
     items.reverse();
     return items;
-  }, [currentMessages, mergedTimeline, lang, messageMode, starredFilter, searchQuery, user, phoneNumber]);
+  }, [currentMessages, mergedTimeline, lang, messageMode, starredFilter, searchQuery, user, phoneNumber, numberFilter, allWabaNumbers]);
 
   // Stable via ref (see handleMediaPress note) — a listData-dependent callback here would change
   // on every message change and re-render the whole list through renderItem.
@@ -3185,6 +3282,23 @@ export default function ChatConversationScreen() {
           </Pressable>
         )}
 
+        {/* Number filter banner */}
+        {numberFilter !== '' && (() => {
+          const fn = wabaNumbers.find((n) => numId(n) === numberFilter);
+          return (
+            <Pressable
+              onPress={() => setNumberFilter('')}
+              style={[styles.modeBanner, { backgroundColor: theme.dark ? '#12332b' : '#e8f5ef' }]}
+            >
+              <MaterialCommunityIcons name="phone-outline" size={16} color="#2e6155" />
+              <Text style={[styles.modeBannerText, { color: '#2e6155' }]}>
+                {(isRTL ? 'מסונן לפי מספר: ' : 'Filtered by number: ') + (fn ? numLabel(fn) : '')}
+              </Text>
+              <MaterialCommunityIcons name="close" size={16} color="#2e6155" />
+            </Pressable>
+          );
+        })()}
+
         {/* Message mode indicator - removed internal notes UI per user request */}
 
         {/* Status / Category bar */}
@@ -3195,6 +3309,87 @@ export default function ChatConversationScreen() {
           style={[styles.chatMetaBarScroll, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant || 'rgba(0,0,0,0.06)' }]}
           contentContainerStyle={styles.chatMetaBar}
         >
+          {/* WhatsApp number chip (multi-number orgs): switch the number for this chat (open/closed is
+              re-checked for it) and filter the messages by number — same logic as the web. */}
+          {wabaNumbers.length > 1 && (() => {
+            const viewedNum = wabaNumbers.find((n) => numId(n) === activeWabaNumber);
+            const viewedLabel = viewedNum ? numLabel(viewedNum) : (isRTL ? 'מספר' : 'Number');
+            const filterNum = numberFilter ? wabaNumbers.find((n) => numId(n) === numberFilter) : undefined;
+            const liveColor = conversationLive === null ? '#94a3b8' : conversationLive ? '#16a34a' : '#94a3b8';
+            const liveTag = (id: string, isViewed: boolean) => {
+              const live = isViewed && conversationLive !== null ? conversationLive : numberLiveMap[id];
+              if (live === undefined) return '…';
+              return live ? (isRTL ? '🟢 פתוח' : '🟢 Open') : (isRTL ? '⚪ סגור' : '⚪ Closed');
+            };
+            return (
+              <Menu
+                visible={showNumberMenu}
+                onDismiss={() => setShowNumberMenu(false)}
+                anchor={
+                  <Pressable
+                    onPress={() => setShowNumberMenu(true)}
+                    style={[styles.metaChip, { backgroundColor: numberFilter ? 'rgba(46,97,85,0.18)' : (theme.dark ? '#334155' : '#e2e8f0') }]}
+                  >
+                    <MaterialCommunityIcons name="circle" size={8} color={liveColor} />
+                    <MaterialCommunityIcons name="phone-outline" size={12} color={theme.colors.primary} style={{ marginStart: 4 }} />
+                    <Text style={{ fontSize: 11, fontWeight: '600', color: theme.colors.primary, marginStart: 4 }} numberOfLines={1}>
+                      {viewedLabel}{viewedNum && numIsPrimary(viewedNum) ? ' ★' : ''}
+                    </Text>
+                    {numberFilter ? (
+                      <MaterialCommunityIcons name="filter" size={12} color={theme.colors.primary} style={{ marginStart: 4 }} />
+                    ) : null}
+                    <MaterialCommunityIcons name="chevron-down" size={14} color="#64748b" style={{ marginStart: 2 }} />
+                  </Pressable>
+                }
+                contentStyle={{ backgroundColor: theme.colors.surface }}
+              >
+                <Menu.Item
+                  disabled
+                  title={isRTL ? 'מספר השיחה / שליחה' : 'Chat / send from number'}
+                  titleStyle={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}
+                />
+                {wabaNumbers.map((n) => {
+                  const id = numId(n);
+                  const isViewed = id === activeWabaNumber;
+                  return (
+                    <Menu.Item
+                      key={`pick-${id}`}
+                      leadingIcon={isViewed ? 'check' : undefined}
+                      title={`${numLabel(n)}${numIsPrimary(n) ? ' ★' : ''}   ${liveTag(id, isViewed)}`}
+                      onPress={() => { setShowNumberMenu(false); if (!isViewed) handlePickNumber(id); }}
+                    />
+                  );
+                })}
+                {numbersInConversation.length > 1 && (
+                  <>
+                    <Divider />
+                    <Menu.Item
+                      disabled
+                      title={isRTL ? 'סינון הודעות לפי מספר' : 'Filter messages by number'}
+                      titleStyle={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}
+                    />
+                    <Menu.Item
+                      leadingIcon={!numberFilter ? 'check' : undefined}
+                      title={isRTL ? 'כל המספרים' : 'All numbers'}
+                      onPress={() => { setShowNumberMenu(false); setNumberFilter(''); }}
+                    />
+                    {numbersInConversation.map(({ num, count }) => {
+                      const id = numId(num);
+                      return (
+                        <Menu.Item
+                          key={`flt-${id}`}
+                          leadingIcon={numberFilter === id ? 'check' : undefined}
+                          title={`${numLabel(num)}${numIsPrimary(num) ? ' ★' : ''}  (${count})`}
+                          onPress={() => { setShowNumberMenu(false); setNumberFilter(numberFilter === id ? '' : id); }}
+                        />
+                      );
+                    })}
+                  </>
+                )}
+              </Menu>
+            );
+          })()}
+
           {/* Owner chip — shows the conversation owner (or "unassigned"); tap to assign */}
           <Pressable
             onPress={() => setShowAssignOwnerModal(true)}
@@ -3527,7 +3722,7 @@ export default function ChatConversationScreen() {
                     return (
                       <Pressable
                         key={id}
-                        onPress={() => setActiveWabaNumber(id)}
+                        onPress={() => handlePickNumber(id)}
                         style={{ paddingHorizontal: 10, paddingVertical: 4, marginEnd: 6, borderRadius: 12, backgroundColor: isActive ? (theme.dark ? '#1e3a32' : '#d1fae5') : (theme.dark ? '#334155' : '#e2e8f0') }}
                       >
                         <Text style={{ fontSize: 11, fontWeight: isActive ? '700' : '400', color: isActive ? theme.colors.primary : theme.colors.onSurface }}>{numLabel}</Text>
@@ -3684,7 +3879,7 @@ export default function ChatConversationScreen() {
               onSlashQueryChange={handleSlashQueryChange}
               activeWabaNumber={activeWabaNumber}
               wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
-              onChangeWabaNumber={setActiveWabaNumber}
+              onChangeWabaNumber={handlePickNumber}
               aiReplyEnabled={aiReplyEnabled}
               isGeneratingAiReply={isGeneratingAiReply}
               onGenerateAiReply={handleGenerateAiReply}

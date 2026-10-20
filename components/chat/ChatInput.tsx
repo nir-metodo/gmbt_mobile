@@ -412,7 +412,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
                     style={({ pressed }) => [styles.numberDropdownItem, pressed && { backgroundColor: theme.colors.surfaceVariant }, id === activeWabaNumber && { backgroundColor: theme.dark ? '#1e3a32' : '#d1fae5' }]}
                   >
                     <MaterialCommunityIcons name={id === activeWabaNumber ? 'check-circle' : 'circle-outline'} size={16} color={theme.colors.primary} />
-                    <Text style={{ fontSize: 13, color: theme.colors.onSurface, marginStart: 8 }}>{numLabel}</Text>
+                    <Text style={{ fontSize: 13, color: theme.colors.onSurface, marginStart: 8 }}>{numLabel}{(num.IsPrimary || num.isPrimary) ? ' ★' : ''}</Text>
                   </Pressable>
                 );
               })}

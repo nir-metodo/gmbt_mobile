@@ -9,6 +9,8 @@ export interface WabaNumberInfo {
   color?: string;
   DefaultTemplateId?: string;
   defaultTemplateId?: string;
+  IsPrimary?: boolean;
+  isPrimary?: boolean;
 }
 
 export interface User {
@@ -135,6 +137,7 @@ export interface Chat {
   isCTWA?: boolean;
   lastFromNumberId?: string;
   wabaPhoneNumberId?: string;
+  wabaPhoneNumberIds?: string[];
   // false = a human agent has NOT reviewed the conversation yet (undefined/true = reviewed).
   humanReviewed?: boolean;
   // User IDs who have an UNREAD internal message (@-mention) on this contact. Used to show a

@@ -74,6 +74,7 @@ import { usersApi } from '../../../services/api/users';
 import { contactsApi } from '../../../services/api/contacts';
 import { chatsApi } from '../../../services/api/chats';
 import { cleanPhoneNumber, DEFAULT_COUNTRY } from '../../../utils/phoneNumber';
+import { effectiveChatNumberIds } from '../../../utils/wabaNumbers';
 import type { Chat, WabaNumberInfo } from '../../../types';
 
 // A typed query is treated as a phone number (rather than a name search) when it
@@ -1540,12 +1541,12 @@ export default function ChatsListScreen() {
     // Auto-filter by assignedWhatsAppNumbers when DataVisibility is 'byPhone' or user has assigned numbers
     const assignedNums = user?.assignedWhatsAppNumbers || [];
     if (assignedNums.length > 0 && !numberFilter) {
+      // Same semantics as the web sidebar: a conversation with an unknown/missing number tag counts
+      // as the PRIMARY line, and a contact that chatted with several numbers matches any of them.
       result = result.filter((c) => {
-        const fromId = (c as any).lastFromNumberId || (c as any).wabaPhoneNumberId || '';
-        const ids = (c as any).wabaPhoneNumberIds;
-        if (Array.isArray(ids) && ids.length > 0) return ids.some((id: string) => assignedNums.includes(id));
-        if (fromId) return assignedNums.includes(fromId);
-        return true;
+        const eff = effectiveChatNumberIds(c, wabaNumbersList);
+        if (eff.length === 0) return true;
+        return eff.some((id) => assignedNums.includes(id));
       });
     }
 
@@ -1619,8 +1620,9 @@ export default function ChatsListScreen() {
 
     if (numberFilter) {
       result = result.filter((c) => {
-        const fromId = (c as any).lastFromNumberId || (c as any).wabaPhoneNumberId || '';
-        return fromId === numberFilter;
+        const eff = effectiveChatNumberIds(c, wabaNumbersList);
+        if (eff.length === 0) return true;
+        return eff.includes(numberFilter);
       });
     }
 
@@ -1659,7 +1661,7 @@ export default function ChatsListScreen() {
     // "list re-sorts wrong after entering a chat and coming back" report. Sorting the (already
     // filtered) copy here makes the displayed order correct no matter what.
     return [...result].sort((a, b) => chatActivityMs(b) - chatActivityMs(a));
-  }, [chats, filter, viewFilters, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages, messageSla]);
+  }, [chats, filter, viewFilters, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages, messageSla, wabaNumbersList]);
 
   // When searching, show all results; otherwise paginate for smooth scrolling
   const displayedChats = useMemo(() => {
@@ -2247,10 +2249,7 @@ export default function ChatsListScreen() {
       // threshold. null = within SLA (no badge). Mirrors the web inbox pill.
       const slaWaiting = getConversationWaiting(item, messageSla);
 
-      const chatNumberId = (item as any).lastFromNumberId || (item as any).wabaPhoneNumberId || '';
-      const chatNumberIds = new Set<string>();
-      if (chatNumberId) chatNumberIds.add(chatNumberId);
-      if ((item as any).wabaPhoneNumberId && (item as any).wabaPhoneNumberId !== chatNumberId) chatNumberIds.add((item as any).wabaPhoneNumberId);
+      const chatNumberIds = new Set<string>(effectiveChatNumberIds(item, wabaNumbersList));
       const chatNumberBadges = [...chatNumberIds]
         .map(id => availableNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === id))
         .filter(Boolean)
@@ -2511,7 +2510,7 @@ export default function ChatsListScreen() {
         </Swipeable>
       );
     },
-    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, openRowActions, swipeableRefs, currentUserId, messageSla],
+    [theme, openChat, flexDirection, textAlign, isRTL, lang, contactLeadMap, contactCaseMap, availableNumbers, wabaNumbersList, t, selectionMode, selectedPhones, toggleSelect, enterSelection, handleSingleMarkUnread, openRowActions, swipeableRefs, currentUserId, messageSla],
   );
 
   const renderEmpty = useCallback(

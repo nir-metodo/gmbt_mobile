@@ -287,6 +287,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isCTWA: !!(c.ctwaClid || c.adSourceId),
           lastFromNumberId: c.lastFromNumberId || c.wabaPhoneNumberId || '',
           wabaPhoneNumberId: c.wabaPhoneNumberId || c.lastFromNumberId || '',
+          wabaPhoneNumberIds: Array.isArray(c.wabaPhoneNumberIds) ? c.wabaPhoneNumberIds : undefined,
           humanReviewed: c.humanReviewed,
           usersWithUnreadInternalMessages: c.usersWithUnreadInternalMessages || [],
         }));
@@ -342,6 +343,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             isCTWA: !!(c.ctwaClid || c.adSourceId),
             lastFromNumberId: c.lastFromNumberId || c.wabaPhoneNumberId || '',
             wabaPhoneNumberId: c.wabaPhoneNumberId || c.lastFromNumberId || '',
+          wabaPhoneNumberIds: Array.isArray(c.wabaPhoneNumberIds) ? c.wabaPhoneNumberIds : undefined,
             humanReviewed: c.humanReviewed,
             usersWithUnreadInternalMessages: c.usersWithUnreadInternalMessages || [],
           } as Chat);
