@@ -410,6 +410,22 @@ export const campaignsApi = {
     return Number.isFinite(n) ? n : 0;
   },
 
+  /** The actual contacts behind the audience count (same endpoint the web "show recipients" modal uses). */
+  async previewContacts(
+    organization: string,
+    contactFilters: any,
+    limit = 200,
+  ): Promise<{ count: number; contacts: Array<{ phone: string; name: string }> }> {
+    const body: any = { organization, limit };
+    if (contactFilters) body.contactFilters = contactFilters;
+    const res = await axiosInstance.post('/api/Webhooks/GetContactsByFilter', body);
+    const d = res.data || {};
+    return {
+      count: Number(d.count ?? d.Count ?? 0) || 0,
+      contacts: asArray(d.contacts).map((c: any) => ({ phone: String(c?.phone ?? ''), name: String(c?.name ?? '') })),
+    };
+  },
+
   async validateContactMapping(
     organization: string,
     contactFilters: any,

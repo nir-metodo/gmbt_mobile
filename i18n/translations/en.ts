@@ -77,6 +77,7 @@ export default {
     networkError: 'Network connection problem. Please check your internet and try again.',
     trialExpired: 'Your organization\'s trial period has expired. Please contact your account administrator.',
     accountSuspended: 'Account has been suspended. Please contact your organization administrator.',
+    accountCancelled: 'Your organization\'s account has been cancelled. Please contact your administrator or support.',
     companionNotice: 'Enterprise-only companion app for Gambot CRM.\nAccess requires an organization account provisioned by your administrator.\nNo individual purchase or subscription available.\nAll accounts are managed by your organization.',
   },
   tabs: {
@@ -466,6 +467,9 @@ export default {
     items: 'Items',
     addItem: 'Add Item',
     itemName: 'Item Name',
+    item: 'Item',
+    qty: 'Qty',
+    price: 'Price',
     itemDescription: 'Description',
     quantity: 'Quantity',
     unitPrice: 'Unit Price',

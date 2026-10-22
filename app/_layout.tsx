@@ -20,7 +20,10 @@ import { notificationService } from '../services/notifications';
 import { pushNotificationService } from '../services/pushNotifications';
 import { notificationSound } from '../services/notificationSound';
 import { syncDeviceCallEventsConfig } from '../services/deviceCallEvents';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import '../i18n';
+
+const LAST_HANDLED_NOTIF_KEY = 'last_handled_notification_id';
 
 I18nManager.allowRTL(true);
 if (!I18nManager.isRTL) {
@@ -64,7 +67,7 @@ export default function RootLayout() {
         try {
           const refreshToken = await secureStorage.getRefreshToken();
           if (!refreshToken) return;
-          const res = await axiosInstance.post(ENDPOINTS.REFRESH_TOKEN, { refreshToken });
+          const res = await axiosInstance.post(ENDPOINTS.REFRESH_TOKEN, { refreshToken, organization: currentUser.organization });
           if (res?.data?.IdToken) {
             const newToken = res.data.IdToken;
             await secureStorage.setToken(newToken);
@@ -79,6 +82,9 @@ export default function RootLayout() {
         } catch {
           // Non-critical — token refresh on foreground failed; user will get 401 on next request
         }
+
+        // Sign the user out if their org was cancelled / suspended / trial-expired while backgrounded.
+        useAuthStore.getState().checkAccountAccess().catch(() => {});
 
         // Keep the Android call-event receiver's stored token/config fresh, and flush any
         // events it queued while the app was backgrounded/killed. No-op on iOS / pre-rebuild.
@@ -175,6 +181,15 @@ export default function RootLayout() {
       if (notifId) {
         if (handledNotifIdsRef.current.has(notifId)) return;
         handledNotifIdsRef.current.add(notifId);
+        // getLastNotificationResponseAsync() keeps returning the LAST tapped notification on later
+        // cold starts / activity restores (the in-memory set above is empty then), which re-ran its
+        // navigation (e.g. a quote/order/report push → a "More" sub-screen) instead of opening the
+        // default screen. Remember the last handled id across launches so each tap is handled once.
+        try {
+          const lastHandled = await AsyncStorage.getItem(LAST_HANDLED_NOTIF_KEY);
+          if (lastHandled === notifId) return;
+          await AsyncStorage.setItem(LAST_HANDLED_NOTIF_KEY, notifId);
+        } catch { /* storage failure must not block navigation */ }
       }
 
       const actionId = response.actionIdentifier;
@@ -243,9 +258,19 @@ export default function RootLayout() {
           }
           break;
         case 'newOrder':
+          if (data.orderId) {
+            router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: data.orderId as string } });
+          } else {
+            router.push('/(tabs)/more/orders');
+          }
+          break;
         case 'newQuote':
         case 'orderAssigned':
-          router.push('/(tabs)/more/quotes');
+          if (data.quoteId) {
+            router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: data.quoteId as string } });
+          } else {
+            router.push('/(tabs)/more/quotes');
+          }
           break;
         case 'taskAssigned':
         case 'taskReminder':

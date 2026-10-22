@@ -162,6 +162,7 @@ export const ENDPOINTS = {
   GET_COMPANY_LOGO: '/api/Webhooks/GetCompanyLogo',
   GET_ORG_DISPLAY_NAME: '/api/Webhooks/GetOrgDisplayName',
   GET_FEATURE_TOGGLES: '/api/Webhooks/GetFeatureToggles',
+  CHECK_ACCOUNT_ACCESS: '/api/Webhooks/CheckAccountAccess',
 
   // Timeline
   GET_TIMELINE: '/api/Webhooks/GetTimelineByPhoneNumber',

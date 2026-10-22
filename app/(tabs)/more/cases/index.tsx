@@ -2,20 +2,18 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import {
   View,
   StyleSheet,
-  FlatList,
   Pressable,
   RefreshControl,
-  Animated,
   ScrollView,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
+  BackHandler,
 } from 'react-native';
 import {
   Text,
   Searchbar,
   Chip,
   FAB,
+  Avatar,
   ActivityIndicator,
   Portal,
   Modal,
@@ -23,10 +21,14 @@ import {
   Button,
   IconButton,
   Divider,
-  TouchableRipple,
+  Snackbar,
+  Menu,
 } from 'react-native-paper';
+import { FlashList } from '@shopify/flash-list';
+import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
+import { useMultiSelect, SelectCheck, SelectionHeader, BulkActionBar, type BulkAction } from '../../../../components/MultiSelect';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -40,14 +42,9 @@ import { cacheEntities } from '../../../../services/entityCache';
 import { ENDPOINTS } from '../../../../constants/api';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { getDataVisibility } from '../../../../constants/permissions';
-import { formatDate, getInitials, withAlpha } from '../../../../utils/formatters';
-import { spacing, borderRadius, fontSize } from '../../../../constants/theme';
+import { formatRelativeTime, getInitials, withAlpha } from '../../../../utils/formatters';
+import { borderRadius } from '../../../../constants/theme';
 import type { Case } from '../../../../types';
-import { useContactLookup } from '../../../../hooks/useContactLookup';
-import ContactLookupField from '../../../../components/ContactLookupField';
-import { DynamicFieldsSectionForm, type DynamicSection } from '../../../../components/DynamicFieldsSection';
-import { ListToolbar } from '../../../../components/ListToolbar';
-import { StatusFilterBar } from '../../../../components/StatusFilterBar';
 import { EmptyState } from '../../../../components/EmptyState';
 
 const STATUS_FILTERS = ['all', 'open', 'in_progress', 'resolved', 'closed'] as const;
@@ -145,42 +142,75 @@ interface SavedView {
   UserId?: string;
 }
 
-function ViewRow({ icon, label, active, onPress, onDelete, badge, color, disabled, theme }: {
-  icon: string; label: string; active: boolean; onPress: () => void; onDelete?: () => void;
-  badge?: number; color?: string; disabled?: boolean; theme: any;
+const OWNER_COLORS = ['#2e6155', '#3b82f6', '#9C27B0', '#f59e0b', '#06b6d4', '#ef4444', '#8b5cf6', '#10b981'];
+
+// Compact owner avatar (initials on a stable per-name color); a dashed placeholder when unassigned.
+function OwnerAvatar({ name, theme, size = 22 }: { name?: string; theme: any; size?: number }) {
+  if (!name) {
+    return (
+      <View style={{ width: size, height: size, borderRadius: size / 2, borderWidth: 1, borderStyle: 'dashed', borderColor: theme.colors.outline, alignItems: 'center', justifyContent: 'center' }}>
+        <MaterialCommunityIcons name="account-outline" size={size * 0.62} color={theme.colors.onSurfaceVariant} />
+      </View>
+    );
+  }
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return (
+    <Avatar.Text
+      size={size}
+      label={getInitials(name)}
+      style={{ backgroundColor: OWNER_COLORS[hash % OWNER_COLORS.length] }}
+      labelStyle={{ fontSize: size * 0.42, lineHeight: size * 0.5, color: '#fff' }}
+    />
+  );
+}
+
+// One-tap filter pill used by the quick-filter row (same look as the Leads list).
+function QuickChip({
+  theme, icon, label, color, active, onPress, count, caret, disabled,
+}: {
+  theme: any; icon: string; label: string; color: string; active?: boolean; onPress: () => void;
+  count?: number; caret?: boolean; disabled?: boolean;
 }) {
-  const c = color || theme.colors.primary;
+  const fg = active ? color : theme.colors.onSurfaceVariant;
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
-      style={({ pressed }) => [
-        { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 10 },
-        { backgroundColor: active ? withAlpha(c, 0.12) : pressed ? theme.colors.surfaceVariant : 'transparent' },
+      style={[
+        styles.quickChip,
+        {
+          backgroundColor: active ? withAlpha(color, 0.14) : theme.colors.surfaceVariant,
+          borderColor: active ? color : 'transparent',
+          opacity: disabled ? 0.6 : 1,
+        },
       ]}
     >
-      <MaterialCommunityIcons name={icon as any} size={20} color={active ? c : theme.colors.onSurfaceVariant} />
-      <Text variant="bodyMedium" numberOfLines={1} style={{ flex: 1, color: active ? c : theme.colors.onSurface, fontWeight: active ? '700' : '400' }}>{label}</Text>
-      {badge ? (
-        <View style={{ backgroundColor: c, borderRadius: 9, minWidth: 18, paddingHorizontal: 5, paddingVertical: 1, alignItems: 'center' }}>
-          <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{badge}</Text>
+      <MaterialCommunityIcons name={icon as any} size={14} color={fg} />
+      <Text style={{ fontSize: 12, fontWeight: active ? '700' : '500', color: fg }} numberOfLines={1}>
+        {label}
+      </Text>
+      {count != null && count > 0 ? (
+        <View style={{ backgroundColor: color, borderRadius: 8, minWidth: 16, paddingHorizontal: 4, alignItems: 'center' }}>
+          <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{count}</Text>
         </View>
       ) : null}
-      {onDelete ? (
-        <Pressable onPress={onDelete} hitSlop={8}>
-          <MaterialCommunityIcons name="trash-can-outline" size={18} color={theme.colors.onSurfaceVariant} />
-        </Pressable>
-      ) : null}
+      {caret ? <MaterialCommunityIcons name="chevron-down" size={14} color={fg} /> : null}
     </Pressable>
   );
 }
+
+const CaseDivider = () => <Divider />;
 
 export default function CasesListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  // Inline he/en strings for the new UI (same pattern as the Leads list).
+  const tr = useCallback((he: string, en: string) => (isRTL ? he : en), [isRTL]);
+  const lang: 'en' | 'he' = i18n.language === 'he' ? 'he' : 'en';
 
   const user = useAuthStore((s) => s.user);
   const userIsAdmin = String(user?.SecurityRole || '').toLowerCase() === 'admin';
@@ -188,7 +218,6 @@ export default function CasesListScreen() {
 
   // "SLA breaches" fixed view — activated by the digest push (params.view === 'sla') or its tab.
   const [slaOnly, setSlaOnly] = useState(false);
-  const { contactSearch, contactResults, contactSearching, selectedContact, handleContactSearch, handleSelectContact, resetContactLookup } = useContactLookup();
 
   // ── Pagination state ────────────────────────────────────────────────────────
   const PAGE_SIZE = 30;
@@ -205,7 +234,6 @@ export default function CasesListScreen() {
   // ── Filter state ─────────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [searchVisible, setSearchVisible] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [advancedFilterVisible, setAdvancedFilterVisible] = useState(false);
   const [filterCategory, setFilterCategory] = useState('');
@@ -222,8 +250,29 @@ export default function CasesListScreen() {
   const [saveViewVisibility, setSaveViewVisibility] = useState<'personal' | 'shared'>('personal');
 
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
-  const [viewsVisible, setViewsVisible] = useState(false);
-  const [statusPickerCase, setStatusPickerCase] = useState<Case | null>(null);
+  const [moreMenuVisible, setMoreMenuVisible] = useState(false);
+  const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  const [snackbar, setSnackbar] = useState('');
+
+  // ── Multi-select (list view): long-press a row to start, bulk actions in the bottom bar ──
+  const sel = useMultiSelect();
+  const clearSelection = sel.clear;
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkModal, setBulkModal] = useState<null | 'stage' | 'priority'>(null);
+  // Leaving the screen or switching to the board drops the selection.
+  useFocusEffect(useCallback(() => () => clearSelection(), [clearSelection]));
+  useEffect(() => {
+    if (viewMode !== 'list') clearSelection();
+  }, [viewMode, clearSelection]);
+  // Android back exits selection mode first.
+  useEffect(() => {
+    if (!sel.active) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      clearSelection();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [sel.active, clearSelection]);
 
   // ── Sort state (persisted; default = created on, newest first) ────────────────
   type SortKey = 'createdOn' | 'modifiedOn' | 'subject' | 'priority' | 'status';
@@ -267,8 +316,6 @@ export default function CasesListScreen() {
   const [loadingAll, setLoadingAll] = useState(false);
 
   const viewActive = activeViewId !== '__all' || !!taskQuickFilter || slaOnly || filterMine;
-  const searchAnim = useRef(new Animated.Value(0)).current;
-
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);
@@ -542,19 +589,6 @@ export default function CasesListScreen() {
     setRefreshing(false);
   }, [fetchPage, fetchAllCases, taskQuickFilter, slaOnly]);
 
-  const toggleSearch = useCallback(() => {
-    const willShow = !searchVisible;
-    if (willShow) {
-      setSearchVisible(true);
-      Animated.timing(searchAnim, { toValue: 1, duration: 220, useNativeDriver: false }).start();
-    } else {
-      Animated.timing(searchAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(() => {
-        setSearchVisible(false);
-        setSearchQuery('');
-      });
-    }
-  }, [searchVisible, searchAnim]);
-
   // Server does the heavy filtering/pagination; here we apply the client-side task
   // quick-filter (when active) and the chosen sort order.
   const PRIORITY_RANK: Record<string, number> = { urgent: 4, high: 3, medium: 2, low: 1 };
@@ -616,7 +650,6 @@ export default function CasesListScreen() {
 
   const handleStatusChange = useCallback(
     async (caseItem: Case, newStatus: string) => {
-      setStatusPickerCase(null);
       if (!user?.organization) return;
       // Optimistic update
       setCases((prev) =>
@@ -655,145 +688,252 @@ export default function CasesListScreen() {
     handleStatusChange(item, toColumnId);
   }, [handleStatusChange]);
 
-  const searchHeightInterp = searchAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 56],
-  });
-
   const handleTakeOwnership = useCallback(async (caseItem: Case) => {
     if (!user?.organization) return;
     const userId = user.uID || user.userId || '';
     const userName = user.fullname || '';
-    setCases((prev) => prev.map((c) => c.id === caseItem.id ? { ...c, assignedTo: userName, assignedToId: userId } as any : c));
+    const patch = { assignedTo: userId, assignedToName: userName, ownerId: userId, ownerName: userName };
+    setCases((prev) => prev.map((c) => c.id === caseItem.id ? { ...c, ...patch } as Case : c));
     try {
-      await casesApi.update(user.organization, caseItem.id, { assignedTo: userName, assignedToId: userId, ownerId: userId, ownerName: userName } as any, userName);
+      await casesApi.update(user.organization, caseItem.id, { assignedTo: userId, assignedToName: userName }, userName, userId);
     } catch {
-      setCases((prev) => prev.map((c) => c.id === caseItem.id ? { ...c, assignedTo: (caseItem as any).assignedTo, assignedToId: (caseItem as any).assignedToId } : c));
+      setCases((prev) => prev.map((c) => c.id === caseItem.id ? caseItem : c));
     }
   }, [user]);
 
+  // ── Labels ───────────────────────────────────────────────────────────────────
+  const statusLabel = useCallback(
+    (st: string) => t(`cases.status_${st}`, { defaultValue: st.charAt(0).toUpperCase() + st.slice(1).replace(/_/g, ' ') }),
+    [t],
+  );
+  const normStatus = (c: Case) => (c.status || '').toLowerCase().replace(/\s+/g, '_');
+
+  // ── Bulk actions ─────────────────────────────────────────────────────────────
+  // The stage list is the same one the detail screen offers.
+  const BULK_STATUSES = ['open', 'pending', 'escalated', 'on_hold', 'in_progress', 'resolved', 'closed'] as const;
+
+  // Applies `data` to every selected case (4 requests at a time) with an optimistic local `patch`
+  // that is rolled back per failed case. Shows a summary and clears the selection.
+  const runBulk = useCallback(
+    async (opts: { patch: Partial<Case>; data: Partial<Case>; doneText: (n: number) => string }) => {
+      if (!user?.organization) return;
+      const organization = user.organization;
+      const userId = user.uID || user.userId || '';
+      const idSet = new Set(sel.ids);
+      const targets = cases.filter((c) => idSet.has(c.id));
+      if (targets.length === 0) { clearSelection(); return; }
+      setBulkBusy(true);
+      const originals = new Map(targets.map((c) => [c.id, c]));
+      setCases((prev) => prev.map((c) => (idSet.has(c.id) ? ({ ...c, ...opts.patch } as Case) : c)));
+      const failedIds = new Set<string>();
+      let ok = 0;
+      const queue = [...targets];
+      const worker = async () => {
+        while (queue.length > 0) {
+          const c = queue.shift()!;
+          try {
+            const res = await casesApi.update(organization, c.id, opts.data, user.fullname, userId);
+            if (res && res.Success === false) throw new Error('update failed');
+            ok++;
+          } catch {
+            failedIds.add(c.id);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker));
+      if (failedIds.size > 0) {
+        setCases((prev) => prev.map((c) => (failedIds.has(c.id) ? originals.get(c.id) ?? c : c)));
+      }
+      setBulkBusy(false);
+      clearSelection();
+      if (failedIds.size > 0) {
+        Alert.alert(opts.doneText(ok), tr(`${failedIds.size} פניות נכשלו`, `${failedIds.size} cases failed`));
+      } else {
+        setSnackbar(opts.doneText(ok));
+      }
+    },
+    [user, cases, sel.ids, clearSelection, tr],
+  );
+
+  const bulkSetStatus = useCallback(
+    (status: string) => {
+      setBulkModal(null);
+      const resolved = status === 'resolved' ? { resolvedAt: new Date().toISOString() } : {};
+      runBulk({
+        patch: { status, stageName: statusLabel(status), ...resolved },
+        data: { status, ...resolved },
+        doneText: (n) => tr(`עודכנו ${n} פניות`, `${n} cases updated`),
+      });
+    },
+    [runBulk, statusLabel, tr],
+  );
+
+  const bulkClose = useCallback(() => {
+    const n = sel.count;
+    Alert.alert(
+      tr('סגירת פניות', 'Close cases'),
+      tr(`לסגור ${n} פניות?`, `Close ${n} cases?`),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: tr('סגור', 'Close'), style: 'destructive', onPress: () => bulkSetStatus('closed') },
+      ],
+    );
+  }, [sel.count, tr, t, bulkSetStatus]);
+
+  const bulkSetPriority = useCallback(
+    (priority: Case['priority']) => {
+      setBulkModal(null);
+      runBulk({
+        patch: { priority },
+        data: { priority },
+        doneText: (n) => tr(`עודכנו ${n} פניות`, `${n} cases updated`),
+      });
+    },
+    [runBulk, tr],
+  );
+
+  const bulkTakeOwnership = useCallback(() => {
+    if (!user) return;
+    const userId = user.uID || user.userId || '';
+    const userName = user.fullname || '';
+    runBulk({
+      patch: { assignedTo: userId, assignedToName: userName, ownerId: userId, ownerName: userName },
+      data: { assignedTo: userId, assignedToName: userName },
+      doneText: (n) => tr(`עודכנו ${n} פניות`, `${n} cases updated`),
+    });
+  }, [user, runBulk, tr]);
+
+  const bulkActions = useMemo<BulkAction[]>(() => [
+    { key: 'stage', icon: 'swap-horizontal', label: tr('שלב', 'Stage'), onPress: () => setBulkModal('stage') },
+    { key: 'close', icon: 'lock-outline', label: tr('סגור', 'Close'), onPress: bulkClose, color: '#757575' },
+    { key: 'owner', icon: 'account-arrow-left', label: tr('בעלות', 'Owner'), onPress: bulkTakeOwnership },
+    { key: 'priority', icon: 'flag-outline', label: tr('עדיפות', 'Priority'), onPress: () => setBulkModal('priority') },
+  ], [tr, bulkClose, bulkTakeOwnership]);
+
+  // ── Row ──────────────────────────────────────────────────────────────────────
   const renderCaseCard = useCallback(
     ({ item }: { item: Case }) => {
-      const priorityColor = PRIORITY_COLORS[item.priority] || PRIORITY_COLORS.medium;
-      const statusColor = getStatusColor(item.status);
-      const isMyCase = ((item as any).ownerId || (item as any).assignedToId) === (user?.uID || user?.userId);
-
+      const anyItem = item as any;
+      const sKey = normStatus(item);
+      const sColor = getStatusColor(item.status || '');
+      const pillText = item.stageName || statusLabel(sKey);
+      const pColor = PRIORITY_COLORS[item.priority];
+      const myId = user?.uID || user?.userId;
+      const isMyCase = !!myId && (anyItem.ownerId || anyItem.assignedToId || item.assignedTo) === myId;
+      const ownerName = anyItem.ownerName || anyItem.assignedToName || '';
+      const sub = [item.contactName, item.category].filter(Boolean).join('  ·  ');
+      const ts = parseTs(anyItem.modifiedOn || anyItem.updatedAt) || parseTs(anyItem.createdOn || anyItem.createdAt);
+      const activity = ts ? formatRelativeTime(new Date(ts).toISOString(), lang) : '';
+      const lvl = caseSlaLevel(item);
+      const slaColor = lvl === 'breach' ? '#ef4444' : '#f59e0b';
+      const taskBadge = taskFilterSets.overdue.has(item.id)
+        ? { label: t('tasks.overdue', 'באיחור'), color: '#ef4444' }
+        : taskFilterSets.today.has(item.id)
+          ? { label: t('tasks.today', 'היום'), color: '#f59e0b' }
+          : taskFilterSets.withTasks.has(item.id)
+            ? { label: t('tasks.taskShort', 'משימה'), color: '#3b82f6' }
+            : null;
+      const selecting = sel.active;
+      const checked = selecting && sel.isSelected(item.id);
       return (
         <Pressable
-          onPress={() => openCase(item)}
-          onLongPress={() => setStatusPickerCase(item)}
+          onPress={() => (selecting ? sel.toggle(item.id) : openCase(item))}
+          onLongPress={() => {
+            if (selecting) return;
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+            sel.start(item.id);
+          }}
           delayLongPress={400}
           android_ripple={{ color: theme.colors.surfaceVariant }}
           style={({ pressed }) => [
-            styles.caseCard,
+            styles.caseRow,
             {
-              backgroundColor: pressed ? theme.colors.surfaceVariant : theme.custom.cardBackground,
-              borderColor: theme.colors.outlineVariant,
+              backgroundColor: checked
+                ? withAlpha(theme.colors.primary, 0.12)
+                : pressed
+                  ? theme.colors.surfaceVariant
+                  : theme.colors.surface,
               flexDirection,
             },
           ]}
         >
-          <View style={[styles.priorityBar, {
-            backgroundColor: statusColor,
-            borderTopLeftRadius: isRTL ? 0 : borderRadius.lg,
-            borderBottomLeftRadius: isRTL ? 0 : borderRadius.lg,
-            borderTopRightRadius: isRTL ? borderRadius.lg : 0,
-            borderBottomRightRadius: isRTL ? borderRadius.lg : 0,
-          }]} />
+          <View style={[styles.stripe, { backgroundColor: sColor }]} />
 
-          <View style={styles.caseContent}>
-            <View style={[styles.caseTopRow, { flexDirection }]}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: statusColor, alignSelf: 'center', marginEnd: 6 }} />
+          {selecting ? (
+            <View style={{ alignSelf: 'center' }}>
+              <SelectCheck checked={checked} />
+            </View>
+          ) : null}
+
+          <View style={styles.caseBody}>
+            {/* Row 1: title + SLA + last activity */}
+            <View style={[styles.caseTop, { flexDirection }]}>
               <Text
                 variant="titleSmall"
                 numberOfLines={1}
-                style={[styles.caseTitle, { color: theme.colors.onSurface, textAlign }]}
+                style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}
               >
                 {item.subject || item.title}
               </Text>
-              {(() => {
-                const lvl = caseSlaLevel(item);
-                if (!lvl) return null;
-                const c = lvl === 'breach' ? '#ef4444' : '#f59e0b';
-                return (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: `${c}22`, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, marginEnd: 4 }}>
-                    <MaterialCommunityIcons name="clock-alert-outline" size={12} color={c} style={{ marginEnd: 2 }} />
-                    <Text style={{ fontSize: 10, fontWeight: '700', color: c }}>
-                      {lvl === 'breach' ? t('cases.slaBreach', 'חריגת SLA') : t('cases.slaDueSoon', 'קרוב לחריגה')}
-                    </Text>
-                  </View>
-                );
-              })()}
-              <Chip
-                compact
-                textStyle={[styles.statusChipText, { color: statusColor }]}
-                style={[styles.statusChip, { backgroundColor: `${statusColor}35` }]}
-              >
-                {item.stageName || item.status}
-              </Chip>
+              {lvl ? (
+                <MaterialCommunityIcons name="clock-alert-outline" size={16} color={slaColor} />
+              ) : null}
+              {activity ? (
+                <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }} numberOfLines={1}>
+                  {activity}
+                </Text>
+              ) : null}
             </View>
 
-            <View style={[styles.caseMeta, { flexDirection }]}>
-              {item.contactName ? (
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons
-                    name="account"
-                    size={14}
-                    color={theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelSmall"
-                    numberOfLines={1}
-                    style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}
-                  >
-                    {item.contactName}
-                  </Text>
-                </View>
-              ) : null}
+            {/* Row 2: contact · category */}
+            <Text
+              variant="bodySmall"
+              numberOfLines={1}
+              style={{ color: theme.colors.onSurfaceVariant, textAlign }}
+            >
+              {sub || ' '}
+            </Text>
 
-              {item.category ? (
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons name="tag" size={14} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" numberOfLines={1} style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}>
-                    {item.category}
-                  </Text>
-                </View>
-              ) : null}
-
-              {(item as any).ownerName || (item as any).assignedToName ? (
-                <View style={[styles.metaItem, { flexDirection }]}>
-                  <MaterialCommunityIcons name="account-tie-outline" size={14} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" numberOfLines={1} style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}>
-                    {(item as any).ownerName || (item as any).assignedToName}
-                  </Text>
-                </View>
-              ) : null}
-
-              <View style={[styles.metaItem, { flexDirection }]}>
-                <MaterialCommunityIcons name="calendar" size={14} color={theme.colors.onSurfaceVariant} />
-                <Text variant="labelSmall" style={[styles.metaText, { color: theme.colors.onSurfaceVariant }]}>
-                  {formatDate(item.createdOn || '')}
+            {/* Row 3: status pill, priority, tasks, take-ownership, owner */}
+            <View style={[styles.caseBottom, { flexDirection }]}>
+              <View style={[styles.stagePill, { backgroundColor: withAlpha(sColor, 0.16) }]}>
+                <Text style={{ fontSize: 11, fontWeight: '600', color: sColor }} numberOfLines={1}>
+                  {pillText}
                 </Text>
               </View>
-
-              {!isMyCase && (
+              {pColor ? <MaterialCommunityIcons name="flag" size={14} color={pColor} /> : null}
+              {lvl ? (
+                <Text style={{ fontSize: 10, fontWeight: '700', color: slaColor }} numberOfLines={1}>
+                  {lvl === 'breach' ? t('cases.slaBreach', 'חריגת SLA') : t('cases.slaDueSoon', 'קרוב לחריגה')}
+                </Text>
+              ) : null}
+              {taskBadge ? (
+                <View style={[styles.signalChip, { backgroundColor: withAlpha(taskBadge.color, 0.14) }]}>
+                  <MaterialCommunityIcons name="clock-outline" size={12} color={taskBadge.color} />
+                  <Text style={{ fontSize: 10, fontWeight: '700', color: taskBadge.color }}>{taskBadge.label}</Text>
+                </View>
+              ) : null}
+              <View style={{ flex: 1 }} />
+              {!isMyCase && !selecting ? (
                 <Pressable
-                  onPress={(e) => { e.stopPropagation?.(); handleTakeOwnership(item); }}
-                  style={[styles.metaItem, { flexDirection }]}
-                  hitSlop={4}
+                  onPress={() => handleTakeOwnership(item)}
+                  hitSlop={6}
+                  style={[styles.takeBtn, { flexDirection }]}
                 >
                   <MaterialCommunityIcons name="account-arrow-left" size={14} color={theme.colors.tertiary || '#FF9800'} />
-                  <Text variant="labelSmall" style={{ color: theme.colors.tertiary || '#FF9800', marginStart: 3, fontWeight: '600' }}>
+                  <Text style={{ fontSize: 11, color: theme.colors.tertiary || '#FF9800', fontWeight: '600' }}>
                     {t('leads.takeOwnership', 'קח בעלות')}
                   </Text>
                 </Pressable>
-              )}
+              ) : null}
+              <OwnerAvatar name={ownerName} theme={theme} />
             </View>
           </View>
         </Pressable>
       );
     },
-    [theme, openCase, flexDirection, textAlign, user, handleTakeOwnership, t],
+    [theme, flexDirection, textAlign, openCase, user, handleTakeOwnership, t, lang, statusLabel, taskFilterSets,
+      sel.active, sel.isSelected, sel.toggle, sel.start],
   );
 
   const renderEmpty = useCallback(() => {
@@ -809,6 +949,37 @@ export default function CasesListScreen() {
     );
   }, [loading, t, statusFilter, debouncedSearch, viewActive, router]);
 
+  const loadAllPages = useCallback(() => {
+    const allPages = Math.ceil(totalCount / PAGE_SIZE);
+    for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
+  }, [totalCount, page, fetchPage]);
+
+  const advancedFilterCount =
+    (filterCategory.trim() ? 1 : 0) + (filterAssignee.trim() ? 1 : 0) + (filterPriority ? 1 : 0) + (filterDateRange ? 1 : 0);
+  const hasAnyFilter = viewActive || statusFilter !== 'all' || advancedFilterCount > 0 || !!searchQuery.trim();
+  const ownViews = savedViews.filter((v) => {
+    const vis = v.Visibility || 'personal';
+    if (vis === 'shared') return true;
+    return (v.UserId || '') === (user?.uID || user?.userId || '');
+  });
+  const slaCount = useMemo(() => cases.filter(isCaseSlaBreached).length, [cases]);
+
+  const sortOptions: { key: SortKey; label: string; icon: string }[] = [
+    { key: 'createdOn', label: t('leads.sortCreated', 'נוצר ב'), icon: 'calendar-plus' },
+    { key: 'modifiedOn', label: t('leads.sortUpdated', 'עודכן ב'), icon: 'update' },
+    { key: 'subject', label: t('leads.name', 'שם'), icon: 'sort-alphabetical-ascending' },
+    { key: 'priority', label: t('tasks.priority', 'עדיפות'), icon: 'flag-outline' },
+    { key: 'status', label: t('cases.status', 'סטטוס'), icon: 'view-column' },
+  ];
+  const activeSortLabel = sortOptions.find((o) => o.key === sortKey)?.label ?? '';
+
+  const taskChips: { type: TaskQuickFilter; icon: string; label: string; color: string }[] = [
+    { type: 'today', icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
+    { type: 'upcoming', icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
+    { type: 'overdue', icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
+    { type: 'withTasks', icon: 'clipboard-clock-outline', label: t('cases.casesWithTasks', 'פניות עם משימות'), color: '#2e6155' },
+  ];
+
   if (loading && cases.length === 0) {
     return (
       <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
@@ -819,98 +990,273 @@ export default function CasesListScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 8 },
-        ]}
-      >
-        <View style={[styles.headerRow, { flexDirection }]}>
+      {sel.active ? (
+        <SelectionHeader
+          count={sel.count}
+          total={filteredCases.length}
+          onClose={clearSelection}
+          onSelectAll={() => sel.selectAll(filteredCases.map((c) => c.id))}
+          label={tr('נבחרו', 'selected')}
+        />
+      ) : (
+        /* Header: back · title · List|Board switch · filter · overflow */
+        <View
+          style={[
+            styles.header,
+            { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 4, flexDirection },
+          ]}
+        >
           <IconButton
             icon={isRTL ? 'arrow-right' : 'arrow-left'}
             iconColor={theme.custom.headerText}
             size={24}
             onPress={() => router.back()}
+            style={{ margin: 0 }}
           />
-          <Text style={[styles.headerTitle, { flex: 1, textAlign }]}>{t('cases.title')}</Text>
-          {hasMore && (
-          <Pressable
-            onPress={() => {
-              const allPages = Math.ceil(totalCount / PAGE_SIZE);
-              for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
-            }}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name="download"
-              size={24}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
-          )}
-          <Pressable
-            onPress={() => setViewMode(viewMode === 'list' ? 'kanban' : 'list')}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name={viewMode === 'list' ? 'view-column-outline' : 'format-list-bulleted'}
-              size={24}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
-          <Pressable
-            onPress={() => setAdvancedFilterVisible(true)}
-            hitSlop={8}
-            style={({ pressed }) => [styles.headerIcon, pressed && { opacity: 0.7 }]}
-          >
-            <MaterialCommunityIcons
-              name="filter-variant"
-              size={24}
-              color={theme.custom.headerText}
-            />
-          </Pressable>
+          <Text style={[styles.headerTitle, { flex: 1, textAlign }]} numberOfLines={1}>{t('cases.title')}</Text>
+
+          <View style={[styles.segment, { flexDirection }]}>
+            {([
+              { key: 'list' as const, icon: 'format-list-bulleted' },
+              { key: 'kanban' as const, icon: 'view-column-outline' },
+            ]).map((seg) => {
+              const active = viewMode === seg.key;
+              return (
+                <Pressable
+                  key={seg.key}
+                  onPress={() => setViewMode(seg.key)}
+                  style={[styles.segmentItem, active && styles.segmentItemActive]}
+                >
+                  <MaterialCommunityIcons name={seg.icon as any} size={18} color={active ? theme.custom.headerBackground : '#FFF'} />
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={[styles.headerActions, { flexDirection }]}>
+            <Pressable
+              onPress={() => setAdvancedFilterVisible(true)}
+              hitSlop={8}
+              style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
+            >
+              <MaterialCommunityIcons name="filter-variant" size={24} color={theme.custom.headerText} />
+              {advancedFilterCount > 0 ? (
+                <View style={styles.filterBadge}>
+                  <Text style={styles.filterBadgeText}>{advancedFilterCount}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+            <Menu
+              visible={moreMenuVisible}
+              onDismiss={() => setMoreMenuVisible(false)}
+              anchor={
+                <Pressable
+                  onPress={() => setMoreMenuVisible(true)}
+                  hitSlop={8}
+                  style={({ pressed }) => [styles.headerBtn, pressed && { opacity: 0.7 }]}
+                >
+                  <MaterialCommunityIcons name="dots-vertical" size={24} color={theme.custom.headerText} />
+                </Pressable>
+              }
+            >
+              <Menu.Item
+                leadingIcon="bookmark-plus-outline"
+                title={tr('שמור תצוגה נוכחית', 'Save current view')}
+                onPress={() => { setMoreMenuVisible(false); setShowSaveViewModal(true); }}
+              />
+              {hasAnyFilter ? (
+                <Menu.Item
+                  leadingIcon="filter-remove-outline"
+                  title={tr('נקה את כל הסינונים', 'Clear all filters')}
+                  onPress={() => { setMoreMenuVisible(false); clearAllFilters(); }}
+                />
+              ) : null}
+              {hasMore ? (
+                <Menu.Item
+                  leadingIcon="download"
+                  title={t('common.loadAll', 'טען הכול')}
+                  onPress={() => { setMoreMenuVisible(false); loadAllPages(); }}
+                />
+              ) : null}
+              <Menu.Item
+                leadingIcon="refresh"
+                title={tr('רענן', 'Refresh')}
+                onPress={() => { setMoreMenuVisible(false); onRefresh(); }}
+              />
+            </Menu>
+          </View>
         </View>
+      )}
+
+      {/* Search — always visible, one field */}
+      <View style={[styles.searchWrap, { backgroundColor: theme.custom.headerBackground }]}>
+        <Searchbar
+          placeholder={t('cases.searchPlaceholder')}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          returnKeyType="search"
+          style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
+          inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left', minHeight: 0 }}
+          iconColor={theme.colors.onSurfaceVariant}
+        />
       </View>
 
-      <ListToolbar
-        query={searchQuery}
-        onChangeQuery={setSearchQuery}
-        placeholder={t('cases.searchPlaceholder')}
-        sortOptions={viewMode === 'list' ? [
-          { key: 'createdOn', label: t('leads.sortCreated', 'נוצר ב') },
-          { key: 'modifiedOn', label: t('leads.sortUpdated', 'עודכן ב') },
-          { key: 'subject', label: t('leads.name', 'שם') },
-          { key: 'priority', label: t('tasks.priority', 'עדיפות') },
-          { key: 'status', label: t('cases.status', 'סטטוס') },
-        ] : undefined}
-        sortKey={sortKey}
-        sortDir={sortDir}
-        onSort={(key) => {
-          if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-          else { setSortKey(key as SortKey); setSortDir(['createdOn', 'modifiedOn', 'priority'].includes(key) ? 'desc' : 'asc'); }
-        }}
-        trailing={
-          <View>
-            <IconButton
-              icon="bookmark-multiple-outline"
-              size={22}
-              iconColor={viewActive ? theme.colors.primary : theme.colors.onSurfaceVariant}
-              onPress={() => setViewsVisible(true)}
-            />
-            {viewActive ? <View style={{ position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.primary }} /> : null}
-          </View>
-        }
-      />
+      {/* Views: All · SLA breaches · saved views · save current */}
+      <View style={[styles.viewsRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.viewsScroll, { flexDirection }]}>
+          <Pressable
+            onPress={clearAllFilters}
+            style={[styles.viewTab, activeViewId === '__all' && !slaOnly && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.viewTabText, { color: activeViewId === '__all' && !slaOnly ? theme.colors.primary : theme.colors.onSurfaceVariant }]}>
+              {t('common.all')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              if (slaOnly) { setSlaOnly(false); setActiveViewId('__all'); }
+              else { setSlaOnly(true); setActiveViewId('__sla'); setTaskQuickFilter(null); setFilterMine(false); fetchAllCases(); }
+            }}
+            style={[styles.viewTab, slaOnly && { borderBottomColor: '#ef4444', borderBottomWidth: 2 }]}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Text style={[styles.viewTabText, { color: slaOnly ? '#ef4444' : theme.colors.onSurfaceVariant }]}>
+                {t('cases.slaBreaches', 'חריגות SLA')}
+              </Text>
+              {slaCount > 0 && (
+                <View style={{ backgroundColor: '#ef4444', borderRadius: 9, minWidth: 18, paddingHorizontal: 4, paddingVertical: 1, alignItems: 'center' }}>
+                  <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{slaCount}</Text>
+                </View>
+              )}
+            </View>
+          </Pressable>
+          {ownViews.map((view) => (
+            <Pressable
+              key={view.id}
+              onPress={() => { setSlaOnly(false); setTaskQuickFilter(null); loadSavedView(view); }}
+              onLongPress={() => {
+                Alert.alert(
+                  view.Name,
+                  t('sidebar.deleteViewConfirm', 'Delete this view?'),
+                  [
+                    { text: t('common.cancel'), style: 'cancel' },
+                    { text: t('common.delete', 'Delete'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
+                  ],
+                );
+              }}
+              style={[styles.viewTab, activeViewId === view.id && { borderBottomColor: theme.colors.primary, borderBottomWidth: 2 }]}
+            >
+              <Text style={[styles.viewTabText, { color: activeViewId === view.id ? theme.colors.primary : theme.colors.onSurfaceVariant }]} numberOfLines={1}>
+                {(view.Visibility === 'shared' ? '👥 ' : '') + view.Name}
+              </Text>
+            </Pressable>
+          ))}
+          <Pressable
+            onPress={() => setShowSaveViewModal(true)}
+            style={[styles.viewTab, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}
+          >
+            <MaterialCommunityIcons name="bookmark-plus-outline" size={18} color={theme.colors.primary} />
+            {hasAnyFilter ? (
+              <Text style={[styles.viewTabText, { color: theme.colors.primary }]}>{tr('שמור תצוגה', 'Save view')}</Text>
+            ) : null}
+          </Pressable>
+        </ScrollView>
+      </View>
 
-      <StatusFilterBar
-        allLabel={t('common.all')}
-        options={STATUS_FILTERS.filter((f) => f !== 'all').map((st) => ({ key: st, label: t(`cases.status_${st}`, { defaultValue: st.charAt(0).toUpperCase() + st.slice(1).replace(/_/g, ' ') }), color: getStatusColor(st) }))}
-        value={statusFilter}
-        onChange={(k) => setStatusFilter(k as StatusFilter)}
-      />
+      {/* One-tap quick filters: mine · status · tasks (combine with the view and each other) */}
+      <View style={{ backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline, borderBottomWidth: StyleSheet.hairlineWidth }}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={[styles.quickRow, { flexDirection }]}
+        >
+          {hasAnyFilter ? (
+            <QuickChip
+              theme={theme}
+              icon="close-circle"
+              label={`${tr('נקה', 'Clear')}${advancedFilterCount > 0 ? ` (${advancedFilterCount})` : ''}`}
+              color="#ef4444"
+              active
+              onPress={clearAllFilters}
+            />
+          ) : null}
+          <QuickChip
+            theme={theme}
+            icon="account-check-outline"
+            label={tr('שלי', 'Mine')}
+            color={theme.colors.primary}
+            active={filterMine}
+            onPress={() => {
+              setFilterMine((v) => !v);
+              setActiveViewId('__all');
+            }}
+          />
+          {CASE_STATUSES.map((st) => (
+            <QuickChip
+              key={st}
+              theme={theme}
+              icon={STATUS_ICONS_MAP[st]}
+              label={statusLabel(st)}
+              color={getStatusColor(st)}
+              active={statusFilter === st}
+              onPress={() => setStatusFilter(statusFilter === st ? 'all' : st)}
+            />
+          ))}
+          <View style={[styles.quickDivider, { backgroundColor: theme.colors.outline }]} />
+          {taskChips.map(({ type, icon, label, color }) => (
+            <QuickChip
+              key={type}
+              theme={theme}
+              icon={icon}
+              label={label}
+              color={color}
+              active={taskQuickFilter === type}
+              count={taskFilterSets[type].size}
+              disabled={taskFilterLoading}
+              onPress={() => applyTaskFilter(type)}
+            />
+          ))}
+        </ScrollView>
+      </View>
+
+      {/* Summary line: count  +  sort (list) */}
+      <View style={[styles.summaryRow, { flexDirection, backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+        <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, flexShrink: 1 }} numberOfLines={1}>
+          <Text style={{ fontWeight: '700', color: theme.colors.onSurface }}>
+            {hasMore && !taskQuickFilter && !slaOnly ? `${cases.length} / ${totalCount}` : filteredCases.length}
+          </Text>
+          {` ${tr('פניות', 'cases')}`}
+        </Text>
+        <View style={{ flex: 1 }} />
+        {viewMode === 'list' ? (
+          <Menu
+            visible={sortMenuVisible}
+            onDismiss={() => setSortMenuVisible(false)}
+            anchor={
+              <Pressable onPress={() => setSortMenuVisible(true)} hitSlop={6} style={[styles.sortBtn, { flexDirection }]}>
+                <MaterialCommunityIcons name="sort" size={16} color={theme.colors.primary} />
+                <Text style={{ fontSize: 12, color: theme.colors.primary, fontWeight: '600' }}>{activeSortLabel}</Text>
+                <MaterialCommunityIcons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={12} color={theme.colors.primary} />
+              </Pressable>
+            }
+          >
+            {sortOptions.map((opt) => (
+              <Menu.Item
+                key={opt.key}
+                leadingIcon={opt.icon}
+                trailingIcon={sortKey === opt.key ? (sortDir === 'asc' ? 'arrow-up' : 'arrow-down') : undefined}
+                title={opt.label}
+                titleStyle={sortKey === opt.key ? { color: theme.colors.primary, fontWeight: '700' } : undefined}
+                onPress={() => {
+                  setSortMenuVisible(false);
+                  if (sortKey === opt.key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+                  else { setSortKey(opt.key); setSortDir(['createdOn', 'modifiedOn', 'priority'].includes(opt.key) ? 'desc' : 'asc'); }
+                }}
+              />
+            ))}
+          </Menu>
+        ) : null}
+      </View>
 
       {/* Error banner */}
       {error ? (
@@ -973,38 +1319,33 @@ export default function CasesListScreen() {
           }}
         />
       ) : (
-        <FlatList
+        <FlashList
           data={filteredCases}
           renderItem={renderCaseCard}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, idx) => item.id || `case_${idx}`}
+          extraData={sel.selected}
+          ItemSeparatorComponent={CaseDivider}
           ListEmptyComponent={renderEmpty}
           onEndReached={onEndReached}
           onEndReachedThreshold={0.3}
           ListFooterComponent={
-            loadingMore
-              ? () => <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
-              : totalCount > 0
-                ? () => (
-                    <View style={{ alignItems: 'center', paddingVertical: 12, gap: 8 }}>
-                      <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
-                        {cases.length} / {totalCount}
-                      </Text>
-                      {hasMore && (
-                        <View style={{ flexDirection: 'row', gap: 8 }}>
-                          <Pressable onPress={() => fetchPage(page + 1, false)} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer }}>
-                            <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadMore', 'טען עוד')}</Text>
-                          </Pressable>
-                          <Pressable onPress={() => {
-                            const allPages = Math.ceil(totalCount / PAGE_SIZE);
-                            for (let p = page + 1; p <= allPages; p++) fetchPage(p, false);
-                          }} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surfaceVariant }}>
-                            <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>{t('common.loadAll', 'טען הכול')}</Text>
-                          </Pressable>
-                        </View>
-                      )}
-                    </View>
-                  )
-                : null
+            loadingMore ? (
+              <ActivityIndicator size="small" color={theme.colors.primary} style={{ marginVertical: 16 }} />
+            ) : hasMore ? (
+              <View style={{ alignItems: 'center', paddingVertical: 12, gap: 8 }}>
+                <Text variant="labelSmall" style={{ textAlign: 'center', color: theme.colors.onSurfaceVariant }}>
+                  {cases.length} / {totalCount}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable onPress={() => fetchPage(page + 1, false)} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.primaryContainer }}>
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onPrimaryContainer }}>{t('common.loadMore', 'טען עוד')}</Text>
+                  </Pressable>
+                  <Pressable onPress={loadAllPages} style={{ paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surfaceVariant }}>
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>{t('common.loadAll', 'טען הכול')}</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null
           }
           refreshControl={
             <RefreshControl
@@ -1014,131 +1355,81 @@ export default function CasesListScreen() {
               tintColor={theme.colors.primary}
             />
           }
-          contentContainerStyle={[
-            styles.listContent,
-            filteredCases.length === 0 && styles.listContentEmpty,
-          ]}
-          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
-          showsVerticalScrollIndicator={false}
+          contentContainerStyle={sel.active ? { ...styles.listContent, paddingBottom: 120 + insets.bottom } : styles.listContent}
         />
       )}
 
-      {/* FAB */}
-      <FAB
-        icon="plus"
-        onPress={() => router.push('/more/cases/new')}
-        style={[
-          styles.fab,
-          { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },
-        ]}
-        color="#FFFFFF"
-        label={t('cases.addCase')}
-      />
+      {sel.active ? (
+        <BulkActionBar actions={bulkActions} busy={bulkBusy} />
+      ) : (
+        <FAB
+          icon="plus"
+          onPress={() => router.push('/more/cases/new')}
+          style={[
+            styles.fab,
+            { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 },
+          ]}
+          color="#FFFFFF"
+          label={t('cases.addCase')}
+        />
+      )}
 
       <Portal>
+        {/* Bulk: change stage / priority for the selected cases */}
         <Modal
-          visible={viewsVisible}
-          onDismiss={() => setViewsVisible(false)}
-          contentContainerStyle={[styles.statusPickerModal, { backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
-        >
-          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12, textAlign }}>
-            {t('cases.views', 'תצוגות')}
-          </Text>
-          <ScrollView showsVerticalScrollIndicator={false}>
-            <ViewRow icon="format-list-bulleted" label={t('common.all')} active={!viewActive}
-              onPress={() => { clearAllFilters(); setViewsVisible(false); }} theme={theme} />
-            <ViewRow icon="account" label={t('leads.viewMine', 'שלי')} active={activeViewId === '__mine'}
-              onPress={() => { setActiveViewId('__mine'); setFilterMine(true); setTaskQuickFilter(null); setSlaOnly(false); setViewsVisible(false); }} theme={theme} />
-            <ViewRow icon="alert-decagram-outline" color="#ef4444" label={t('cases.slaBreaches', 'חריגות SLA')} active={slaOnly}
-              badge={cases.filter(isCaseSlaBreached).length}
-              onPress={() => {
-                if (slaOnly) { setSlaOnly(false); setActiveViewId('__all'); }
-                else { setSlaOnly(true); setActiveViewId('__sla'); setTaskQuickFilter(null); setFilterMine(false); fetchAllCases(); }
-                setViewsVisible(false);
-              }} theme={theme} />
-            {([
-              { type: 'today' as TaskQuickFilter, icon: 'calendar-today', label: t('leads.tasksToday', 'משימות להיום'), color: '#f59e0b' },
-              { type: 'upcoming' as TaskQuickFilter, icon: 'clock-outline', label: t('leads.tasksUpcoming', 'משימות קרובות'), color: '#3b82f6' },
-              { type: 'overdue' as TaskQuickFilter, icon: 'alert-circle-outline', label: t('leads.tasksOverdue', 'משימות באיחור'), color: '#ef4444' },
-              { type: 'withTasks' as TaskQuickFilter, icon: 'clipboard-clock-outline', label: t('cases.casesWithTasks', 'פניות עם משימות'), color: '#2e6155' },
-            ]).map(({ type, icon, label, color }) => (
-              <ViewRow key={type} icon={icon} color={color} label={label} active={taskQuickFilter === type}
-                badge={taskFilterSets[type].size} disabled={taskFilterLoading}
-                onPress={() => { applyTaskFilter(type); setViewsVisible(false); }} theme={theme} />
-            ))}
-            {savedViews.filter((v) => {
-              const vis = v.Visibility || 'personal';
-              if (vis === 'shared') return true;
-              return (v.UserId || '') === (user?.uID || user?.userId || '');
-            }).map((view) => (
-              <ViewRow key={view.id} icon={view.Visibility === 'shared' ? 'account-group-outline' : 'bookmark-outline'} label={view.Name}
-                active={activeViewId === view.id}
-                onPress={() => { loadSavedView(view); setViewsVisible(false); }}
-                onDelete={() => Alert.alert(view.Name, t('sidebar.deleteViewConfirm', 'Delete this view?'), [
-                  { text: t('common.cancel'), style: 'cancel' },
-                  { text: t('common.delete', 'Delete'), style: 'destructive', onPress: () => deleteSavedView(view.id) },
-                ])} theme={theme} />
-            ))}
-          </ScrollView>
-          <Button mode="text" icon="plus" onPress={() => { setViewsVisible(false); setShowSaveViewModal(true); }} style={{ marginTop: 8 }}>
-            {t('cases.saveView', 'שמור תצוגה נוכחית')}
-          </Button>
-        </Modal>
-      </Portal>
-
-      <Portal>
-        <Modal
-          visible={!!statusPickerCase}
-          onDismiss={() => setStatusPickerCase(null)}
+          visible={bulkModal !== null}
+          onDismiss={() => setBulkModal(null)}
           contentContainerStyle={[styles.statusPickerModal, { backgroundColor: theme.colors.surface }]}
         >
-          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 4 }}>
-            {t('leads.moveStage')}
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 4, textAlign }}>
+            {bulkModal === 'priority' ? tr('שינוי עדיפות', 'Change priority') : tr('שינוי שלב', 'Change stage')}
           </Text>
-          {statusPickerCase ? (
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 16 }}>
-              {statusPickerCase.subject || statusPickerCase.title}
-            </Text>
-          ) : null}
-          {STATUS_FILTERS.filter((f) => f !== 'all').map((status) => {
-            const color = getStatusColor(status);
-            const isCurrent = statusPickerCase?.status?.toLowerCase().replace(/\s+/g, '_') === status;
-            return (
-              <Pressable
-                key={status}
-                onPress={() => statusPickerCase && handleStatusChange(statusPickerCase, status)}
-                disabled={isCurrent}
-                style={({ pressed }) => [
-                  styles.statusPickerOption,
-                  {
-                    backgroundColor: isCurrent
-                      ? withAlpha(color, 0.12)
-                      : pressed
-                        ? theme.colors.surfaceVariant
-                        : 'transparent',
-                  },
-                ]}
-              >
-                <View style={[styles.statusDot, { backgroundColor: color }]} />
-                <Text
-                  variant="bodyMedium"
-                  style={{
-                    flex: 1,
-                    color: isCurrent ? color : theme.colors.onSurface,
-                    fontWeight: isCurrent ? '700' : '400',
-                  }}
-                >
-                  {status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ')}
-                </Text>
-                {isCurrent ? (
-                  <MaterialCommunityIcons name="check" size={20} color={color} />
-                ) : null}
-              </Pressable>
-            );
-          })}
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 16, textAlign }}>
+            {tr(`${sel.count} פניות נבחרו`, `${sel.count} cases selected`)}
+          </Text>
+          {bulkModal === 'stage'
+            ? BULK_STATUSES.map((status) => {
+                const color = getStatusColor(status);
+                return (
+                  <Pressable
+                    key={status}
+                    onPress={() => bulkSetStatus(status)}
+                    style={({ pressed }) => [
+                      styles.statusPickerOption,
+                      { flexDirection, backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent' },
+                    ]}
+                  >
+                    <View style={[styles.statusDot, { backgroundColor: color }]} />
+                    <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign }}>
+                      {statusLabel(status)}
+                    </Text>
+                  </Pressable>
+                );
+              })
+            : null}
+          {bulkModal === 'priority'
+            ? PRIORITIES.map((p) => {
+                const color = PRIORITY_COLORS[p];
+                return (
+                  <Pressable
+                    key={p}
+                    onPress={() => bulkSetPriority(p)}
+                    style={({ pressed }) => [
+                      styles.statusPickerOption,
+                      { flexDirection, backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent' },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name="flag" size={18} color={color} />
+                    <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign }}>
+                      {t(`tasks.${p}`, p)}
+                    </Text>
+                  </Pressable>
+                );
+              })
+            : null}
           <Button
             mode="text"
-            onPress={() => setStatusPickerCase(null)}
+            onPress={() => setBulkModal(null)}
             style={{ marginTop: 8 }}
             textColor={theme.colors.onSurfaceVariant}
           >
@@ -1304,6 +1595,15 @@ export default function CasesListScreen() {
           </View>
         </Modal>
       </Portal>
+
+      <Snackbar
+        visible={!!snackbar}
+        onDismiss={() => setSnackbar('')}
+        duration={2500}
+        style={{ marginBottom: 70 }}
+      >
+        {snackbar}
+      </Snackbar>
     </View>
   );
 }
@@ -1312,23 +1612,46 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
-    paddingBottom: 4,
-  },
-  headerRow: {
     alignItems: 'center',
+    paddingHorizontal: 4,
+    paddingBottom: 4,
+    gap: 6,
   },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#FFFFFF',
+  headerTitle: { fontSize: 22, fontWeight: '700', color: '#FFFFFF' },
+  headerActions: { alignItems: 'center', gap: 4, paddingEnd: 10 },
+  headerBtn: { padding: 4 },
+  filterBadge: {
+    position: 'absolute',
+    top: -2,
+    end: -2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  headerIcon: { padding: 4, marginRight: 8 },
-  chipRow: { flexWrap: 'wrap', gap: 6, marginBottom: 4 },
+  filterBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  segment: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 16,
+    padding: 2,
+    gap: 2,
+  },
+  segmentItem: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  segmentItemActive: { backgroundColor: '#FFF' },
   searchWrap: {
     paddingHorizontal: 14,
-    overflow: 'hidden',
     justifyContent: 'center',
-    paddingBottom: 8,
+    paddingTop: 4,
+    paddingBottom: 10,
   },
   searchbar: { height: 40, borderRadius: 20, elevation: 0 },
   viewsRow: {
@@ -1350,80 +1673,45 @@ const styles = StyleSheet.create({
     gap: 8,
     alignItems: 'center',
   },
-  filtersRow: {
-    paddingVertical: 10,
+  quickRow: { paddingHorizontal: 14, paddingVertical: 8, gap: 6, alignItems: 'center' },
+  quickChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+  },
+  quickDivider: { width: StyleSheet.hairlineWidth, height: 18, marginHorizontal: 2 },
+  summaryRow: {
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  filtersScroll: {
-    paddingHorizontal: 14,
-    gap: 8,
-    alignItems: 'center',
-  },
-  filterChip: { height: 32 },
-  filterChipText: { fontSize: 13 },
-  listContent: { padding: 14, paddingBottom: 100 },
-  listContentEmpty: { flexGrow: 1 },
-  caseCard: {
-    flexDirection: 'row',
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
+  sortBtn: { alignItems: 'center', gap: 4, paddingVertical: 2 },
+  listContent: { paddingTop: 4, paddingBottom: 100 },
+  caseRow: {
+    alignItems: 'stretch',
+    paddingTop: 8,
+    paddingBottom: 8,
+    paddingEnd: 12,
+    gap: 10,
     overflow: 'hidden',
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
   },
-  priorityBar: {
-    width: 5,
-    borderTopLeftRadius: borderRadius.lg,
-    borderBottomLeftRadius: borderRadius.lg,
+  stripe: {
+    width: 4,
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
   },
-  caseContent: {
-    flex: 1,
-    padding: 14,
-    gap: 8,
-  },
-  caseTopRow: {
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  caseTitle: {
-    flex: 1,
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  statusChip: {
-    minHeight: 28,
-    borderRadius: 14,
-  },
-  statusChipText: {
-    fontSize: 11,
-    fontWeight: '600',
-    lineHeight: 16,
-  },
-  caseMeta: {
-    alignItems: 'center',
-    gap: 14,
-    flexWrap: 'wrap',
-  },
-  metaItem: {
-    alignItems: 'center',
-    gap: 4,
-  },
-  metaText: {
-    fontSize: 12,
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 80,
-    paddingHorizontal: 40,
-    gap: 12,
-  },
-  emptyTitle: { fontWeight: '600', marginTop: 8 },
+  caseBody: { flex: 1, gap: 3 },
+  caseTop: { alignItems: 'center', gap: 6 },
+  caseBottom: { alignItems: 'center', gap: 6, marginTop: 2 },
+  stagePill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, maxWidth: 140 },
+  signalChip: { flexDirection: 'row', alignItems: 'center', gap: 2, borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 },
+  takeBtn: { alignItems: 'center', gap: 3 },
   fab: {
     position: 'absolute',
     borderRadius: 16,
@@ -1436,34 +1724,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   errorText: { flex: 1, fontSize: 13 },
-  modalContainer: {
-    marginHorizontal: 20,
-    borderRadius: borderRadius.xl,
-    maxHeight: '85%',
-    padding: 20,
-  },
-  modalHeader: {
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
+  chipRow: { flexWrap: 'wrap', gap: 6, marginBottom: 4 },
+  filterChip: { height: 32 },
+  filterChipText: { fontSize: 13 },
   formInput: {
     marginBottom: 14,
-  },
-  formLabel: {
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  priorityRow: {
-    gap: 8,
-    marginBottom: 14,
-    flexWrap: 'wrap',
-  },
-  priorityChip: {
-    height: 32,
-  },
-  priorityChipText: {
-    fontSize: 12,
   },
   modalActions: {
     gap: 12,
@@ -1486,7 +1751,6 @@ const styles = StyleSheet.create({
     maxHeight: '80%',
   },
   statusPickerOption: {
-    flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 12,
     paddingHorizontal: 14,

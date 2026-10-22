@@ -155,8 +155,10 @@ const performTokenRefresh = async (): Promise<string> => {
   const refreshToken = await secureStorage.getRefreshToken();
   if (!refreshToken) throw new Error('No refresh token');
 
+  const storedUser = await appStorage.getUser();
   const res = await axios.post(`${API_BASE_URL}${ENDPOINTS.REFRESH_TOKEN}`, {
     refreshToken,
+    organization: storedUser?.organization, // lets the server refuse refresh for cancelled / trial-expired orgs
   });
 
   if (!res?.data?.IdToken) {

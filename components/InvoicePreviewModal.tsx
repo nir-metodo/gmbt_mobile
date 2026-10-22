@@ -45,7 +45,7 @@ export function InvoicePreviewModal({ visible, onDismiss, doc, branding }: Props
   const { flexDirection, textAlign, isRTL } = useRTL();
   const b = branding || {};
   const typeInfo = DOCUMENT_TYPES.find((d) => d.key === doc.type);
-  const color: string = b.primaryColor || typeInfo?.color || '#2e6155';
+  const color: string = b.primaryColor || '#2e6155';
   const isCredit = doc.type === 'credit_invoice' || doc.type === 'credit_receipt';
   const sym = currencySymbol(doc.currency);
   const money = (n: number | undefined | null) => formatCurrency(Number(n || 0), sym);

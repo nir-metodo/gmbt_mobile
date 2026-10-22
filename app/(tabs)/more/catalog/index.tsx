@@ -799,6 +799,8 @@ export default function CatalogScreen() {
     setModalVisible(true);
   }, []);
 
+  const closeForm = useCallback(() => { setModalVisible(false); resetForm(); }, [resetForm]);
+
   const handleSave = useCallback(async () => {
     const reqField = fieldsConfig.requiredField || 'name';
     const baseVals: Record<string, string> = {
@@ -929,9 +931,12 @@ export default function CatalogScreen() {
             </View>
           )}
           <View style={styles.cardContent}>
-            <Text variant="titleSmall" style={{ color: theme.colors.onSurface, textAlign }} numberOfLines={1}>
-              {displayTitle}
-            </Text>
+            <View style={{ flexDirection, alignItems: 'center', gap: 6 }}>
+              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, textAlign, fontWeight: '600', flexShrink: 1 }} numberOfLines={1}>
+                {displayTitle}
+              </Text>
+              {item.isPublic ? <MaterialCommunityIcons name="link-variant" size={13} color={BRAND_COLOR} /> : null}
+            </View>
             {item.description ? (
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginTop: 2 }} numberOfLines={2}>
                 {item.description}
@@ -947,9 +952,7 @@ export default function CatalogScreen() {
                 if (tok === 'image' || tok === 'name') continue;
                 if (!isColumnTokenVisible(tok)) continue;
                 if (tok === 'unitPrice') {
-                  if (item.unitPrice > 0) chips.push({ key: tok, node: (
-                    <Text variant="labelMedium" style={{ color: BRAND_COLOR, fontWeight: '700', marginEnd: 8 }}>₪{item.unitPrice.toLocaleString()}</Text>
-                  ) });
+                  continue;
                 } else if (tok === 'sku') {
                   if (item.sku) chips.push({ key: tok, node: (
                     <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginEnd: 8 }}>{item.sku}</Text>
@@ -981,35 +984,10 @@ export default function CatalogScreen() {
               );
             })()}
           </View>
-          {!selectionMode && (
-          <View>
-            <IconButton
-              icon={item.isPublic ? 'link-variant' : 'link-variant-off'}
-              size={18}
-              iconColor={item.isPublic ? BRAND_COLOR : theme.colors.onSurfaceVariant}
-              onPress={() => toggleItemPublic(item)}
-            />
-            <IconButton
-              icon="pencil-outline"
-              size={18}
-              iconColor={theme.colors.onSurfaceVariant}
-              onPress={() => openEditModal(item)}
-            />
-            <IconButton
-              icon="share-variant"
-              size={18}
-              iconColor={BRAND_COLOR}
-              onPress={() => handleShareItem(item)}
-            />
-          </View>
-          )}
+          {hasVal(item.unitPrice) && item.unitPrice > 0 && isColumnTokenVisible('unitPrice') ? (
+            <Text variant="titleSmall" style={{ color: BRAND_COLOR, fontWeight: '700', marginStart: 4 }}>₪{item.unitPrice.toLocaleString()}</Text>
+          ) : null}
         </View>
-        {item.isPublic ? (
-          <View style={[styles.publicBadge, { [isRTL ? 'left' : 'right']: 8 }]}>
-            <MaterialCommunityIcons name="link-variant" size={10} color="#fff" />
-            <Text style={styles.publicBadgeText}>{isRTL ? 'בקטלוג הפומבי' : 'Public'}</Text>
-          </View>
-        ) : null}
       </Pressable>
     );
   }, [theme, flexDirection, textAlign, openEditModal, handleDelete, handleShareItem, toggleItemPublic, openImageViewer, customColumns, orderedColumnTokens, isColumnTokenVisible, isRTL, fieldsConfig, selectionMode, selectedIds, toggleSelect]);
@@ -1361,16 +1339,29 @@ export default function CatalogScreen() {
 
       {/* Add/Edit Modal */}
       <Portal>
-        <Modal
-          visible={modalVisible}
-          onDismiss={() => { setModalVisible(false); resetForm(); }}
-          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
-        >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text variant="titleMedium" style={[styles.modalTitle, { color: theme.colors.onSurface, textAlign }]}>
-                {editingItem ? 'עריכת פריט' : 'פריט חדש'}
-              </Text>
+        <RNModal visible={modalVisible} animationType="slide" transparent onRequestClose={closeForm} statusBarTranslucent>
+          <View style={styles.sheetOverlay}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={closeForm} />
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              style={[styles.sheet, { backgroundColor: theme.colors.surface, marginTop: insets.top + 24 }]}
+            >
+              <View style={[styles.sheetHandle, { backgroundColor: theme.colors.outlineVariant }]} />
+              <View style={[styles.sheetHeader, { flexDirection }]}>
+                <Text variant="titleMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign, fontWeight: '700' }}>
+                  {editingItem ? 'עריכת פריט' : 'פריט חדש'}
+                </Text>
+                {editingItem ? (
+                  <IconButton icon="share-variant-outline" size={20} iconColor={BRAND_COLOR} onPress={() => handleShareItem(editingItem)} />
+                ) : null}
+                <IconButton icon="close" size={22} iconColor={theme.colors.onSurfaceVariant} onPress={closeForm} />
+              </View>
+              <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={styles.sheetBody}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+              >
 
               {fieldsConfig.name !== false && (
               <TextInput
@@ -1378,8 +1369,9 @@ export default function CatalogScreen() {
                 value={formName}
                 onChangeText={setFormName}
                 mode="outlined"
+                dense
                 style={styles.input}
-                outlineColor={BRAND_COLOR + '40'}
+                outlineColor={theme.colors.outlineVariant}
                 activeOutlineColor={BRAND_COLOR}
               />
               )}
@@ -1390,10 +1382,11 @@ export default function CatalogScreen() {
                 value={formDescription}
                 onChangeText={setFormDescription}
                 mode="outlined"
+                dense
                 style={styles.input}
                 multiline
                 numberOfLines={3}
-                outlineColor={BRAND_COLOR + '40'}
+                outlineColor={theme.colors.outlineVariant}
                 activeOutlineColor={BRAND_COLOR}
               />
               )}
@@ -1407,7 +1400,7 @@ export default function CatalogScreen() {
                   mode="outlined"
                   style={[styles.input, { flex: 1 }]}
                   keyboardType="numeric"
-                  outlineColor={BRAND_COLOR + '40'}
+                  outlineColor={theme.colors.outlineVariant}
                   activeOutlineColor={BRAND_COLOR}
                 />
                 )}
@@ -1419,7 +1412,7 @@ export default function CatalogScreen() {
                   onChangeText={setFormSku}
                   mode="outlined"
                   style={[styles.input, { flex: 1 }]}
-                  outlineColor={BRAND_COLOR + '40'}
+                  outlineColor={theme.colors.outlineVariant}
                   activeOutlineColor={BRAND_COLOR}
                 />
                 )}
@@ -1431,8 +1424,9 @@ export default function CatalogScreen() {
                 value={formCategory}
                 onChangeText={setFormCategory}
                 mode="outlined"
+                dense
                 style={styles.input}
-                outlineColor={BRAND_COLOR + '40'}
+                outlineColor={theme.colors.outlineVariant}
                 activeOutlineColor={BRAND_COLOR}
               />
               )}
@@ -1443,10 +1437,11 @@ export default function CatalogScreen() {
                 value={formLink}
                 onChangeText={setFormLink}
                 mode="outlined"
+                dense
                 style={styles.input}
                 keyboardType="url"
                 autoCapitalize="none"
-                outlineColor={BRAND_COLOR + '40'}
+                outlineColor={theme.colors.outlineVariant}
                 activeOutlineColor={BRAND_COLOR}
               />
               )}
@@ -1494,7 +1489,7 @@ export default function CatalogScreen() {
                   style={[styles.input, { flex: 1, marginBottom: 0 }]}
                   keyboardType="url"
                   autoCapitalize="none"
-                  outlineColor={BRAND_COLOR + '40'}
+                  outlineColor={theme.colors.outlineVariant}
                   activeOutlineColor={BRAND_COLOR}
                 />
                 <IconButton icon="plus-circle" size={26} iconColor={BRAND_COLOR} disabled={!imageUrlInput.trim()} onPress={addImageUrl} />
@@ -1584,7 +1579,7 @@ export default function CatalogScreen() {
                         mode="outlined"
                         style={styles.input}
                         keyboardType={col.type === 'number' ? 'numeric' : 'default'}
-                        outlineColor={BRAND_COLOR + '40'}
+                        outlineColor={theme.colors.outlineVariant}
                         activeOutlineColor={BRAND_COLOR}
                       />
                     );
@@ -1605,41 +1600,15 @@ export default function CatalogScreen() {
                 <Switch value={formIsPublic} onValueChange={setFormIsPublic} color={BRAND_COLOR} />
               </View>
 
-              {editingItem && (
-                <Button
-                  mode="outlined"
-                  icon="share-variant"
-                  onPress={() => handleShareItem(editingItem)}
-                  style={[styles.actionBtn, { borderColor: BRAND_COLOR, marginBottom: 8 }]}
-                  textColor={BRAND_COLOR}
-                >
-                  {isRTL ? 'שתף פריט' : 'Share item'}
-                </Button>
-              )}
-
-              <View style={[styles.modalActions, { flexDirection }]}>
-                <Button
-                  mode="outlined"
-                  onPress={() => { setModalVisible(false); resetForm(); }}
-                  style={styles.actionBtn}
-                  textColor={theme.colors.onSurfaceVariant}
-                >
-                  ביטול
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={handleSave}
-                  loading={saving}
-                  disabled={saving || !requiredFilled}
-                  style={[styles.actionBtn, { backgroundColor: BRAND_COLOR }]}
-                  textColor="#fff"
-                >
-                  {editingItem ? 'שמור' : 'הוסף'}
+              </ScrollView>
+              <View style={[styles.sheetFooter, { borderTopColor: theme.colors.outlineVariant, paddingBottom: insets.bottom + 12 }]}>
+                <Button mode="contained" onPress={handleSave} loading={saving} disabled={saving || !requiredFilled} buttonColor={BRAND_COLOR} textColor="#fff" style={styles.sheetSave} contentStyle={{ height: 48 }}>
+                  {editingItem ? 'שמור שינויים' : 'הוסף פריט'}
                 </Button>
               </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </Modal>
+            </KeyboardAvoidingView>
+          </View>
+        </RNModal>
 
         {/* Share settings — enable public catalog + choose all vs. marked items */}
         <Modal
@@ -2050,22 +2019,18 @@ const styles = StyleSheet.create({
   chipsRow: { paddingHorizontal: 12, paddingVertical: 8, gap: 6 },
   chip: { marginEnd: 4 },
   statsBar: { paddingHorizontal: 16, paddingVertical: 6, alignItems: 'center', justifyContent: 'space-between' },
-  list: { paddingHorizontal: 12, paddingBottom: 100 },
+  list: { paddingBottom: 100 },
   emptyList: { flex: 1 },
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
   card: {
-    marginBottom: 8,
-    borderRadius: 12,
-    padding: 12,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(128,128,128,0.25)',
   },
   cardRow: { alignItems: 'center' },
-  cardImage: { width: 56, height: 56, borderRadius: 8 },
-  cardImagePlaceholder: { width: 56, height: 56, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  cardImage: { width: 52, height: 52, borderRadius: 10 },
+  cardImagePlaceholder: { width: 52, height: 52, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   imageCountBadge: { position: 'absolute', bottom: 2, right: 2, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 8, paddingHorizontal: 4, paddingVertical: 1, gap: 2 },
   imageCountText: { color: '#fff', fontSize: 9, fontWeight: '700' },
   formThumbWrap: { width: 96, height: 96, borderRadius: 10, overflow: 'hidden', position: 'relative', backgroundColor: 'rgba(0,0,0,0.05)' },
@@ -2087,6 +2052,13 @@ const styles = StyleSheet.create({
   categoryBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   customBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginEnd: 4, marginTop: 2 },
   fab: { position: 'absolute', bottom: 24, right: 16, borderRadius: 16 },
+  sheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.45)' },
+  sheet: { flex: 1, borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
+  sheetHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, marginTop: 8 },
+  sheetHeader: { alignItems: 'center', paddingStart: 20, paddingEnd: 6, paddingTop: 4 },
+  sheetBody: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 24 },
+  sheetFooter: { paddingHorizontal: 20, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth },
+  sheetSave: { borderRadius: 12 },
   modal: { marginHorizontal: 16, borderRadius: 16, padding: 20, maxHeight: '85%' },
   // Taller variant for the personal-link sheet so the whole form (incl. "Create link") fits
   // without scrolling on most devices.

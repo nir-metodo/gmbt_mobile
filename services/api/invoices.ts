@@ -51,9 +51,17 @@ export interface OpenInvoicesSummary {
   dueSoonCount: number;
 }
 
+export type InvoiceSortKey = 'date' | 'created' | 'dueDate' | 'amount' | 'balance' | 'customer' | 'number' | 'createdBy';
+
+export interface InvoiceCreator {
+  id: string;
+  name: string;
+  count: number;
+}
+
 export const DOCUMENT_TYPES = [
   { key: 'tax_invoice',    labelHe: 'חשבונית מס',           color: '#2e6155' },
-  { key: 'combined',       labelHe: 'חשבונית מס קבלה',      color: '#7c3aed' },
+  { key: 'combined',       labelHe: 'חשבונית מס קבלה',      color: '#2e6155' },
   { key: 'receipt',        labelHe: 'קבלה',                  color: '#2563eb' },
   { key: 'transaction',    labelHe: 'חשבון עסקה',            color: '#d97706' },
   { key: 'credit_invoice', labelHe: 'חשבונית זיכוי',        color: '#dc2626' },
@@ -72,8 +80,28 @@ export const INVOICE_STATUSES = [
 export const invoicesApi = {
   async getPaginated(
     organization: string,
-    params?: { page?: number; pageSize?: number; searchTerm?: string; statusFilter?: string; typeFilter?: string }
-  ): Promise<{ invoices: Invoice[]; totalCount: number }> {
+    params?: {
+      page?: number;
+      pageSize?: number;
+      searchTerm?: string;
+      statusFilter?: string;
+      typeFilter?: string;
+      /** Document date range, 'yyyy-MM-dd' (inclusive). */
+      fromDate?: string;
+      toDate?: string;
+      minAmount?: number;
+      maxAmount?: number;
+      /** Only documents created by this user id. */
+      createdByFilter?: string;
+      sortBy?: InvoiceSortKey;
+      sortDir?: 'asc' | 'desc';
+      /** Also return the distinct creators (for the "created by" picker). */
+      includeCreators?: boolean;
+      /** 'own' limits the list to the user's own documents (server-enforced, same as the web). */
+      dataVisibility?: string;
+      userId?: string;
+    }
+  ): Promise<{ invoices: Invoice[]; totalCount: number; creators: InvoiceCreator[] }> {
     const response = await axiosInstance.post(ENDPOINTS.GET_INVOICES_PAGINATED, {
       organization,
       pageNumber: params?.page ?? 1,
@@ -81,11 +109,22 @@ export const invoicesApi = {
       searchTerm: params?.searchTerm || null,
       statusFilter: params?.statusFilter || 'all',
       typeFilter: params?.typeFilter || 'all',
+      fromDate: params?.fromDate || null,
+      toDate: params?.toDate || null,
+      minAmount: params?.minAmount ?? null,
+      maxAmount: params?.maxAmount ?? null,
+      createdByFilter: params?.createdByFilter || null,
+      sortBy: params?.sortBy || null,
+      sortDir: params?.sortDir || null,
+      includeCreators: params?.includeCreators ? true : null,
+      dataVisibility: params?.dataVisibility || null,
+      userId: params?.userId || null,
     });
     const raw = response.data;
     return {
       invoices: raw?.Invoices || raw?.invoices || [],
       totalCount: raw?.TotalCount || raw?.totalCount || 0,
+      creators: raw?.Creators || raw?.creators || [],
     };
   },
 

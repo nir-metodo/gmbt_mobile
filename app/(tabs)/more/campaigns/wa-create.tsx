@@ -11,6 +11,7 @@ import { useRTL } from '../../../../hooks/useRTL';
 import { withAlpha } from '../../../../utils/formatters';
 import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { campaignsApi, WaCampaign, WaLimit, WaNumber, WaTemplate } from '../../../../services/api/campaigns';
+import PickerSheet from '../../../../components/campaigns/email/PickerSheet';
 import WaHeader from '../../../../components/campaigns/whatsapp/WaHeader';
 import TemplateBubble from '../../../../components/campaigns/whatsapp/TemplateBubble';
 import { Section, Notice, ChipGroup, Picker } from '../../../../components/campaigns/whatsapp/formParts';
@@ -92,6 +93,10 @@ export default function WaCreateScreen() {
   const [tagSearch, setTagSearch] = useState('');
   const [count, setCount] = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewContacts, setPreviewContacts] = useState<Array<{ phone: string; name: string }>>([]);
+  const [previewTotal, setPreviewTotal] = useState(0);
   const [maps, setMaps] = useState<Record<number, VarMapping>>({});
   // Dynamic URL-button values, keyed by the query name (button{B}_dynamic_var{N}).
   const [btnMaps, setBtnMaps] = useState<Record<string, VarMapping>>({});
@@ -252,6 +257,25 @@ export default function WaCreateScreen() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organization, filtersKey, rowsValid, lockAudience, step >= 1]);
+
+  // "View contacts": the real list behind the number (same as the web recipients preview).
+  const openPreview = async () => {
+    if (!organization) return;
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+    setPreviewContacts([]);
+    try {
+      const r = await campaignsApi.previewContacts(organization, contactFilters);
+      setPreviewContacts(r.contacts);
+      setPreviewTotal(r.count);
+      setCount(r.count);
+    } catch {
+      setPreviewContacts([]);
+      setPreviewTotal(0);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
 
   const audienceCount = lockAudience
     ? Number(source?.ExcelData?.validCount ?? source?.ExcelData?.recipients?.length ?? 0)
@@ -886,6 +910,11 @@ export default function WaCreateScreen() {
                       <Text style={{ color: BRAND, fontSize: 22, fontWeight: '800' }}>{count == null ? '—' : count.toLocaleString()}</Text>
                     )}
                   </View>
+                  {rowsValid && !countLoading && count !== 0 ? (
+                    <Button mode="outlined" icon="account-search-outline" textColor={BRAND} onPress={openPreview} style={{ alignSelf: 'flex-start' }}>
+                      {L('צפה באנשי קשר', 'View contacts')}
+                    </Button>
+                  ) : null}
                   <Text style={{ color: sub, fontSize: 11.5, textAlign }}>
                     {L(
                       'ספירה מקורבת – הרשימה הסופית נקבעת בעת ההרצה (ללא ספאם / מחוקים; מי שהסיר הסכמה מוחרג).',
@@ -1174,6 +1203,24 @@ export default function WaCreateScreen() {
             ) : null}
           </>
         ) : null}
+
+        <PickerSheet
+          visible={previewOpen}
+          mode="view"
+          title={
+            previewLoading
+              ? L('אנשי קשר', 'Contacts')
+              : L(
+                  `אנשי קשר – ${previewTotal.toLocaleString()} סה"כ${previewTotal > previewContacts.length ? ` (מוצגים ${previewContacts.length})` : ''}`,
+                  `Contacts – ${previewTotal.toLocaleString()} total${previewTotal > previewContacts.length ? ` (showing ${previewContacts.length})` : ''}`,
+                )
+          }
+          loading={previewLoading}
+          items={previewContacts.map((c) => ({ value: c.phone, label: c.name || c.phone, subtitle: c.name ? c.phone : undefined }))}
+          emptyText={L('לא נמצאו אנשי קשר', 'No contacts found')}
+          searchPlaceholder={L('חיפוש לפי שם או טלפון', 'Search by name or phone')}
+          onDismiss={() => setPreviewOpen(false)}
+        />
 
         <GambotDateTimePicker
           visible={pickerOpen}

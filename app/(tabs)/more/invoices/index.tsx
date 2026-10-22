@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, StyleSheet, FlatList, Pressable, RefreshControl } from 'react-native';
+import { View, StyleSheet, FlatList, Pressable, RefreshControl, ScrollView } from 'react-native';
 import { Text, ActivityIndicator, FAB, IconButton, Menu } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -15,7 +15,16 @@ import {
   OpenInvoicesSummary,
   DOCUMENT_TYPES,
   INVOICE_STATUSES,
+  InvoiceCreator,
+  InvoiceSortKey,
 } from '../../../../services/api/invoices';
+import {
+  InvoiceFiltersSheet,
+  InvoiceFilters,
+  EMPTY_INVOICE_FILTERS,
+  countInvoiceFilters,
+} from '../../../../components/invoices/InvoiceFiltersSheet';
+import { getDataVisibility } from '../../../../constants/permissions';
 import { cacheEntities } from '../../../../services/entityCache';
 import { formatDate, formatCurrency } from '../../../../utils/formatters';
 import { currencySymbol } from '../../../../utils/currency';
@@ -50,6 +59,16 @@ export default function InvoicesScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const loadedOnceRef = useRef(false);
 
+  // Sorting is done by the server (the list is paged). `null` = the default order (newest created first;
+  // the "open" status keeps its own most-urgent-first order).
+  const [sortKey, setSortKey] = useState<InvoiceSortKey | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [filters, setFilters] = useState<InvoiceFilters>(EMPTY_INVOICE_FILTERS);
+  const [filtersVisible, setFiltersVisible] = useState(false);
+  const invoicesDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'invoices');
+  const [creators, setCreators] = useState<InvoiceCreator[]>([]);
+  const creatorsLoadedRef = useRef(false);
+
   // Search runs as you type (debounced) — no hidden magnifier, no "submit" step.
   const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
@@ -65,7 +84,18 @@ export default function InvoicesScreen() {
         searchTerm: debouncedSearch || undefined,
         statusFilter,
         typeFilter,
+        fromDate: filters.fromDate || undefined,
+        toDate: filters.toDate || undefined,
+        minAmount: filters.minAmount !== '' ? Number(filters.minAmount) : undefined,
+        maxAmount: filters.maxAmount !== '' ? Number(filters.maxAmount) : undefined,
+        createdByFilter: filters.createdBy || undefined,
+        sortBy: sortKey || undefined,
+        sortDir: sortKey ? sortDir : undefined,
+        includeCreators: !creatorsLoadedRef.current,
+        dataVisibility: invoicesDV,
+        userId: user.uID || user.userId,
       });
+      if (result.creators.length > 0) { setCreators(result.creators); creatorsLoadedRef.current = true; }
       cacheEntities('invoices', result.invoices);
       setInvoices((prev) => (append ? [...prev, ...result.invoices] : result.invoices));
       setTotalCount(result.totalCount);
@@ -77,7 +107,7 @@ export default function InvoicesScreen() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [user?.organization, debouncedSearch, statusFilter, typeFilter, t]);
+  }, [user?.organization, user?.uID, user?.userId, invoicesDV, debouncedSearch, statusFilter, typeFilter, filters, sortKey, sortDir, t]);
 
   const fetchSummary = useCallback(async () => {
     if (!user?.organization) return;
@@ -137,7 +167,59 @@ export default function InvoicesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router, t]);
 
-  const filtering = statusFilter !== 'all' || typeFilter !== 'all' || !!debouncedSearch;
+  const advancedCount = countInvoiceFilters(filters);
+  const filtering = statusFilter !== 'all' || typeFilter !== 'all' || !!debouncedSearch || advancedCount > 0;
+
+  const SORT_LABELS: Record<InvoiceSortKey, string> = {
+    created: t('invoices.sortCreated', 'תאריך יצירה'),
+    date: t('invoices.sortDate', 'תאריך המסמך'),
+    dueDate: t('invoices.sortDue', 'תאריך פירעון'),
+    amount: t('invoices.sortAmount', 'סכום'),
+    balance: t('invoices.sortBalance', 'יתרה לתשלום'),
+    customer: t('invoices.sortCustomer', 'לקוח'),
+    number: t('invoices.sortNumber', 'מספר מסמך'),
+    createdBy: t('invoices.sortCreatedBy', 'נוצר על ידי'),
+  };
+  // Text columns read best A→Z first; everything else newest/biggest first.
+  const TEXT_SORTS: InvoiceSortKey[] = ['customer', 'createdBy'];
+
+  const handleSort = useCallback((key: string) => {
+    const k = key as InvoiceSortKey;
+    if ((sortKey ?? 'created') === k) {
+      setSortKey(k);
+      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortKey(k);
+      setSortDir(TEXT_SORTS.includes(k) ? 'asc' : 'desc');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortKey]);
+
+  const sortSummary = (() => {
+    const k = sortKey ?? 'created';
+    if (TEXT_SORTS.includes(k)) return `${SORT_LABELS[k]} ${sortDir === 'asc' ? 'א→ת' : 'ת→א'}`;
+    if (k === 'amount' || k === 'balance' || k === 'number')
+      return `${SORT_LABELS[k]} ${sortDir === 'desc' ? t('invoices.highFirst', 'גבוה קודם') : t('invoices.lowFirst', 'נמוך קודם')}`;
+    return `${SORT_LABELS[k]} ${sortDir === 'desc' ? t('invoices.newestFirst', 'חדש קודם') : t('invoices.oldestFirst', 'ישן קודם')}`;
+  })();
+
+  const creatorName = creators.find((c) => c.id === filters.createdBy)?.name || t('invoices.unknownUser', 'משתמש');
+  const activeChips: { key: string; label: string; onClear?: () => void }[] = [];
+  if (sortKey) activeChips.push({ key: 'sort', label: `${t('invoices.sortBy', 'מיון')}: ${sortSummary}`, onClear: () => { setSortKey(null); setSortDir('desc'); } });
+  if (filters.fromDate || filters.toDate)
+    activeChips.push({
+      key: 'dates',
+      label: `${filters.fromDate ? formatDate(filters.fromDate) : '…'} – ${filters.toDate ? formatDate(filters.toDate) : '…'}`,
+      onClear: () => setFilters((f) => ({ ...f, fromDate: '', toDate: '' })),
+    });
+  if (filters.createdBy)
+    activeChips.push({ key: 'by', label: `${t('invoices.createdBy', 'נוצר על ידי')}: ${creatorName}`, onClear: () => setFilters((f) => ({ ...f, createdBy: '' })) });
+  if (filters.minAmount || filters.maxAmount)
+    activeChips.push({
+      key: 'amt',
+      label: `${t('invoices.sortAmount', 'סכום')}: ${filters.minAmount || '0'}–${filters.maxAmount || '∞'}`,
+      onClear: () => setFilters((f) => ({ ...f, minAmount: '', maxAmount: '' })),
+    });
 
   const summaryItems = summary
     ? [
@@ -171,7 +253,21 @@ export default function InvoicesScreen() {
         query={searchQuery}
         onChangeQuery={setSearchQuery}
         placeholder={t('invoices.searchPlaceholder', 'חפש חשבוניות...')}
+        sortOptions={(Object.keys(SORT_LABELS) as InvoiceSortKey[]).map((k) => ({ key: k, label: SORT_LABELS[k] }))}
+        sortKey={sortKey ?? 'created'}
+        sortDir={sortDir}
+        onSort={handleSort}
         trailing={
+          <>
+          <View>
+            <IconButton
+              icon="filter-variant"
+              size={22}
+              iconColor={advancedCount > 0 ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+              onPress={() => setFiltersVisible(true)}
+            />
+            {advancedCount > 0 ? <View style={[styles.activeDot, { backgroundColor: BRAND_COLOR }]} /> : null}
+          </View>
           <Menu
             visible={typeMenuVisible}
             onDismiss={() => setTypeMenuVisible(false)}
@@ -202,8 +298,37 @@ export default function InvoicesScreen() {
               />
             ))}
           </Menu>
+          </>
         }
       />
+
+      {activeChips.length > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ flexGrow: 0, backgroundColor: theme.colors.surface }}
+          contentContainerStyle={styles.chipsRow}
+        >
+          {activeChips.map((c) => (
+            <Pressable
+              key={c.key}
+              onPress={c.onClear}
+              style={[styles.activeChip, { backgroundColor: theme.colors.primaryContainer }]}
+            >
+              <Text style={{ fontSize: 12, color: theme.colors.primary, fontWeight: '600' }}>{c.label}</Text>
+              {c.onClear ? <MaterialCommunityIcons name="close" size={14} color={theme.colors.primary} /> : null}
+            </Pressable>
+          ))}
+          {activeChips.length > 1 ? (
+            <Pressable
+              onPress={() => { setSortKey(null); setSortDir('desc'); setFilters(EMPTY_INVOICE_FILTERS); }}
+              style={styles.activeChip}
+            >
+              <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant }}>{t('common.clear', 'נקה')}</Text>
+            </Pressable>
+          ) : null}
+        </ScrollView>
+      ) : null}
 
       <SummaryHeader items={summaryItems} />
 
@@ -249,6 +374,14 @@ export default function InvoicesScreen() {
         style={[styles.fab, { backgroundColor: BRAND_COLOR, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
         color="#FFF"
       />
+
+      <InvoiceFiltersSheet
+        visible={filtersVisible}
+        filters={filters}
+        creators={creators}
+        onApply={(f) => { setFilters(f); setFiltersVisible(false); }}
+        onDismiss={() => setFiltersVisible(false)}
+      />
     </View>
   );
 }
@@ -261,4 +394,6 @@ const styles = StyleSheet.create({
   errorBanner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
   activeDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4 },
   fab: { position: 'absolute', borderRadius: 16 },
+  chipsRow: { paddingHorizontal: 12, paddingBottom: 6, gap: 8, alignItems: 'center' },
+  activeChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14 },
 });

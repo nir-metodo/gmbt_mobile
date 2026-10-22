@@ -1,30 +1,29 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Modal, Pressable, ScrollView, Alert } from 'react-native';
-import { Text, TextInput, Chip, Button, Switch } from 'react-native-paper';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { View, StyleSheet, Modal, Alert } from 'react-native';
+import { Chip, TextInput } from 'react-native-paper';
 import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../hooks/useAppTheme';
 import { useRTL } from '../hooks/useRTL';
 import { tasksApi } from '../services/api/tasks';
 import { usersApi } from '../services/api/users';
-import GambotDateTimePicker from './GambotDateTimePicker';
 import type { OrgUser } from '../types';
-
-// Crash-proof date/time formatter. On Android (Hermes) `Date.toLocaleString(locale, { dateStyle, timeStyle })`
-// can throw when full ICU/Intl isn't bundled, which closes the whole app in a release build (no error
-// boundary). Try the rich formatter, fall back to a manual one.
-function formatDateTimeSafe(value: Date | string | null | undefined, lang: string): string {
-  if (!value) return '';
-  const d = value instanceof Date ? value : new Date(value);
-  if (isNaN(d.getTime())) return typeof value === 'string' ? value : '';
-  try {
-    return d.toLocaleString(lang === 'he' ? 'he-IL' : 'en-US', { dateStyle: 'short', timeStyle: 'short' });
-  } catch {
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
-}
+import {
+  TASK_PRIORITY_COLORS,
+  TaskFormFrame,
+  TaskFormHeader,
+  TaskFormBody,
+  TaskFormSubmitBar,
+  TaskTitleInput,
+  FormSectionLabel,
+  FormTextField,
+  ChoiceChips,
+  DueQuickPicks,
+  FormRow,
+  UserPickerList,
+  MoreDetailsToggle,
+  ReminderRow,
+  formatDateTimeSafe,
+} from './tasks/TaskFormParts';
 
 export interface TaskRelatedTo {
   type: 'contact' | 'lead' | 'order' | 'case' | 'quote' | 'invoice' | string;
@@ -45,6 +44,15 @@ interface Props {
   relatedPhone?: string;
 }
 
+const RELATED_META: Record<string, { icon: any; he: string; en: string }> = {
+  contact: { icon: 'account-outline', he: 'איש קשר', en: 'Contact' },
+  lead: { icon: 'chart-line', he: 'ליד', en: 'Lead' },
+  order: { icon: 'package-variant-closed', he: 'הזמנה', en: 'Order' },
+  case: { icon: 'briefcase-outline', he: 'פנייה', en: 'Case' },
+  quote: { icon: 'file-document-outline', he: 'הצעת מחיר', en: 'Quote' },
+  invoice: { icon: 'receipt', he: 'חשבונית', en: 'Invoice' },
+};
+
 /**
  * Reusable "Add Task" bottom sheet shared by contacts, orders, cases, leads, etc.
  * Defaults: assignee = current user, due = now (current date & time), reminder ON aligned to due
@@ -61,19 +69,17 @@ export default function AddTaskSheet({
   relatedPhone,
 }: Props) {
   const theme = useAppTheme();
-  const { flexDirection, textAlign, isRTL } = useRTL();
+  const { isRTL } = useRTL();
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
-  const insets = useSafeAreaInsets();
+  const tr = (he: string, en: string) => (isRTL ? he : en);
 
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium');
   const [dueObj, setDueObj] = useState<Date>(new Date());
   const [dueIso, setDueIso] = useState('');
-  const [showDuePicker, setShowDuePicker] = useState(false);
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [reminderObj, setReminderObj] = useState<Date>(new Date());
-  const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [creating, setCreating] = useState(false);
 
   // Assignee (responsible user) — defaults to the current user, changeable from a picker.
@@ -82,8 +88,8 @@ export default function AddTaskSheet({
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
   const [userPickerExpanded, setUserPickerExpanded] = useState(false);
 
-  // "Additional details" — collapsed by default, mirroring the web TaskForm. Holds the optional
-  // description / task type / category / tags so the default view stays minimal.
+  // "More details" — collapsed by default, mirroring the web TaskForm. Holds the reminder and the
+  // optional description / task type / category / tags so the default view stays minimal.
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [description, setDescription] = useState('');
   const [taskType, setTaskType] = useState<string>('general');
@@ -92,10 +98,10 @@ export default function AddTaskSheet({
   const [tagInput, setTagInput] = useState('');
 
   const TASK_TYPES: Array<{ key: string; he: string; en: string; icon: string }> = [
-    { key: 'phone_call', he: 'שיחת טלפון', en: 'Phone call', icon: '📞' },
-    { key: 'follow_up', he: 'מעקב', en: 'Follow up', icon: '📧' },
-    { key: 'meeting', he: 'פגישה', en: 'Meeting', icon: '🤝' },
-    { key: 'general', he: 'כללי', en: 'General', icon: '📝' },
+    { key: 'phone_call', he: 'שיחת טלפון', en: 'Phone call', icon: 'phone-outline' },
+    { key: 'follow_up', he: 'מעקב', en: 'Follow up', icon: 'email-outline' },
+    { key: 'meeting', he: 'פגישה', en: 'Meeting', icon: 'handshake-outline' },
+    { key: 'general', he: 'כללי', en: 'General', icon: 'note-text-outline' },
   ];
 
   const addTag = () => {
@@ -117,8 +123,6 @@ export default function AddTaskSheet({
     setReminderEnabled(true);
     setTitle(defaultTitle ?? '');
     setPriority('medium');
-    setShowDuePicker(false);
-    setShowReminderPicker(false);
     setUserPickerExpanded(false);
     setAssignedToId(user?.uID || user?.userId || '');
     setAssignedToName(user?.fullname || user?.name || '');
@@ -195,305 +199,179 @@ export default function AddTaskSheet({
     }
   };
 
+  const relatedMeta = relatedTo ? RELATED_META[relatedTo.type] : undefined;
+  const detailsSummary = [
+    reminderEnabled ? `${tr('תזכורת', 'Reminder')}: ${formatDateTimeSafe(reminderObj, lang)}` : tr('ללא תזכורת', 'No reminder'),
+    tr('תיאור, סוג, תיוגים', 'Description, type, tags'),
+  ].join(' · ');
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
-      <Pressable style={styles.overlay} onPress={onDismiss}>
-        <Pressable
-          onPress={(e) => e.stopPropagation()}
-          style={[styles.sheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 }]}
-        >
-          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12, textAlign }}>
-            {t('tasks.addTask', 'הוסף משימה')}
-          </Text>
-          <ScrollView style={{ maxHeight: 440 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            <TextInput
-              label={t('tasks.taskTitle', 'כותרת')}
-              value={title}
-              onChangeText={setTitle}
-              mode="outlined"
-              placeholder={defaultTitle}
-              style={{ marginBottom: 14, textAlign }}
-              outlineColor={theme.colors.outline}
-              activeOutlineColor={theme.colors.primary}
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss} statusBarTranslucent>
+      <TaskFormFrame dim onBackdropPress={onDismiss}>
+        <TaskFormHeader title={t('tasks.addTask', 'הוסף משימה')} onClose={onDismiss} />
+
+        <TaskFormBody>
+          <TaskTitleInput
+            value={title}
+            onChangeText={setTitle}
+            placeholder={defaultTitle || tr('מה צריך לעשות?', 'What needs to be done?')}
+            hint={title.trim() || defaultTitle ? undefined : tr('ללא כותרת המשימה תיקרא "משימה"', 'Without a title the task will be named "Task"')}
+          />
+
+          <FormSectionLabel icon="calendar-clock">{t('tasks.dueDate', 'תאריך יעד')}</FormSectionLabel>
+          <View style={styles.section}>
+            <DueQuickPicks
+              value={dueIso ? dueObj : null}
+              onChange={(d) => applyDueChange(d, dueObj)}
+              title={t('tasks.dueDate', 'תאריך יעד')}
             />
+          </View>
 
-            <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
-              {t('tasks.priority', 'עדיפות')}
-            </Text>
-            <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
-              {(['low', 'medium', 'high'] as const).map((p) => {
-                const pc = p === 'high' ? '#EF4444' : p === 'medium' ? '#F59E0B' : '#10B981';
-                const active = priority === p;
-                return (
-                  <Chip
-                    key={p}
-                    selected={active}
-                    onPress={() => setPriority(p)}
-                    compact
-                    style={[
-                      styles.chip,
-                      active
-                        ? { backgroundColor: `${pc}20`, borderColor: pc, borderWidth: 1.5 }
-                        : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
-                    ]}
-                    textStyle={[{ fontSize: 12 }, active ? { color: pc, fontWeight: '700' } : null]}
-                  >
-                    {t(`tasks.${p}`)}
-                  </Chip>
-                );
-              })}
-            </View>
+          <FormSectionLabel icon="flag-outline">{t('tasks.priority', 'עדיפות')}</FormSectionLabel>
+          <View style={styles.section}>
+            <ChoiceChips
+              segmented
+              value={priority}
+              onChange={(k) => setPriority(k as 'low' | 'medium' | 'high')}
+              options={(['low', 'medium', 'high'] as const).map((p) => ({
+                key: p,
+                label: t(`tasks.${p}`),
+                color: TASK_PRIORITY_COLORS[p],
+              }))}
+            />
+          </View>
 
-            {/* Assignee / responsible user — defaults to the current user, tap to change. */}
-            <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
-              {t('tasks.assignedTo', 'אחראי')}
-            </Text>
-            <Pressable onPress={() => setUserPickerExpanded((v) => !v)}>
-              <View pointerEvents="none">
-                <TextInput
-                  value={assignedToName || t('tasks.unassigned', 'ללא')}
-                  mode="outlined"
-                  editable={false}
-                  style={{ marginBottom: userPickerExpanded ? 4 : 14, textAlign }}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                  left={<TextInput.Icon icon="account" />}
-                  right={<TextInput.Icon icon={userPickerExpanded ? 'chevron-up' : 'chevron-down'} />}
-                />
-              </View>
-            </Pressable>
+          {/* Assignee / responsible user — defaults to the current user, tap to change. */}
+          <View style={styles.section}>
+            <FormRow
+              label={t('tasks.assignedTo', 'אחראי')}
+              value={assignedToName}
+              placeholder={t('tasks.unassigned', 'ללא')}
+              avatarText={assignedToName || undefined}
+              icon="account"
+              chevron={userPickerExpanded ? 'up' : 'down'}
+              onPress={() => setUserPickerExpanded((v) => !v)}
+            />
             {userPickerExpanded && (
-              <View style={[styles.userList, { borderColor: theme.colors.outline, backgroundColor: theme.colors.surfaceVariant }]}>
-                {orgUsers.length === 0 ? (
-                  <Text style={{ color: theme.colors.onSurfaceVariant, padding: 12, textAlign }}>
-                    {t('common.loading', 'טוען...')}
-                  </Text>
-                ) : (
-                  orgUsers.map((u) => {
-                    const id = u.uID || u.userId || '';
-                    const name = u.fullname || u.name || u.userName || u.email || id;
-                    const active = id === assignedToId;
-                    return (
-                      <Pressable
-                        key={id}
-                        onPress={() => {
-                          setAssignedToId(id);
-                          setAssignedToName(name);
-                          setUserPickerExpanded(false);
-                        }}
-                        style={[styles.userRow, { flexDirection }, active ? { backgroundColor: `${theme.colors.primary}1A` } : null]}
-                      >
-                        <Text style={{ color: active ? theme.colors.primary : theme.colors.onSurface, fontWeight: active ? '700' : '500' }}>
-                          {name}
-                        </Text>
-                        {active && <MaterialCommunityIcons name="check" size={18} color={theme.colors.primary} />}
-                      </Pressable>
-                    );
-                  })
-                )}
-              </View>
+              <UserPickerList
+                loading={orgUsers.length === 0}
+                selectedId={assignedToId}
+                users={orgUsers.map((u) => {
+                  const id = u.uID || u.userId || '';
+                  return { id, name: u.fullname || u.name || u.userName || u.email || id };
+                })}
+                onSelect={(id, name) => {
+                  setAssignedToId(id);
+                  setAssignedToName(name);
+                  setUserPickerExpanded(false);
+                }}
+              />
             )}
+          </View>
 
-            <Pressable
-              onPress={() => {
-                setShowReminderPicker(false);
-                setShowDuePicker(true);
-              }}
-            >
-              <View pointerEvents="none">
-                <TextInput
-                  label={t('tasks.dueDate', 'תאריך יעד')}
-                  value={dueIso ? formatDateTimeSafe(dueIso, lang) : ''}
-                  mode="outlined"
-                  editable={false}
-                  placeholder={t('tasks.selectDueDate', 'בחר תאריך ושעה')}
-                  style={{ marginBottom: 14, textAlign }}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                  right={<TextInput.Icon icon="calendar" />}
-                />
-              </View>
-            </Pressable>
+          {/* Linked record (read-only — set by the screen that opened the sheet). */}
+          {relatedTo ? (
+            <View style={styles.section}>
+              <FormRow
+                label={tr('קשור ל', 'Related to')}
+                value={relatedTo.entityName ? `${relatedMeta ? tr(relatedMeta.he, relatedMeta.en) + ' · ' : ''}${relatedTo.entityName}` : (relatedMeta ? tr(relatedMeta.he, relatedMeta.en) : relatedTo.type)}
+                icon={relatedMeta?.icon || 'link-variant'}
+                chevron="none"
+              />
+            </View>
+          ) : null}
 
-            <View style={[styles.reminderRow, { flexDirection }]}>
-              <View style={[{ alignItems: 'center', gap: 8, flexDirection }]}>
-                <MaterialCommunityIcons name="bell-outline" size={20} color={theme.colors.primary} />
-                <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }}>{t('tasks.reminder', 'תזכורת')}</Text>
-              </View>
-              <Switch
-                value={reminderEnabled}
-                onValueChange={(val) => {
+          {/* More details — collapsed by default (mirrors the web TaskForm). */}
+          <MoreDetailsToggle
+            expanded={detailsExpanded}
+            onToggle={() => setDetailsExpanded((v) => !v)}
+            summary={detailsSummary}
+          />
+
+          {detailsExpanded && (
+            <View style={{ paddingTop: 8 }}>
+              <ReminderRow
+                enabled={reminderEnabled}
+                onToggle={(val) => {
                   setReminderEnabled(val);
                   if (val && dueIso) {
                     const d = new Date(dueIso);
                     if (!isNaN(d.getTime())) setReminderObj(d);
                   }
                 }}
-                color={theme.colors.primary}
+                value={reminderObj}
+                onChange={setReminderObj}
               />
-            </View>
 
-            {reminderEnabled && (
-              <Pressable onPress={() => {
-                setShowDuePicker(false);
-                setShowReminderPicker(true);
-              }}>
-                <View pointerEvents="none">
-                  <TextInput
-                    label={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
-                    value={formatDateTimeSafe(reminderObj, lang)}
-                    mode="outlined"
-                    editable={false}
-                    style={{ marginBottom: 14, textAlign }}
-                    outlineColor={theme.colors.outline}
-                    activeOutlineColor={theme.colors.primary}
-                    right={<TextInput.Icon icon="bell-ring-outline" />}
-                  />
-                </View>
-              </Pressable>
-            )}
-
-            {/* Additional details — collapsed by default (mirrors the web TaskForm). */}
-            <Pressable
-              onPress={() => setDetailsExpanded((v) => !v)}
-              style={[styles.detailsToggle, { flexDirection }]}
-            >
-              <MaterialCommunityIcons
-                name={detailsExpanded ? 'chevron-down' : (isRTL ? 'chevron-left' : 'chevron-right')}
-                size={20}
-                color={theme.colors.primary}
+              <FormTextField
+                label={tr('תיאור', 'Description')}
+                value={description}
+                onChangeText={setDescription}
+                multiline
+                numberOfLines={3}
               />
-              <Text style={{ color: theme.colors.primary, fontWeight: '700' }}>
-                {isRTL ? 'פרטים נוספים' : 'Additional details'}
-              </Text>
-            </Pressable>
 
-            {detailsExpanded && (
-              <View style={{ marginTop: 4 }}>
-                {/* Description */}
-                <TextInput
-                  label={isRTL ? 'תיאור' : 'Description'}
-                  value={description}
-                  onChangeText={setDescription}
-                  mode="outlined"
-                  multiline
-                  numberOfLines={3}
-                  style={{ marginBottom: 14, textAlign }}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
+              <FormSectionLabel icon="shape-outline">{tr('סוג משימה', 'Task type')}</FormSectionLabel>
+              <View style={styles.section}>
+                <ChoiceChips
+                  value={taskType}
+                  onChange={setTaskType}
+                  options={TASK_TYPES.map((tt) => ({
+                    key: tt.key,
+                    label: isRTL ? tt.he : tt.en,
+                    icon: tt.icon as any,
+                  }))}
                 />
-
-                {/* Task type */}
-                <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
-                  {isRTL ? 'סוג משימה' : 'Task type'}
-                </Text>
-                <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
-                  {TASK_TYPES.map((tt) => {
-                    const active = taskType === tt.key;
-                    return (
-                      <Chip
-                        key={tt.key}
-                        selected={active}
-                        onPress={() => setTaskType(tt.key)}
-                        compact
-                        style={[
-                          styles.chip,
-                          active
-                            ? { backgroundColor: `${theme.colors.primary}20`, borderColor: theme.colors.primary, borderWidth: 1.5 }
-                            : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
-                        ]}
-                        textStyle={[{ fontSize: 12 }, active ? { color: theme.colors.primary, fontWeight: '700' } : null]}
-                      >
-                        {`${tt.icon} ${isRTL ? tt.he : tt.en}`}
-                      </Chip>
-                    );
-                  })}
-                </View>
-
-                {/* Category */}
-                <TextInput
-                  label={isRTL ? 'קטגוריה' : 'Category'}
-                  value={category}
-                  onChangeText={setCategory}
-                  mode="outlined"
-                  style={{ marginBottom: 14, textAlign }}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                />
-
-                {/* Tags */}
-                <Text variant="labelLarge" style={{ color: theme.colors.onSurface, marginBottom: 6, textAlign }}>
-                  {isRTL ? 'תיוגים' : 'Tags'}
-                </Text>
-                <TextInput
-                  value={tagInput}
-                  onChangeText={setTagInput}
-                  onSubmitEditing={addTag}
-                  blurOnSubmit={false}
-                  returnKeyType="done"
-                  mode="outlined"
-                  placeholder={isRTL ? 'הקלד תיוג והוסף...' : 'Type a tag and add...'}
-                  style={{ marginBottom: tags.length > 0 ? 8 : 14, textAlign }}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                  right={<TextInput.Icon icon="plus" onPress={addTag} />}
-                />
-                {tags.length > 0 && (
-                  <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
-                    {tags.map((tag) => (
-                      <Chip
-                        key={tag}
-                        compact
-                        onClose={() => removeTag(tag)}
-                        style={[styles.chip, { backgroundColor: theme.colors.surfaceVariant }]}
-                        textStyle={{ fontSize: 12 }}
-                      >
-                        {tag}
-                      </Chip>
-                    ))}
-                  </View>
-                )}
               </View>
-            )}
-          </ScrollView>
 
-          <View style={[styles.actions, { flexDirection }]}>
-            <Button mode="outlined" onPress={onDismiss} style={{ flex: 1 }} textColor={theme.colors.onSurfaceVariant}>
-              {t('common.cancel')}
-            </Button>
-            <Button mode="contained" onPress={handleCreate} loading={creating} disabled={creating} style={{ flex: 1 }}>
-              {t('common.save')}
-            </Button>
-          </View>
-        </Pressable>
-      </Pressable>
+              <FormTextField label={tr('קטגוריה', 'Category')} value={category} onChangeText={setCategory} />
 
-      <GambotDateTimePicker
-        visible={showDuePicker}
-        value={dueIso || dueObj}
-        title={t('tasks.dueDate', 'תאריך יעד')}
-        onConfirm={(d) => applyDueChange(d, dueObj)}
-        onDismiss={() => setShowDuePicker(false)}
-      />
-      <GambotDateTimePicker
-        visible={showReminderPicker}
-        value={reminderObj}
-        title={t('tasks.reminderDateTime', 'תאריך ושעת תזכורת')}
-        onConfirm={(d) => setReminderObj(d)}
-        onDismiss={() => setShowReminderPicker(false)}
-      />
+              <FormSectionLabel icon="tag-outline">{tr('תיוגים', 'Tags')}</FormSectionLabel>
+              <FormTextField
+                value={tagInput}
+                onChangeText={setTagInput}
+                onSubmitEditing={addTag}
+                blurOnSubmit={false}
+                returnKeyType="done"
+                placeholder={tr('הקלד תיוג והוסף...', 'Type a tag and add...')}
+                style={{ marginBottom: tags.length > 0 ? 8 : 14 }}
+                right={<FormTagAdd onPress={addTag} />}
+              />
+              {tags.length > 0 && (
+                <View style={[styles.tagsRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  {tags.map((tag) => (
+                    <Chip
+                      key={tag}
+                      compact
+                      onClose={() => removeTag(tag)}
+                      style={{ backgroundColor: theme.colors.surfaceVariant, borderRadius: 18 }}
+                      textStyle={{ fontSize: 12 }}
+                    >
+                      {tag}
+                    </Chip>
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+        </TaskFormBody>
+
+        <TaskFormSubmitBar
+          label={tr('צור משימה', 'Create task')}
+          onPress={handleCreate}
+          loading={creating}
+        />
+      </TaskFormFrame>
     </Modal>
   );
 }
 
+// Trailing "+" action for the tag field.
+function FormTagAdd({ onPress }: { onPress: () => void }) {
+  return <TextInput.Icon icon="plus" onPress={onPress} />;
+}
+
 const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
-  sheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 18 },
-  chipsRow: { gap: 8, flexWrap: 'wrap' },
-  chip: { borderRadius: 18 },
-  reminderRow: { alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  actions: { gap: 12, marginTop: 12 },
-  userList: { borderWidth: 1, borderRadius: 10, marginBottom: 14, overflow: 'hidden' },
-  userRow: { alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 14 },
-  detailsToggle: { alignItems: 'center', gap: 6, paddingVertical: 10, marginBottom: 2 },
+  section: { marginBottom: 18 },
+  tagsRow: { gap: 8, flexWrap: 'wrap', marginBottom: 14 },
 });

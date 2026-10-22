@@ -58,6 +58,7 @@ import { StickySaveBar } from '../../../../components/StickySaveBar';
 import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
 import { InvoicePreviewModal } from '../../../../components/InvoicePreviewModal';
 import { CollapsibleSection } from '../../../../components/CollapsibleSection';
+import { sendDocumentViaGambot, MissingDefaultTemplateError } from '../../../../services/whatsappDocSender';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -180,6 +181,7 @@ export default function InvoiceDetailScreen() {
   const [saving, setSaving] = useState(false);
   const [issuing, setIssuing] = useState(false);
   const [creatingReceipt, setCreatingReceipt] = useState(false);
+  const [sendingWa, setSendingWa] = useState(false);
 
   // Type/payment menus
   const [typeMenuVisible, setTypeMenuVisible] = useState(false);
@@ -215,7 +217,9 @@ export default function InvoiceDetailScreen() {
   );
 
   const getDocLabel = (type: string) => DOCUMENT_TYPES.find((d) => d.key === type)?.labelHe || type;
-  const getDocColor = (type: string) => DOCUMENT_TYPES.find((d) => d.key === type)?.color || BRAND_COLOR;
+  // The document screen always uses the system's green; the type is identified by its label, not a per-type
+  // color (receipt/combined used to tint the whole screen blue/purple, disconnected from the app).
+  const getDocColor = (_type: string) => BRAND_COLOR;
   const getStatusLabel = (status: string) => INVOICE_STATUSES.find((s) => s.key === status)?.labelHe || status;
   const getStatusColor = (status: string) => INVOICE_STATUSES.find((s) => s.key === status)?.color || '#9E9E9E';
 
@@ -626,6 +630,50 @@ export default function InvoiceDetailScreen() {
     await Clipboard.setStringAsync(publicInvoiceUrl);
     Alert.alert(t('docs.linkCopied', 'הקישור הועתק'), t('invoices.linkCopiedDesc', 'קישור לצפייה בחשבונית הועתק ללוח'));
   }, [invoice, publicInvoiceUrl, t]);
+
+  // ── Send to the customer via Gambot WhatsApp: open window → regular message, closed → default template ──
+  const handleSendWhatsApp = useCallback(async () => {
+    if (!user?.organization || !invoice) return;
+    const phone = invoice.contactPhone;
+    if (!phone) {
+      Alert.alert(t('common.error'), t('invoices.noPhone', 'אין מספר טלפון ללקוח. אפשר לשתף את הקישור בדרך אחרת.'), [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('invoices.share', 'שתף'), onPress: handleShare },
+      ]);
+      return;
+    }
+    const docLabel = `${DOCUMENT_TYPES.find((d) => d.key === invoice.type)?.labelHe || invoice.type}${invoice.documentNumber ? ` ${invoice.documentNumber}` : ''}`;
+    setSendingWa(true);
+    try {
+      const mode = await sendDocumentViaGambot({
+        organization: user.organization,
+        phone,
+        role: 'sendInvoice',
+        user,
+        customerName: invoice.contactName,
+        docLabel,
+        url: publicInvoiceUrl,
+        liveText: `שלום ${invoice.contactName || ''},\n${docLabel} מוכנה עבורך 🧾\n${t('invoices.total', 'סה"כ')}: ${formatCurrency(Number(invoice.total || 0), currencySymbol(invoice.currency))}`,
+      });
+      Alert.alert(
+        t('common.success', 'הצלחה'),
+        mode === 'regular'
+          ? t('invoices.sentRegular', 'המסמך נשלח בוואטסאפ')
+          : t('invoices.sentTemplate', 'המסמך נשלח בוואטסאפ באמצעות תבנית (השיחה סגורה)'),
+      );
+    } catch (err: any) {
+      if (err instanceof MissingDefaultTemplateError) {
+        Alert.alert(
+          t('common.error'),
+          t('invoices.noTemplate', 'השיחה עם הלקוח סגורה ואין תבנית ברירת מחדל לשליחת חשבונית. היא נוצרת אוטומטית עם חיבור הוואטסאפ — אפשר להשלים אותה בהגדרות ← תבניות ברירת מחדל.'),
+        );
+      } else {
+        Alert.alert(t('common.error'), err?.message || t('errors.generic'));
+      }
+    } finally {
+      setSendingWa(false);
+    }
+  }, [user, invoice, publicInvoiceUrl, handleShare, t]);
 
   // ── "Mark paid" = issue a receipt for the open balance (legal way to record a payment) ──
   const handleMarkPaid = useCallback(() => {
@@ -1175,7 +1223,7 @@ export default function InvoiceDetailScreen() {
 
   let primary: { label: string; icon: string; color: string; run: () => void; loading?: boolean } | null = null;
   if (invoice.status === 'issued') {
-    primary = { label: t('invoices.sendToCustomer', 'שלח ללקוח'), icon: 'send', color: docColor, run: handleShare };
+    primary = { label: t('invoices.sendWhatsApp', 'שלח בוואטסאפ'), icon: 'whatsapp', color: docColor, run: handleSendWhatsApp, loading: sendingWa };
   } else if ((invoice.status === 'sent' || overdue) && openBalance > 0) {
     primary = { label: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', color: '#16a34a', run: handleMarkPaid, loading: creatingReceipt };
   } else if (invoice.status === 'paid') {
@@ -1195,6 +1243,7 @@ export default function InvoiceDetailScreen() {
           <IconButton icon="eye-outline" iconColor={theme.custom.headerText} size={22} onPress={() => setPreviewVisible(true)} />
           <HeaderMenu
             items={[
+              { key: 'whatsapp', title: t('invoices.sendWhatsApp', 'שלח בוואטסאפ'), icon: 'whatsapp', onPress: handleSendWhatsApp, hidden: primary?.icon === 'whatsapp' },
               { key: 'share', title: t('invoices.share', 'שתף'), icon: 'share-variant', onPress: handleShare },
               { key: 'link', title: t('docs.copyLink', 'העתק קישור'), icon: 'link-variant', onPress: handleCopyLink },
               { key: 'receipt', title: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', onPress: handleMarkPaid, hidden: openBalance <= 0 || primary?.icon === 'cash-check' },

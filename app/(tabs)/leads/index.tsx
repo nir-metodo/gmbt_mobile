@@ -8,12 +8,15 @@ import {
   Alert,
   Linking,
   Modal as RNModal,
+  BackHandler,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { FlashList } from '@shopify/flash-list';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Text, Searchbar, Chip, FAB, Avatar, Divider, Surface, Portal, Modal, Button, TextInput as PaperInput, ActivityIndicator, IconButton, Snackbar, Menu } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../components/KanbanBoard';
+import { useMultiSelect, SelectCheck, SelectionHeader, BulkActionBar, type BulkAction } from '../../../components/MultiSelect';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -377,6 +380,27 @@ export default function LeadsListScreen() {
   const [quickFilters, setQuickFilters] = useState<QuickFilterKey[]>([]);
   const [stagePickerLead, setStagePickerLead] = useState<Lead | null>(null);
   const [pipelineStages, setPipelineStages] = useState<LeadStage[]>([]);
+
+  // ── Multi-select (list view): long-press a row to start, bulk actions in the bottom bar ──
+  const sel = useMultiSelect();
+  const clearSelection = sel.clear;
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkModal, setBulkModal] = useState<null | 'stage' | 'status'>(null);
+  // Leaving the screen or switching to the board drops the selection.
+  useFocusEffect(useCallback(() => () => clearSelection(), [clearSelection]));
+  useEffect(() => {
+    if (viewMode !== 'list') clearSelection();
+  }, [viewMode, clearSelection]);
+  // Android back exits selection mode first.
+  useEffect(() => {
+    if (!sel.active) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      clearSelection();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [sel.active, clearSelection]);
+
   const fetchingRef = useRef(false);
   const latestLeadsRef = useRef<Lead[]>([]);
 
@@ -1301,6 +1325,147 @@ export default function LeadsListScreen() {
     }
   }, [organization, user, t]);
 
+  // ── Bulk actions ────────────────────────────────────────────────────────────
+  // Runs `fn` for every selected lead with limited concurrency. `fn` applies its own optimistic
+  // update and must throw (after rolling back) on failure. Shows a summary and clears the selection.
+  const runBulk = useCallback(
+    async (doneText: (n: number) => string, fn: (lead: Lead) => Promise<void>) => {
+      const idSet = new Set(sel.ids);
+      const targets = leads.filter((l) => idSet.has(l.id));
+      if (targets.length === 0) { clearSelection(); return; }
+      setBulkBusy(true);
+      let ok = 0;
+      let failed = 0;
+      const queue = [...targets];
+      const worker = async () => {
+        while (queue.length > 0) {
+          const lead = queue.shift()!;
+          try { await fn(lead); ok++; } catch { failed++; }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker));
+      setBulkBusy(false);
+      clearSelection();
+      if (failed > 0) {
+        Alert.alert(
+          doneText(ok),
+          tr(`${failed} לידים נכשלו`, `${failed} leads failed`),
+        );
+      } else {
+        setOwnershipSnackbar(doneText(ok));
+      }
+    },
+    [sel.ids, leads, clearSelection, tr],
+  );
+
+  const bulkChangeStage = useCallback(
+    (newStage: string) => {
+      setBulkModal(null);
+      const stageObj = pipelineStages.find((s) => s.name === newStage) || pipelineStages.find((s) => s.id === newStage);
+      const newStageId = stageObj?.id || newStage;
+      const newStageName = stageObj?.name || newStage;
+      if (!organization || !newStageId) return;
+      const userName = user?.fullname || user?.name || '';
+      runBulk(
+        (n) => tr(`עודכנו ${n} לידים`, `${n} leads updated`),
+        async (lead) => {
+          const movedAtIso = new Date().toISOString();
+          setLeads((prev) =>
+            prev.map((l) => (l.id === lead.id ? ({ ...l, stageName: newStageName, stage: newStageName, stageId: newStageId, modifiedOn: movedAtIso, updatedOn: movedAtIso } as Lead) : l)),
+          );
+          try {
+            await leadsApi.moveStage(organization, lead.id, newStageId, newStageName, userName);
+          } catch (err) {
+            setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, stageName: lead.stageName, stage: lead.stage, stageId: lead.stageId } : l)));
+            throw err;
+          }
+        },
+      );
+    },
+    [organization, user, pipelineStages, runBulk, tr],
+  );
+
+  const bulkTakeOwnership = useCallback(() => {
+    if (!organization || !user) return;
+    const userId = user.uID || user.userId || '';
+    const userName = user.fullname || '';
+    runBulk(
+      (n) => tr(`לקחת בעלות על ${n} לידים`, `Took ownership of ${n} leads`),
+      async (lead) => {
+        setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, ownerId: userId, ownerName: userName } : l)));
+        try {
+          await leadsApi.update(organization, { id: lead.id, ownerId: userId, ownerName: userName }, userId, userName);
+        } catch (err) {
+          setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, ownerId: lead.ownerId, ownerName: (lead as any).ownerName } : l)));
+          throw err;
+        }
+      },
+    );
+  }, [organization, user, runBulk, tr]);
+
+  const bulkChangeStatus = useCallback(
+    (status: string) => {
+      setBulkModal(null);
+      if (!organization || !user) return;
+      const userId = user.uID || user.userId || '';
+      const userName = user.fullname || '';
+      runBulk(
+        (n) => tr(`עודכנו ${n} לידים`, `${n} leads updated`),
+        async (lead) => {
+          setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, status } : l)));
+          try {
+            await leadsApi.update(organization, { id: lead.id, status }, userId, userName);
+          } catch (err) {
+            setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, status: lead.status } : l)));
+            throw err;
+          }
+        },
+      );
+    },
+    [organization, user, runBulk, tr],
+  );
+
+  const bulkDelete = useCallback(() => {
+    if (!organization || !userIsAdmin) return;
+    const n = sel.count;
+    Alert.alert(
+      tr('מחיקת לידים', 'Delete leads'),
+      tr(`למחוק ${n} לידים? הפעולה אינה הפיכה.`, `Delete ${n} leads? This cannot be undone.`),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete', 'Delete'),
+          style: 'destructive',
+          onPress: () =>
+            runBulk(
+              (cnt) => tr(`נמחקו ${cnt} לידים`, `${cnt} leads deleted`),
+              async (lead) => {
+                await leadsApi.delete(organization, lead.id);
+                setLeads((prev) => {
+                  const next = prev.filter((l) => l.id !== lead.id);
+                  latestLeadsRef.current = next;
+                  return next;
+                });
+                setTotalCount((c) => Math.max(0, c - 1));
+              },
+            ),
+        },
+      ],
+    );
+  }, [organization, userIsAdmin, sel.count, runBulk, tr, t]);
+
+  const bulkActions = useMemo<BulkAction[]>(() => {
+    const actions: BulkAction[] = [
+      { key: 'stage', icon: 'swap-horizontal', label: tr('שלב', 'Stage'), onPress: () => setBulkModal('stage') },
+      { key: 'owner', icon: 'account-arrow-left', label: tr('בעלות', 'Owner'), onPress: bulkTakeOwnership },
+      { key: 'status', icon: 'tag-outline', label: tr('סטטוס', 'Status'), onPress: () => setBulkModal('status') },
+    ];
+    if (userIsAdmin) {
+      actions.push({ key: 'delete', icon: 'delete-outline', label: tr('מחק', 'Delete'), onPress: bulkDelete, color: '#ef4444' });
+    }
+    return actions;
+  }, [tr, bulkTakeOwnership, bulkDelete, userIsAdmin]);
+
   const callLead = useCallback((lead: Lead) => {
     const phone = lead.contactPhone || lead.phoneNumber || '';
     if (!phone) return;
@@ -1329,21 +1494,37 @@ export default function LeadsListScreen() {
       const sub = [company || item.contactName, phone].filter(Boolean).join('  ·  ');
       const task = leadTaskMap.get(item.id);
       const activity = activityLabel(item);
+      const selecting = sel.active;
+      const checked = selecting && sel.isSelected(item.id);
       return (
       <Pressable
-        onPress={() => openLead(item)}
-        onLongPress={() => setStagePickerLead(item)}
+        onPress={() => (selecting ? sel.toggle(item.id) : openLead(item))}
+        onLongPress={() => {
+          if (selecting) return;
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+          sel.start(item.id);
+        }}
         delayLongPress={400}
         android_ripple={{ color: theme.colors.surfaceVariant }}
         style={({ pressed }) => [
           styles.leadRow,
           {
-            backgroundColor: pressed ? theme.colors.surfaceVariant : theme.colors.surface,
+            backgroundColor: checked
+              ? withAlpha(theme.colors.primary, 0.12)
+              : pressed
+                ? theme.colors.surfaceVariant
+                : theme.colors.surface,
             flexDirection,
           },
         ]}
       >
         <View style={[styles.stageStripe, { backgroundColor: sColor }]} />
+
+        {selecting ? (
+          <View style={{ alignSelf: 'center' }}>
+            <SelectCheck checked={checked} />
+          </View>
+        ) : null}
 
         <View style={styles.leadBody}>
           {/* Row 1: name + value */}
@@ -1381,11 +1562,15 @@ export default function LeadsListScreen() {
 
           {/* Row 3: stage pill, signals, owner */}
           <View style={[styles.leadBottom, { flexDirection }]}>
-            <View style={[styles.stagePill, { backgroundColor: withAlpha(sColor, 0.16) }]}>
+            <Pressable
+              onPress={() => (selecting ? sel.toggle(item.id) : setStagePickerLead(item))}
+              hitSlop={4}
+              style={[styles.stagePill, { backgroundColor: withAlpha(sColor, 0.16) }]}
+            >
               <Text style={{ fontSize: 11, fontWeight: '600', color: sColor }} numberOfLines={1}>
                 {stageName}
               </Text>
-            </View>
+            </Pressable>
             {task ? <LeadTaskBadge info={task} t={t} formatDate={formatDate} /> : null}
             {(item as any).score ? (
               <View style={[styles.signalChip, { backgroundColor: withAlpha(scoreColor((item as any).score), 0.16) }]}>
@@ -1406,7 +1591,7 @@ export default function LeadsListScreen() {
           </View>
         </View>
 
-        {phone ? (
+        {phone && !selecting ? (
           <Pressable
             onPress={() => callLead(item)}
             hitSlop={6}
@@ -1417,7 +1602,7 @@ export default function LeadsListScreen() {
         ) : null}
       </Pressable>
     );},
-    [theme, flexDirection, textAlign, openLead, stageColor, t, getLeadStageName, seenLeadIds, leadTaskMap, activityLabel, callLead],
+    [theme, flexDirection, textAlign, openLead, stageColor, t, getLeadStageName, seenLeadIds, leadTaskMap, activityLabel, callLead, sel.active, sel.isSelected, sel.toggle, sel.start],
   );
 
   // Board card: name, value, priority/score, owner, age + task/overdue hint. Dragging (long-press) is
@@ -1552,6 +1737,16 @@ export default function LeadsListScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background, flexDirection: 'column' }]}>
+      {sel.active ? (
+        <SelectionHeader
+          count={sel.count}
+          total={filteredLeads.length}
+          onClose={clearSelection}
+          onSelectAll={() => sel.selectAll(filteredLeads.map((l) => l.id))}
+          label={tr('נבחרו', 'selected')}
+        />
+      ) : (
+      <>
       {/* Header: title · List|Board switch · filter · overflow  (3 controls max) */}
       <View
         style={[
@@ -1832,6 +2027,8 @@ export default function LeadsListScreen() {
           )}
         </View>
       )}
+      </>
+      )}
 
       {/* Content */}
       {isLoading && leads.length === 0 ? (
@@ -1875,7 +2072,8 @@ export default function LeadsListScreen() {
           }
           onEndReached={onEndReached}
           onEndReachedThreshold={0.3}
-          contentContainerStyle={styles.listContent}
+          extraData={sel.selected}
+          contentContainerStyle={sel.active ? { ...styles.listContent, paddingBottom: 120 + insets.bottom } : styles.listContent}
         />
       ) : (
         <View style={{ flex: 1 }}>
@@ -1894,12 +2092,16 @@ export default function LeadsListScreen() {
         </View>
       )}
 
-      <FAB
-        icon="plus"
-        onPress={() => router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new' } })}
-        style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
-        color="#FFF"
-      />
+      {sel.active ? (
+        <BulkActionBar actions={bulkActions} busy={bulkBusy} />
+      ) : (
+        <FAB
+          icon="plus"
+          onPress={() => router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new' } })}
+          style={[styles.fab, { backgroundColor: theme.colors.primary, bottom: insets.bottom + 16, left: isRTL ? 16 : undefined, right: isRTL ? undefined : 16 }]}
+          color="#FFF"
+        />
+      )}
 
       <Portal>
         <Modal
@@ -2170,6 +2372,63 @@ export default function LeadsListScreen() {
             style={{ marginTop: 8 }}
             textColor={theme.colors.onSurfaceVariant}
           >
+            {t('common.cancel')}
+          </Button>
+        </Modal>
+      </Portal>
+
+      {/* Bulk: change stage / status for the selected leads */}
+      <Portal>
+        <Modal
+          visible={bulkModal !== null}
+          onDismiss={() => setBulkModal(null)}
+          contentContainerStyle={[styles.stageModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 4, textAlign }}>
+            {bulkModal === 'status' ? tr('שינוי סטטוס', 'Change status') : t('leads.moveStage')}
+          </Text>
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, textAlign }}>
+            {tr(`${sel.count} לידים נבחרו`, `${sel.count} leads selected`)}
+          </Text>
+          <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator={false}>
+            {bulkModal === 'stage'
+              ? stageKeys.map((stage) => {
+                  const color = stageColor(stage);
+                  return (
+                    <Pressable
+                      key={stage}
+                      onPress={() => bulkChangeStage(stage)}
+                      style={({ pressed }) => [
+                        styles.stageOption,
+                        { flexDirection, backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent' },
+                      ]}
+                    >
+                      <View style={[styles.stageOptionDot, { backgroundColor: color }]} />
+                      <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign }}>
+                        {t(STAGE_I18N[stage] ?? stage)}
+                      </Text>
+                    </Pressable>
+                  );
+                })
+              : bulkModal === 'status'
+                ? STATUS_OPTIONS.map((st) => (
+                    <Pressable
+                      key={st}
+                      onPress={() => bulkChangeStatus(st)}
+                      style={({ pressed }) => [
+                        styles.stageOption,
+                        { flexDirection, backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent' },
+                      ]}
+                    >
+                      <View style={[styles.stageOptionDot, { backgroundColor: theme.colors.primary }]} />
+                      <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface, textAlign }}>
+                        {st}
+                      </Text>
+                    </Pressable>
+                  ))
+                : null}
+          </ScrollView>
+          <Button mode="text" onPress={() => setBulkModal(null)} style={{ marginTop: 8 }} textColor={theme.colors.onSurfaceVariant}>
             {t('common.cancel')}
           </Button>
         </Modal>

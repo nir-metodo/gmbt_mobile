@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -8,7 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
-  useWindowDimensions,
 } from 'react-native';
 import {
   Text,
@@ -24,7 +23,7 @@ import {
   Switch,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
@@ -42,7 +41,6 @@ import { spacing, borderRadius } from '../../../../constants/theme';
 import ContactLookup from '../../../../components/ContactLookup';
 import type { OrgUser, Template } from '../../../../types';
 import {
-  DynamicFieldsSectionView,
   DynamicFieldsSectionForm,
   ExtraFieldsSectionView,
   getSectionFieldKeys,
@@ -85,6 +83,70 @@ function getStatusColor(status: string): string {
   return map[normalized] || '#9E9E9E';
 }
 
+// Keys of a stored case that are edited through dedicated form fields (everything else is carried
+// along as a "dynamic"/custom field value).
+const CORE_CASE_KEYS = ['id', 'title', 'subject', 'description', 'status', 'priority', 'category', 'assignedTo', 'source', 'contactName', 'contactPhone', 'contactId', 'dueDate', 'tags', 'notes', 'createdAt', 'updatedAt', 'resolvedAt', 'organization', 'pipelineId', 'stageId', 'stageName'];
+
+interface CaseFormValues {
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  category: string;
+  assignedTo: string;
+  assignedToId: string;
+  source: string;
+  contactName: string;
+  contactPhone: string;
+  contactId: string;
+  dueDate: string;
+  tags: string;
+  notes: string;
+  followUpEnabled: boolean;
+  followUpInterval: number;
+  followUpUnit: 'hours' | 'days' | 'weeks';
+  followUpTemplateId: string;
+  followUpTemplateName: string;
+  followUpRepeat: number;
+  nextFollowUp: string;
+  dynamic: Record<string, any>;
+}
+
+// Stored case -> editable form values. Used both to fill the form and as the "unsaved changes" baseline.
+function formFromCase(c: Case): CaseFormValues {
+  const anyC = c as any;
+  const dynamicVals: Record<string, any> = {};
+  Object.keys(anyC).forEach((k) => {
+    if (!CORE_CASE_KEYS.includes(k)) dynamicVals[k] = anyC[k];
+  });
+  return {
+    title: c.title || c.subject || '',
+    description: c.description || '',
+    status: c.status,
+    priority: c.priority,
+    category: c.category || '',
+    assignedTo: c.assignedToName || c.assignedTo || '',
+    assignedToId: c.assignedTo || '',
+    source: anyC.source || '',
+    contactName: c.contactName || '',
+    contactPhone: c.contactPhone || anyC.contact_phone || '',
+    contactId: c.contactId || '',
+    dueDate: anyC.dueDate || anyC.due_date || '',
+    tags: Array.isArray(anyC.tags) ? anyC.tags.join(', ') : (anyC.tags || ''),
+    notes: anyC.notes || '',
+    followUpEnabled: !!c.followUpEnabled,
+    followUpInterval: c.followUpInterval || 2,
+    followUpUnit: (c.followUpUnit as any) || 'days',
+    followUpTemplateId: c.followUpTemplateId || '',
+    followUpTemplateName: c.followUpTemplateName || '',
+    followUpRepeat: c.followUpRepeat || 3,
+    nextFollowUp: c.nextFollowUp || '',
+    dynamic: { ...(anyC.customFields || {}), ...dynamicVals },
+  };
+}
+
+const serializeForm = (v: CaseFormValues) => JSON.stringify(v);
+
 export default function CaseDetailScreen() {
   const router = useRouter();
   const { id, contactPhone: prefillPhone, prefillContactName } = useLocalSearchParams<{
@@ -93,7 +155,6 @@ export default function CaseDetailScreen() {
     prefillContactName?: string;
   }>();
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign, writingDirection } = useRTL();
   const { t, i18n } = useTranslation();
@@ -117,8 +178,11 @@ export default function CaseDetailScreen() {
   const [formDynamicFields, setFormDynamicFields] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(!isNew && !cachedCase);
   const [error, setError] = useState<string | null>(null);
-  const [editModalVisible, setEditModalVisible] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Serialized form values as last loaded/saved; the form is "dirty" when it differs from this.
+  const [formBaseline, setFormBaseline] = useState<string | null>(null);
+  const forceInitRef = useRef(false);
+  const skipGuardRef = useRef(false);
   const [deleting, setDeleting] = useState(false);
 
   const [formTitle, setFormTitle] = useState('');
@@ -200,13 +264,14 @@ export default function CaseDetailScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, completingTaskId, fetchTimeline]);
 
-  const fetchCase = useCallback(async () => {
-    if (!user?.organization) return;
+  const fetchCase = useCallback(async (): Promise<Case | null> => {
+    if (!user?.organization) return null;
     if (isNew) {
       setLoading(false);
-      return;
+      return null;
     }
-    if (!id) return;
+    if (!id) return null;
+    let result: Case | null = null;
     try {
       setError(null);
       const [found, settings] = await Promise.all([
@@ -214,6 +279,7 @@ export default function CaseDetailScreen() {
         casesApi.getSettings(user.organization).catch(() => null),
       ]);
       if (found) {
+        result = found;
         setCaseData(found);
         cacheEntity('cases', found);
       } else if (!cachedCase) {
@@ -227,6 +293,7 @@ export default function CaseDetailScreen() {
     } finally {
       setLoading(false);
     }
+    return result;
   }, [user?.organization, id, isNew, t, cachedCase]);
 
   useEffect(() => {
@@ -261,44 +328,86 @@ export default function CaseDetailScreen() {
     }
   }, [isNew, prefillPhone, prefillContactName, user?.organization]);
 
-  const openEditModal = useCallback(() => {
-    if (!caseData) return;
-    setFormTitle(caseData.title || caseData.subject || '');
-    setFormDescription(caseData.description || '');
-    setFormStatus(caseData.status);
-    setFormPriority(caseData.priority);
-    setFormCategory(caseData.category || '');
-    setFormAssignedTo(caseData.assignedToName || caseData.assignedTo || '');
-    setFormAssignedToId(caseData.assignedTo || '');
-    setFormSource((caseData as any).source || '');
-    setFormContactName(caseData.contactName || '');
-    setFormContactPhone(caseData.contactPhone || (caseData as any).contact_phone || '');
-    setFormContactId(caseData.contactId || '');
-    setFormDueDate((caseData as any).dueDate || (caseData as any).due_date || '');
-    setFormTags((caseData as any).tags || '');
-    setFormNotes((caseData as any).notes || '');
-    setFormFollowUpEnabled(!!caseData.followUpEnabled);
-    setFormFollowUpInterval(caseData.followUpInterval || 2);
-    setFormFollowUpUnit((caseData.followUpUnit as any) || 'days');
-    setFormFollowUpTemplateId(caseData.followUpTemplateId || '');
-    setFormFollowUpTemplateName(caseData.followUpTemplateName || '');
-    setFormFollowUpRepeat(caseData.followUpRepeat || 3);
-    setFormNextFollowUp(caseData.nextFollowUp || '');
-    const customFields = (caseData as any).customFields || {};
-    const dynamicVals: Record<string, any> = {};
-    Object.keys(caseData as any).forEach((k) => {
-      if (!['id', 'title', 'subject', 'description', 'status', 'priority', 'category', 'assignedTo', 'source', 'contactName', 'contactPhone', 'contactId', 'dueDate', 'tags', 'notes', 'createdAt', 'updatedAt', 'resolvedAt', 'organization', 'pipelineId', 'stageId', 'stageName'].includes(k)) {
-        dynamicVals[k] = (caseData as any)[k];
-      }
-    });
-    setFormDynamicFields({ ...customFields, ...dynamicVals });
+  // ── Always-editable form ──────────────────────────────────────────────────────
+  // The detail screen is the edit form: fields are bound to the form* state below, filled from the
+  // stored case, and a sticky save bar appears only while the values differ from `baselineValues`.
+  const [baselineValues, setBaselineValues] = useState<CaseFormValues | null>(null);
+
+  const currentForm = useMemo<CaseFormValues>(() => ({
+    title: formTitle,
+    description: formDescription,
+    status: formStatus,
+    priority: formPriority,
+    category: formCategory,
+    assignedTo: formAssignedTo,
+    assignedToId: formAssignedToId,
+    source: formSource,
+    contactName: formContactName,
+    contactPhone: formContactPhone,
+    contactId: formContactId,
+    dueDate: formDueDate,
+    tags: formTags,
+    notes: formNotes,
+    followUpEnabled: formFollowUpEnabled,
+    followUpInterval: formFollowUpInterval,
+    followUpUnit: formFollowUpUnit,
+    followUpTemplateId: formFollowUpTemplateId,
+    followUpTemplateName: formFollowUpTemplateName,
+    followUpRepeat: formFollowUpRepeat,
+    nextFollowUp: formNextFollowUp,
+    dynamic: formDynamicFields,
+  }), [formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formAssignedToId, formSource, formContactName, formContactPhone, formContactId, formDueDate, formTags, formNotes, formFollowUpEnabled, formFollowUpInterval, formFollowUpUnit, formFollowUpTemplateId, formFollowUpTemplateName, formFollowUpRepeat, formNextFollowUp, formDynamicFields]);
+
+  const initFormFromCase = useCallback((c: Case) => {
+    const v = formFromCase(c);
+    setFormTitle(v.title);
+    setFormDescription(v.description);
+    setFormStatus(v.status);
+    setFormPriority(v.priority);
+    setFormCategory(v.category);
+    setFormAssignedTo(v.assignedTo);
+    setFormAssignedToId(v.assignedToId);
+    setFormSource(v.source);
+    setFormContactName(v.contactName);
+    setFormContactPhone(v.contactPhone);
+    setFormContactId(v.contactId);
+    setFormDueDate(v.dueDate);
+    setFormTags(v.tags);
+    setFormNotes(v.notes);
+    setFormFollowUpEnabled(v.followUpEnabled);
+    setFormFollowUpInterval(v.followUpInterval);
+    setFormFollowUpUnit(v.followUpUnit);
+    setFormFollowUpTemplateId(v.followUpTemplateId);
+    setFormFollowUpTemplateName(v.followUpTemplateName);
+    setFormFollowUpRepeat(v.followUpRepeat);
+    setFormNextFollowUp(v.nextFollowUp);
+    setFormDynamicFields(v.dynamic);
     setUserPickerExpanded(false);
-    setEditModalVisible(true);
-    if (orgUsers.length === 0) {
-      setOrgUsersLoading(true);
-      usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+    setBaselineValues(v);
+  }, []);
+
+  const isDirty = !isNew && !!caseData && !!baselineValues
+    && serializeForm(currentForm) !== serializeForm(baselineValues);
+  const isDirtyRef = useRef(false);
+  isDirtyRef.current = isDirty;
+
+  // (Re)fill the form whenever the stored case changes — unless the user has unsaved edits
+  // (a save forces a refill so the form picks up server-stamped values).
+  useLayoutEffect(() => {
+    if (isNew || !caseData) return;
+    if (forceInitRef.current || !isDirtyRef.current) {
+      forceInitRef.current = false;
+      initFormFromCase(caseData);
     }
-  }, [caseData, user?.organization, orgUsers.length]);
+  }, [caseData, isNew, initFormFromCase]);
+
+  // Org users for the assignee picker (loaded once, for existing cases).
+  useEffect(() => {
+    if (isNew || !user?.organization || orgUsers.length > 0) return;
+    setOrgUsersLoading(true);
+    usersApi.getAll(user.organization).then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNew, user?.organization]);
 
   // Builds the auto follow-up fields for the case payload. When enabled we schedule
   // the first send from interval/unit (mirrors the web CaseForm + leads) so the backend
@@ -375,37 +484,118 @@ export default function CaseDetailScreen() {
     }
   }, [user, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formAssignedToId, formSource, formContactName, formContactPhone, formDueDate, formTags, formNotes, formDynamicFields, buildFollowUpPayload, router, t]);
 
-  const handleSave = useCallback(async () => {
-    if (!user?.organization || !caseData || !formTitle.trim()) return;
+  // Saves only what the user actually changed (so e.g. editing the title never re-sends the
+  // auto follow-up schedule or stale server-stamped values). Returns true on success.
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (!user?.organization || !caseData || !baselineValues) return false;
+    if (!formTitle.trim()) {
+      Alert.alert(t('common.error'), t('cases.titleRequired', 'יש להזין כותרת לפנייה'));
+      return false;
+    }
+    const b = baselineValues;
+    const differs = (a: unknown, c: unknown) => JSON.stringify(a) !== JSON.stringify(c);
+    const payload: Record<string, any> = {};
+    if (formTitle.trim() !== b.title.trim()) payload.title = formTitle.trim();
+    if (formDescription.trim() !== b.description.trim()) payload.description = formDescription.trim();
+    if (formStatus !== b.status) {
+      payload.status = formStatus;
+      if (formStatus === 'resolved') payload.resolvedAt = new Date().toISOString();
+    }
+    if (formPriority !== b.priority) payload.priority = formPriority;
+    if (formCategory.trim() !== b.category.trim()) payload.category = formCategory.trim();
+    if (formAssignedToId !== b.assignedToId || formAssignedTo !== b.assignedTo) {
+      payload.assignedTo = formAssignedToId || formAssignedTo.trim();
+      payload.assignedToName = formAssignedTo.trim();
+    }
+    if (formSource !== b.source) payload.source = formSource;
+    if (formContactName.trim() !== b.contactName.trim() || formContactPhone.trim() !== b.contactPhone.trim() || formContactId !== b.contactId) {
+      payload.contactName = formContactName.trim();
+      payload.contactPhone = formContactPhone.trim();
+      payload.contactId = formContactId;
+    }
+    if (formDueDate.trim() !== b.dueDate.trim()) payload.dueDate = formDueDate.trim();
+    if (formTags.trim() !== b.tags.trim()) payload.tags = formTags.trim();
+    if (formNotes.trim() !== b.notes.trim()) payload.notes = formNotes.trim();
+    if (
+      formFollowUpEnabled !== b.followUpEnabled || formFollowUpInterval !== b.followUpInterval
+      || formFollowUpUnit !== b.followUpUnit || formFollowUpTemplateId !== b.followUpTemplateId
+      || formFollowUpRepeat !== b.followUpRepeat
+    ) {
+      Object.assign(payload, buildFollowUpPayload());
+    }
+    const changedDynamic: Record<string, any> = {};
+    Object.keys(formDynamicFields).forEach((k) => {
+      if (differs(formDynamicFields[k], b.dynamic[k])) changedDynamic[k] = formDynamicFields[k];
+    });
+    if (Object.keys(changedDynamic).length > 0) {
+      Object.assign(payload, changedDynamic);
+      payload.customFields = { ...((caseData as any).customFields || {}), ...changedDynamic };
+    }
+    if (Object.keys(payload).length === 0) {
+      initFormFromCase(caseData);
+      return true;
+    }
     setSaving(true);
     try {
-      await casesApi.update(user.organization, caseData.id, {
-        title: formTitle.trim(),
-        description: formDescription.trim() || undefined,
-        status: formStatus,
-        priority: formPriority as Case['priority'],
-        category: formCategory.trim() || undefined,
-        assignedTo: formAssignedToId || formAssignedTo.trim() || undefined,
-        assignedToName: formAssignedTo.trim() || undefined,
-        source: formSource || undefined,
-        contactName: formContactName.trim() || undefined,
-        contactPhone: formContactPhone.trim() || undefined,
-        contactId: formContactId || undefined,
-        dueDate: formDueDate.trim() || undefined,
-        tags: (formTags.trim() || undefined) as any,
-        notes: formNotes.trim() || undefined,
-        ...buildFollowUpPayload(),
-        ...({ customFields: formDynamicFields } as any),
-        ...formDynamicFields,
-      }, user?.fullname, user?.userId || user?.uID || '');
-      setEditModalVisible(false);
-      await fetchCase();
+      const res = await casesApi.update(user.organization, caseData.id, payload as Partial<Case>, user?.fullname, user?.userId || user?.uID || '');
+      if (res && res.Success === false) throw new Error(res.Message || res.message || t('errors.generic'));
+      // Refill the form from the server copy (or, if that fetch fails, from what we just saved).
+      forceInitRef.current = true;
+      const fresh = await fetchCase();
+      if (!fresh) setCaseData((prev) => (prev ? ({ ...prev, ...payload } as Case) : prev));
+      return true;
     } catch (err: any) {
+      forceInitRef.current = false;
       Alert.alert(t('common.error'), err.message || t('errors.generic'));
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [user?.organization, caseData, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formSource, formContactName, formContactPhone, formContactId, formDueDate, formTags, formNotes, formDynamicFields, buildFollowUpPayload, fetchCase, t]);
+  }, [user, caseData, baselineValues, formTitle, formDescription, formStatus, formPriority, formCategory, formAssignedTo, formAssignedToId, formSource, formContactName, formContactPhone, formContactId, formDueDate, formTags, formNotes, formFollowUpEnabled, formFollowUpInterval, formFollowUpUnit, formFollowUpTemplateId, formFollowUpRepeat, formDynamicFields, buildFollowUpPayload, initFormFromCase, fetchCase, t]);
+
+  // Throw away unsaved edits and restore the form from the stored case.
+  const discardChanges = useCallback(() => {
+    if (caseData) initFormFromCase(caseData);
+  }, [caseData, initFormFromCase]);
+
+  // Unsaved-changes guard: leaving with a dirty form asks to save / discard / stay.
+  const navigation = useNavigation();
+  const handleSaveRef = useRef(handleSave);
+  handleSaveRef.current = handleSave;
+  useEffect(() => {
+    if (isNew) return;
+    const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
+      if (skipGuardRef.current || !isDirtyRef.current) return;
+      e.preventDefault();
+      const he = lang === 'he';
+      Alert.alert(
+        he ? 'שינויים שלא נשמרו' : 'Unsaved changes',
+        he ? 'יש שינויים שלא נשמרו בפנייה. מה לעשות?' : 'You have unsaved changes to this case. What would you like to do?',
+        [
+          { text: he ? 'הישאר' : 'Stay', style: 'cancel' },
+          {
+            text: he ? 'בטל שינויים' : 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              skipGuardRef.current = true;
+              navigation.dispatch(e.data.action);
+            },
+          },
+          {
+            text: t('common.save'),
+            onPress: async () => {
+              const ok = await handleSaveRef.current();
+              if (ok) {
+                skipGuardRef.current = true;
+                navigation.dispatch(e.data.action);
+              }
+            },
+          },
+        ],
+      );
+    });
+    return unsubscribe;
+  }, [navigation, isNew, lang, t]);
 
   const handleDelete = useCallback(() => {
     Alert.alert(
@@ -422,6 +612,7 @@ export default function CaseDetailScreen() {
             try {
               await casesApi.delete(user.organization, caseData.id);
               Alert.alert(t('common.success', 'הצלחה'), t('cases.deleteSuccess', 'נמחק בהצלחה'));
+              skipGuardRef.current = true;
               if (router.canGoBack()) {
                 router.back();
               } else {
@@ -485,63 +676,6 @@ export default function CaseDetailScreen() {
     },
     [user?.organization, user?.fullname, caseData, fetchCase, t],
   );
-
-  const handlePriorityChange = useCallback(
-    async (newPriority: Case['priority']) => {
-      if (!user?.organization || !caseData || caseData.priority === newPriority) return;
-      const prevPriority = caseData.priority;
-      setCaseData((c) => (c ? { ...c, priority: newPriority } : c));
-      try {
-        await casesApi.update(user.organization, caseData.id, { priority: newPriority }, user?.fullname);
-        fetchCase();
-      } catch (err: any) {
-        setCaseData((c) => (c ? { ...c, priority: prevPriority } : c));
-        Alert.alert(t('common.error'), err.message || t('errors.generic'));
-      }
-    },
-    [user?.organization, user?.fullname, caseData, fetchCase, t],
-  );
-
-  // ── Inline title/description editing with a contextual save bar ──
-  const [inlineTitle, setInlineTitle] = useState(cachedCase?.title || '');
-  const [inlineDesc, setInlineDesc] = useState(cachedCase?.description || '');
-  const [savingInline, setSavingInline] = useState(false);
-  const inlineDirty = !!caseData && !isNew
-    && (inlineTitle !== (caseData.title || '') || inlineDesc !== (caseData.description || ''));
-  const inlineDirtyRef = useRef(false);
-  inlineDirtyRef.current = inlineDirty;
-  useEffect(() => {
-    if (caseData && !inlineDirtyRef.current) {
-      setInlineTitle(caseData.title || '');
-      setInlineDesc(caseData.description || '');
-    }
-  }, [caseData?.id, caseData?.title, caseData?.description]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleSaveInline = useCallback(async () => {
-    if (!user?.organization || !caseData) return;
-    if (!inlineTitle.trim()) {
-      Alert.alert(t('common.error'), t('cases.titleRequired', 'יש להזין כותרת'));
-      return;
-    }
-    setSavingInline(true);
-    try {
-      await casesApi.update(user.organization, caseData.id, {
-        title: inlineTitle.trim(),
-        description: inlineDesc.trim() || undefined,
-      }, user?.fullname, user?.userId || user?.uID || '');
-      await fetchCase();
-    } catch (err: any) {
-      Alert.alert(t('common.error'), err.message || t('errors.generic'));
-    } finally {
-      setSavingInline(false);
-    }
-  }, [user, caseData, inlineTitle, inlineDesc, fetchCase, t]);
-
-  const discardInline = useCallback(() => {
-    if (!caseData) return;
-    setInlineTitle(caseData.title || '');
-    setInlineDesc(caseData.description || '');
-  }, [caseData]);
 
   // Next step in the case life-cycle drives the one prominent action.
   const normalizedCaseStatus = (caseData?.status || '').toLowerCase().replace(/\s+/g, '_');
@@ -942,7 +1076,6 @@ export default function CaseDetailScreen() {
           <HeaderMenu
             iconColor={theme.custom.headerText}
             items={[
-              { key: 'edit', title: t('cases.editAllFields', 'עריכת כל השדות'), icon: 'form-select', onPress: openEditModal },
               { key: 'note', title: t('leads.addNote', 'הוסף הערה'), icon: 'note-plus-outline', onPress: () => setNoteModalVisible(true) },
               { key: 'task', title: t('tasks.addTask', 'הוסף משימה'), icon: 'clipboard-check-outline', onPress: () => setAddTaskVisible(true) },
               { key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true, dividerBefore: true },
@@ -951,10 +1084,12 @@ export default function CaseDetailScreen() {
         </View>
       </View>
 
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
       <ScrollView
         style={styles.body}
         contentContainerStyle={styles.bodyContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {/* SLA Badge */}
         {caseSettings?.sla?.enabled ? (
@@ -1014,7 +1149,10 @@ export default function CaseDetailScreen() {
           );
         })()}
 
-        {/* Status + priority: one tap each, saved immediately */}
+        {/* The case is edited in place: every field below is live, and a sticky save bar appears
+            (only) while something differs from the saved case. */}
+
+        {/* Status + priority */}
         <View
           style={[
             styles.sectionCard,
@@ -1024,16 +1162,16 @@ export default function CaseDetailScreen() {
           <Text variant="labelLarge" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign }]}>
             {t('cases.status')}
           </Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <View style={[styles.statusRow, { flexDirection }]}>
               {STATUS_OPTIONS.map((st) => {
                 const sc = getStatusColor(st);
-                const active = caseData.status.toLowerCase().replace(/\s+/g, '_') === st;
+                const active = (formStatus || '').toLowerCase().replace(/\s+/g, '_') === st;
                 return (
                   <Chip
                     key={st}
                     selected={active}
-                    onPress={() => handleStatusChange(st)}
+                    onPress={() => setFormStatus(st)}
                     compact
                     style={[
                       styles.statusSelectChip,
@@ -1055,14 +1193,14 @@ export default function CaseDetailScreen() {
             {t('cases.priority')}
           </Text>
           <View style={[styles.statusRow, { flexDirection }]}>
-            {(['low', 'medium', 'high', 'urgent'] as const).map((p) => {
+            {PRIORITIES.map((p) => {
               const pc = PRIORITY_COLORS[p] || PRIORITY_COLORS.medium;
-              const active = caseData.priority === p;
+              const active = formPriority === p;
               return (
                 <Chip
                   key={p}
                   selected={active}
-                  onPress={() => handlePriorityChange(p)}
+                  onPress={() => setFormPriority(p)}
                   compact
                   style={[
                     styles.statusSelectChip,
@@ -1080,7 +1218,7 @@ export default function CaseDetailScreen() {
           </View>
         </View>
 
-        {/* Title + description: edited in place; a save bar appears only when changed */}
+        {/* Title, description, category */}
         <View
           style={[
             styles.sectionCard,
@@ -1090,207 +1228,327 @@ export default function CaseDetailScreen() {
           <TextInput
             mode="outlined"
             label={t('cases.caseTitle', 'כותרת')}
-            value={inlineTitle}
-            onChangeText={setInlineTitle}
+            value={formTitle}
+            onChangeText={setFormTitle}
+            error={!formTitle.trim()}
             style={{ textAlign }}
             activeOutlineColor={theme.colors.primary}
           />
           <TextInput
             mode="outlined"
             label={t('cases.description')}
-            value={inlineDesc}
-            onChangeText={setInlineDesc}
+            value={formDescription}
+            onChangeText={setFormDescription}
             multiline
             numberOfLines={3}
             style={{ marginTop: 10, textAlign }}
             activeOutlineColor={theme.colors.primary}
           />
+          <TextInput
+            mode="outlined"
+            label={t('cases.category')}
+            value={formCategory}
+            onChangeText={setFormCategory}
+            style={{ marginTop: 10, textAlign }}
+            activeOutlineColor={theme.colors.primary}
+            right={<TextInput.Icon icon="tag" />}
+          />
         </View>
 
-        {/* Detail fields */}
+        {/* Contact */}
         <View
           style={[
             styles.sectionCard,
             { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
           ]}
         >
-          {/* Category */}
-          {caseData.category ? (
-            <View style={styles.detailRow}>
-              <View style={[styles.detailIcon, { backgroundColor: '#9C27B018' }]}>
-                <MaterialCommunityIcons name="tag" size={20} color="#9C27B0" />
-              </View>
-              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('cases.category')}
-                </Text>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '500' }}>
-                  {caseData.category}
-                </Text>
-              </View>
+          <View style={[styles.formSectionHeader, { flexDirection }]}>
+            <View style={styles.formSectionAccent} />
+            <MaterialCommunityIcons name="account-box-outline" size={18} color="#2e6155" />
+            <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.contact')}</Text>
+          </View>
+          <Pressable
+            onPress={() => setContactLookupVisible(true)}
+            style={[styles.contactLookupBtn, { backgroundColor: withAlpha('#2e6155', formContactName ? 0.08 : 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection, marginBottom: 0 }]}
+          >
+            <View style={[styles.contactLookupIconCircle, { backgroundColor: '#2e6155' }]}>
+              <MaterialCommunityIcons name={formContactName ? 'account-check' : 'account-search'} size={20} color="#FFFFFF" />
             </View>
-          ) : null}
-
-          {/* Source */}
-          {(caseData as any).source ? (
-            <>
-              {caseData.category ? <Divider style={{ marginVertical: 10 }} /> : null}
-              <View style={styles.detailRow}>
-                <View style={[styles.detailIcon, { backgroundColor: '#2196F318' }]}>
-                  <MaterialCommunityIcons name="source-branch" size={20} color="#2196F3" />
-                </View>
-                <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('leads.source')}
+            <View style={{ flex: 1 }}>
+              {formContactName ? (
+                <>
+                  <Text style={{ color: theme.colors.onSurface, fontSize: 15, fontWeight: '600', textAlign }} numberOfLines={1}>
+                    {formContactName}
                   </Text>
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '500' }}>
-                    {(caseData as any).source}
-                  </Text>
-                </View>
-              </View>
-            </>
-          ) : null}
+                  {formContactPhone ? (
+                    <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, marginTop: 2, textAlign }} numberOfLines={1}>
+                      {formContactPhone}
+                    </Text>
+                  ) : null}
+                </>
+              ) : (
+                <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 15, textAlign }}>
+                  {t('common.selectContact', 'חפש ובחר איש קשר')}
+                </Text>
+              )}
+            </View>
+            {formContactName ? (
+              <Pressable hitSlop={8} onPress={() => { setFormContactName(''); setFormContactPhone(''); setFormContactId(''); }}>
+                <MaterialCommunityIcons name="close-circle" size={20} color={theme.colors.onSurfaceVariant} />
+              </Pressable>
+            ) : (
+              <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
+            )}
+          </Pressable>
 
-          {(caseData.category || (caseData as any).source) && (caseData.contactName || caseData.assignedToName) ? (
-            <Divider style={{ marginVertical: 10 }} />
-          ) : null}
+          {(() => {
+            const contactNavId = caseData.contactId || caseData.contactPhone || (caseData as any).contact_phone;
+            const savedPhone = caseData.contactPhone || (caseData as any).contact_phone;
+            if (!caseData.contactName || !contactNavId) return null;
+            return (
+              <Pressable
+                onPress={() => router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: contactNavId } })}
+                style={[styles.detailRow, { marginTop: 10, flexDirection }]}
+              >
+                <MaterialCommunityIcons name="account-arrow-right-outline" size={18} color={theme.colors.primary} />
+                <Text variant="bodySmall" style={{ color: theme.colors.primary, fontWeight: '600', flex: 1, textAlign }}>
+                  {lang === 'he' ? 'פתח כרטיס איש קשר' : 'Open contact'}
+                </Text>
+                <MaterialCommunityIcons
+                  name={isRTL ? 'chevron-left' : 'chevron-right'}
+                  size={20}
+                  color={theme.colors.onSurfaceVariant}
+                />
+              </Pressable>
+            );
+          })()}
 
-          {/* Contact */}
-          {caseData.contactName ? (
-            <View>
+          {(caseData.contactPhone || (caseData as any).contact_phone) ? (
+            <View style={[styles.contactActions, { flexDirection, marginStart: 0 }]}>
               <Pressable
                 onPress={() => {
-                  const contactNavId = caseData.contactId || caseData.contactPhone || (caseData as any).contact_phone;
-                  if (contactNavId) {
-                    router.push({ pathname: '/(tabs)/contacts/[id]', params: { id: contactNavId } });
-                  }
+                  const phone = caseData.contactPhone || (caseData as any).contact_phone;
+                  placeSmartCall({
+                    phoneNumber: phone,
+                    organization: user?.organization || '',
+                    user,
+                    relatedTo: { type: 'case', entityId: caseData.id, entityName: caseData.subject || caseData.title },
+                    contactId: (caseData as any).contactId,
+                    leadId: (caseData as any).leadId,
+                    customerName: caseData.contactName,
+                  });
                 }}
-                style={styles.detailRow}
+                style={[styles.contactActionBtn, { backgroundColor: theme.colors.primaryContainer }]}
               >
-                <View style={[styles.detailIcon, { backgroundColor: withAlpha(theme.colors.secondary, 0.094) }]}>
-                  <MaterialCommunityIcons name="account" size={20} color={theme.colors.secondary} />
-                </View>
-                <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    {t('cases.contact')}
-                  </Text>
-                  <Text variant="bodyMedium" style={{ color: theme.colors.primary, fontWeight: '500' }}>
-                    {caseData.contactName}
-                  </Text>
-                </View>
-                {(caseData.contactId || caseData.contactPhone || (caseData as any).contact_phone) ? (
-                  <MaterialCommunityIcons
-                    name={isRTL ? 'chevron-left' : 'chevron-right'}
-                    size={20}
-                    color={theme.colors.onSurfaceVariant}
-                  />
-                ) : null}
+                <MaterialCommunityIcons name="phone" size={20} color={theme.colors.primary} />
+                <Text variant="labelMedium" style={{ color: theme.colors.primary, fontWeight: '600' }}>
+                  {t('common.call')}
+                </Text>
               </Pressable>
-              {(caseData.contactPhone || (caseData as any).contact_phone) ? (
-                <View style={[styles.contactActions, { flexDirection }]}>
-                  <Pressable
-                    onPress={() => {
-                      const phone = caseData.contactPhone || (caseData as any).contact_phone;
-                      placeSmartCall({
-                        phoneNumber: phone,
-                        organization: user?.organization || '',
-                        user,
-                        relatedTo: { type: 'case', entityId: caseData.id, entityName: caseData.subject || caseData.title },
-                        contactId: (caseData as any).contactId,
-                        leadId: (caseData as any).leadId,
-                        customerName: caseData.contactName,
-                      });
-                    }}
-                    style={[styles.contactActionBtn, { backgroundColor: theme.colors.primaryContainer }]}
-                  >
-                    <MaterialCommunityIcons name="phone" size={20} color={theme.colors.primary} />
-                    <Text variant="labelMedium" style={{ color: theme.colors.primary, fontWeight: '600' }}>
-                      {t('common.call')}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() =>
-                      router.push({
-                        pathname: '/(tabs)/chats/[phoneNumber]',
-                        params: { phoneNumber: caseData.contactPhone || (caseData as any).contact_phone },
-                      })
-                    }
-                    style={[styles.contactActionBtn, { backgroundColor: '#25D36620' }]}
-                  >
-                    <MaterialCommunityIcons name="whatsapp" size={20} color="#25D366" />
-                    <Text variant="labelMedium" style={{ color: '#25D366', fontWeight: '600' }}>
-                      WhatsApp
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => setNoteModalVisible(true)}
-                    style={[styles.contactActionBtn, { backgroundColor: '#9C27B018' }]}
-                  >
-                    <MaterialCommunityIcons name="note-plus-outline" size={20} color="#9C27B0" />
-                    <Text variant="labelMedium" style={{ color: '#9C27B0', fontWeight: '600' }}>
-                      {t('phoneCalls.addNote')}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => setAddTaskVisible(true)}
-                    style={[styles.contactActionBtn, { backgroundColor: '#FFF3E0' }]}
-                  >
-                    <MaterialCommunityIcons name="clipboard-check-outline" size={20} color="#FF9800" />
-                    <Text variant="labelMedium" style={{ color: '#FF9800', fontWeight: '600' }}>
-                      {t('tasks.taskShort', 'משימה')}
-                    </Text>
-                  </Pressable>
-                </View>
-              ) : null}
-            </View>
-          ) : null}
-
-          {caseData.contactName && caseData.assignedToName ? (
-            <Divider style={{ marginVertical: 10 }} />
-          ) : null}
-
-          {/* Assigned to */}
-          {caseData.assignedToName ? (
-            <View style={styles.detailRow}>
-              <Avatar.Text
-                size={36}
-                label={getInitials(caseData.assignedToName)}
-                style={{ backgroundColor: theme.colors.primaryContainer }}
-                labelStyle={{ fontSize: 13, color: theme.colors.primary, fontWeight: '700' }}
-              />
-              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('cases.assignedTo')}
+              <Pressable
+                onPress={() =>
+                  router.push({
+                    pathname: '/(tabs)/chats/[phoneNumber]',
+                    params: { phoneNumber: caseData.contactPhone || (caseData as any).contact_phone },
+                  })
+                }
+                style={[styles.contactActionBtn, { backgroundColor: '#25D36620' }]}
+              >
+                <MaterialCommunityIcons name="whatsapp" size={20} color="#25D366" />
+                <Text variant="labelMedium" style={{ color: '#25D366', fontWeight: '600' }}>
+                  WhatsApp
                 </Text>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '500' }}>
-                  {caseData.assignedToName}
+              </Pressable>
+              <Pressable
+                onPress={() => setNoteModalVisible(true)}
+                style={[styles.contactActionBtn, { backgroundColor: '#9C27B018' }]}
+              >
+                <MaterialCommunityIcons name="note-plus-outline" size={20} color="#9C27B0" />
+                <Text variant="labelMedium" style={{ color: '#9C27B0', fontWeight: '600' }}>
+                  {t('phoneCalls.addNote')}
                 </Text>
-              </View>
+              </Pressable>
+              <Pressable
+                onPress={() => setAddTaskVisible(true)}
+                style={[styles.contactActionBtn, { backgroundColor: '#FFF3E0' }]}
+              >
+                <MaterialCommunityIcons name="clipboard-check-outline" size={20} color="#FF9800" />
+                <Text variant="labelMedium" style={{ color: '#FF9800', fontWeight: '600' }}>
+                  {t('tasks.taskShort', 'משימה')}
+                </Text>
+              </Pressable>
             </View>
           ) : null}
         </View>
 
-        {/* Due Date */}
-        {(caseData as any).dueDate || (caseData as any).due_date ? (
+        {/* Source & assignee */}
+        <View
+          style={[
+            styles.sectionCard,
+            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+          ]}
+        >
+          <Text variant="labelLarge" style={[styles.sectionLabel, { color: theme.colors.onSurface, textAlign }]}>
+            {t('leads.source')}
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ marginBottom: 14 }}>
+            <View style={[styles.statusRow, { flexDirection }]}>
+              {CASE_SOURCES.map((src) => {
+                const active = formSource === src;
+                return (
+                  <Chip
+                    key={src}
+                    selected={active}
+                    onPress={() => setFormSource(active ? '' : src)}
+                    compact
+                    style={[
+                      styles.statusSelectChip,
+                      active
+                        ? { backgroundColor: '#2196F320', borderColor: '#2196F3', borderWidth: 1.5 }
+                        : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
+                    ]}
+                    textStyle={[{ fontSize: 12 }, active && { color: '#2196F3', fontWeight: '700' }]}
+                  >
+                    {src.charAt(0).toUpperCase() + src.slice(1).replace(/_/g, ' ')}
+                  </Chip>
+                );
+              })}
+            </View>
+          </ScrollView>
+
+          {/* Assigned to - user picker */}
+          <Pressable
+            onPress={() => {
+              setUserPickerExpanded((v) => !v);
+              if (orgUsers.length === 0 && !orgUsersLoading) {
+                setOrgUsersLoading(true);
+                usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
+              }
+            }}
+            style={{
+              borderWidth: 1,
+              borderRadius: 4,
+              borderColor: userPickerExpanded ? theme.colors.primary : theme.colors.outline,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+              backgroundColor: theme.colors.surface,
+            }}
+          >
+            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 2, textAlign }}>
+              {t('cases.assignedTo')}
+            </Text>
+            <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
+              {formAssignedTo ? (
+                <Avatar.Text
+                  size={24}
+                  label={getInitials(formAssignedTo)}
+                  style={{ backgroundColor: theme.colors.primaryContainer }}
+                  labelStyle={{ fontSize: 10, color: theme.colors.primary, fontWeight: '700' }}
+                />
+              ) : (
+                <MaterialCommunityIcons name="account-check" size={16} color={theme.colors.onSurfaceVariant} />
+              )}
+              <Text variant="bodyMedium" style={{ flex: 1, color: formAssignedTo ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
+                {orgUsersLoading ? t('common.loading') || 'טוען...' : (formAssignedTo || t('cases.selectAssignee') || 'בחר נציג')}
+              </Text>
+              <MaterialCommunityIcons name={userPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
+            </View>
+          </Pressable>
+          {userPickerExpanded && (
+            <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 4, marginTop: 6, overflow: 'hidden' }}>
+              <Pressable
+                style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8 }]}
+                onPress={() => { setFormAssignedTo(''); setFormAssignedToId(''); setUserPickerExpanded(false); }}
+              >
+                <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('common.none') || 'ללא'}</Text>
+              </Pressable>
+              <Divider />
+              {orgUsers.map((u) => {
+                const uid = u.uID || u.userId || u.id;
+                const selected = uid === formAssignedToId;
+                return (
+                  <Pressable
+                    key={uid}
+                    style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: selected ? `${theme.colors.primary}15` : 'transparent' }]}
+                    onPress={() => { setFormAssignedTo(u.userName || u.fullname || u.name || ''); setFormAssignedToId(uid || ''); setUserPickerExpanded(false); }}
+                  >
+                    <MaterialCommunityIcons name="account" size={16} color={selected ? theme.colors.primary : theme.colors.onSurfaceVariant} />
+                    <Text variant="bodySmall" style={{ color: selected ? theme.colors.primary : theme.colors.onSurface, fontWeight: selected ? '700' : '400' }}>
+                      {u.userName || u.fullname || u.name}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        {/* Due date, tags, notes */}
+        <View
+          style={[
+            styles.sectionCard,
+            { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+          ]}
+        >
+          <TextInput
+            mode="outlined"
+            label={t('cases.dueDate', 'Due Date')}
+            value={formDueDate}
+            onChangeText={setFormDueDate}
+            placeholder="YYYY-MM-DD"
+            style={{ textAlign }}
+            activeOutlineColor={theme.colors.primary}
+            right={<TextInput.Icon icon="calendar-clock" />}
+          />
+          <TextInput
+            mode="outlined"
+            label={t('contacts.tags', 'Tags')}
+            value={formTags}
+            onChangeText={setFormTags}
+            placeholder={t('cases.tagsHint', 'Comma-separated tags')}
+            style={{ marginTop: 10, textAlign }}
+            activeOutlineColor={theme.colors.primary}
+            right={<TextInput.Icon icon="tag-multiple" />}
+          />
+          <TextInput
+            mode="outlined"
+            label={t('cases.notes', 'Notes')}
+            value={formNotes}
+            onChangeText={setFormNotes}
+            multiline
+            numberOfLines={3}
+            style={{ marginTop: 10, textAlign }}
+            activeOutlineColor={theme.colors.primary}
+            right={<TextInput.Icon icon="note-text" />}
+          />
+        </View>
+
+        {/* Auto follow-up */}
+        {renderFollowUpSection([
+          styles.sectionCard,
+          { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
+        ])}
+
+        {/* Custom fields */}
+        {caseFormSections.length > 0 ? (
           <View
             style={[
               styles.sectionCard,
               { backgroundColor: theme.custom.cardBackground, borderColor: theme.colors.outlineVariant },
             ]}
           >
-            <View style={styles.detailRow}>
-              <View style={[styles.detailIcon, { backgroundColor: '#FF572218' }]}>
-                <MaterialCommunityIcons name="calendar-clock" size={20} color="#FF5722" />
-              </View>
-              <View style={[styles.detailContent, { alignItems: 'flex-start' }]}>
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {t('cases.dueDate', 'Due Date')}
-                </Text>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '500' }}>
-                  {formatDate((caseData as any).dueDate || (caseData as any).due_date)}
-                </Text>
-              </View>
-            </View>
+            <DynamicFieldsSectionForm
+              sections={caseFormSections}
+              values={formDynamicFields}
+              onChange={(k, v) => setFormDynamicFields((prev) => ({ ...prev, [k]: v }))}
+              lang={lang}
+              formLayout={caseFormLayout}
+              theme={theme}
+              textAlign={textAlign}
+              writingDirection={writingDirection}
+              flexDirection={flexDirection}
+            />
           </View>
         ) : null}
 
@@ -1335,13 +1593,6 @@ export default function CaseDetailScreen() {
             </View>
           ) : null}
         </View>
-
-        <DynamicFieldsSectionView
-          sections={caseFormSections}
-          data={{ ...(caseData as any).customFields, ...caseData } as Record<string, any>}
-          lang={lang}
-          formLayout={caseFormLayout}
-        />
 
         <ExtraFieldsSectionView
           data={{ ...(caseData as any).customFields, ...caseData } as Record<string, any>}
@@ -1476,6 +1727,7 @@ export default function CaseDetailScreen() {
 
         <View style={{ height: insets.bottom + 24 }} />
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <ContactLookup
         visible={contactLookupVisible}
@@ -1490,389 +1742,19 @@ export default function CaseDetailScreen() {
       />
 
       <StickySaveBar
-        visible={inlineDirty}
-        saving={savingInline}
-        onSave={handleSaveInline}
-        onDiscard={discardInline}
+        visible={isDirty}
+        saving={saving}
+        disabled={!formTitle.trim()}
+        onSave={handleSave}
+        onDiscard={discardChanges}
       />
       <PrimaryActionBar
-        visible={!inlineDirty && !!nextCaseStatus}
+        visible={!isDirty && !!nextCaseStatus}
         label={nextCaseStatus ? nextCaseLabel[nextCaseStatus] : ''}
         icon="arrow-right-circle-outline"
         color={nextCaseStatus ? getStatusColor(nextCaseStatus) : undefined}
         onPress={() => { if (nextCaseStatus) handleStatusChange(nextCaseStatus); }}
       />
-
-      {/* Edit Modal */}
-      <Portal>
-        <Modal
-          visible={editModalVisible}
-          onDismiss={() => setEditModalVisible(false)}
-          contentContainerStyle={[
-            styles.modalContainer,
-            { backgroundColor: theme.colors.surface },
-          ]}
-        >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-            {/* maxHeight bounds the ScrollView so it can scroll. A bare `flex:1` here collapses the
-                content to height 0 inside a Paper Modal whose container only has `maxHeight` (no
-                definite height), which is what made the modal show only a grey backdrop. */}
-            <ScrollView style={{ maxHeight: windowHeight * 0.78 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <View style={[styles.modalHeader, { flexDirection }]}>
-                <IconButton icon="close" iconColor={theme.colors.onSurfaceVariant} size={22} onPress={() => setEditModalVisible(false)} style={{ margin: 0 }} />
-                <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}>
-                  {t('cases.editCase')}
-                </Text>
-                <View style={{ width: 40 }} />
-              </View>
-
-              {/* ── Contact Section ── */}
-              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
-                <View style={[styles.formSectionHeader, { flexDirection }]}>
-                  <View style={styles.formSectionAccent} />
-                  <MaterialCommunityIcons name="account-box-outline" size={18} color="#2e6155" />
-                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.contact')}</Text>
-                </View>
-                <Pressable
-                  onPress={() => setContactLookupVisible(true)}
-                  style={[styles.contactLookupBtn, { backgroundColor: formContactName ? withAlpha('#2e6155', 0.08) : withAlpha('#2e6155', 0.06), borderColor: withAlpha('#2e6155', 0.2), flexDirection }]}
-                >
-                  <View style={[styles.contactLookupIconCircle, { backgroundColor: '#2e6155' }]}>
-                    <MaterialCommunityIcons name={formContactName ? 'account-check' : 'account-search'} size={20} color="#FFFFFF" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    {formContactName ? (
-                      <>
-                        <Text style={{ color: theme.colors.onSurface, fontSize: 15, fontWeight: '600', textAlign }} numberOfLines={1}>
-                          {formContactName}
-                        </Text>
-                        {formContactPhone ? (
-                          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, marginTop: 2, textAlign }} numberOfLines={1}>
-                            {formContactPhone}
-                          </Text>
-                        ) : null}
-                      </>
-                    ) : (
-                      <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 15, textAlign }}>
-                        {t('common.selectContact', 'חפש ובחר איש קשר')}
-                      </Text>
-                    )}
-                  </View>
-                  {formContactName ? (
-                    <Pressable hitSlop={8} onPress={() => { setFormContactName(''); setFormContactPhone(''); setFormContactId(''); }}>
-                      <MaterialCommunityIcons name="close-circle" size={20} color={theme.colors.onSurfaceVariant} />
-                    </Pressable>
-                  ) : (
-                    <MaterialCommunityIcons name={isRTL ? 'chevron-left' : 'chevron-right'} size={20} color="#2e6155" />
-                  )}
-                </Pressable>
-              </View>
-
-              {/* ── Case Details Section ── */}
-              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
-                <View style={[styles.formSectionHeader, { flexDirection }]}>
-                  <View style={styles.formSectionAccent} />
-                  <MaterialCommunityIcons name="text-box-outline" size={18} color="#2e6155" />
-                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.caseTitle')}</Text>
-                </View>
-
-              <TextInput
-                label={t('cases.caseTitle')}
-                value={formTitle}
-                onChangeText={setFormTitle}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-
-              <TextInput
-                label={t('cases.description')}
-                value={formDescription}
-                onChangeText={setFormDescription}
-                mode="outlined"
-                multiline
-                numberOfLines={3}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-              />
-
-              <TextInput
-                label={t('cases.category')}
-                value={formCategory}
-                onChangeText={setFormCategory}
-                mode="outlined"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                right={<TextInput.Icon icon="tag" />}
-              />
-              </View>
-
-              {/* ── Status & Priority Section ── */}
-              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
-                <View style={[styles.formSectionHeader, { flexDirection }]}>
-                  <View style={styles.formSectionAccent} />
-                  <MaterialCommunityIcons name="flag-outline" size={18} color="#2e6155" />
-                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.status')}</Text>
-                </View>
-
-              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('cases.status')}
-              </Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
-                <View style={[styles.chipsRow, { flexDirection }]}>
-                  {STATUS_OPTIONS.map((s) => {
-                    const sc = getStatusColor(s);
-                    const active = formStatus.toLowerCase().replace(/\s+/g, '_') === s;
-                    return (
-                      <Chip
-                        key={s}
-                        selected={active}
-                        onPress={() => setFormStatus(s)}
-                        compact
-                        style={[
-                          styles.formChip,
-                          active
-                            ? { backgroundColor: `${sc}20`, borderColor: sc, borderWidth: 1.5 }
-                            : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
-                        ]}
-                        textStyle={[
-                          { fontSize: 12 },
-                          active && { color: sc, fontWeight: '700' },
-                        ]}
-                      >
-                        {s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ')}
-                      </Chip>
-                    );
-                  })}
-                </View>
-              </ScrollView>
-
-              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('cases.priority')}
-              </Text>
-              <View style={[styles.chipsRow, { flexDirection, marginBottom: 14 }]}>
-                {PRIORITIES.map((p) => {
-                  const pc = PRIORITY_COLORS[p];
-                  const active = formPriority === p;
-                  return (
-                    <Chip
-                      key={p}
-                      selected={active}
-                      onPress={() => setFormPriority(p)}
-                      compact
-                      style={[
-                        styles.formChip,
-                        active
-                          ? { backgroundColor: `${pc}20`, borderColor: pc, borderWidth: 1.5 }
-                          : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
-                      ]}
-                      textStyle={[
-                        { fontSize: 12 },
-                        active && { color: pc, fontWeight: '700' },
-                      ]}
-                    >
-                      {t(`tasks.${p}`)}
-                    </Chip>
-                  );
-                })}
-              </View>
-              </View>
-
-              {/* ── Auto Follow-up Section (pinned near top for quick access, like the lead form) ── */}
-              {renderFollowUpSection([styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }])}
-
-              {/* ── Source & Assignment Section ── */}
-              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
-                <View style={[styles.formSectionHeader, { flexDirection }]}>
-                  <View style={styles.formSectionAccent} />
-                  <MaterialCommunityIcons name="source-branch" size={18} color="#2e6155" />
-                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('leads.source')}</Text>
-                </View>
-
-              <Text variant="labelLarge" style={[styles.formLabel, { color: theme.colors.onSurface }]}>
-                {t('leads.source')}
-              </Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
-                <View style={[styles.chipsRow, { flexDirection }]}>
-                  {CASE_SOURCES.map((src) => {
-                    const active = formSource === src;
-                    return (
-                      <Chip
-                        key={src}
-                        selected={active}
-                        onPress={() => setFormSource(active ? '' : src)}
-                        compact
-                        style={[
-                          styles.formChip,
-                          active
-                            ? { backgroundColor: '#2196F320', borderColor: '#2196F3', borderWidth: 1.5 }
-                            : { backgroundColor: theme.colors.surfaceVariant, borderWidth: 1.5, borderColor: 'transparent' },
-                        ]}
-                        textStyle={[
-                          { fontSize: 12 },
-                          active && { color: '#2196F3', fontWeight: '700' },
-                        ]}
-                      >
-                        {src.charAt(0).toUpperCase() + src.slice(1).replace(/_/g, ' ')}
-                      </Chip>
-                    );
-                  })}
-                </View>
-              </ScrollView>
-
-              {/* Assigned to - user picker */}
-              <Pressable
-                onPress={() => {
-                  setUserPickerExpanded((v) => !v);
-                  if (orgUsers.length === 0 && !orgUsersLoading) {
-                    setOrgUsersLoading(true);
-                    usersApi.getAll(user?.organization || '').then((u) => setOrgUsers(u)).catch(() => {}).finally(() => setOrgUsersLoading(false));
-                  }
-                }}
-                style={[
-                  styles.formInput,
-                  {
-                    borderWidth: 1,
-                    borderRadius: 4,
-                    borderColor: userPickerExpanded ? theme.colors.primary : theme.colors.outline,
-                    paddingHorizontal: 12,
-                    paddingVertical: 10,
-                    backgroundColor: theme.colors.surface,
-                  },
-                ]}
-              >
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 2 }}>
-                  {t('cases.assignedTo')}
-                </Text>
-                <View style={[{ flexDirection, alignItems: 'center', gap: 8 }]}>
-                  <MaterialCommunityIcons name="account-check" size={16} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="bodyMedium" style={{ flex: 1, color: formAssignedTo ? theme.colors.onSurface : theme.colors.onSurfaceVariant, textAlign }}>
-                    {orgUsersLoading ? t('common.loading') || 'טוען...' : (formAssignedTo || t('cases.selectAssignee') || 'בחר נציג')}
-                  </Text>
-                  <MaterialCommunityIcons name={userPickerExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.onSurfaceVariant} />
-                </View>
-              </Pressable>
-              {userPickerExpanded && (
-                <View style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 4, marginTop: -14, marginBottom: 14, overflow: 'hidden' }}>
-                  <Pressable
-                    style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8 }]}
-                    onPress={() => { setFormAssignedTo(''); setFormAssignedToId(''); setUserPickerExpanded(false); }}
-                  >
-                    <MaterialCommunityIcons name="close" size={16} color={theme.colors.onSurfaceVariant} />
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{t('common.none') || 'ללא'}</Text>
-                  </Pressable>
-                  <Divider />
-                  {orgUsers.map((u) => (
-                    <Pressable
-                      key={u.uID || u.userId || u.id}
-                      style={[{ padding: 12, flexDirection, alignItems: 'center', gap: 8, backgroundColor: (u.uID || u.userId || u.id) === formAssignedToId ? `${theme.colors.primary}15` : 'transparent' }]}
-                      onPress={() => { setFormAssignedTo(u.userName || u.fullname || u.name || ''); setFormAssignedToId(u.uID || u.userId || u.id || ''); setUserPickerExpanded(false); }}
-                    >
-                      <MaterialCommunityIcons name="account" size={16} color={(u.uID || u.userId || u.id) === formAssignedToId ? theme.colors.primary : theme.colors.onSurfaceVariant} />
-                      <Text variant="bodySmall" style={{ color: (u.uID || u.userId || u.id) === formAssignedToId ? theme.colors.primary : theme.colors.onSurface, fontWeight: (u.uID || u.userId || u.id) === formAssignedToId ? '700' : '400' }}>
-                        {u.userName || u.fullname || u.name}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-              </View>
-
-              {/* ── Additional Info Section ── */}
-              <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
-                <View style={[styles.formSectionHeader, { flexDirection }]}>
-                  <View style={styles.formSectionAccent} />
-                  <MaterialCommunityIcons name="information-outline" size={18} color="#2e6155" />
-                  <Text variant="titleSmall" style={styles.formSectionTitle}>{t('cases.dueDate', 'Due Date')}</Text>
-                </View>
-
-              <TextInput
-                label={t('cases.dueDate', 'Due Date')}
-                value={formDueDate}
-                onChangeText={setFormDueDate}
-                mode="outlined"
-                placeholder="YYYY-MM-DD"
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                right={<TextInput.Icon icon="calendar-clock" />}
-              />
-
-              <TextInput
-                label={t('contacts.tags', 'Tags')}
-                value={formTags}
-                onChangeText={setFormTags}
-                mode="outlined"
-                placeholder={t('cases.tagsHint', 'Comma-separated tags')}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                right={<TextInput.Icon icon="tag-multiple" />}
-              />
-
-              <TextInput
-                label={t('cases.notes', 'Notes')}
-                value={formNotes}
-                onChangeText={setFormNotes}
-                mode="outlined"
-                multiline
-                numberOfLines={3}
-                style={[styles.formInput, { textAlign }]}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={theme.colors.primary}
-                right={<TextInput.Icon icon="note-text" />}
-              />
-              </View>
-
-              {/* ── Custom Fields Section ── */}
-              {caseFormSections.length > 0 && (
-                <View style={[styles.modalSectionCard, { borderColor: theme.colors.outlineVariant }]}>
-                  <DynamicFieldsSectionForm
-                    sections={caseFormSections}
-                    values={formDynamicFields}
-                    onChange={(k, v) => setFormDynamicFields((prev) => ({ ...prev, [k]: v }))}
-                    lang={lang}
-                    formLayout={caseFormLayout}
-                    theme={theme}
-                    textAlign={textAlign}
-                    writingDirection={writingDirection}
-                    flexDirection={flexDirection}
-                  />
-                </View>
-              )}
-
-              <View style={[styles.editModalActions, { flexDirection }]}>
-                <Pressable onPress={handleDelete} style={[styles.deleteBtn, { backgroundColor: withAlpha(theme.colors.error, 0.08) }]}>
-                  <MaterialCommunityIcons name="delete-outline" size={18} color={theme.colors.error} />
-                  <Text style={{ color: theme.colors.error, fontWeight: '600', fontSize: 13 }}>{t('common.delete')}</Text>
-                </Pressable>
-                <View style={{ flex: 1 }} />
-                <Button
-                  mode="outlined"
-                  onPress={() => setEditModalVisible(false)}
-                  style={styles.modalButton}
-                  textColor={theme.colors.onSurface}
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={handleSave}
-                  loading={saving}
-                  disabled={!formTitle.trim() || saving}
-                  style={[styles.modalButton, { backgroundColor: '#2e6155' }]}
-                  textColor="#FFFFFF"
-                >
-                  {t('common.save')}
-                </Button>
-              </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </Modal>
-      </Portal>
 
       <Portal>
         <Modal

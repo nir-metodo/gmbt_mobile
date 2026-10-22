@@ -26,6 +26,8 @@ const mapAuthError = (error: any): string => {
       return i18n.t('login.trialExpired');
     case 'suspended':
       return i18n.t('login.accountSuspended');
+    case 'cancelled':
+      return i18n.t('login.accountCancelled');
   }
 
   const rawMessage =
@@ -89,6 +91,7 @@ interface AuthState {
   clearError: () => void;
   updateUser: (updates: Partial<User>) => Promise<void>;
   fetchOrgFeatureToggles: () => Promise<void>;
+  checkAccountAccess: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -116,6 +119,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           .registerPushTokenWithRetry(user.organization, user.uID || user.userId)
           .catch(() => {});
         get().fetchOrgFeatureToggles().catch(() => {});
+        get().checkAccountAccess().catch(() => {});
       } else {
         set({ isInitialized: true });
       }
@@ -197,6 +201,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     } catch {
       // Silently fail - defaults will apply
+    }
+  },
+
+  // Session guard: signs the user out when their organization is cancelled / suspended / trial-expired.
+  // Login already blocks these; this covers sessions that were opened before the status changed.
+  // Fails open on any network/server error.
+  checkAccountAccess: async () => {
+    const user = get().user;
+    if (!user?.organization) return;
+    if ((user.email || '').toLowerCase().endsWith('@gambot.co.il')) return;
+    try {
+      const res = await axiosInstance.post(ENDPOINTS.CHECK_ACCOUNT_ACCESS, { organization: user.organization });
+      if (res.data?.Blocked) {
+        const code = res.data?.ErrorCode;
+        const message =
+          code === 'trial_expired' ? i18n.t('login.trialExpired')
+          : code === 'suspended' ? i18n.t('login.accountSuspended')
+          : i18n.t('login.accountCancelled');
+        await get().logout();
+        set({ error: message });
+      }
+    } catch {
+      // fail open
     }
   },
 }));

@@ -20,6 +20,7 @@ import {
   TextInput,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -107,8 +108,28 @@ export default function OrdersScreen() {
   const [sortField, setSortField] = useState<'date' | 'amount' | 'status'>('date');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
+  const [viewMode, setViewModeState] = useState<'list' | 'kanban'>('list');
   const [statuses, setStatuses] = useState<OrderStatusConfig[]>(DEFAULT_ORDER_STATUSES);
+
+  // View (list / kanban): the user's own last choice wins; with no choice yet, follow the org's
+  // "default view" from Orders settings (same rule as the web).
+  const VIEW_KEY = 'orders_view_mode';
+  const hasStoredViewRef = useRef(false);
+  const viewResolvedRef = useRef(false);
+  const setViewMode = useCallback((m: 'list' | 'kanban') => {
+    hasStoredViewRef.current = true;
+    setViewModeState(m);
+    AsyncStorage.setItem(VIEW_KEY, m).catch(() => {});
+  }, []);
+  useEffect(() => {
+    AsyncStorage.getItem(VIEW_KEY).then((v) => {
+      if (v === 'list' || v === 'kanban') {
+        hasStoredViewRef.current = true;
+        viewResolvedRef.current = true;
+        setViewModeState(v);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Advanced filters
   const [advancedVisible, setAdvancedVisible] = useState(false);
@@ -122,8 +143,12 @@ export default function OrdersScreen() {
   const loadSettings = useCallback(async () => {
     if (!user?.organization) return;
     try {
-      const { statuses: loaded } = await ordersApi.getSettings(user.organization);
+      const { statuses: loaded, defaultView } = await ordersApi.getSettings(user.organization);
       if (loaded.length > 0) setStatuses(loaded);
+      if (defaultView && !hasStoredViewRef.current && !viewResolvedRef.current) {
+        viewResolvedRef.current = true;
+        setViewModeState(defaultView);
+      }
     } catch {
       setStatuses(DEFAULT_ORDER_STATUSES);
     }
@@ -494,7 +519,7 @@ export default function OrdersScreen() {
               icon={viewMode === 'kanban' ? 'view-list' : 'view-column'}
               iconColor={theme.custom.headerText}
               size={22}
-              onPress={() => setViewMode((m) => (m === 'kanban' ? 'list' : 'kanban'))}
+              onPress={() => setViewMode(viewMode === 'kanban' ? 'list' : 'kanban')}
             />
             <View>
               <IconButton

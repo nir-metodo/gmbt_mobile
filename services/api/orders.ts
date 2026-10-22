@@ -201,7 +201,7 @@ export const ordersApi = {
     return response.data;
   },
 
-  async getSettings(organization: string): Promise<{ statuses: OrderStatusConfig[] }> {
+  async getSettings(organization: string): Promise<{ statuses: OrderStatusConfig[]; defaultView?: 'list' | 'kanban' }> {
     try {
       const response = await axiosInstance.post(ENDPOINTS.GET_ORDERS_SETTINGS, { organization });
       const raw = response.data;
@@ -213,7 +213,8 @@ export const ordersApi = {
             icon: resolveOrderStatusIcon(s.id),
           }))
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        return { statuses };
+        const dv = String(raw.settings.defaultView || '').toLowerCase();
+        return { statuses, defaultView: dv === 'kanban' ? 'kanban' : dv === 'list' ? 'list' : undefined };
       }
     } catch {
       // fall through to defaults

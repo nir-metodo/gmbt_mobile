@@ -26,6 +26,7 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { esignatureApi } from '../../../../services/api/esignature';
+import { sendDocumentViaGambot, MissingDefaultTemplateError } from '../../../../services/whatsappDocSender';
 import { formatDate, withAlpha } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import type { ESignatureDocument, ESignatureSigner } from '../../../../types';
@@ -120,17 +121,50 @@ export default function ESignatureDetailScreen() {
     }
   }, [t]);
 
+  // Sends THROUGH Gambot (lands in the customer's chat): open 24h window → regular message, closed → the org's
+  // default "digital signature" template. Falls back to the phone's own WhatsApp only if no template exists.
   const handleSendWhatsApp = useCallback(async (phone: string, signerName: string, url: string) => {
+    const docName = document?.documentName || document?.title || '';
+    const openNativeWhatsApp = async () => {
+      const message = encodeURIComponent(`${t('esignature.title')}: ${docName}\n${t('esignature.signHere')}: ${url}`);
+      await Linking.openURL(`whatsapp://send?phone=${phone.replace(/\D/g, '')}&text=${message}`);
+    };
+    if (!user?.organization) return;
+    setActionLoading(`wa-${phone}`);
     try {
-      const message = encodeURIComponent(
-        `${t('esignature.title')}: ${document?.documentName || document?.title}\n${t('esignature.signHere')}: ${url}`
+      const mode = await sendDocumentViaGambot({
+        organization: user.organization,
+        phone,
+        role: 'digitalSignature',
+        user,
+        customerName: signerName,
+        docLabel: docName,
+        url,
+        liveText: `שלום ${signerName || ''},\nהמסמך "${docName}" מוכן לחתימה ✍️`,
+      });
+      Alert.alert(
+        t('common.success'),
+        mode === 'regular'
+          ? t('esignature.waSentRegular', 'הבקשה לחתימה נשלחה בוואטסאפ')
+          : t('esignature.waSentTemplate', 'הבקשה לחתימה נשלחה בוואטסאפ באמצעות תבנית (השיחה סגורה)'),
       );
-      const cleanPhone = phone.replace(/\D/g, '');
-      await Linking.openURL(`whatsapp://send?phone=${cleanPhone}&text=${message}`);
     } catch (err: any) {
-      Alert.alert(t('common.error'), err.message || t('errors.generic'));
+      if (err instanceof MissingDefaultTemplateError) {
+        Alert.alert(
+          t('common.error'),
+          t('esignature.waNoTemplate', 'השיחה עם הלקוח סגורה ואין תבנית ברירת מחדל לחתימה דיגיטלית (נוצרת אוטומטית עם חיבור הוואטסאפ). לפתוח את הוואטסאפ במכשיר ולשלוח משם?'),
+          [
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('esignature.openWhatsApp', 'פתח וואטסאפ'), onPress: () => { openNativeWhatsApp().catch(() => {}); } },
+          ],
+        );
+      } else {
+        Alert.alert(t('common.error'), err?.message || t('errors.generic'));
+      }
+    } finally {
+      setActionLoading(null);
     }
-  }, [document, t]);
+  }, [document, user, t]);
 
   const handleShareDocument = useCallback(async () => {
     if (!document) return;
@@ -478,6 +512,8 @@ export default function ESignatureDetailScreen() {
                           mode="contained"
                           icon="whatsapp"
                           compact
+                          loading={actionLoading === `wa-${signer.signerPhone}`}
+                          disabled={!!actionLoading}
                           onPress={() => handleSendWhatsApp(signer.signerPhone!, signer.signerName, signerUrl)}
                           style={[styles.signerActionBtn, { backgroundColor: '#25D366' }]}
                           textColor="#FFFFFF"

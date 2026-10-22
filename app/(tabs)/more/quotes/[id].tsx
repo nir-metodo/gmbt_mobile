@@ -1792,11 +1792,12 @@ export default function QuoteDetailScreen() {
           </View>
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.previewContent}>
             {/* Company banner */}
-            <View style={[styles.previewDocHeader, { backgroundColor: getStatusColor(quote.status) }]}>
+            <View style={[styles.previewDocHeader, { backgroundColor: '#2e6155' }]}>
+              <Text style={styles.previewDocSubtitle}>{t('quotes.quote', 'הצעת מחיר')}{quote.quoteNumber ? ` #${quote.quoteNumber}` : ''}</Text>
               <Text style={styles.previewDocTitle}>{quote.title}</Text>
-              {quote.quoteNumber ? (
-                <Text style={styles.previewDocSubtitle}>#{quote.quoteNumber}</Text>
-              ) : null}
+              <View style={{ marginTop: 6, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.2)' }}>
+                <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{t('quotes.' + quote.status, quote.status)}</Text>
+              </View>
             </View>
 
             {/* Info grid */}
@@ -1876,7 +1877,7 @@ export default function QuoteDetailScreen() {
               ) : null}
               <View style={[styles.previewTotalRow, styles.previewGrandTotal]}>
                 <Text style={styles.previewGrandTotalLabel}>{t('quotes.total') || 'סה"כ לתשלום'}</Text>
-                <Text style={[styles.previewGrandTotalValue, { color: getStatusColor(quote.status) }]}>{formatCurrency(quote.total || 0, currSymbol)}</Text>
+                <Text style={[styles.previewGrandTotalValue, { color: '#2e6155' }]}>{formatCurrency(quote.total || 0, currSymbol)}</Text>
               </View>
             </View>
 
