@@ -64,6 +64,7 @@ import WebSocketService from '../../../services/websocket';
 import { MessageBubble } from '../../../components/chat/MessageBubble';
 import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/ChatInput';
 import { MediaPanel } from '../../../components/chat/MediaPanel';
+import { MediaTitleSheet } from '../../../components/chat/MediaTitleSheet';
 import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
 import ForwardMessageSheet from '../../../components/chat/ForwardMessageSheet';
 import AddTaskSheet from '../../../components/AddTaskSheet';
@@ -327,6 +328,8 @@ export default function ChatConversationScreen() {
   const [mediaPanelVisible, setMediaPanelVisible] = useState(false);
   const [selectedMessage, setSelectedMessage] =
     useState<Message | null>(null);
+  // Name / folder sheet for a media message (opened from the long-press action sheet)
+  const [mediaTitleMessage, setMediaTitleMessage] = useState<Message | null>(null);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -2168,7 +2171,8 @@ export default function ChatConversationScreen() {
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       msgs = msgs.filter((m) =>
-        (m.text || m.body || '').toLowerCase().includes(q)
+        (m.text || m.body || '').toLowerCase().includes(q) ||
+        (m.mediaTitle || '').toLowerCase().includes(q)
       );
     }
 
@@ -4615,6 +4619,24 @@ export default function ChatConversationScreen() {
                 </Text>
               </Pressable>
 
+              {!!selectedMessage && !!(selectedMessage.mediaUrl || selectedMessage.MediaUrl || selectedMessage.media_url || (selectedMessage as any).gmbt_mediaUrl) && (
+                <Pressable
+                  onPress={() => {
+                    setMediaTitleMessage(selectedMessage);
+                    setSelectedMessage(null);
+                  }}
+                  style={({ pressed }) => [
+                    styles.actionItem,
+                    pressed && { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="tag-outline" size={22} color={theme.colors.onSurface} />
+                  <Text variant="bodyLarge" style={{ marginStart: 16, color: theme.colors.onSurface }}>
+                    {t('chats.mediaTitleAction', 'שם ותיקייה')}
+                  </Text>
+                </Pressable>
+              )}
+
               <Pressable
                 onPress={handleForward}
                 style={({ pressed }) => [
@@ -5367,6 +5389,19 @@ export default function ChatConversationScreen() {
         organization={user?.organization || ''}
         messages={currentMessages}
         wabaNumbers={wabaNumbers.length > 1 ? wabaNumbers : undefined}
+        onMediaUpdated={(u) => updateMessage(u.messageId, { mediaTitle: u.mediaTitle, mediaFolderId: u.mediaFolderId } as Partial<Message>)}
+      />
+
+      <MediaTitleSheet
+        visible={!!mediaTitleMessage}
+        onClose={() => setMediaTitleMessage(null)}
+        organization={user?.organization || ''}
+        contactPhone={phoneNumber || ''}
+        messageId={mediaTitleMessage?.messageId || ''}
+        initialTitle={mediaTitleMessage?.mediaTitle || ''}
+        initialFolderId={mediaTitleMessage?.mediaFolderId || ''}
+        placeholder={mediaTitleMessage?.fileName || undefined}
+        onSaved={(u) => updateMessage(u.messageId, { mediaTitle: u.mediaTitle, mediaFolderId: u.mediaFolderId } as Partial<Message>)}
       />
 
       {/* Shared-media grid (opened from the header) — a WhatsApp-style overview of every photo/video

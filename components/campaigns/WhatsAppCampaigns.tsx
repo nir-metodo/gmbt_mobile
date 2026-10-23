@@ -147,6 +147,10 @@ export default function WhatsAppCampaigns() {
     (c: WaCampaign) => router.push({ pathname: `${BASE}/wa-run`, params: { id: c.campaingId } } as any),
     [router],
   );
+  const edit = useCallback(
+    (c: WaCampaign) => router.push({ pathname: `${BASE}/wa-create`, params: { editId: c.campaingId } } as any),
+    [router],
+  );
   const duplicate = useCallback(
     (c: WaCampaign) => router.push({ pathname: `${BASE}/wa-create`, params: { duplicateFrom: c.campaingId } } as any),
     [router],
@@ -225,6 +229,7 @@ export default function WhatsAppCampaigns() {
         onVisible={(id) => requestSummaries([id])}
         onOpen={openResults}
         onRun={runCampaign}
+        onEdit={edit}
         onDuplicate={duplicate}
         onDelete={removeCampaign}
         onCancelSchedule={cancelSchedule}
@@ -232,7 +237,7 @@ export default function WhatsAppCampaigns() {
     ),
     // `pending` re-renders rows when a lazy summary lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [statusById, getSummary, templateNames, he, requestSummaries, openResults, runCampaign, duplicate, removeCampaign, cancelSchedule, pending],
+    [statusById, getSummary, templateNames, he, requestSummaries, openResults, runCampaign, edit, duplicate, removeCampaign, cancelSchedule, pending],
   );
 
   const chips: Array<{ key: FilterKey; he: string; en: string }> = [

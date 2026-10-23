@@ -73,6 +73,24 @@ export const mediaApi = {
     return response.data;
   },
 
+  /** Name a chat media message and/or file it under a folder (stored on the message; "" clears). */
+  async updateMessageMedia(
+    organization: string,
+    phoneNumber: string,
+    messageId: string,
+    mediaTitle: string,
+    mediaFolderId: string
+  ): Promise<boolean> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_MESSAGE_MEDIA, {
+      organizationId: organization,
+      phoneNumber,
+      messageId,
+      mediaTitle,
+      mediaFolderId,
+    });
+    return !!response.data?.success;
+  },
+
   async updateFolder(
     organization: string,
     folderId: string,

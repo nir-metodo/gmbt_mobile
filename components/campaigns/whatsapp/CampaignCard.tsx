@@ -19,6 +19,7 @@ interface Props {
   onVisible: (id: string) => void;
   onOpen: (c: WaCampaign) => void;
   onRun: (c: WaCampaign) => void;
+  onEdit: (c: WaCampaign) => void;
   onDuplicate: (c: WaCampaign) => void;
   onDelete: (c: WaCampaign) => void;
   onCancelSchedule: (c: WaCampaign) => void;
@@ -52,6 +53,7 @@ function CampaignCardBase({
   onVisible,
   onOpen,
   onRun,
+  onEdit,
   onDuplicate,
   onDelete,
   onCancelSchedule,
@@ -92,6 +94,14 @@ function CampaignCardBase({
             onDismiss={() => setMenuOpen(false)}
             anchor={<IconButton icon="dots-vertical" size={20} onPress={() => setMenuOpen(true)} style={styles.kebab} />}
           >
+            <Menu.Item
+              leadingIcon="pencil-outline"
+              title={he ? 'ערוך' : 'Edit'}
+              onPress={() => {
+                setMenuOpen(false);
+                onEdit(campaign);
+              }}
+            />
             <Menu.Item
               leadingIcon="content-copy"
               title={he ? 'שכפל' : 'Duplicate'}

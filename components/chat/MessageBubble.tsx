@@ -1119,6 +1119,11 @@ function MessageBubbleInner({
         ) : (
           <>
             {renderMedia()}
+            {message.mediaTitle && mediaUrl ? (
+              <Text style={{ color: isOutbound ? textColor : theme.colors.primary, fontSize: 12, fontWeight: '700', marginTop: 4 }} numberOfLines={2}>
+                🏷️ {message.mediaTitle}
+              </Text>
+            ) : null}
             {(message.text || message.body || message.caption) ? (() => {
               const txt = (message.caption || message.text || message.body || '').replace(/\\n/g, '\n').trim();
               const isMediaPlaceholder = ['image', 'video', 'audio', 'document'].includes(msgType) && mediaUrl &&

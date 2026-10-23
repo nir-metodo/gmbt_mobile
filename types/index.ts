@@ -82,6 +82,9 @@ export interface Message {
   media_url?: string;
   mediaType?: string;
   fileName?: string;
+  /** User-given name for a media message (searchable) and the media-library folder it is filed under. */
+  mediaTitle?: string;
+  mediaFolderId?: string;
   isStarred?: boolean;
   quotedMessage?: Message;
   ContextMessageId?: string;

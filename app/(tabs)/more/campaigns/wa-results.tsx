@@ -384,7 +384,14 @@ export default function WaResultsScreen() {
       )}
 
       {!isSystem && campaign && !loading && (
-        <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 10, backgroundColor: theme.colors.surface }]}>
+        <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 10, backgroundColor: theme.colors.surface, gap: 8 }]}>
+          <Button
+            mode="outlined"
+            icon="pencil-outline"
+            onPress={() => router.push({ pathname: '/(tabs)/more/campaigns/wa-create', params: { editId: campaignId } } as any)}
+          >
+            {he ? 'ערוך קמפיין (תמונה, תבנית, קהל…)' : 'Edit campaign (image, template, audience…)'}
+          </Button>
           <Button
             mode="contained"
             icon="play"

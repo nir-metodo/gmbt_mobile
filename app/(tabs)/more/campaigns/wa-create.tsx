@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, Pressable, Alert, KeyboardAvoidingView, Platform, Image } from 'react-native';
 import { Text, Button, ActivityIndicator, TextInput, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import { mediaApi } from '../../../../services/api/media';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +38,7 @@ import {
   isBodyQuery,
   mappingFromQuery,
   mergeQueries,
+  parseRunAtLocal,
   queryBodyIndex,
   templateKey,
   VarMapping,
@@ -48,15 +51,27 @@ const MIN_SCHEDULE_LEAD_MS = 60 * 1000;
 const TPL_LIST_LIMIT = 30;
 const TAG_LIST_LIMIT = 40;
 
-type Mode = 'draft' | 'now' | 'once' | 'weekly';
+// 'keep' (edit only): leave the campaign's existing schedule exactly as it is.
+type Mode = 'draft' | 'now' | 'once' | 'weekly' | 'keep';
 const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** Header-media override: the campaign sends this file instead of the template's own image/video. */
+type MediaOverride = { url: string; name: string; kind: 'file' | 'url' };
+const isMediaQuery = (q: any) =>
+  !!q && (q.isMediaUpload || /dynamic_image|dynamic_video/.test(String(q.Variable || '')));
+const SCHEDULE_KEYS = [
+  'campaignTrigger', 'campaignStatus', 'runAt', 'timezone', 'scheduleType', 'interval', 'intervalNumber',
+  'EndCondition', 'Recurrence', 'AutoSplit', 'BatchSize', 'ScheduledRuns',
+];
 
 const WEEKDAYS_HE = ['א׳', 'ב׳', 'ג׳', 'ד׳', 'ה׳', 'ו׳', 'ש׳'];
 const WEEKDAYS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export default function WaCreateScreen() {
-  const { duplicateFrom } = useLocalSearchParams<{ duplicateFrom?: string }>();
+  const { duplicateFrom, editId: editParam } = useLocalSearchParams<{ duplicateFrom?: string; editId?: string }>();
   const duplicateId = duplicateFrom ? String(duplicateFrom) : '';
+  const editId = editParam ? String(editParam) : '';
+  const sourceId = editId || duplicateId;
   const router = useRouter();
   const theme = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -88,6 +103,11 @@ export default function WaCreateScreen() {
   const [tplDetail, setTplDetail] = useState<WaTemplate | null>(null);
   const [tplSearch, setTplSearch] = useState('');
   const [mediaUrl, setMediaUrl] = useState('');
+  const [mediaOverride, setMediaOverride] = useState<MediaOverride | null>(null);
+  const [mediaBusy, setMediaBusy] = useState(false);
+  const [mediaError, setMediaError] = useState('');
+  const [mediaLinkOpen, setMediaLinkOpen] = useState(false);
+  const [mediaLink, setMediaLink] = useState('');
   const [rows, setRows] = useState<FilterRow[]>([]);
   const [logic, setLogic] = useState<'AND' | 'OR'>('AND');
   const [tagSearch, setTagSearch] = useState('');
@@ -114,6 +134,9 @@ export default function WaCreateScreen() {
   const savingRef = useRef(false);
 
   const isDuplicate = !!duplicateId;
+  const isEdit = !!editId;
+  const hasSource = !!sourceId;
+  const sourceScheduled = !!source && String(source.campaignTrigger || '') === 'Scheduled' && !!source.runAt;
   const isExcelDup = String(source?.recipientSource || '').toLowerCase() === 'excel';
   const isRegularDup = !!source && String(source.messageType || '').toLowerCase() === 'regular';
   const lockAudience = isExcelDup;
@@ -136,7 +159,7 @@ export default function WaCreateScreen() {
           campaignsApi.getUsers(organization),
           campaignsApi.getContactFields(organization),
           campaignsApi.getContactColumns(organization),
-          isDuplicate ? loadSource(organization, duplicateId) : Promise.resolve(null),
+          hasSource ? loadSource(organization, sourceId) : Promise.resolve(null),
         ]);
         if (cancelled) return;
         setTemplates(tpls);
@@ -150,10 +173,18 @@ export default function WaCreateScreen() {
         setFromNumberId(src?.fromNumberId || primary?.PhoneNumberId || '');
         if (src) {
           setSource(src);
-          setName(`${src.campaignName || ''} ${L('(עותק)', '(copy)')}`.trim());
+          setName(isEdit ? String(src.campaignName || '') : `${src.campaignName || ''} ${L('(עותק)', '(copy)')}`.trim());
           const srcTplId = campaignTemplateId(src);
           if (srcTplId && tpls.some((t) => templateKey(t) === srcTplId)) setTplId(srcTplId);
           const qs = Array.isArray(src.templateVariableQuery) ? src.templateVariableQuery : [];
+          // The image/video this campaign already sends instead of the template's own (so it can be replaced / reverted).
+          const mq: any = qs.find((q: any) => isMediaQuery(q) && String(q.parameters_hardCoded_Text || '').trim());
+          if (mq) {
+            const u = String(mq.parameters_hardCoded_Text);
+            setMediaOverride({ url: u, name: String(mq.parameters_webhook_value || '').replace(/^URL:\s*/, ''), kind: mq.mediaSourceType === 'url' ? 'url' : 'file' });
+          }
+          // Editing keeps the schedule untouched unless the user changes it.
+          if (isEdit) setMode(String(src.campaignTrigger || '') === 'Scheduled' && src.runAt ? 'keep' : 'draft');
           const m: Record<number, VarMapping> = {};
           qs.filter(isBodyQuery).forEach((q) => {
             const n = queryBodyIndex(q);
@@ -181,7 +212,7 @@ export default function WaCreateScreen() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization, duplicateId, reloadKey]);
+  }, [organization, sourceId, reloadKey]);
 
   // ───────────── derived: template ─────────────
   const approvedTemplates = useMemo(() => {
@@ -204,7 +235,7 @@ export default function WaCreateScreen() {
 
   // Fetch the full template (and header media) when selected — the list payload may be partial.
   useEffect(() => {
-    if (!organization || !tplId || lockTemplate) return;
+    if (!organization || !tplId || isRegularDup) return;
     let cancelled = false;
     setTplDetail(null);
     setMediaUrl('');
@@ -219,12 +250,23 @@ export default function WaCreateScreen() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [organization, tplId, lockTemplate]);
+  }, [organization, tplId, isRegularDup]);
 
   const selectTemplate = (t: WaTemplate) => {
     const key = templateKey(t);
     if (key === tplId) return;
     setTplId(key);
+    // A custom header image belongs to the previous template — back to the new template's own media
+    // (only the campaign's original template keeps its saved override).
+    setMediaError('');
+    if (source && campaignTemplateId(source) === key) {
+      const mq: any = (Array.isArray(source.templateVariableQuery) ? source.templateVariableQuery : []).find(
+        (q: any) => isMediaQuery(q) && String(q.parameters_hardCoded_Text || '').trim(),
+      );
+      setMediaOverride(mq ? { url: String(mq.parameters_hardCoded_Text), name: String(mq.parameters_webhook_value || '').replace(/^URL:\s*/, ''), kind: mq.mediaSourceType === 'url' ? 'url' : 'file' } : null);
+    } else {
+      setMediaOverride(null);
+    }
     // Variable mapping belongs to the template — start clean unless this is the duplicated template.
     if (!(source && campaignTemplateId(source) === key)) {
       setMaps({});
@@ -310,11 +352,43 @@ export default function WaCreateScreen() {
       return { ...prev, [key]: { ...cur, ...patch } };
     });
 
+  const headerFormat = info?.headerFormat || '';
+  const hasMediaHeader = headerFormat === 'IMAGE' || headerFormat === 'VIDEO';
   const queries = useMemo(() => {
-    if (lockVariables) return Array.isArray(source?.templateVariableQuery) ? source!.templateVariableQuery! : [];
-    const keepExisting = source && campaignTemplateId(source) === tplId ? source.templateVariableQuery : [];
-    return mergeQueries(keepExisting, bodyVars, maps, info?.bodyHints || {}, buttonVars, btnMaps);
-  }, [lockVariables, source, tplId, bodyVars, maps, info, buttonVars, btnMaps]);
+    let list: any[];
+    if (lockVariables) list = Array.isArray(source?.templateVariableQuery) ? [...source!.templateVariableQuery!] : [];
+    else {
+      const keepExisting = source && campaignTemplateId(source) === tplId ? source.templateVariableQuery : [];
+      list = mergeQueries(keepExisting, bodyVars, maps, info?.bodyHints || {}, buttonVars, btnMaps);
+    }
+    // Header media: the chosen image/video replaces the template's own (same shape the web stores).
+    // No override → drop any stale one so the template's original media is sent.
+    if (hasMediaHeader) {
+      const idx = list.findIndex(isMediaQuery);
+      const isVideo = headerFormat === 'VIDEO';
+      if (mediaOverride) {
+        const q = {
+          ...(idx >= 0 ? list[idx] : {}),
+          Variable: idx >= 0 && list[idx].Variable ? list[idx].Variable : isVideo ? 'dynamic_video' : 'dynamic_image',
+          dataSource1: 'data_source1_HardCoded',
+          parameters_hardCoded_Text: mediaOverride.url,
+          parameters_webhook_value: mediaOverride.kind === 'url' ? `URL: ${mediaOverride.url}` : mediaOverride.name,
+          mediaSourceType: mediaOverride.kind === 'url' ? 'url' : 'media',
+          isMediaUpload: true,
+          mediaFormat: isVideo ? 'VIDEO' : 'IMAGE',
+        };
+        if (idx >= 0) list[idx] = q;
+        else {
+          list.unshift(q);
+          list = list.map((x, i) => ({ ...x, index: i + 1 }));
+        }
+      } else if (idx >= 0) {
+        list.splice(idx, 1);
+        list = list.map((x, i) => ({ ...x, index: i + 1 }));
+      }
+    }
+    return list;
+  }, [lockVariables, source, tplId, bodyVars, maps, info, buttonVars, btnMaps, hasMediaHeader, headerFormat, mediaOverride]);
 
   // Server-side sanity check of the column mappings (empty columns etc.) — advisory only.
   useEffect(() => {
@@ -414,14 +488,21 @@ export default function WaCreateScreen() {
   const firstBadStep = [0, 1, 2, 3].find((s) => !!stepError(s));
 
   // ───────────── actions ─────────────
-  const dirty = !!(name.trim() || tplId || rows.length);
+  // Editing: "dirty" = something actually changed since the campaign was loaded.
+  const formSig = JSON.stringify([name, tplId, rows, logic, maps, btnMaps, mediaOverride, mode, when?.getTime() ?? null, weekdays, endType, endCount, fromNumberId]);
+  const baselineSig = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loading && baselineSig.current === null) baselineSig.current = formSig;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+  const dirty = isEdit ? baselineSig.current !== null && formSig !== baselineSig.current : !!(name.trim() || tplId || rows.length);
   const leave = () => {
     if (router.canGoBack()) router.back();
     else router.replace(BASE as any);
   };
   const onBack = () => {
     if (!dirty || saving) return leave();
-    Alert.alert(L('לצאת ללא שמירה?', 'Discard this campaign?'), L('השינויים לא יישמרו.', 'Your changes will not be saved.'), [
+    Alert.alert(isEdit ? L('לצאת בלי לשמור את השינויים?', 'Discard your changes?') : L('לצאת ללא שמירה?', 'Discard this campaign?'), L('השינויים לא יישמרו.', 'Your changes will not be saved.'), [
       { text: L('המשך עריכה', 'Keep editing'), style: 'cancel' },
       { text: L('צא', 'Discard'), style: 'destructive', onPress: leave },
     ]);
@@ -439,6 +520,67 @@ export default function WaCreateScreen() {
   };
   const patchRow = (id: number, patch: any) => setRows((r) => r.map((x) => (x.id === id ? ({ ...x, ...patch } as FilterRow) : x)));
   const removeRow = (id: number) => setRows((r) => r.filter((x) => x.id !== id));
+
+  // ── header media: pick → upload to the media library → use the permanent link ──
+  const uploadHeaderMedia = async (uri: string, fileName: string, mimeType: string) => {
+    if (!organization) return;
+    setMediaBusy(true);
+    setMediaError('');
+    try {
+      const res = await mediaApi.uploadFile(organization, uri, fileName, mimeType, {
+        uploadedBy: user?.uID || user?.userId || '',
+        uploadedByName: user?.fullname || '',
+      });
+      const file = Array.isArray(res?.files) ? res.files[0] : null;
+      if (!file?.url) throw new Error(L('ההעלאה נכשלה', 'Upload failed'));
+      // The listed URL is short-lived — keep the permanent share link so the campaign still sends it later.
+      const url = (await mediaApi.getShareLink(organization, file.url)) || file.url;
+      setMediaOverride({ url, name: String(file.name || fileName), kind: 'file' });
+    } catch (e: any) {
+      setMediaError(e?.response?.data?.Message || e?.message || L('ההעלאה נכשלה', 'Upload failed'));
+    } finally {
+      setMediaBusy(false);
+    }
+  };
+
+  const pickHeaderMedia = async (from: 'gallery' | 'camera') => {
+    const isVideo = headerFormat === 'VIDEO';
+    try {
+      if (from === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (perm.status !== 'granted') {
+          setMediaError(L('יש לאפשר גישה למצלמה', 'Camera permission is required'));
+          return;
+        }
+      }
+      const opts: any = { mediaTypes: [isVideo ? 'videos' : 'images'], quality: 0.85 };
+      const result =
+        from === 'camera' ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
+      if (result.canceled || !result.assets?.length) return;
+      const a: any = result.assets[0];
+      const size = Number(a.fileSize || 0);
+      const max = isVideo ? 16 * 1024 * 1024 : 5 * 1024 * 1024;
+      if (size > max) {
+        setMediaError(isVideo ? L('הסרטון חייב להיות קטן מ-16MB', 'The video must be under 16MB') : L('התמונה חייבת להיות קטנה מ-5MB', 'The image must be under 5MB'));
+        return;
+      }
+      await uploadHeaderMedia(a.uri, a.fileName || `${isVideo ? 'video' : 'photo'}_${Date.now()}.${isVideo ? 'mp4' : 'jpg'}`, a.mimeType || (isVideo ? 'video/mp4' : 'image/jpeg'));
+    } catch (e: any) {
+      setMediaError(e?.message || L('לא ניתן לבחור קובץ', 'Could not pick a file'));
+    }
+  };
+
+  const applyMediaLink = () => {
+    const u = mediaLink.trim();
+    if (!/^https?:\/\/\S+$/i.test(u)) {
+      setMediaError(L('הזן כתובת תקינה שמתחילה ב-https://', 'Enter a valid link starting with https://'));
+      return;
+    }
+    setMediaError('');
+    setMediaOverride({ url: u, name: u, kind: 'url' });
+    setMediaLinkOpen(false);
+    setMediaLink('');
+  };
 
   const buildPayload = (): Record<string, any> => {
     const data: Record<string, any> = {};
@@ -483,7 +625,19 @@ export default function WaCreateScreen() {
     else data.ContactFilters = contactFilters;
     if (fromNumberId) data.fromNumberId = fromNumberId;
 
-    if (scheduled && when) {
+    if (isEdit) {
+      data.campaingId = editId;
+      data.modifiedOn = new Date().toISOString();
+      data.createdBy = source?.createdBy || data.createdBy;
+    }
+
+    if (mode === 'keep' && source) {
+      // Untouched schedule: hand back exactly what is stored so the server sees no timing change.
+      SCHEDULE_KEYS.forEach((k) => {
+        if ((source as any)[k] !== undefined) data[k] = (source as any)[k];
+      });
+      if (!data.campaignTrigger) data.campaignTrigger = 'Scheduled';
+    } else if (scheduled && when) {
       const tz = deviceTimeZone();
       data.runAt = formatRunAt(when);
       data.timezone = tz;
@@ -519,12 +673,12 @@ export default function WaCreateScreen() {
     setSaving(true);
     setSaveError('');
     try {
-      const res = await campaignsApi.createCampaign(organization, buildPayload(), {
-        userId: user?.userId || user?.uID || '',
-        userName: user?.fullname || user?.userName || '',
-      });
+      const who = { userId: user?.userId || user?.uID || '', userName: user?.fullname || user?.userName || '' };
+      const res = isEdit
+        ? await campaignsApi.updateCampaign(organization, buildPayload(), who)
+        : await campaignsApi.createCampaign(organization, buildPayload(), who);
       invalidateRunSummary();
-      const newId = String(res?.Data ?? res?.data ?? '');
+      const newId = isEdit ? editId : String(res?.Data ?? res?.data ?? '');
       if (mode === 'now' && newId) {
         router.replace(`${BASE}/wa-run?id=${encodeURIComponent(newId)}` as any);
       } else {
@@ -544,7 +698,7 @@ export default function WaCreateScreen() {
   };
 
   // ───────────── render ─────────────
-  const title = isDuplicate ? L('שכפול קמפיין', 'Duplicate campaign') : L('קמפיין חדש', 'New campaign');
+  const title = isEdit ? L('עריכת קמפיין', 'Edit campaign') : isDuplicate ? L('שכפול קמפיין', 'Duplicate campaign') : L('קמפיין חדש', 'New campaign');
 
   if (!organization) {
     return (
@@ -598,12 +752,90 @@ export default function WaCreateScreen() {
 
   const sourceLabel = (s: VarSource) => ({ text: L('טקסט קבוע', 'Fixed text'), column: L('שדה איש קשר', 'Contact field'), phone: L('טלפון', 'Phone') })[s];
 
+  const keptWhen = sourceScheduled ? parseRunAtLocal(source?.runAt) : null;
   const modeOptions: Array<{ key: Mode; label: string; icon: string; hint: string }> = [
-    { key: 'draft', label: L('שמירה כטיוטה', 'Save as draft'), icon: 'content-save-outline', hint: L('הרצה ידנית בהמשך', 'Run it manually later') },
+    ...(isEdit && sourceScheduled
+      ? [
+          {
+            key: 'keep' as Mode,
+            label: L('השאר את התזמון הקיים', 'Keep the current schedule'),
+            icon: 'calendar-check',
+            hint: keptWhen ? `${formatWhen(keptWhen, he)}${source?.timezone ? ` · ${source.timezone}` : ''}` : L('התזמון לא ישתנה', 'The schedule is not changed'),
+          },
+        ]
+      : []),
+    {
+      key: 'draft',
+      label: isEdit ? L('שמירה ללא תזמון', 'Save without a schedule') : L('שמירה כטיוטה', 'Save as draft'),
+      icon: 'content-save-outline',
+      hint: isEdit && sourceScheduled ? L('מבטל את התזמון הקיים – הרצה ידנית בהמשך', 'Removes the current schedule — run it manually later') : L('הרצה ידנית בהמשך', 'Run it manually later'),
+    },
     { key: 'now', label: L('שמור ושלח עכשיו', 'Save & send now'), icon: 'send', hint: L('עובר למסך התצוגה המקדימה לפני השליחה', 'Opens the preview screen before sending') },
     { key: 'once', label: L('תזמון חד-פעמי', 'Schedule once'), icon: 'calendar-clock', hint: L('שליחה אוטומטית במועד שתבחר', 'Sent automatically at the time you pick') },
     { key: 'weekly', label: L('תזמון שבועי', 'Repeat weekly'), icon: 'calendar-sync', hint: L('חוזר בימים שתבחר', 'Repeats on the weekdays you pick') },
   ];
+
+  const shownMedia = mediaOverride?.url || mediaUrl;
+  const isVideoHeader = headerFormat === 'VIDEO';
+  // Replace the header image/video of this campaign (the template itself is not touched).
+  const mediaSection = hasMediaHeader ? (
+    <Section title={isVideoHeader ? L('סרטון כותרת', 'Header video') : L('תמונת כותרת', 'Header image')} icon={isVideoHeader ? 'video-outline' : 'image-outline'}>
+      <View style={[styles.mediaRow, { flexDirection }]}>
+        {!isVideoHeader && shownMedia ? (
+          <Image source={{ uri: shownMedia }} style={[styles.mediaThumb, { backgroundColor: theme.colors.surfaceVariant }]} resizeMode="cover" />
+        ) : (
+          <View style={[styles.mediaThumb, styles.center, { backgroundColor: theme.colors.surfaceVariant }]}>
+            <MaterialCommunityIcons name={isVideoHeader ? 'video-outline' : 'image-outline'} size={28} color={sub} />
+          </View>
+        )}
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ color: theme.colors.onSurface, fontWeight: '700', fontSize: 13, textAlign }} numberOfLines={2}>
+            {mediaOverride ? L('קובץ מותאם לקמפיין', 'Custom file for this campaign') : L('המדיה של התבנית', "The template's own media")}
+          </Text>
+          <Text style={{ color: sub, fontSize: 11.5, textAlign }} numberOfLines={2}>
+            {mediaOverride ? mediaOverride.name || mediaOverride.url : L('אפשר להחליף רק לקמפיין הזה', 'You can replace it for this campaign only')}
+          </Text>
+        </View>
+        {mediaBusy ? <ActivityIndicator size="small" color={BRAND} /> : null}
+      </View>
+      <View style={[styles.addRow, { flexDirection }]}>
+        <Button compact mode="outlined" icon="image-multiple-outline" disabled={mediaBusy} onPress={() => pickHeaderMedia('gallery')}>
+          {mediaOverride ? L('החלף', 'Replace') : L('בחר מהגלריה', 'Gallery')}
+        </Button>
+        {!isVideoHeader ? (
+          <Button compact mode="outlined" icon="camera-outline" disabled={mediaBusy} onPress={() => pickHeaderMedia('camera')}>
+            {L('מצלמה', 'Camera')}
+          </Button>
+        ) : null}
+        <Button compact mode="outlined" icon="link-variant" disabled={mediaBusy} onPress={() => setMediaLinkOpen((v) => !v)}>
+          {L('קישור', 'Link')}
+        </Button>
+        {mediaOverride ? (
+          <Button compact mode="text" icon="undo" disabled={mediaBusy} onPress={() => { setMediaOverride(null); setMediaError(''); }}>
+            {L('חזרה לתבנית', 'Use template media')}
+          </Button>
+        ) : null}
+      </View>
+      {mediaLinkOpen ? (
+        <View style={{ gap: 6 }}>
+          <TextInput
+            mode="outlined"
+            dense
+            value={mediaLink}
+            onChangeText={setMediaLink}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            placeholder="https://…"
+          />
+          <Button compact mode="contained" buttonColor={BRAND} onPress={applyMediaLink} style={{ alignSelf: 'flex-start' }}>
+            {L('השתמש בקישור', 'Use this link')}
+          </Button>
+        </View>
+      ) : null}
+      {mediaError ? <Notice kind="error" text={mediaError} /> : null}
+    </Section>
+  ) : null;
 
   // Preview of the chosen template, shown right under it in the list.
   const previewBlock =
@@ -633,12 +865,15 @@ export default function WaCreateScreen() {
             text={L('התבנית כוללת משתנים – תמלא אותם בשלב "משתנים".', 'This template has variables — you fill them in the "Variables" step.')}
           />
         ) : null}
-        <TemplateBubble info={info} mediaUrl={mediaUrl} he={he} buttonUrls={buttonUrls} />
+        <TemplateBubble info={info} mediaUrl={shownMedia} he={he} buttonUrls={buttonUrls} />
+        {mediaSection}
       </View>
     ) : null;
 
   const saveLabel =
-    mode === 'draft'
+    isEdit && (mode === 'draft' || mode === 'keep')
+      ? L('שמור שינויים', 'Save changes')
+      : mode === 'draft'
       ? L('שמור טיוטה', 'Save draft')
       : mode === 'now'
         ? L('שמור והמשך לשליחה', 'Save & continue to send')
@@ -782,7 +1017,7 @@ export default function WaCreateScreen() {
                 )}
               </Section>
             )}
-
+            {lockTemplate ? mediaSection : null}
           </>
         ) : null}
 
@@ -1007,7 +1242,7 @@ export default function WaCreateScreen() {
                 ))}
                 {info ? (
                   <Section title={L('תצוגה מקדימה', 'Preview')} icon="eye-outline">
-                    <TemplateBubble info={info} bodyText={previewBody} mediaUrl={mediaUrl} he={he} buttonUrls={buttonUrls} />
+                    <TemplateBubble info={info} bodyText={previewBody} mediaUrl={shownMedia} he={he} buttonUrls={buttonUrls} />
                     <Text style={{ color: sub, fontSize: 11.5, textAlign }}>
                       {L('‹שדה› יוחלף בערך של כל נמען בעת השליחה.', '‹field› is replaced with each recipient\'s value when sending.')}
                     </Text>
@@ -1160,12 +1395,22 @@ export default function WaCreateScreen() {
                     .join('\n')}
                 />
               ) : null}
+              {hasMediaHeader ? (
+                <ReviewLine
+                  label={headerFormat === 'VIDEO' ? L('סרטון כותרת', 'Header video') : L('תמונת כותרת', 'Header image')}
+                  value={mediaOverride ? mediaOverride.name || L('קובץ מותאם', 'Custom file') : L('של התבנית', "The template's own")}
+                />
+              ) : null}
               {senderNum ? <ReviewLine label={L('מספר שולח', 'Sender')} value={senderNum.DisplayNumber} /> : null}
               <ReviewLine
                 label={L('שליחה', 'Delivery')}
                 value={
-                  mode === 'draft'
-                    ? L('טיוטה – הרצה ידנית', 'Draft — run manually')
+                  mode === 'keep'
+                    ? `${L('התזמון הקיים נשאר', 'Current schedule kept')}${keptWhen ? `: ${formatWhen(keptWhen, he)}` : ''}`
+                    : mode === 'draft'
+                    ? isEdit
+                      ? L('ללא תזמון – הרצה ידנית', 'No schedule — run manually')
+                      : L('טיוטה – הרצה ידנית', 'Draft — run manually')
                     : mode === 'now'
                       ? L('שליחה עכשיו (דרך מסך התצוגה המקדימה)', 'Send now (via the preview screen)')
                       : mode === 'once'
@@ -1247,6 +1492,11 @@ export default function WaCreateScreen() {
               {L('הקודם', 'Back')}
             </Button>
           ) : null}
+          {isEdit && step < STEPS.length - 1 ? (
+            <Button mode="outlined" icon="content-save-outline" onPress={doSave} disabled={saving || !dirty || firstBadStep != null}>
+              {L('שמור', 'Save')}
+            </Button>
+          ) : null}
           <Button
             mode="contained"
             buttonColor={BRAND}
@@ -1295,6 +1545,8 @@ const styles = StyleSheet.create({
   filterCard: { borderWidth: 1, borderRadius: 10, padding: 10, gap: 8 },
   addRow: { gap: 8, flexWrap: 'wrap' },
   modeRow: { alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 10, padding: 10 },
+  mediaRow: { alignItems: 'center', gap: 10 },
+  mediaThumb: { width: 72, height: 72, borderRadius: 10, overflow: 'hidden' },
   pickRow: { alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 8, padding: 12 },
   bar: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, paddingTop: 10 },
 });

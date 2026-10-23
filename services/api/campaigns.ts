@@ -322,6 +322,17 @@ export const campaignsApi = {
     return res.data;
   },
 
+  /** Edit an existing campaign (same payload as create, with `campaingId` set) — the web's `UpdateCampaign`. */
+  async updateCampaign(
+    organization: string,
+    campaignData: Record<string, any>,
+    user: { userId: string; userName: string },
+  ): Promise<any> {
+    const res = await axiosInstance.post('/api/Webhooks/UpdateCampaign', { organization, campaignData, user });
+    assertOk(res.data, 'Failed to update the campaign');
+    return res.data;
+  },
+
   async deleteCampaign(organization: string, campaignId: string): Promise<void> {
     const res = await axiosInstance.post('/api/Webhooks/DeleteCampaign', { organization, CampaignId: campaignId });
     assertOk(res.data, 'Failed to delete the campaign');

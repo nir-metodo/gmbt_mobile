@@ -234,6 +234,7 @@ export const ENDPOINTS = {
   GET_MEDIA_FILES: '/api/Webhooks/GetMediaFiles',
   UPLOAD_MEDIA_FILE: '/api/Webhooks/UploadMediaFile',
   CREATE_MEDIA_FOLDER: '/api/Webhooks/CreateMediaFolder',
+  UPDATE_MESSAGE_MEDIA: '/api/Webhooks/UpdateMessageMedia',
   UPDATE_MEDIA_FOLDER: '/api/Webhooks/UpdateMediaFolder',
   DELETE_MEDIA_FILE: '/api/Webhooks/DeleteMediaFile',
   DELETE_MEDIA_FOLDER: '/api/Webhooks/DeleteMediaFolder',

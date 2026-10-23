@@ -22,7 +22,9 @@ import axiosInstance from '../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { chatsApi } from '../../services/api/chats';
-import type { Message, WabaNumberInfo } from '../../types';
+import { mediaApi } from '../../services/api/media';
+import { MediaTitleSheet, type MediaTitleSaved } from './MediaTitleSheet';
+import type { Message, WabaNumberInfo, MediaFolder } from '../../types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_COLUMNS = 3;
@@ -42,6 +44,10 @@ interface MediaItem {
   source: 'chat' | 'uploaded';
   size?: number;
   direction?: string;
+  messageId?: string;
+  mediaTitle?: string;
+  mediaFolderId?: string;
+  fileName?: string;
 }
 
 type SortMode = 'date_desc' | 'date_asc' | 'name_asc' | 'name_desc';
@@ -53,6 +59,7 @@ interface MediaPanelProps {
   organization: string;
   messages?: Message[];
   wabaNumbers?: WabaNumberInfo[];
+  onMediaUpdated?: (u: MediaTitleSaved) => void;
 }
 
 const TAB_TYPES: TabType[] = ['all', 'image', 'video', 'audio', 'document'];
@@ -90,7 +97,7 @@ function getMediaUrl(m: any): string {
   return m.gmbt_mediaUrl || m.mediaUrl || m.MediaUrl || m.media_url || '';
 }
 
-export function MediaPanel({ visible, onClose, contactPhone, organization, messages = [], wabaNumbers = [] }: MediaPanelProps) {
+export function MediaPanel({ visible, onClose, contactPhone, organization, messages = [], wabaNumbers = [], onMediaUpdated }: MediaPanelProps) {
   const theme = useAppTheme();
   const wabaNumberIds = useMemo(() => wabaNumbers.map((n) => n.PhoneNumberId || n.phoneNumberId || '').filter(Boolean), [wabaNumbers]);
 
@@ -108,6 +115,11 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
   const [numberFilter, setNumberFilter] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('date_desc');
   const [showSortMenu, setShowSortMenu] = useState(false);
+  // Media naming / folders
+  const [mediaOverrides, setMediaOverrides] = useState<Record<string, { mediaTitle: string; mediaFolderId: string }>>({});
+  const [folders, setFolders] = useState<MediaFolder[]>([]);
+  const [activeFolder, setActiveFolder] = useState('');
+  const [editItem, setEditItem] = useState<MediaItem | null>(null);
   const soundRef = useRef<Audio.Sound | null>(null);
 
   useEffect(() => {
@@ -148,10 +160,17 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
       })
       .map((m: any) => {
         const fileType = detectFileType(m);
+        const ov = mediaOverrides[m.messageId];
+        const mediaTitle: string = ov ? ov.mediaTitle : (m.mediaTitle || '');
+        const mediaFolderId: string = ov ? ov.mediaFolderId : (m.mediaFolderId || '');
         return {
           id: m.id || m.messageId || Math.random().toString(36),
+          messageId: m.messageId,
+          mediaTitle,
+          mediaFolderId,
+          fileName: m.fileName,
           url: getMediaUrl(m),
-          name: m.caption || m.fileName || (fileType === 'image' ? 'תמונה' : fileType === 'video' ? 'סרטון' : 'קובץ'),
+          name: mediaTitle || m.caption || m.fileName || (fileType === 'image' ? 'תמונה' : fileType === 'video' ? 'סרטון' : 'קובץ'),
           fileType,
           createdOn: m.createdOn || m.timestamp,
           source: 'chat' as const,
@@ -164,7 +183,44 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
         const db = b.createdOn?._seconds || new Date(b.createdOn || 0).getTime() / 1000;
         return db - da;
       });
-  }, [effectiveMessages, numberFilter]);
+  }, [effectiveMessages, numberFilter, mediaOverrides]);
+
+  const loadFolders = useCallback(async () => {
+    if (!organization) return;
+    try {
+      setFolders(await mediaApi.getFolders(organization));
+    } catch {}
+  }, [organization]);
+
+  useEffect(() => {
+    if (visible) loadFolders();
+  }, [visible, loadFolders]);
+
+  // Only folders that hold at least one item from this chat
+  const chatFolders = useMemo(() => {
+    const counts: Record<string, number> = {};
+    chatMedia.forEach((m) => {
+      if (m.mediaFolderId) counts[m.mediaFolderId] = (counts[m.mediaFolderId] || 0) + 1;
+    });
+    return Object.keys(counts).map((id) => ({
+      id,
+      name: folders.find((f) => f.id === id)?.name || '—',
+      count: counts[id],
+    }));
+  }, [chatMedia, folders]);
+
+  useEffect(() => {
+    if (activeFolder && !chatFolders.some((f) => f.id === activeFolder)) setActiveFolder('');
+  }, [chatFolders, activeFolder]);
+
+  const handleMediaSaved = useCallback(
+    (u: MediaTitleSaved) => {
+      setMediaOverrides((prev) => ({ ...prev, [u.messageId]: { mediaTitle: u.mediaTitle, mediaFolderId: u.mediaFolderId } }));
+      loadFolders();
+      onMediaUpdated?.(u);
+    },
+    [loadFolders, onMediaUpdated]
+  );
 
   useEffect(() => {
     if (!visible) return;
@@ -204,7 +260,7 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
   };
 
   const allMedia = useMemo<MediaItem[]>(() => {
-    let combined = [...chatMedia, ...uploadedMedia];
+    let combined = activeFolder ? chatMedia.filter((m) => m.mediaFolderId === activeFolder) : [...chatMedia, ...uploadedMedia];
     if (activeTab !== 'all') combined = combined.filter((m) => m.fileType === activeTab);
     if (dateFrom || dateTo) {
       const fromTs = dateFrom ? dateFrom.getTime() / 1000 : 0;
@@ -219,6 +275,8 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
       combined = combined.filter(
         (m) =>
           (m.name || '').toLowerCase().includes(q) ||
+          (m.mediaTitle || '').toLowerCase().includes(q) ||
+          (m.fileName || '').toLowerCase().includes(q) ||
           (m.fileType || '').toLowerCase().includes(q)
       );
     }
@@ -242,7 +300,7 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
       }
     });
     return combined;
-  }, [chatMedia, uploadedMedia, activeTab, searchTerm, dateFrom, dateTo, sortMode]);
+  }, [chatMedia, uploadedMedia, activeTab, activeFolder, searchTerm, dateFrom, dateTo, sortMode]);
 
   const visualMedia = useMemo(() => allMedia.filter((m) => m.fileType === 'image' || m.fileType === 'video'), [allMedia]);
   const fileMedia = useMemo(() => allMedia.filter((m) => m.fileType === 'document' || m.fileType === 'audio'), [allMedia]);
@@ -273,6 +331,8 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
       setNumberFilter('');
       setSortMode('date_desc');
       setShowSortMenu(false);
+      setActiveFolder('');
+      setEditItem(null);
     }
   }, [visible]);
 
@@ -339,6 +399,7 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
     <Pressable
       style={styles.gridItem}
       onPress={() => setPreviewItem(item)}
+      onLongPress={item.source === 'chat' && item.messageId ? () => setEditItem(item) : undefined}
     >
       {item.fileType === 'image' ? (
         <Image
@@ -361,7 +422,7 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
         </View>
       )}
       <View style={styles.gridDateBadge}>
-        <Text style={styles.gridDateText}>{formatDate(item.createdOn)}</Text>
+        <Text style={styles.gridDateText} numberOfLines={1}>{item.mediaTitle ? `🏷️ ${item.mediaTitle}` : formatDate(item.createdOn)}</Text>
       </View>
     </Pressable>
   ), []);
@@ -389,6 +450,14 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
               {item.direction ? ` · ${item.direction === 'outbound' ? '↑' : '↓'}` : ''}
             </Text>
           </View>
+          {item.source === 'chat' && item.messageId ? (
+            <IconButton
+              icon={item.mediaTitle || item.mediaFolderId ? 'tag' : 'tag-outline'}
+              size={22}
+              iconColor={item.mediaTitle || item.mediaFolderId ? PRIMARY : theme.colors.onSurfaceVariant}
+              onPress={() => setEditItem(item)}
+            />
+          ) : null}
           {isAudio ? (
             <IconButton
               icon={isPlaying ? 'stop' : 'play'}
@@ -468,6 +537,32 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
             )}
           />
         </View>
+
+        {/* Folders (only those holding items from this chat) */}
+        {chatFolders.length > 0 && (
+          <View style={[styles.tabsContainer, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
+            <FlatList
+              data={[{ id: '', name: 'הכל', count: 0 }, ...chatFolders]}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(f) => f.id || 'all'}
+              contentContainerStyle={styles.tabsList}
+              renderItem={({ item: f }) => {
+                const selected = activeFolder === f.id;
+                return (
+                  <Pressable
+                    onPress={() => setActiveFolder(selected && f.id ? '' : f.id)}
+                    style={[styles.tab, selected && { backgroundColor: '#d1fae5', borderWidth: 1, borderColor: PRIMARY }]}
+                  >
+                    <Text style={[styles.tabText, selected && { color: PRIMARY, fontWeight: '700' }]}>
+                      {f.id ? `📁 ${f.name} (${f.count})` : f.name}
+                    </Text>
+                  </Pressable>
+                );
+              }}
+            />
+          </View>
+        )}
 
         {/* Search & Filters */}
         <View style={[styles.searchContainer, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outline }]}>
@@ -738,12 +833,22 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
                     {previewIndex + 1} / {previewableItems.length}
                   </Text>
                 )}
-                <IconButton
-                  icon="download"
-                  size={28}
-                  iconColor="#fff"
-                  onPress={() => handleDocumentPress(previewItem)}
-                />
+                <View style={{ flexDirection: 'row' }}>
+                  {previewItem.source === 'chat' && previewItem.messageId ? (
+                    <IconButton
+                      icon="tag-outline"
+                      size={28}
+                      iconColor="#fff"
+                      onPress={() => { const it = previewItem; setPreviewItem(null); setEditItem(it); }}
+                    />
+                  ) : null}
+                  <IconButton
+                    icon="download"
+                    size={28}
+                    iconColor="#fff"
+                    onPress={() => handleDocumentPress(previewItem)}
+                  />
+                </View>
               </View>
 
               <View style={styles.previewContent}>
@@ -790,6 +895,18 @@ export function MediaPanel({ visible, onClose, contactPhone, organization, messa
             </View>
           </Modal>
         )}
+
+        <MediaTitleSheet
+          visible={!!editItem}
+          onClose={() => setEditItem(null)}
+          organization={organization}
+          contactPhone={contactPhone}
+          messageId={editItem?.messageId || ''}
+          initialTitle={editItem?.mediaTitle || ''}
+          initialFolderId={editItem?.mediaFolderId || ''}
+          placeholder={editItem?.fileName || undefined}
+          onSaved={handleMediaSaved}
+        />
       </View>
     </Modal>
   );
