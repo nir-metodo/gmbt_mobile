@@ -285,11 +285,22 @@ function buildTemplateVarEntry(bodyVarIndex: number, value: string, queryIndex: 
 }
 
 export default function ChatConversationScreen() {
-  const { phoneNumber, defaultWabaNumber } = useLocalSearchParams<{
+  const { phoneNumber, defaultWabaNumber, returnTo } = useLocalSearchParams<{
     phoneNumber: string;
     defaultWabaNumber?: string;
+    /** Route of the screen that opened this chat (e.g. a specific order / lead) — Back returns there. */
+    returnTo?: string;
   }>();
   const router = useRouter();
+  // The chat lives in its own tab, so a plain router.back() does not reliably return to the
+  // order/lead that opened it. When the caller passes `returnTo`, go back to exactly that record.
+  const goBack = useCallback(() => {
+    if (returnTo) {
+      router.navigate(returnTo as any);
+    } else {
+      router.back();
+    }
+  }, [returnTo, router]);
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL } = useRTL();
@@ -1787,12 +1798,12 @@ export default function ChatConversationScreen() {
       if (starredFilter) { setStarredFilter(false); return true; }
       if (replyToMessage) { setReplyToMessage(null); return true; }
       Keyboard.dismiss();
-      router.back();
+      goBack();
       return true;
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [showTimelineSheet, showAttachSheet, menuVisible, searchVisible, showContactInfoSheet, mediaPanelVisible, showQuickActionsSheet, showInlineQuickMessages, showMentionPicker, starredFilter, replyToMessage, router]);
+  }, [showTimelineSheet, showAttachSheet, menuVisible, searchVisible, showContactInfoSheet, mediaPanelVisible, showQuickActionsSheet, showInlineQuickMessages, showMentionPicker, starredFilter, replyToMessage, goBack]);
 
   // Load messages & mark as read
   useEffect(() => {
@@ -3117,7 +3128,7 @@ export default function ChatConversationScreen() {
         >
           <View style={styles.headerContent}>
             <Pressable
-              onPress={() => router.back()}
+              onPress={goBack}
               hitSlop={8}
               style={({ pressed }) => [
                 styles.backBtn,

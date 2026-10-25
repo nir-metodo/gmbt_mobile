@@ -278,6 +278,16 @@ export default function OrderDetailScreen() {
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)/more/orders');
   }, [router]);
+  // Open the customer's Gambot chat; Back in the chat returns to THIS order (returnTo).
+  // The screen stays mounted in its tab, so unsaved edits here are kept.
+  const handleOpenChat = useCallback(() => {
+    const phone = formCustomerPhone.trim();
+    if (!phone || isNew) return;
+    router.push({
+      pathname: '/(tabs)/chats/[phoneNumber]',
+      params: { phoneNumber: phone, returnTo: `/(tabs)/more/orders/${order?.id || id}` },
+    } as any);
+  }, [formCustomerPhone, isNew, order?.id, id, router]);
   const handleBack = useCallback(() => {
     if (!hasUnsaved) { leaveScreen(); return; }
     Alert.alert(
@@ -539,6 +549,9 @@ export default function OrderDetailScreen() {
           actions={!isNew ? (
             <HeaderMenu
               items={[
+                ...(formCustomerPhone.trim()
+                  ? [{ key: 'chat', title: t('orders.openChat', 'פתח שיחה עם הלקוח'), icon: 'whatsapp', onPress: handleOpenChat }]
+                  : []),
                 { key: 'note', title: t('orders.addNote'), icon: 'note-plus-outline', onPress: () => setNoteModalVisible(true) },
                 { key: 'task', title: t('tasks.addTask', 'הוסף משימה'), icon: 'clipboard-check-outline', onPress: () => setAddTaskVisible(true) },
                 { key: 'delete', title: t('common.delete'), icon: 'delete-outline', onPress: handleDelete, destructive: true, dividerBefore: true },
@@ -646,6 +659,17 @@ export default function OrderDetailScreen() {
               <TextInput label="טלפון" value={formCustomerPhone} onChangeText={setFormCustomerPhone}
                 mode="outlined" keyboardType="phone-pad" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
                 right={<TextInput.Icon icon="phone-outline" />} />
+              {!isNew && formCustomerPhone.trim() ? (
+                <Button
+                  mode="outlined"
+                  icon="whatsapp"
+                  onPress={handleOpenChat}
+                  textColor={BRAND_COLOR}
+                  style={{ marginBottom: 10, borderColor: BRAND_COLOR + '55' }}
+                >
+                  {t('orders.openChat', 'פתח שיחה עם הלקוח')}
+                </Button>
+              ) : null}
               <TextInput label="כתובת משלוח" value={formShippingAddress} onChangeText={setFormShippingAddress}
                 mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
                 right={<TextInput.Icon icon="map-marker-outline" />} />

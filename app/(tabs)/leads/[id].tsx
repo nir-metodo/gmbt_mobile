@@ -474,7 +474,8 @@ export default function LeadDetailScreen() {
     if (lead?.contactPhone || lead?.phoneNumber) {
       router.push({
         pathname: '/(tabs)/chats/[phoneNumber]',
-        params: { phoneNumber: lead.contactPhone || lead.phoneNumber || '' },
+        // returnTo: Back in the chat returns to this lead
+        params: { phoneNumber: lead.contactPhone || lead.phoneNumber || '', returnTo: `/(tabs)/leads/${lead.id}` },
       });
     }
   }, [lead, router]);
