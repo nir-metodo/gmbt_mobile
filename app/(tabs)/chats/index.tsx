@@ -302,7 +302,7 @@ export default function ChatsListScreen() {
 
   // Per-row quick actions (swipe → "…") — mirrors the web sidebar right-click menu.
   const [rowActionChat, setRowActionChat] = useState<Chat | null>(null);
-  const [rowActionKind, setRowActionKind] = useState<null | 'menu' | 'owner' | 'status' | 'category' | 'tags' | 'leadStage'>(null);
+  const [rowActionKind, setRowActionKind] = useState<null | 'menu' | 'owner' | 'status' | 'category' | 'tags' | 'leadStage' | 'caseStage'>(null);
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [rowOwners, setRowOwners] = useState<any[]>([]);
   const [rowCategories, setRowCategories] = useState<string[]>([]);
@@ -311,6 +311,11 @@ export default function ChatsListScreen() {
   // the rare case the list-level `leadStages` hasn't loaded yet.
   const [rowLead, setRowLead] = useState<any>(null);
   const [rowLeadStages, setRowLeadStages] = useState<any[]>([]);
+  // Row case-stage ("שלב פנייה") action — same shape as the lead one above.
+  const [rowCase, setRowCase] = useState<any>(null);
+  const [rowCaseStages, setRowCaseStages] = useState<any[]>([]);
+  // Bulk stage update (lead / case) for the multi-select toolbar: which picker is open.
+  const [bulkStageKind, setBulkStageKind] = useState<null | 'lead' | 'case'>(null);
 
   const chatsDV = getDataVisibility(user?.DataVisibility, user?.SecurityRole, 'chats');
   const currentUserId = user?.uID || user?.userId || '';
@@ -2042,6 +2047,7 @@ export default function ChatsListScreen() {
     setRowActionKind(null);
     setRowTagInput('');
     setRowLead(null);
+    setRowCase(null);
   }, []);
 
   const rowTakeOwnership = useCallback(async () => {
@@ -2184,6 +2190,129 @@ export default function ChatsListScreen() {
       closeRowActions();
     }
   }, [user?.organization, rowLead, rowActionChat, closeRowActions]);
+
+  // ---- Case ("פנייה") stage — mirrors the chat-detail handleMoveCaseStage (UpdateCase) ----
+  // A contact's case = the first one returned by GetCasesByContact (same rule as the chat screen).
+  const fetchContactRecords = useCallback(async (kind: 'lead' | 'case', phone: string): Promise<any[]> => {
+    if (!user?.organization) return [];
+    const digits = String(phone).replace(/\D/g, '');
+    try {
+      const res = await axiosInstance.post(
+        kind === 'lead' ? ENDPOINTS.GET_LEADS_BY_CONTACT : ENDPOINTS.GET_CASES_BY_CONTACT,
+        { organization: user.organization, contactPhone: digits, phoneNumber: digits },
+      );
+      const raw = res.data;
+      const list = Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }, [user?.organization]);
+
+  // Lead → first still-open lead (skip won/lost) else the first; case → the first one.
+  const pickActiveRecord = useCallback((kind: 'lead' | 'case', list: any[]) => {
+    if (kind === 'case') return list[0] || null;
+    return list.find((l: any) => {
+      const s = (l.stageId || l.StageId || '').toString().toLowerCase();
+      return s !== 'won' && s !== 'lost' && s !== 'closed_won' && s !== 'closed_lost';
+    }) || list[0] || null;
+  }, []);
+
+  // Stage options for a picker: use the list-level ones, else fetch the org settings once.
+  const loadStageOptions = useCallback(async (kind: 'lead' | 'case') => {
+    if (!user?.organization) return;
+    if (kind === 'lead' ? leadStages.length || rowLeadStages.length : caseStages.length || rowCaseStages.length) return;
+    try {
+      const res = await axiosInstance.post(
+        kind === 'lead' ? ENDPOINTS.GET_PIPELINE_SETTINGS : ENDPOINTS.GET_CASE_SETTINGS,
+        { organization: user.organization },
+      );
+      const raw = res.data;
+      const stages = raw?.stages || raw?.Data?.stages || raw?.pipelines?.[0]?.stages || [];
+      const arr = (Array.isArray(stages) ? stages : []).map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color }));
+      if (kind === 'lead') setRowLeadStages(arr); else setRowCaseStages(arr);
+    } catch { /* leave empty — the picker shows a friendly message */ }
+  }, [user?.organization, leadStages.length, rowLeadStages.length, caseStages.length, rowCaseStages.length]);
+
+  const openRowCaseStage = useCallback(async () => {
+    setRowActionKind('caseStage');
+    setRowCase(null);
+    if (!user?.organization || !rowActionChat) return;
+    setRowActionBusy(true);
+    try {
+      const list = await fetchContactRecords('case', rowActionChat.phoneNumber);
+      setRowCase(pickActiveRecord('case', list));
+      await loadStageOptions('case');
+    } finally {
+      setRowActionBusy(false);
+    }
+  }, [user?.organization, rowActionChat, fetchContactRecords, pickActiveRecord, loadStageOptions]);
+
+  const rowSetCaseStage = useCallback(async (stage: any) => {
+    if (!user?.organization || !rowCase || !rowActionChat) return;
+    const stageId = stage.id || stage.Id;
+    const stageName = stage.name || stage.Name || stage.stageName;
+    if ((rowCase.stageId || rowCase.StageId) === stageId) { closeRowActions(); return; }
+    setRowActionBusy(true);
+    try {
+      await axiosInstance.post(ENDPOINTS.UPDATE_CASE, {
+        organization: user.organization, caseId: rowCase.id || rowCase.Id, stageId, stageName,
+      });
+      addOrUpdateChat({ phoneNumber: rowActionChat.phoneNumber, caseStageName: stageName, ...(stage.color ? { caseStageColor: stage.color } : {}) } as any);
+    } finally {
+      setRowActionBusy(false);
+      closeRowActions();
+    }
+  }, [user?.organization, rowCase, rowActionChat, addOrUpdateChat, closeRowActions]);
+
+  // ---- Bulk: update lead / case stage for every selected contact ----
+  // Each contact has its own lead/case record, so resolve it per phone (GetLeadsByContact /
+  // GetCasesByContact) and move it. Contacts with no lead/case are skipped and reported.
+  const openBulkStage = useCallback(async (kind: 'lead' | 'case') => {
+    setShowBulkMoreMenu(false);
+    setBulkStageKind(kind);
+    await loadStageOptions(kind);
+  }, [loadStageOptions]);
+
+  const handleBulkStage = useCallback(async (stage: any) => {
+    const kind = bulkStageKind;
+    if (!user?.organization || !kind || selectedPhones.length === 0) return;
+    const stageId = stage.id || stage.Id;
+    const stageName = stage.name || stage.Name || stage.stageName;
+    const stageColor = stage.color || stage.Color || '';
+    setBulkBusy(true);
+    let updated = 0, unchanged = 0, missing = 0, failed = 0;
+    try {
+      for (const phone of selectedPhones) {
+        const record = pickActiveRecord(kind, await fetchContactRecords(kind, phone));
+        if (!record) { missing++; continue; }
+        if ((record.stageId || record.StageId) === stageId) { unchanged++; continue; }
+        try {
+          if (kind === 'lead') {
+            await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, { organization: user.organization, leadId: record.id || record.Id, stageId, stageName });
+            const digits = String(phone).replace(/\D/g, '');
+            if (digits) setContactLeadMap((prev: any) => ({ ...prev, [digits]: { stageName, stageColor: stageColor || prev?.[digits]?.stageColor || '#7c3aed', stageId } }));
+            addOrUpdateChat({ phoneNumber: phone, leadStageName: stageName, ...(stageColor ? { leadStageColor: stageColor } : {}) } as any);
+          } else {
+            await axiosInstance.post(ENDPOINTS.UPDATE_CASE, { organization: user.organization, caseId: record.id || record.Id, stageId, stageName });
+            addOrUpdateChat({ phoneNumber: phone, caseStageName: stageName, ...(stageColor ? { caseStageColor: stageColor } : {}) } as any);
+          }
+          updated++;
+        } catch {
+          failed++;
+        }
+      }
+    } finally {
+      setBulkBusy(false);
+      setBulkStageKind(null);
+      exitSelection();
+      const what = kind === 'lead' ? (isRTL ? 'ליד' : 'lead') : (isRTL ? 'פנייה' : 'case');
+      const parts = isRTL
+        ? [`עודכנו ${updated}`, unchanged ? `${unchanged} כבר בשלב הזה` : '', missing ? `${missing} ללא ${what}` : '', failed ? `${failed} נכשלו` : '']
+        : [`${updated} updated`, unchanged ? `${unchanged} already in this stage` : '', missing ? `${missing} with no ${what}` : '', failed ? `${failed} failed` : ''];
+      Alert.alert(isRTL ? `שלב ${what}: ${stageName}` : `${what} stage: ${stageName}`, parts.filter(Boolean).join(' · '));
+    }
+  }, [bulkStageKind, user?.organization, selectedPhones, pickActiveRecord, fetchContactRecords, addOrUpdateChat, exitSelection, isRTL]);
 
   const rowCurrentTags = useMemo(() => {
     const raw = rowActionChat?.tags || rowActionChat?.keys;
@@ -3116,6 +3245,8 @@ export default function ChatsListScreen() {
             }
           >
             <Menu.Item leadingIcon="tag-outline" onPress={openBulkCategory} title={t('chats.category', 'קטגוריה')} />
+            <Menu.Item leadingIcon="account-star-outline" onPress={() => openBulkStage('lead')} title={isRTL ? 'עדכן שלב ליד' : 'Update lead stage'} />
+            <Menu.Item leadingIcon="briefcase-edit-outline" onPress={() => openBulkStage('case')} title={isRTL ? 'עדכן שלב פנייה' : 'Update case stage'} />
             <Menu.Item leadingIcon="email-check-outline" onPress={handleBulkMarkRead} title={t('chats.markRead', 'סמן כנקרא')} />
             <Menu.Item leadingIcon="email-mark-as-unread" onPress={() => { setShowBulkMoreMenu(false); handleBulkMarkUnread(); }} title={t('chats.markUnread', 'סמן כלא נקרא')} />
           </Menu>
@@ -3798,6 +3929,7 @@ export default function ChatsListScreen() {
             { icon: 'circle-outline', label: isRTL ? 'עריכת סטטוס' : 'Edit status', onPress: () => setRowActionKind('status') },
             { icon: 'tag-outline', label: isRTL ? 'עריכת קטגוריה' : 'Edit category', onPress: openRowCategory },
             { icon: 'account-star-outline', label: isRTL ? 'עדכן שלב ליד' : 'Update lead stage', onPress: openRowLeadStage },
+            { icon: 'briefcase-edit-outline', label: isRTL ? 'עדכן שלב פנייה' : 'Update case stage', onPress: openRowCaseStage },
           ].map((a) => (
             <Pressable
               key={a.label}
@@ -3946,6 +4078,88 @@ export default function ChatsListScreen() {
             </ScrollView>
           )}
           {rowActionBusy && rowLead && <ActivityIndicator style={{ marginTop: 8 }} color={theme.colors.primary} />}
+        </Modal>
+
+        {/* Row: case stage */}
+        <Modal
+          visible={!!rowActionChat && rowActionKind === 'caseStage'}
+          onDismiss={closeRowActions}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '70%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '700', textAlign }}>
+            {isRTL ? 'עדכן שלב פנייה' : 'Update case stage'}
+          </Text>
+          {rowActionBusy && !rowCase ? (
+            <ActivityIndicator style={{ marginVertical: 24 }} color={theme.colors.primary} />
+          ) : !rowCase ? (
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, paddingVertical: 16, textAlign }}>
+              {isRTL ? 'אין פנייה לאיש קשר זה' : 'No case for this contact'}
+            </Text>
+          ) : (
+            <ScrollView style={{ maxHeight: 360 }}>
+              {(rowCaseStages.length ? rowCaseStages : caseStages).map((stage: any) => {
+                const stageId = stage.id || stage.Id;
+                const stageName = stage.name || stage.Name || stage.stageName;
+                const isCurrent = (rowCase.stageId || rowCase.StageId) === stageId;
+                return (
+                  <Pressable
+                    key={stageId || stageName}
+                    onPress={() => rowSetCaseStage(stage)}
+                    disabled={rowActionBusy}
+                    style={({ pressed }) => [
+                      { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 12, borderRadius: 8 },
+                      pressed && { backgroundColor: theme.colors.surfaceVariant },
+                    ]}
+                  >
+                    <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: stage.color || '#0891b2' }} />
+                    <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, fontWeight: isCurrent ? '700' : '400', flex: 1, textAlign }}>{stageName}</Text>
+                    {isCurrent && <MaterialCommunityIcons name="check" size={20} color="#2e6155" />}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
+          {rowActionBusy && rowCase && <ActivityIndicator style={{ marginTop: 8 }} color={theme.colors.primary} />}
+        </Modal>
+
+        {/* Bulk: update lead / case stage for all selected contacts */}
+        <Modal
+          visible={bulkStageKind !== null}
+          onDismiss={() => { if (!bulkBusy) setBulkStageKind(null); }}
+          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '70%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 4, fontWeight: '700', textAlign }}>
+            {bulkStageKind === 'case' ? (isRTL ? 'עדכן שלב פנייה' : 'Update case stage') : (isRTL ? 'עדכן שלב ליד' : 'Update lead stage')} ({selectedPhones.length})
+          </Text>
+          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, marginBottom: 12, textAlign }}>
+            {bulkStageKind === 'case'
+              ? (isRTL ? 'השלב יעודכן בפנייה של כל איש קשר נבחר. אנשי קשר ללא פנייה ידולגו.' : 'Updates each selected contact\'s case. Contacts with no case are skipped.')
+              : (isRTL ? 'השלב יעודכן בליד הפעיל של כל איש קשר נבחר. אנשי קשר ללא ליד ידולגו.' : 'Updates each selected contact\'s active lead. Contacts with no lead are skipped.')}
+          </Text>
+          <ScrollView style={{ maxHeight: 360 }}>
+            {(bulkStageKind === 'case'
+              ? (rowCaseStages.length ? rowCaseStages : caseStages)
+              : (rowLeadStages.length ? rowLeadStages : leadStages)
+            ).map((stage: any) => {
+              const stageId = stage.id || stage.Id;
+              const stageName = stage.name || stage.Name || stage.stageName;
+              return (
+                <Pressable
+                  key={stageId || stageName}
+                  onPress={() => handleBulkStage(stage)}
+                  disabled={bulkBusy}
+                  style={({ pressed }) => [
+                    { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 12, borderRadius: 8 },
+                    pressed && { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                >
+                  <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: stage.color || (bulkStageKind === 'case' ? '#0891b2' : '#7c3aed') }} />
+                  <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, flex: 1, textAlign }}>{stageName}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          {bulkBusy && <ActivityIndicator style={{ marginTop: 8 }} color={theme.colors.primary} />}
         </Modal>
 
         {/* Row: tags */}

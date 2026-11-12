@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gambot",
     "slug": "gambot-mobile",
-    "version": "2.0.4",
+    "version": "2.0.5",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "109",
+      "buildNumber": "110",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -35,7 +35,7 @@
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 159,
+      "versionCode": 160,
       "minSdkVersion": 26,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
@@ -99,7 +99,14 @@
           "calendarPermission": "Allow Gambot to access your calendar to create events."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "Gambot uses your microphone for phone calls made and received in the app.",
+          "cameraPermission": "Gambot needs access to your camera to take photos and videos to share in chats."
+        }
+      ]
     ],
     "extra": {
       "router": {},

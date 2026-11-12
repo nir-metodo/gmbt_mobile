@@ -4,11 +4,18 @@ import { Platform } from 'react-native';
 import { appStorage } from './storage';
 import axiosInstance from './api/axiosInstance';
 import { ENDPOINTS } from '../constants/api';
+import { useSettingsStore } from '../stores/settingsStore';
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
+  handleNotification: async (notification) => ({
     shouldShowAlert: true,
-    shouldPlaySound: true,
+    // Call alerts (missed call / call summary / incoming-call pushes) honor the user's "call alert sound" preference
+    // while the app is open. When the app is in the background the Android "Phone Calls" channel settings apply.
+    shouldPlaySound: (() => {
+      const d: any = notification?.request?.content?.data || {};
+      const kind = String(d.channelId || d.type || d.notificationType || d.category || '').toLowerCase();
+      return kind.includes('call') ? useSettingsStore.getState().callAlertSoundEnabled : true;
+    })(),
     shouldSetBadge: true,
     shouldShowBanner: true,
     shouldShowList: true,

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, Image, Linking, ActivityIndicator, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, Pressable, Image, Linking, ActivityIndicator, Platform, Alert, Vibration } from 'react-native';
 import type { MD3Theme } from 'react-native-paper';
 import {
   Appbar,
@@ -13,6 +13,7 @@ import {
   List,
   RadioButton,
   Avatar,
+  TextInput,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -90,6 +91,7 @@ export default function SettingsScreen() {
   const [languageDialogVisible, setLanguageDialogVisible] = useState(false);
   const [themeDialogVisible, setThemeDialogVisible] = useState(false);
   const [defaultScreenDialogVisible, setDefaultScreenDialogVisible] = useState(false);
+  const [dialerDialogVisible, setDialerDialogVisible] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [cacheSize, setCacheSize] = useState<string>('...');
   const [clearingCache, setClearingCache] = useState(false);
@@ -155,6 +157,16 @@ export default function SettingsScreen() {
     setDefaultScreenDialogVisible(false);
   }, [settings]);
 
+  // Dialer every "call" button opens first (chats, contacts, leads, cases, quotes...): the organization's system dialer or the phone's own.
+  const currentDialer: 'system' | 'phone' = settings.telephonySolutionAvailable && settings.defaultDialer !== 'phone' ? 'system' : 'phone';
+  const handleDialerChange = useCallback(async (value: 'system' | 'phone') => {
+    try {
+      await settings.setDefaultDialer(value);
+    } catch {
+      // already applied locally
+    }
+    setDialerDialogVisible(false);
+  }, [settings]);
   const handleThemeChange = useCallback(async (mode: string) => {
     try {
       await settings.setTheme(mode as 'light' | 'dark' | 'system');
@@ -183,6 +195,68 @@ export default function SettingsScreen() {
       // setting update failed — toggle already applied locally
     }
   }, [settings, user]);
+
+  // Incoming calls to the office number ALSO ring this user's personal phone (own extension only; server enforces it).
+  // The user's own mobile: the user profile first, else the one saved on their telephony extension. When neither exists the
+  // user is asked for it right here (dialog below) and it is saved on the extension - no need to edit the user profile.
+  const myPhone = (user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone || settings.myExtension?.mobilePhone || '';
+  const [phoneDialogVisible, setPhoneDialogVisible] = useState(false);
+  const [phoneInput, setPhoneInput] = useState('');
+  const [phoneDialogAction, setPhoneDialogAction] = useState<'ring' | 'callerId' | null>(null);
+  const [savingPhone, setSavingPhone] = useState(false);
+
+  const openPhoneDialog = useCallback((action: 'ring' | 'callerId' | null) => {
+    setPhoneDialogAction(action);
+    setPhoneInput(myPhone);
+    setPhoneDialogVisible(true);
+  }, [myPhone]);
+
+  const handlePhoneDialogSave = useCallback(async () => {
+    const digits = phoneInput.replace(/[^\d+]/g, '');
+    if (digits.length < 7) {
+      Alert.alert(t('common.error', 'Error'), isRTL ? 'מספר טלפון לא תקין' : 'Invalid phone number');
+      return;
+    }
+    const org = user?.organization || '';
+    setSavingPhone(true);
+    try {
+      // The pending toggle (if any) is applied together with the number; otherwise only the number is saved (ring state unchanged).
+      const res = phoneDialogAction === 'callerId'
+        ? await settings.setMyOutboundCallerId(org, 'mobile', digits)
+        : await settings.setMyMobileRinging(org, phoneDialogAction === 'ring' ? true : !!settings.myExtension?.ringMobile, digits);
+      if (!res.ok) {
+        Alert.alert(t('common.error', 'Error'), t('settings.ringMobileFailed', isRTL ? 'לא ניתן לעדכן. ודאו שיש לכם שלוחה פעילה בארגון.' : 'Could not update. Make sure you have an active extension in the organization.'));
+        return;
+      }
+      setPhoneDialogVisible(false);
+    } finally {
+      setSavingPhone(false);
+    }
+  }, [phoneInput, phoneDialogAction, settings, user, t, isRTL]);
+
+  const handleRingMobile = useCallback(async (value: boolean) => {
+    if (value && !myPhone) {
+      openPhoneDialog('ring');
+      return;
+    }
+    const res = await settings.setMyMobileRinging(user?.organization || '', value, myPhone);
+    if (!res.ok) Alert.alert(t('common.error', 'Error'), t('settings.ringMobileFailed', isRTL ? 'לא ניתן לעדכן. ודאו שיש לכם שלוחה פעילה בארגון.' : 'Could not update. Make sure you have an active extension in the organization.'));
+  }, [settings, user, t, isRTL, myPhone, openPhoneDialog]);
+
+  // Which number the CUSTOMER sees on outgoing calls: the user's own mobile or the organization's number (own extension only).
+  const handleOutboundCallerId = useCallback(async (useMobile: boolean) => {
+    if (useMobile && !myPhone) {
+      openPhoneDialog('callerId');
+      return;
+    }
+    const res = await settings.setMyOutboundCallerId(user?.organization || '', useMobile ? 'mobile' : 'did', myPhone);
+    if (!res.ok) Alert.alert(t('common.error', 'Error'), t('settings.ringMobileFailed', isRTL ? 'לא ניתן לעדכן. ודאו שיש לכם שלוחה פעילה בארגון.' : 'Could not update. Make sure you have an active extension in the organization.'));
+  }, [settings, user, t, isRTL, myPhone, openPhoneDialog]);
+
+  const handleCallAlertVibrate = useCallback((value: boolean) => {
+    settings.setCallAlertVibrate(value);
+    if (value) Vibration.vibrate(200); // let the user feel the setting
+  }, [settings]);
 
   const handleReminderToggle = useCallback(async (key: 'taskReminderViaEmail' | 'taskReminderViaPush', value: boolean) => {
     if (key === 'taskReminderViaEmail') setReminderViaEmail(value);
@@ -301,6 +375,117 @@ export default function SettingsScreen() {
           />
         </Surface></>
         )}
+
+        {/* ────── Telephony: how calls are placed, incoming calls on my phone, call alerts ────── */}
+        <SectionHeader title={t('settings.telephony', isRTL ? 'טלפוניה' : 'Telephony')} isRTL={isRTL} themeColors={theme.colors} />
+        <Surface style={[s.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+          <SettingRow
+            icon={settings.telephonySolutionAvailable ? 'phone-in-talk' : 'phone-outline'}
+            iconColor={BRAND_COLOR}
+            label={t('settings.dialMethod', isRTL ? 'איך מחייגים' : 'How calls are placed')}
+            description={settings.telephonySolutionAvailable
+              ? (isRTL
+                  ? 'דרך קו הארגון: המערכת מחייגת אליכם ואז מחברת ללקוח. השיחה מוקלטת ומתועדת ב-CRM.'
+                  : "Through the organization's line: the system rings you, then connects the customer. The call is recorded and logged in the CRM.")
+              : (isRTL
+                  ? 'אין פתרון טלפוניה פעיל לארגון: כפתור החיוג פותח את החייגן של הטלפון ורק מתעד שבוצע חיוג.'
+                  : 'No telephony solution is active for the organization: the call button opens your phone\'s dialer and only logs that a call was made.')}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+          />
+          {settings.telephonySolutionAvailable && (
+            <>
+              <Divider style={s.divider} />
+              <SettingRow
+                icon="dialpad"
+                iconColor={BRAND_COLOR}
+                label={t('settings.defaultDialer', isRTL ? 'חייגן ברירת מחדל' : 'Default dialer')}
+                description={currentDialer === 'system'
+                  ? (isRTL ? 'חייגן המערכת (קו הארגון) - בכל כפתור חיוג באפליקציה. אפשר לעבור לחייגן הטלפון בכל שיחה.' : "System dialer (the organization's line) - on every call button in the app. You can switch to the phone's dialer on any call.")
+                  : (isRTL ? 'חייגן הטלפון - בכל כפתור חיוג באפליקציה. אפשר לעבור לחייגן המערכת בכל שיחה.' : "Phone dialer - on every call button in the app. You can switch to the system dialer on any call.")}
+                isRTL={isRTL}
+                themeColors={theme.colors}
+                onPress={() => setDialerDialogVisible(true)}
+                right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
+              />
+            </>
+          )}          {settings.telephonySolutionAvailable && settings.myExtension?.enabled && (
+            <>
+              <Divider style={s.divider} />
+              <SettingRow
+                icon="cellphone"
+                iconColor="#2A9D8F"
+                label={isRTL ? 'המספר הנייד שלי' : 'My mobile number'}
+                description={myPhone
+                  ? (isRTL ? `${myPhone} - המערכת מחייגת אליו כדי לחבר שיחה ללקוח. לחצו לשינוי.` : `${myPhone} - the system rings it to connect you to the customer. Tap to change.`)
+                  : (isRTL ? 'לא הוגדר. לחצו כדי להזין - נדרש כדי לחייג שיחות דרך גמבוט.' : 'Not set. Tap to enter it - required to place calls through Gambot.')}
+                isRTL={isRTL}
+                themeColors={theme.colors}
+                onPress={() => openPhoneDialog(null)}
+                right={<MaterialCommunityIcons name="pencil-outline" size={20} color={theme.colors.onSurfaceVariant} />}
+              />
+              <Divider style={s.divider} />
+              <SettingRow
+                icon="phone-incoming-outline"
+                iconColor="#2A9D8F"
+                label={t('settings.ringMobile', isRTL ? 'שיחות נכנסות גם לנייד שלי' : 'Incoming calls also ring my phone')}
+                description={isRTL
+                  ? `שיחות למספר הארגון יצלצלו גם במספר הנייד שלכם${settings.myExtension?.mobilePhone ? ` (${settings.myExtension.mobilePhone})` : ''}. הנייד מצלצל לפי הגדרות הצליל והרטט של המכשיר.`
+                  : `Calls to the organization number will also ring your mobile${settings.myExtension?.mobilePhone ? ` (${settings.myExtension.mobilePhone})` : ''}. Your phone rings with the device's own sound and vibration settings.`}
+                isRTL={isRTL}
+                themeColors={theme.colors}
+                right={<Switch value={!!settings.myExtension?.ringMobile} onValueChange={handleRingMobile} color={BRAND_COLOR} />}
+              />
+              <Divider style={s.divider} />
+              <SettingRow
+                icon="phone-outgoing-outline"
+                iconColor="#2A9D8F"
+                label={t('settings.outboundCallerIdMobile', isRTL ? 'הלקוח רואה את הנייד שלי' : 'Customer sees my mobile number')}
+                description={settings.myExtension?.outboundCallerId === 'mobile'
+                  ? (isRTL
+                      ? `שיחות יוצאות יופיעו אצל הלקוח ממספר הנייד שלכם${settings.myExtension?.mobilePhone ? ` (${settings.myExtension.mobilePhone})` : ''}. השיחה עדיין עוברת דרך קו הארגון ומוקלטת. אם חברת הטלפוניה לא מאשרת את המספר, השיחה תיעשה אוטומטית ממספר הארגון.`
+                      : `Outgoing calls show your mobile number${settings.myExtension?.mobilePhone ? ` (${settings.myExtension.mobilePhone})` : ''} to the customer. The call still goes through the organization's line and is recorded. If the carrier does not allow the number, the call is placed from the organization's number automatically.`)
+                  : (isRTL
+                      ? 'שיחות יוצאות יופיעו אצל הלקוח ממספר הארגון. השיחה מוקלטת.'
+                      : "Outgoing calls show the organization's number to the customer. The call is recorded.")}
+                isRTL={isRTL}
+                themeColors={theme.colors}
+                right={<Switch value={settings.myExtension?.outboundCallerId === 'mobile'} onValueChange={handleOutboundCallerId} color={BRAND_COLOR} />}
+              />
+            </>
+          )}
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="volume-high"
+            iconColor="#FF6B35"
+            label={t('settings.callAlertSound', isRTL ? 'צליל התראות שיחה' : 'Call alert sound')}
+            description={isRTL ? 'צליל בהתראות על שיחות (שיחה שהוחמצה, סיכום שיחה) כשהאפליקציה פתוחה' : 'Sound for call alerts (missed call, call summary) while the app is open'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.callAlertSoundEnabled} onValueChange={(v) => settings.setCallAlertSound(v)} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="vibrate"
+            iconColor="#7B2D8E"
+            label={t('settings.callAlertVibrate', isRTL ? 'רטט התראות שיחה' : 'Call alert vibration')}
+            description={isRTL ? 'רטט בהתראות על שיחות' : 'Vibrate on call alerts'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            right={<Switch value={!!settings.callAlertVibrateEnabled} onValueChange={handleCallAlertVibrate} color={BRAND_COLOR} />}
+          />
+          <Divider style={s.divider} />
+          <SettingRow
+            icon="cellphone-cog"
+            iconColor="#0ea5e9"
+            label={t('settings.systemCallNotifications', isRTL ? 'הגדרות התראות במכשיר' : 'Device notification settings')}
+            description={isRTL ? 'בחרו צלצול, עוצמה ורטט לערוץ "Phone Calls" בהגדרות המערכת' : 'Pick the ringtone, importance and vibration of the "Phone Calls" channel in system settings'}
+            isRTL={isRTL}
+            themeColors={theme.colors}
+            onPress={() => Linking.openSettings().catch(() => {})}
+            right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
+          />
+        </Surface>
 
         {/* ────── Call Settings ────── */}
         {hasTelephony && (
@@ -534,6 +719,40 @@ export default function SettingsScreen() {
         </Dialog>
       </Portal>
 
+      {/* ── Default Dialer Dialog ── */}
+      <Portal>
+        <Dialog visible={dialerDialogVisible} onDismiss={() => setDialerDialogVisible(false)} style={{ borderRadius: 20 }}>
+          <Dialog.Title>{t('settings.defaultDialer', isRTL ? 'חייגן ברירת מחדל' : 'Default dialer')}</Dialog.Title>
+          <Dialog.Content>
+            <RadioButton.Group value={currentDialer} onValueChange={(v) => handleDialerChange(v as 'system' | 'phone')}>
+              <Pressable onPress={() => handleDialerChange('system')} style={[s.themeRow, { flexDirection: 'row' }]}>
+                <MaterialCommunityIcons name="phone-in-talk" size={22} color={theme.colors.onSurface} />
+                <View style={{ flex: 1, marginHorizontal: 12 }}>
+                  <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
+                    {t('phoneCalls.systemDialer', isRTL ? 'חייגן המערכת' : 'System dialer')}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left' }}>
+                    {isRTL ? 'דרך קו הארגון - מוקלט ומתועד ב-CRM' : "Through the organization's line - recorded and logged in the CRM"}
+                  </Text>
+                </View>
+                <RadioButton value="system" color={BRAND_COLOR} />
+              </Pressable>
+              <Pressable onPress={() => handleDialerChange('phone')} style={[s.themeRow, { flexDirection: 'row' }]}>
+                <MaterialCommunityIcons name="phone" size={22} color={theme.colors.onSurface} />
+                <View style={{ flex: 1, marginHorizontal: 12 }}>
+                  <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>
+                    {t('phoneCalls.phoneDialer', isRTL ? 'חייגן הטלפון' : 'Phone dialer')}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left' }}>
+                    {isRTL ? 'החייגן של המכשיר - השיחה רק מתועדת' : "The device's own dialer - the call is only logged"}
+                  </Text>
+                </View>
+                <RadioButton value="phone" color={BRAND_COLOR} />
+              </Pressable>
+            </RadioButton.Group>
+          </Dialog.Content>
+        </Dialog>
+      </Portal>
       {/* ── Default Screen Dialog ── */}
       <Portal>
         <Dialog visible={defaultScreenDialogVisible} onDismiss={() => setDefaultScreenDialogVisible(false)} style={{ borderRadius: 20, maxHeight: '80%' }}>
@@ -579,6 +798,37 @@ export default function SettingsScreen() {
             </Button>
             <Button onPress={handleClearCache} loading={clearingCache} textColor="#E63946" mode="contained" buttonColor="#E6394615">
               {t('settings.clearCache', 'נקה')}
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
+      {/* ── My mobile number (needed for calls through Gambot) ── */}
+      <Portal>
+        <Dialog visible={phoneDialogVisible} onDismiss={() => setPhoneDialogVisible(false)} style={{ borderRadius: 20 }}>
+          <Dialog.Title>{isRTL ? 'המספר הנייד שלי' : 'My mobile number'}</Dialog.Title>
+          <Dialog.Content>
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12 }}>
+              {isRTL
+                ? 'המערכת מחייגת למספר הזה ואז מחברת אתכם ללקוח. המספר נשמר בשלוחה שלכם בהגדרות הטלפוניה.'
+                : 'The system rings this number, then connects you to the customer. It is saved on your extension in the telephony settings.'}
+            </Text>
+            <TextInput
+              mode="outlined"
+              label={isRTL ? 'מספר נייד' : 'Mobile number'}
+              value={phoneInput}
+              onChangeText={setPhoneInput}
+              keyboardType="phone-pad"
+              placeholder="05X-XXXXXXX"
+              autoFocus
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setPhoneDialogVisible(false)} textColor={theme.colors.onSurfaceVariant}>
+              {t('settings.cancel')}
+            </Button>
+            <Button onPress={handlePhoneDialogSave} loading={savingPhone} disabled={savingPhone}>
+              {isRTL ? 'שמור' : 'Save'}
             </Button>
           </Dialog.Actions>
         </Dialog>

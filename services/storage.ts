@@ -17,6 +17,9 @@ const STORAGE_KEYS = {
   CUSTOM_TABLES: 'custom_tables',
   REPORT_DEVICE_CALL_EVENTS: 'report_device_call_events',
   DEFAULT_SCREEN: 'default_screen',
+  DEFAULT_DIALER: 'default_dialer',
+  CALL_ALERT_SOUND: 'call_alert_sound',
+  CALL_ALERT_VIBRATE: 'call_alert_vibrate',
 };
 
 export const secureStorage = {
@@ -94,6 +97,20 @@ export const appStorage = {
     return (await AsyncStorage.getItem(STORAGE_KEYS.REPORT_DEVICE_CALL_EVENTS)) === '1';
   },
 
+  // In-app call alerts (sound / vibration). Both default to ON.
+  async setCallAlertSound(enabled: boolean) {
+    await AsyncStorage.setItem(STORAGE_KEYS.CALL_ALERT_SOUND, enabled ? '1' : '0');
+  },
+  async getCallAlertSound(): Promise<boolean> {
+    return (await AsyncStorage.getItem(STORAGE_KEYS.CALL_ALERT_SOUND)) !== '0';
+  },
+  async setCallAlertVibrate(enabled: boolean) {
+    await AsyncStorage.setItem(STORAGE_KEYS.CALL_ALERT_VIBRATE, enabled ? '1' : '0');
+  },
+  async getCallAlertVibrate(): Promise<boolean> {
+    return (await AsyncStorage.getItem(STORAGE_KEYS.CALL_ALERT_VIBRATE)) !== '0';
+  },
+
   // The user's preferred landing screen when opening the app. Empty string = "auto" (first
   // permitted screen). Stored as a route string like "/(tabs)/more/catalog".
   async setDefaultScreen(route: string) {
@@ -101,6 +118,16 @@ export const appStorage = {
   },
   async getDefaultScreen(): Promise<string> {
     return (await AsyncStorage.getItem(STORAGE_KEYS.DEFAULT_SCREEN)) || '';
+  },
+
+  // Which dialer every "call" button opens first: the organization's system dialer ('system') or the phone's own ('phone').
+  // Empty = automatic (the system dialer when the org has a calling solution, else the phone's).
+  async setDefaultDialer(value: 'system' | 'phone' | '') {
+    await AsyncStorage.setItem(STORAGE_KEYS.DEFAULT_DIALER, value || '');
+  },
+  async getDefaultDialer(): Promise<'system' | 'phone' | ''> {
+    const v = await AsyncStorage.getItem(STORAGE_KEYS.DEFAULT_DIALER);
+    return v === 'system' || v === 'phone' ? v : '';
   },
 
   async clearAll() {

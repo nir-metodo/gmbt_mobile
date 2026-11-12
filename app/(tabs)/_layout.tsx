@@ -10,6 +10,10 @@ import { useAuthStore } from '../../stores/authStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useRTL } from '../../hooks/useRTL';
+import ActiveCallBar from '../../components/phone-calls/ActiveCallBar';
+import IncomingCallOverlay from '../../components/phone-calls/IncomingCallOverlay';
+import DialSheet from '../../components/phone-calls/DialSheet';
+import { useSipPhone } from '../../hooks/useSipPhone';
 import { hasPermission } from '../../constants/permissions';
 import { fontSize, spacing } from '../../constants/theme';
 import type { AppTheme } from '../../constants/theme';
@@ -36,10 +40,12 @@ export default function TabsLayout() {
   const unreadCount = useChatStore((s) => s.unreadCount);
   const telephonyEnabled = useSettingsStore((s) => s.telephonyEnabled);
   const loadTelephonySettings = useSettingsStore((s) => s.loadTelephonySettings);
+  // The app's own SIP phone (calls ring + click-to-call talks through the app) while the app is open.
+  useSipPhone();
 
   useEffect(() => {
     if (user?.organization) {
-      loadTelephonySettings(user.organization);
+      loadTelephonySettings(user.organization, (user as any)?.uID || (user as any)?.userId);
     }
   }, [user?.organization]);
 
@@ -106,6 +112,7 @@ export default function TabsLayout() {
   const tabBarHeight = 60 + insets.bottom;
 
   return (
+    <View style={{ flex: 1 }}>
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -205,6 +212,10 @@ export default function TabsLayout() {
         />
       ))}
     </Tabs>
+    <ActiveCallBar />
+    <IncomingCallOverlay />
+    <DialSheet />
+    </View>
   );
 }
 

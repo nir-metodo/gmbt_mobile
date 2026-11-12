@@ -422,6 +422,11 @@ export interface PhoneCall {
   aiActionItems?: string[];
   leadId?: string;
   createdAt: string;
+  /** 'pbx' = office-number call log (web "Phone Calls" source); 'app' = call logged from the phone's own dialer. */
+  source?: 'pbx' | 'app';
+  callId?: string;
+  agentName?: string;
+  relatedTo?: { type: string; entityId?: string; entityName?: string };
 }
 
 export interface CallRule {

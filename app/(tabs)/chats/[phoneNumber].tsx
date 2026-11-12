@@ -73,8 +73,7 @@ import { chatsApi } from '../../../services/api/chats';
 import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
 import { tasksApi } from '../../../services/api/tasks';
-import { phoneCallsApi } from '../../../services/api/phoneCalls';
-import { makeGambotCall } from '../../../utils/phoneCall';
+import { placeSmartCall } from '../../../utils/phoneCall';
 import { prefetchMediaList } from '../../../services/mediaPrefetcher';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
@@ -499,8 +498,6 @@ export default function ChatConversationScreen() {
 
   // Outbound calling
   const [isInitiatingCall, setIsInitiatingCall] = useState(false);
-  const [telSettings, setTelSettings] = useState<{ phoneNumbers?: any[]; defaultCallerId?: string } | null>(null);
-
   // Media gallery viewer
   const [galleryVisible, setGalleryVisible] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
@@ -1150,62 +1147,35 @@ export default function ChatConversationScreen() {
     }
   }, [user?.organization, phoneNumber, chat?.tags, addOrUpdateChat, user?.uID, user?.userId, user?.fullname, pushLocalTimeline, isRTL]);
 
-  // Load telephony settings for outbound calling (deferred — only needed when placing a call).
-  useEffect(() => {
-    if (!user?.organization) return;
-    const task = InteractionManager.runAfterInteractions(() => {
-      phoneCallsApi.getTelephonySettings(user.organization)
-        .then((data) => { if (data?.phoneNumbers?.length) setTelSettings(data); })
-        .catch(() => {});
-    });
-    return () => task.cancel();
-  }, [user?.organization]);
-
+  // Header phone icon. placeSmartCall decides:
+  //  - a usable calling solution (SIP trunk) + the user's cell known → Gambot bridge call (the system rings the user's phone, then
+  //    connects the customer; recorded and logged in the CRM);
+  //  - otherwise → the phone's own dialer opens and the call is only logged (no recording).
   const handleInitiateCall = useCallback(async () => {
     if (!user?.organization || !phoneNumber || isInitiatingCall) return;
 
-    const agentPhone = (user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone;
-    const fromNumber = telSettings?.defaultCallerId || telSettings?.phoneNumbers?.[0]?.number;
-
-    if (!agentPhone) {
-      Alert.alert(
-        t('phoneCalls.gambotCallTitle', 'Gambot Call'),
-        t('phoneCalls.noAgentPhone', 'No phone number configured for your account. Go to settings to add one.'),
-      );
-      return;
-    }
-    if (!fromNumber) {
-      Linking.openURL(`tel:${phoneNumber}`);
-      return;
-    }
-
     setIsInitiatingCall(true);
     try {
-      const result = await makeGambotCall({
+      const result = await placeSmartCall({
         phoneNumber: phoneNumber as string,
         organization: user.organization,
-        agentPhone,
-        fromPhoneNumber: fromNumber,
-        agentId: user.uID || user.userId || '',
-        agentName: user.fullname || user.FullName || '',
+        user,
         customerName: contactName,
         contactId: phoneNumber as string,
       });
 
-      if (result.success) {
+      if (result.mode === 'gambot' && result.success) {
         Alert.alert(
           t('phoneCalls.gambotCallTitle', 'Gambot Call'),
           t('phoneCalls.callInitiated', 'Call initiated. Your phone will ring shortly.'),
         );
-      } else {
-        Alert.alert(t('common.error'), t('phoneCalls.gambotCallFailed', 'Failed to initiate call'));
       }
     } catch {
       Alert.alert(t('common.error'), t('phoneCalls.gambotCallFailed', 'Failed to initiate call'));
     } finally {
       setIsInitiatingCall(false);
     }
-  }, [user, phoneNumber, isInitiatingCall, telSettings, contactName, t]);
+  }, [user, phoneNumber, isInitiatingCall, contactName, t]);
 
   // Load timeline entries
   useEffect(() => {

@@ -42,14 +42,17 @@ import { useRTL } from '../../../../hooks/useRTL';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { useAuthStore } from '../../../../stores/authStore';
-import { makeAppCall, makeGambotCall } from '../../../../utils/phoneCall';
+import { useSettingsStore } from '../../../../stores/settingsStore';
+import { useActiveCallStore } from '../../../../stores/activeCallStore';
+import { makeAppCall, makeGambotCall, tryInAppSipCall } from '../../../../utils/phoneCall';
+import { sipPhone } from '../../../../services/sip/sipPhone';
+import { RecordingPlayer } from '../../../../components/phone-calls/RecordingPlayer';
 import { getDataVisibility } from '../../../../constants/permissions';
 import { PhoneCall, CallRule } from '../../../../types';
 import {
   formatDate,
   formatDuration,
   formatPhoneNumber,
-  formatRelativeTime,
 } from '../../../../utils/formatters';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -91,6 +94,21 @@ const EMPTY_RULE: Omit<CallRule, 'id'> = {
   enabled: true,
 };
 
+// Stored call times are UTC ISO strings (sometimes without the "Z") - parse them as UTC so they show in the phone's local time.
+function callDate(iso?: string): Date | null {
+  if (!iso) return null;
+  const s = /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function callTime(iso?: string): number {
+  return callDate(iso)?.getTime() ?? 0;
+}
+function formatCallWhen(iso?: string): string {
+  const d = callDate(iso);
+  return d ? formatDate(d.toISOString(), 'dd/MM/yyyy HH:mm') : '';
+}
+
 function getDirectionIcon(direction: string, status: string) {
   if (status === 'missed') return { name: 'phone-missed' as const, color: '#E63946' };
   if (direction === 'inbound') return { name: 'phone-incoming' as const, color: '#2A9D8F' };
@@ -106,11 +124,49 @@ interface CallItemProps {
   themeColors: MD3Theme['colors'];
   onQuickAction: (action: string, call: PhoneCall) => void;
   onDial: (phone: string) => void;
+  org: string;
 }
 
-function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQuickAction, onDial }: CallItemProps) {
+function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQuickAction, onDial, org }: CallItemProps) {
   const dirIcon = getDirectionIcon(call.direction, call.status);
   const [showFullTranscript, setShowFullTranscript] = useState(false);
+  // Summary / transcript / agent documentation of office-number calls (same record as the web call page), loaded when expanded.
+  const [info, setInfo] = useState<any | null>(null);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [notesState, setNotesState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const callKey = call.callId || call.id;
+
+  useEffect(() => {
+    if (!expanded || call.source !== 'pbx' || info || !callKey) return;
+    let cancelled = false;
+    phoneCallsApi.getCallSummary(org, callKey).then((data) => {
+      if (cancelled || !data) return;
+      setInfo(data);
+      setNotesDraft(data.documentation?.notes || '');
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [expanded, call.source, callKey, org, info]);
+
+  const saveNotes = useCallback(async () => {
+    setNotesState('saving');
+    try {
+      const doc = info?.documentation || {};
+      const res = await phoneCallsApi.saveCallNotes(org, callKey, { notes: notesDraft, disposition: doc.disposition, tags: doc.tags }, call.phoneNumber);
+      if (!res.success) throw new Error(res.error || 'save failed');
+      setInfo((prev: any) => ({ ...(prev || {}), documentation: { ...(prev?.documentation || {}), notes: notesDraft } }));
+      setNotesState('saved');
+    } catch {
+      setNotesState('error');
+    }
+  }, [org, callKey, notesDraft, info, call.phoneNumber]);
+
+  const summaryText: string | undefined = info?.summary || call.aiSummary;
+  const transcriptText: string | undefined = info?.transcription || call.transcription;
+  const actionItems: string[] = (info?.extractedActions || [])
+    .map((a: any) => a?.description)
+    .filter(Boolean)
+    .concat(call.aiActionItems || []);
+  const savedNotes: string = info?.documentation?.notes || '';
 
   return (
     <Surface style={[itemStyles.card, { backgroundColor: themeColors.surface }]} elevation={1}>
@@ -121,11 +177,16 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
 
         <View style={[itemStyles.info, { alignItems: 'flex-start' }]}>
           <Text variant="titleSmall" style={{ color: themeColors.onSurface }} numberOfLines={1}>
-            {call.contactName || formatPhoneNumber(call.phoneNumber)}
+            {call.contactName || formatPhoneNumber(call.phoneNumber) || t('phoneCalls.unknownNumber')}
           </Text>
+          {call.contactName ? (
+            <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }} numberOfLines={1}>
+              {formatPhoneNumber(call.phoneNumber)}
+            </Text>
+          ) : null}
           <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }}>
-            {formatRelativeTime(call.createdAt)}
-            {call.duration > 0 ? ` ┬╖ ${formatDuration(call.duration)}` : ''}
+            {formatCallWhen(call.createdAt)}
+            {call.duration > 0 ? ` · ${formatDuration(call.duration)}` : ''}
           </Text>
         </View>
 
@@ -182,18 +243,77 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
           )}
 
           {call.recordingUrl && (
-            <Button
-              icon="play-circle-outline"
-              mode="outlined"
-              compact
-              style={itemStyles.actionBtn}
-              onPress={() => onQuickAction('playRecording', call)}
-            >
-              {t('phoneCalls.playRecording')}
-            </Button>
+            <RecordingPlayer uri={call.recordingUrl} durationSec={call.duration} />
           )}
 
-          {call.transcription && (
+          {call.agentName && !/^gambot$/i.test(call.agentName) ? (
+            <View style={[itemStyles.detailRow, { flexDirection: 'row' }]}>
+              <Text variant="labelMedium" style={{ color: themeColors.onSurfaceVariant }}>
+                {t('phoneCalls.agent')}:
+              </Text>
+              <Text variant="bodyMedium" style={{ marginHorizontal: 8, color: themeColors.onSurface }}>
+                {call.agentName}
+              </Text>
+            </View>
+          ) : null}
+
+          {summaryText ? (
+            <View style={itemStyles.section}>
+              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
+                <MaterialCommunityIcons name="brain" size={16} color="#7B2D8E" />
+                <Text variant="labelMedium" style={{ color: '#7B2D8E', marginHorizontal: 6 }}>
+                  {t('phoneCalls.aiSummary')}
+                </Text>
+              </View>
+              <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', marginTop: 4 }}>
+                {summaryText}
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Agent documentation - editable, same record as on the web call page */}
+          {call.source === 'pbx' ? (
+            <View style={itemStyles.section}>
+              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
+                <MaterialCommunityIcons name="note-edit-outline" size={16} color={BRAND_COLOR} />
+                <Text variant="labelMedium" style={{ color: BRAND_COLOR, marginHorizontal: 6 }}>
+                  {t('phoneCalls.agentNotes')}
+                </Text>
+              </View>
+              <TextInput
+                mode="outlined"
+                multiline
+                dense
+                value={notesDraft}
+                onChangeText={(v) => { setNotesDraft(v); setNotesState('idle'); }}
+                placeholder={t('phoneCalls.notesPlaceholder')}
+                style={{ marginTop: 6, minHeight: 64, backgroundColor: themeColors.surface }}
+                outlineColor={BRAND_COLOR + '40'}
+                activeOutlineColor={BRAND_COLOR}
+                textAlign={isRTL ? 'right' : 'left'}
+              />
+              <View style={[itemStyles.detailRow, { flexDirection: 'row', marginTop: 6, marginBottom: 0 }]}>
+                <Button
+                  mode="contained"
+                  compact
+                  buttonColor={BRAND_COLOR}
+                  loading={notesState === 'saving'}
+                  disabled={notesState === 'saving' || notesDraft === savedNotes}
+                  onPress={saveNotes}
+                >
+                  {t('common.save')}
+                </Button>
+                {notesState === 'saved' ? (
+                  <Text variant="labelSmall" style={{ color: '#2A9D8F', marginHorizontal: 8 }}>{t('phoneCalls.noteSaved')}</Text>
+                ) : null}
+                {notesState === 'error' ? (
+                  <Text variant="labelSmall" style={{ color: '#E63946', marginHorizontal: 8 }}>{t('phoneCalls.noteSaveFailed')}</Text>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+
+          {transcriptText ? (
             <View style={itemStyles.section}>
               <Pressable
                 onPress={() => setShowFullTranscript(!showFullTranscript)}
@@ -214,26 +334,12 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
                 numberOfLines={showFullTranscript ? undefined : 3}
                 style={{ color: themeColors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', marginTop: 4 }}
               >
-                {call.transcription}
+                {transcriptText}
               </Text>
             </View>
-          )}
+          ) : null}
 
-          {call.aiSummary && (
-            <View style={itemStyles.section}>
-              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
-                <MaterialCommunityIcons name="brain" size={16} color="#7B2D8E" />
-                <Text variant="labelMedium" style={{ color: '#7B2D8E', marginHorizontal: 6 }}>
-                  {t('phoneCalls.aiSummary')}
-                </Text>
-              </View>
-              <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', marginTop: 4 }}>
-                {call.aiSummary}
-              </Text>
-            </View>
-          )}
-
-          {call.aiActionItems && call.aiActionItems.length > 0 && (
+          {actionItems.length > 0 && (
             <View style={itemStyles.section}>
               <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
                 <MaterialCommunityIcons name="clipboard-check-outline" size={16} color="#FF6B35" />
@@ -241,9 +347,9 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
                   {t('phoneCalls.actionItems')}
                 </Text>
               </View>
-              {call.aiActionItems.map((item: string, idx: number) => (
+              {actionItems.map((item: string, idx: number) => (
                 <View key={idx} style={[itemStyles.actionItem, { flexDirection: 'row' }]}>
-                  <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }}>ΓÇó</Text>
+                  <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }}>•</Text>
                   <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, flex: 1, marginHorizontal: 6, textAlign: isRTL ? 'right' : 'left' }}>
                     {item}
                   </Text>
@@ -580,7 +686,8 @@ export default function PhoneCallsTabScreen() {
   const [dialNumber, setDialNumber] = useState('');
   const [gambotCallActive, setGambotCallActive] = useState(false);
   const [gambotCallStatus, setGambotCallStatus] = useState<string | null>(null);
-  const [telSettings, setTelSettings] = useState<{ phoneNumbers?: any[]; defaultCallerId?: string } | null>(null);
+  // A usable calling solution (SIP trunk; Twilio only for the master login). Without it the dialer only opens the phone's own dialer.
+  const solutionAvailable = useSettingsStore((s) => s.telephonySolutionAvailable);
 
   const user = useAuthStore((s) => s.user);
   const org = user?.organization || '';
@@ -599,8 +706,23 @@ export default function PhoneCallsTabScreen() {
         const uid = user?.uID || user?.userId;
         if (uid) options.userId = uid;
       }
-      const data = await phoneCallsApi.getAppCalls(org, options);
-      setCalls(data);
+      // Office-number call log (same source as the web page: inbound + outbound) merged with calls logged from the phone's own dialer.
+      let appError: any = null;
+      let pbxFailed = false;
+      const [pbx, app] = await Promise.all([
+        phoneCallsApi.getPbxCalls(org, options).catch(() => { pbxFailed = true; return [] as PhoneCall[]; }),
+        phoneCallsApi.getAppCalls(org, options).catch((e) => { appError = e; return [] as PhoneCall[]; }),
+      ]);
+      if (pbxFailed && appError) throw appError;
+      const seen = new Set<string>();
+      const merged = [...pbx, ...app.map((c) => ({ ...c, source: 'app' as const }))].filter((c) => {
+        if (!c.id || seen.has(c.id)) return false;
+        seen.add(c.id);
+        return true;
+      });
+      merged.sort((a, b) => callTime(b.createdAt) - callTime(a.createdAt));
+      setCalls(merged);
+      setCallsError(null);
     } catch (err: any) {
       setCalls([]);
       setCallsError(err.message || t('errors.generic'));
@@ -616,18 +738,11 @@ export default function PhoneCallsTabScreen() {
     }
   }, [org]);
 
-  const fetchTelSettings = useCallback(async () => {
-    try {
-      const data = await phoneCallsApi.getTelephonySettings(org);
-      if (data?.phoneNumbers?.length) setTelSettings(data);
-    } catch {}
-  }, [org]);
-
   const loadData = useCallback(async () => {
     setLoading(true);
-    await Promise.all([fetchCalls(), fetchRules(), fetchTelSettings()]);
+    await Promise.all([fetchCalls(), fetchRules()]);
     setLoading(false);
-  }, [fetchCalls, fetchRules, fetchTelSettings]);
+  }, [fetchCalls, fetchRules]);
 
   useEffect(() => {
     loadData();
@@ -704,6 +819,18 @@ export default function PhoneCallsTabScreen() {
     }
   }, [org, rules, t]);
 
+  const myExtension = useSettingsStore((s) => s.myExtension);
+  const setMyOutboundCallerId = useSettingsStore((s) => s.setMyOutboundCallerId);
+  const handleCallerIdChange = useCallback(async (value: 'did' | 'mobile') => {
+    const phone = (user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone || myExtension?.mobilePhone || '';
+    if (value === 'mobile' && !phone) {
+      Alert.alert(t('phoneCalls.gambotCallTitle'), t('phoneCalls.noAgentPhone'));
+      return;
+    }
+    const res = await setMyOutboundCallerId(org, value, phone);
+    if (!res.ok) Alert.alert(t('common.error'), t('phoneCalls.callerIdFailed'));
+  }, [user, myExtension?.mobilePhone, setMyOutboundCallerId, org, t]);
+
   const handleDial = useCallback((phone?: string) => {
     if (phone) {
       makeAppCall({
@@ -717,17 +844,43 @@ export default function PhoneCallsTabScreen() {
 
   const handleGambotDial = useCallback(async (phone?: string) => {
     if (!phone?.trim()) return;
-    const agentPhone = (user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone;
-    const fromNumber = telSettings?.defaultCallerId || telSettings?.phoneNumbers?.[0]?.number;
+    // Caller IDs come from the settings store, which already drops Twilio numbers for everyone but the master login.
+    const tel = useSettingsStore.getState();
+    const agentPhone = (user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone || tel.myExtension?.mobilePhone;
+    const fromNumber = tel.defaultCallerId || tel.usableCallerNumbers?.[0]?.number || '';
+    const isSip = tel.telephonyProvider === 'sip';
+
+    // In-app phone (internet call, like the web phone): no "ring my phone first" and no mobile number needed.
+    if (isSip && sipPhone.isSupported()) {
+      setGambotCallActive(true);
+      setGambotCallStatus('connecting');
+      const started = await tryInAppSipCall({ phoneNumber: phone.trim(), organization: org, user });
+      if (started) {
+        setTimeout(() => {
+          setGambotCallActive(false);
+          setGambotCallStatus(null);
+          setDialerVisible(false);
+          setDialNumber('');
+          fetchCalls();
+        }, 2000);
+        return;
+      }
+      setGambotCallActive(false);
+      setGambotCallStatus(null);
+    }
 
     if (!agentPhone) {
       Alert.alert(
         t('phoneCalls.gambotCallTitle'),
         t('phoneCalls.noAgentPhone'),
+        [
+          { text: t('common.cancel', 'Cancel'), style: 'cancel' },
+          { text: t('phoneCalls.openSettings', isRTL ? 'להגדרות' : 'Settings'), onPress: () => router.push('/(tabs)/more/settings' as any) },
+        ],
       );
       return;
     }
-    if (!fromNumber) {
+    if (!fromNumber && !isSip) {
       Alert.alert(
         t('phoneCalls.gambotCallTitle'),
         t('phoneCalls.noGambotNumber'),
@@ -743,6 +896,7 @@ export default function PhoneCallsTabScreen() {
       organization: org,
       agentPhone,
       fromPhoneNumber: fromNumber,
+      allowEmptyFrom: isSip,
       agentId: user?.uID || user?.userId || '',
       agentName: user?.fullname || user?.FullName || '',
     });
@@ -761,12 +915,12 @@ export default function PhoneCallsTabScreen() {
       setGambotCallStatus(null);
       Alert.alert(t('common.error'), t('phoneCalls.gambotCallFailed'));
     }
-  }, [org, user, telSettings, t, fetchCalls]);
+  }, [org, user, t, fetchCalls, isRTL, router]);
 
   const handleQuickAction = useCallback((action: string, call: PhoneCall) => {
     switch (action) {
       case 'playRecording':
-        if (call.recordingUrl) Linking.openURL(call.recordingUrl);
+        // Recordings play inside the app (RecordingPlayer in the expanded call card) - never open the browser.
         break;
       case 'createFollowUp':
         router.push({
@@ -818,9 +972,10 @@ export default function PhoneCallsTabScreen() {
         themeColors={theme.colors}
         onQuickAction={handleQuickAction}
         onDial={handleDial}
+        org={org}
       />
     ),
-    [expandedCallId, isRTL, t, theme.colors, handleExpandCall, handleQuickAction, handleDial],
+    [expandedCallId, isRTL, t, theme.colors, handleExpandCall, handleQuickAction, handleDial, org],
   );
 
   const renderRuleItem = useCallback(
@@ -1044,34 +1199,11 @@ export default function PhoneCallsTabScreen() {
                   }
                 </Text>
               </View>
-              <View style={styles.inCallActions}>
-                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
-                  <MaterialCommunityIcons name="microphone-off" size={24} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-                    {t('phoneCalls.mute')}
-                  </Text>
-                </Pressable>
-                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
-                  <MaterialCommunityIcons name="pause" size={24} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-                    {t('phoneCalls.hold')}
-                  </Text>
-                </Pressable>
-                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
-                  <MaterialCommunityIcons name="dialpad" size={24} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-                    {t('phoneCalls.keypad')}
-                  </Text>
-                </Pressable>
-                <Pressable style={styles.inCallActionBtn} onPress={() => {}}>
-                  <MaterialCommunityIcons name="volume-high" size={24} color={theme.colors.onSurfaceVariant} />
-                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-                    {t('phoneCalls.speaker')}
-                  </Text>
-                </Pressable>
-              </View>
               <Pressable
                 onPress={() => {
+                  const live = useActiveCallStore.getState().call;
+                  if (live) phoneCallsApi.sipCallControl(live.organization, live.callId, 'hangup').catch(() => {});
+                  useActiveCallStore.getState().clear();
                   setGambotCallActive(false);
                   setGambotCallStatus(null);
                   setDialerVisible(false);
@@ -1148,26 +1280,49 @@ export default function PhoneCallsTabScreen() {
                 ))}
               </View>
 
-              {/* Call buttons */}
-              <View style={styles.dialActions}>
-                <Pressable
-                  onPress={() => {
-                    if (dialNumber.trim()) {
-                      handleDial(dialNumber.trim());
-                      setDialerVisible(false);
-                      setDialNumber('');
-                    }
-                  }}
-                  disabled={!dialNumber.trim()}
-                  style={[
-                    styles.dialCallBtn,
-                    { backgroundColor: dialNumber.trim() ? BRAND_COLOR : theme.colors.surfaceVariant },
-                  ]}
-                >
-                  <MaterialCommunityIcons name="phone" size={28} color={dialNumber.trim() ? '#FFF' : theme.colors.onSurfaceVariant} />
-                </Pressable>
+              {/* Which number the customer sees on Gambot calls: the organization number (DID) or my own mobile - saved per user, same as Settings */}
+              {solutionAvailable && myExtension ? (
+                <View style={styles.callerIdRow}>
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginBottom: 6 }}>
+                    {t('phoneCalls.callerIdTitle')}
+                  </Text>
+                  <SegmentedButtons
+                    density="small"
+                    value={myExtension.outboundCallerId === 'mobile' ? 'mobile' : 'did'}
+                    onValueChange={(v) => handleCallerIdChange(v as 'did' | 'mobile')}
+                    buttons={[
+                      { value: 'did', label: t('phoneCalls.callerIdDid'), icon: 'office-building' },
+                      { value: 'mobile', label: t('phoneCalls.callerIdMobile'), icon: 'cellphone' },
+                    ]}
+                    theme={{ colors: { secondaryContainer: BRAND_COLOR + '20', onSecondaryContainer: BRAND_COLOR } }}
+                  />
+                </View>
+              ) : null}
 
-                {telSettings?.phoneNumbers?.length ? (
+              {/* Office number -> Gambot only (a plain phone call could never show the office number).
+                  My mobile -> both: the phone's own dialer (the customer sees my mobile anyway) and Gambot (recorded + CRM).
+                  No calling solution at all -> only the phone's own dialer. */}
+              <View style={styles.dialActions}>
+                {(!solutionAvailable || myExtension?.outboundCallerId === 'mobile') ? (
+                  <Pressable
+                    onPress={() => {
+                      if (dialNumber.trim()) {
+                        handleDial(dialNumber.trim());
+                        setDialerVisible(false);
+                        setDialNumber('');
+                      }
+                    }}
+                    disabled={!dialNumber.trim()}
+                    style={[
+                      styles.dialCallBtn,
+                      { backgroundColor: dialNumber.trim() ? BRAND_COLOR : theme.colors.surfaceVariant },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name="phone" size={28} color={dialNumber.trim() ? '#FFF' : theme.colors.onSurfaceVariant} />
+                  </Pressable>
+                ) : null}
+
+                {solutionAvailable ? (
                   <Pressable
                     onPress={() => handleGambotDial(dialNumber)}
                     disabled={!dialNumber.trim() || gambotCallActive}
@@ -1188,18 +1343,13 @@ export default function PhoneCallsTabScreen() {
                 ) : null}
               </View>
 
-              {/* Call type hints */}
               <View style={styles.dialHints}>
                 <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
-                  {telSettings?.phoneNumbers?.length
-                    ? (isRTL
-                        ? '╫ù╫Ö╫ò╫Æ ╫₧╫ö╫ÿ╫£╫ñ╫ò╫ƒ (╫₧╫¬╫ò╫ó╫ô) | ╫ù╫Ö╫ò╫Æ ╫₧-Gambot (╫₧╫ò╫º╫£╫ÿ + CRM)'
-                        : 'Phone dial (logged) | Gambot dial (recorded + CRM)')
-                    : (isRTL ? '╫ù╫Ö╫ò╫Æ ╫₧╫ö╫ÿ╫£╫ñ╫ò╫ƒ (╫₧╫¬╫ò╫ó╫ô ╫æ-Gambot)' : 'Phone dial (logged in Gambot)')
-                  }
+                  {!solutionAvailable
+                    ? t('phoneCalls.dialHintNative')
+                    : (myExtension?.outboundCallerId === 'mobile' ? t('phoneCalls.dialHintFull') : (isRTL ? 'חיוג מגמבוט (מוקלט + CRM)' : 'Gambot dial (recorded + CRM)'))}
                 </Text>
-              </View>
-            </>
+              </View>            </>
           )}
         </Modal>
       </Portal>
@@ -1310,6 +1460,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 3,
   },
+  callerIdRow: { paddingHorizontal: 4, paddingTop: 4, paddingBottom: 8 },
   dialHints: {
     paddingTop: 8,
     paddingBottom: 4,
@@ -1342,22 +1493,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#ecfdf5',
     borderRadius: 20,
   },
-  inCallActions: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 24,
-    marginTop: 32,
-    marginBottom: 24,
-  },
-  inCallActionBtn: {
-    width: 60,
-    height: 60,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f1f5f9',
-  },
   inCallEndBtn: {
+    marginTop: 32,
     width: 64,
     height: 64,
     borderRadius: 32,

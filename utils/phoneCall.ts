@@ -2,6 +2,9 @@ import { Linking, AppState, AppStateStatus, Platform } from 'react-native';
 import { phoneCallsApi } from '../services/api/phoneCalls';
 import { useSettingsStore } from '../stores/settingsStore';
 import { CallEvents } from '../modules/call-events';
+import { useActiveCallStore } from '../stores/activeCallStore';
+import { sipPhone } from '../services/sip/sipPhone';
+import { useDialSheetStore } from '../stores/dialSheetStore';
 
 interface MakeCallOptions {
   phoneNumber: string;
@@ -25,6 +28,8 @@ export interface GambotCallOptions {
   agentName: string;
   customerName?: string;
   notes?: string;
+  /** SIP orgs may have no caller-ID number configured yet - the gateway then uses its default DID. */
+  allowEmptyFrom?: boolean;
   // CRM association so the recorded office-number call links to the contact/lead and shows in its timeline.
   contactId?: string;
   leadId?: string;
@@ -118,9 +123,9 @@ export async function makeAppCall(options: MakeCallOptions): Promise<{ callId?: 
  * Call is recorded and logged in CRM automatically.
  */
 export async function makeGambotCall(options: GambotCallOptions): Promise<GambotCallResult> {
-  const { phoneNumber, organization, agentPhone, fromPhoneNumber, agentId, agentName, customerName, notes, contactId, leadId, relatedTo } = options;
+  const { phoneNumber, organization, agentPhone, fromPhoneNumber, agentId, agentName, customerName, notes, contactId, leadId, relatedTo, allowEmptyFrom } = options;
 
-  if (!phoneNumber || !agentPhone || !fromPhoneNumber) {
+  if (!phoneNumber || !agentPhone || (!fromPhoneNumber && !allowEmptyFrom)) {
     return { success: false, error: 'missing_fields' };
   }
 
@@ -140,15 +145,66 @@ export async function makeGambotCall(options: GambotCallOptions): Promise<Gambot
       relatedTo,
     });
 
+    // SIP calls get the in-call control bar (hold / mute / keypad / hang up).
+    if (result.success && result.callId && useSettingsStore.getState().telephonyProvider === 'sip') {
+      useActiveCallStore.getState().start({ callId: result.callId, organization, phoneNumber });
+    }
+
     return {
       success: !!result.success,
       callId: result.callId,
-      error: result.success ? undefined : 'call_failed',
+      error: result.success ? undefined : (result.error || 'call_failed'),
     };
   } catch (err: any) {
     return { success: false, error: err?.message || 'network_error' };
   }
 }
+
+/**
+ * Place the call through the app's own SIP phone (internet call, same flow as the web phone). Returns true when the call was
+ * started; false when this build/org can't (no WebRTC module, not registered in time, the backend refused) so the caller can fall
+ * back to the "ring my phone first" bridge call or the device dialer.
+ */
+export async function tryInAppSipCall(opts: {
+  phoneNumber: string;
+  organization: string;
+  user: any;
+  relatedTo?: { type: 'contact' | 'lead' | 'case'; entityId: string; entityName?: string };
+  contactId?: string;
+  leadId?: string;
+  customerName?: string;
+}): Promise<boolean> {
+  const { phoneNumber, organization, user, relatedTo, contactId, leadId, customerName } = opts;
+  const userId = user?.uID || user?.userId || '';
+  const st = useSettingsStore.getState();
+  if (!phoneNumber || !userId || !st.telephonySolutionAvailable || st.telephonyProvider !== 'sip' || !sipPhone.isSupported()) return false;
+  if (!(await sipPhone.waitRegistered(5000))) return false;
+
+  const fromNumber = st.defaultCallerId || st.usableCallerNumbers?.[0]?.number || '';
+  sipPhone.expectBridge();
+  try {
+    const linkType = relatedTo?.type || (contactId ? 'contact' : leadId ? 'lead' : '');
+    const linkId = relatedTo?.entityId || contactId || leadId || '';
+    const res = await phoneCallsApi.sipOutboundCall({
+      organization,
+      to: phoneNumber,
+      from: fromNumber || organization,
+      agentId: userId,
+      agentName: user?.fullname || user?.FullName || user?.displayName || '',
+      customerName,
+      link: linkType && linkId ? { type: linkType, id: linkId } : null,
+    });
+    if (res.callId) {
+      useActiveCallStore.getState().start({ callId: res.callId, organization, phoneNumber });
+      return true;
+    }
+  } catch { /* fall back */ }
+  sipPhone.cancelBridge();
+  return false;
+}
+
+/** 'system' = the organization's line (in-app SIP / bridge call, recorded + logged); 'phone' = the device's own dialer. */
+export type DialerKind = 'system' | 'phone';
 
 export interface SmartCallOptions {
   phoneNumber: string;
@@ -169,37 +225,44 @@ export interface SmartCallResult {
 }
 
 /**
- * Single entry point for placing a call from anywhere in the app.
- * - If org telephony is enabled and we have an office number + agent cell, place a recorded,
- *   CRM-logged, contact/lead-associated office-number bridge call (makeGambotCall).
- * - Otherwise fall back to a logged native dialer call (makeAppCall), passing relatedTo so it still
- *   associates to the entity.
- * This is how every entity/list "Call" button gets the full integrated-telephony behavior.
+ * Places the call with the given dialer.
+ * - 'system':
+ * - If the org has a usable calling solution (the SIP trunk; Twilio only for the master login) AND we know the
+ *   agent's cell, place a recorded, CRM-logged, contact/lead-associated bridge call from the office number
+ *   (makeGambotCall): the system rings the agent's phone, then connects the customer.
+ * - Otherwise (no solution configured / not allowed / the bridge could not start) open the PHONE'S OWN dialer
+ *   (makeAppCall) and only LOG that a call was made, passing relatedTo so it still associates to the entity.
+ * This is how every entity/list/chat "Call" button gets the integrated-telephony behavior.
  */
-export async function placeSmartCall(opts: SmartCallOptions): Promise<SmartCallResult> {
+export async function executeCall(opts: SmartCallOptions, dialer: DialerKind = 'system'): Promise<SmartCallResult> {
   const { phoneNumber, organization, user, relatedTo, contactId, leadId, customerName } = opts;
   if (!phoneNumber) return { mode: 'native', success: false, error: 'missing_phone' };
 
-  const telephonyEnabled = useSettingsStore.getState().telephonyEnabled;
-
-  let settings = opts.telSettings;
-  if (telephonyEnabled && !settings) {
-    try {
-      settings = await phoneCallsApi.getTelephonySettings(organization);
-    } catch {
-      settings = null;
-    }
+  const userId = user?.uID || user?.userId || '';
+  let st = useSettingsStore.getState();
+  // First call before the tabs layout finished loading the telephony settings: load them now (once).
+  if (st.telephonyEnabled === null) {
+    try { await st.loadTelephonySettings(organization, userId); } catch { /* fall back to the device dialer */ }
+    st = useSettingsStore.getState();
   }
 
-  const fromNumber = settings?.defaultCallerId || settings?.phoneNumbers?.[0]?.number;
-  const agentPhone = user?.phoneNumber || user?.PhoneNumber || user?.phone;
+  const fromNumber = st.defaultCallerId || st.usableCallerNumbers?.[0]?.number || '';
+  // The agent's cell: the user profile, else the mobile saved on their telephony extension (Settings → my mobile number).
+  const agentPhone = user?.phoneNumber || user?.PhoneNumber || user?.phone || st.myExtension?.mobilePhone;
+  const isSip = st.telephonyProvider === 'sip';
 
-  if (telephonyEnabled && fromNumber && agentPhone) {
+  // SIP org + this build has the in-app phone: talk through the app itself (internet call, like the web phone) - no "ring my
+  // phone first" round trip. The gateway dials the customer, bridges and records; the app auto-answers its own leg.
+  if (dialer === 'system' && await tryInAppSipCall({ phoneNumber, organization, user, relatedTo, contactId, leadId, customerName })) {
+    return { mode: 'gambot', success: true };
+  }
+  if (dialer === 'system' && st.telephonySolutionAvailable && agentPhone && (fromNumber || isSip)) {
     const res = await makeGambotCall({
       phoneNumber,
       organization,
       agentPhone,
       fromPhoneNumber: fromNumber,
+      allowEmptyFrom: isSip,
       agentId: user?.uID || user?.userId || '',
       agentName: user?.fullname || user?.FullName || user?.displayName || '',
       customerName,
@@ -208,7 +271,7 @@ export async function placeSmartCall(opts: SmartCallOptions): Promise<SmartCallR
       relatedTo,
     });
     if (res.success) return { mode: 'gambot', success: true };
-    // fall through to native if the bridge couldn't be initiated
+    // The server refused (e.g. twilio_disabled) or the bridge couldn't start: fall through to the device dialer.
   }
 
   await makeAppCall({
@@ -219,5 +282,34 @@ export async function placeSmartCall(opts: SmartCallOptions): Promise<SmartCallR
     relatedTo,
     contactName: customerName,
   });
+  return { mode: 'native', success: true };
+}
+
+/** The dialer every call button opens first: the user's choice in Settings, else the system dialer when the org has one. */
+export function getDefaultDialer(): DialerKind {
+  const st = useSettingsStore.getState();
+  if (!st.telephonySolutionAvailable) return 'phone';
+  return st.defaultDialer === 'phone' ? 'phone' : 'system';
+}
+
+/**
+ * Entry point for every "Call" button (chats, contacts, leads, cases, quotes...). Opens the call sheet with the user's DEFAULT
+ * dialer ready, plus a small "switch to the other dialer" option below it. When the org has no system dialer there is nothing to
+ * choose, so the phone's own dialer opens straight away. Callers fire-and-forget; the sheet handles the call and any errors.
+ */
+export async function placeSmartCall(opts: SmartCallOptions): Promise<SmartCallResult> {
+  if (!opts.phoneNumber) return { mode: 'native', success: false, error: 'missing_phone' };
+
+  let st = useSettingsStore.getState();
+  if (st.telephonyEnabled === null) {
+    const userId = opts.user?.uID || opts.user?.userId || '';
+    try { await st.loadTelephonySettings(opts.organization, userId); } catch { /* the phone's dialer is the fallback */ }
+    st = useSettingsStore.getState();
+  }
+
+  if (!st.telephonySolutionAvailable) return executeCall(opts, 'phone');
+
+  // 'native' on purpose: the sheet reports progress itself (callers show the 'your phone will ring' alert for mode 'gambot').
+  useDialSheetStore.getState().open(opts);
   return { mode: 'native', success: true };
 }

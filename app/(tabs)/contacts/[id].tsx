@@ -11,6 +11,7 @@ import {
   Platform,
   ActivityIndicator,
   Keyboard,
+  Linking,
 } from 'react-native';
 import {
   Text,
@@ -34,9 +35,11 @@ import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
 import { tasksApi } from '../../../services/api/tasks';
 import { quotesApi } from '../../../services/api/quotes';
+import { phoneCallsApi } from '../../../services/api/phoneCalls';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
 import { placeSmartCall } from '../../../utils/phoneCall';
+import { RecordingPlayer } from '../../../components/phone-calls/RecordingPlayer';
 import { cleanPhoneNumber } from '../../../utils/phoneNumber';
 import PhoneNumberInput from '../../../components/PhoneNumberInput';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -137,7 +140,7 @@ export default function ContactDetailScreen() {
   const [tagInput, setTagInput] = useState('');
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
-  const [relatedRecords, setRelatedRecords] = useState<any>({ tables: [], leads: [], quotes: [], tasks: [] });
+  const [relatedRecords, setRelatedRecords] = useState<any>({ tables: [], leads: [], quotes: [], tasks: [], calls: [] });
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [orgUsers, setOrgUsers] = useState<any[]>([]);
   const [orgUsersLoading, setOrgUsersLoading] = useState(false);
@@ -258,10 +261,11 @@ export default function ContactDetailScreen() {
     if (!organization || !contact) return;
     setRelatedLoading(true);
     try {
-      const [related, leads, quotesRes] = await Promise.all([
+      const [related, leads, quotesRes, calls] = await Promise.all([
         contactsApi.getRelatedRecords(organization, contact.id).catch(() => null),
         contactsApi.getLeadsByContact(organization, contact.phoneNumber || '').catch(() => []),
         quotesApi.getAll(organization, undefined, undefined, 1, 500, contact.phoneNumber || contact.id || '').catch(() => ({ data: [], total: 0 })),
+        contact.phoneNumber ? phoneCallsApi.getCallsByContact(organization, contact.phoneNumber).catch(() => []) : Promise.resolve([]),
       ]);
       const allQuotes = Array.isArray(quotesRes?.data) ? quotesRes.data : [];
       const contactQuotes = allQuotes.filter(
@@ -274,9 +278,10 @@ export default function ContactDetailScreen() {
         tables: related?.tables || [],
         leads: Array.isArray(leads) ? leads : [],
         quotes: contactQuotes.length > 0 ? contactQuotes : allQuotes,
+        calls: Array.isArray(calls) ? calls : [],
       });
     } catch {
-      setRelatedRecords({ tables: [], leads: [], quotes: [] });
+      setRelatedRecords({ tables: [], leads: [], quotes: [], calls: [] });
     } finally {
       setRelatedLoading(false);
     }
@@ -1963,7 +1968,7 @@ function RelatedRecordsSection({
   flexDirection,
   router,
 }: {
-  data: { tables: any[]; leads: any[]; quotes?: any[] };
+  data: { tables: any[]; leads: any[]; quotes?: any[]; calls?: any[] };
   loading: boolean;
   theme: any;
   t: any;
@@ -1982,7 +1987,8 @@ function RelatedRecordsSection({
   const hasLeads = (data.leads?.length ?? 0) > 0;
   const hasQuotes = (data.quotes?.length ?? 0) > 0;
   const hasTables = (data.tables?.length ?? 0) > 0;
-  const hasAny = hasLeads || hasQuotes || hasTables;
+  const hasCalls = (data.calls?.length ?? 0) > 0;
+  const hasAny = hasLeads || hasQuotes || hasTables || hasCalls;
 
   if (!hasAny) {
     return (
@@ -2002,6 +2008,45 @@ function RelatedRecordsSection({
 
   return (
     <View style={styles.sectionContent}>
+      {hasCalls ? (
+        <View style={{ marginBottom: 16 }}>
+          <View style={[styles.relatedHeader, { flexDirection }]}>
+            <MaterialCommunityIcons name="phone-log" size={18} color="#2e6155" />
+            <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+              {t('phoneCalls.title')} ({data.calls?.length ?? 0})
+            </Text>
+          </View>
+          {(data.calls ?? []).map((call: any) => {
+            const missed = call.status === 'missed';
+            const icon = missed ? 'phone-missed' : call.direction === 'inbound' ? 'phone-incoming' : 'phone-outgoing';
+            const color = missed ? '#E63946' : call.direction === 'inbound' ? '#2A9D8F' : '#2e6155';
+            const when = call.createdAt ? formatDate(/[zZ]|[+-]\d{2}:?\d{2}$/.test(call.createdAt) ? call.createdAt : call.createdAt + 'Z', 'dd/MM/yyyy HH:mm') : '';
+            return (
+              <React.Fragment key={call.id}>
+              <View
+                style={[styles.relatedCard, { backgroundColor: theme.colors.surfaceVariant, flexDirection }]}
+              >
+                <MaterialCommunityIcons name={icon as any} size={20} color={color} />
+                <View style={{ flex: 1 }}>
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign: isRTL ? 'right' : 'left' }}>
+                    {t(call.direction === 'inbound' ? 'phoneCalls.inbound' : 'phoneCalls.outbound')} · {formatPhoneNumber(call.phoneNumber)}
+                  </Text>
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: isRTL ? 'right' : 'left' }}>
+                    {when}{call.duration > 0 ? ` · ${Math.floor(call.duration / 60)}:${String(call.duration % 60).padStart(2, '0')}` : ''}
+                    {call.agentName && !/^gambot$/i.test(call.agentName) ? ` · ${call.agentName}` : ''}
+                  </Text>
+                </View>
+                {call.recordingUrl ? (
+                  <MaterialCommunityIcons name="microphone" size={18} color="#FF6B35" />
+                ) : null}
+              </View>
+              {call.recordingUrl ? <RecordingPlayer uri={call.recordingUrl} durationSec={call.duration} /> : null}
+              </React.Fragment>
+            );
+          })}
+        </View>
+      ) : null}
+
       {hasQuotes ? (
         <View style={{ marginBottom: 16 }}>
           <View style={[styles.relatedHeader, { flexDirection }]}>

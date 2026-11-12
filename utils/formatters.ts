@@ -21,14 +21,18 @@ import { he, enUS } from 'date-fns/locale';
 
 export function formatPhoneNumber(phone: string): string {
   if (!phone) return '';
-  const cleaned = phone.replace(/\D/g, '');
-  if (cleaned.startsWith('972')) {
-    return `+${cleaned.slice(0, 3)}-${cleaned.slice(3, 5)}-${cleaned.slice(5)}`;
-  }
-  if (cleaned.length === 10) {
-    return `${cleaned.slice(0, 3)}-${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
-  }
-  return phone;
+  // Same display format as the web app: "+972 50 527 8310" (landline: "+972 3 123 4567"), whatever the stored form.
+  let digits = phone.replace(/\D/g, '');
+  if (!digits) return phone;
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  const hasPlus = phone.trim().startsWith('+') || phone.trim().startsWith('00');
+  let national = '';
+  if (digits.startsWith('972')) national = digits.slice(3).replace(/^0+/, '');
+  else if (!hasPlus && digits.startsWith('0')) national = digits.slice(1);
+  else if (!hasPlus && (digits.length === 8 || digits.length === 9)) national = digits;
+  if (national.length === 9) return `+972 ${national.slice(0, 2)} ${national.slice(2, 5)} ${national.slice(5)}`;
+  if (national.length === 8) return `+972 ${national.slice(0, 1)} ${national.slice(1, 4)} ${national.slice(4)}`;
+  return hasPlus || digits.startsWith('972') || digits.length > 10 ? `+${digits}` : phone;
 }
 
 export function formatChatTime(dateStr: string, lang: 'en' | 'he' = 'he'): string {

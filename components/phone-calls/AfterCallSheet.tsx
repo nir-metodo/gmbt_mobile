@@ -21,6 +21,7 @@ import { useRTL } from '../../hooks/useRTL';
 import { useAuthStore } from '../../stores/authStore';
 import { PhoneCall } from '../../types';
 import { formatDuration, formatPhoneNumber } from '../../utils/formatters';
+import { RecordingPlayer } from './RecordingPlayer';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -204,6 +205,9 @@ export default function AfterCallSheet({ visible, call, onDismiss, onAction }: A
             </View>
 
             {/* ── Recording Indicator ── */}
+            {call.recordingUrl && (
+              <RecordingPlayer uri={call.recordingUrl} durationSec={call.duration} />
+            )}
             {call.recordingUrl && (
               <View style={[s.recordingBadge, { flexDirection: 'row' }]}>
                 <MaterialCommunityIcons name="microphone" size={16} color="#FF6B35" />

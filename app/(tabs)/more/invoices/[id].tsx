@@ -111,6 +111,21 @@ function catBuildTitle(item: any, columns: CatalogCustomColumn[], cfg: CatalogFi
   return { title: title || '—', titleKey };
 }
 
+/** Follow-up documents per type — mirrors the web DERIVED_ACTIONS (InvoiceForm / InvoicesList). */
+const DERIVED_ACTIONS: Record<string, { targetType: string; label: string; icon: string }[]> = {
+  tax_invoice: [
+    { targetType: 'receipt', label: 'הפק קבלה', icon: 'receipt' },
+    { targetType: 'combined', label: 'הפק חשבונית מס קבלה', icon: 'file-check-outline' },
+    { targetType: 'credit_invoice', label: 'הפק זיכוי', icon: 'undo-variant' },
+  ],
+  combined: [
+    { targetType: 'receipt', label: 'הפק קבלה (השלמת יתרה)', icon: 'receipt' },
+    { targetType: 'credit_invoice', label: 'הפק זיכוי', icon: 'undo-variant' },
+  ],
+  receipt: [{ targetType: 'credit_receipt', label: 'הפק קבלת זיכוי', icon: 'undo-variant' }],
+  transaction: [{ targetType: 'tax_invoice', label: 'הפק חשבונית מס', icon: 'file-document-outline' }],
+};
+
 const PAYMENT_METHODS = [
   { key: 'bank_transfer', label: 'העברה בנקאית' },
   { key: 'credit_card',   label: 'כרטיס אשראי' },
@@ -180,7 +195,10 @@ export default function InvoiceDetailScreen() {
   const [formNotes, setFormNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [issuing, setIssuing] = useState(false);
-  const [creatingReceipt, setCreatingReceipt] = useState(false);
+  // "Create document from this one" (receipt / credit need an amount first, like the web modal).
+  const [derivedModal, setDerivedModal] = useState<{ targetType: string; amount: string } | null>(null);
+  const [creatingDerived, setCreatingDerived] = useState<string | null>(null);
+  const [derivedError, setDerivedError] = useState<string | null>(null);
   const [sendingWa, setSendingWa] = useState(false);
 
   // Type/payment menus
@@ -676,35 +694,49 @@ export default function InvoiceDetailScreen() {
   }, [user, invoice, publicInvoiceUrl, handleShare, t]);
 
   // ── "Mark paid" = issue a receipt for the open balance (legal way to record a payment) ──
-  const handleMarkPaid = useCallback(() => {
+  // Most that can still be credited: what is still owed on a tax invoice; total − already credited on a combined doc.
+  const getCreditLimit = (inv: Invoice): number => {
+    const total = Number(inv.total) || 0;
+    if (inv.type === 'combined') return Math.max(total - (Number(inv.creditedAmount) || 0), 0);
+    return getOpenBalance(inv);
+  };
+
+  // Creates the follow-up document as a DRAFT and opens it right away (edit, then issue from there).
+  const createDerived = useCallback(async (targetType: string, partialAmount = 0) => {
     if (!user?.organization || !invoice || !id) return;
-    const balance = getOpenBalance(invoice);
-    Alert.alert(
-      t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'),
-      `${t('invoices.receiptConfirm', 'ייווצרת קבלה כטיוטה על יתרת החשבונית')}: ${formatCurrency(balance, currencySymbol(invoice.currency))}`,
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('common.confirm'),
-          onPress: async () => {
-            setCreatingReceipt(true);
-            try {
-              const res = await invoicesApi.createDocumentFrom(user.organization, id, 'receipt', 0, user.uID || user.userId, user.fullname);
-              if (res?.success && res?.message) {
-                router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: res.message } });
-              } else {
-                Alert.alert(t('common.error'), res?.error || res?.message || t('errors.generic'));
-              }
-            } catch (err: any) {
-              Alert.alert(t('common.error'), err.message || t('errors.generic'));
-            } finally {
-              setCreatingReceipt(false);
-            }
-          },
-        },
-      ],
-    );
+    setCreatingDerived(targetType);
+    setDerivedError(null);
+    try {
+      const res = await invoicesApi.createDocumentFrom(user.organization, id, targetType, partialAmount, user.uID || user.userId, user.fullname);
+      const ok = res?.success ?? res?.Success;
+      const msg = res?.message ?? res?.Message;
+      if (ok && msg) {
+        setDerivedModal(null);
+        router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: msg } });
+      } else {
+        setDerivedError(res?.error || msg || t('errors.generic'));
+      }
+    } catch (err: any) {
+      setDerivedError(err.message || t('errors.generic'));
+    } finally {
+      setCreatingDerived(null);
+    }
   }, [user, invoice, id, router, t]);
+
+  // Receipt / credit on a tax invoice (or combined) ask for the amount first (partial allowed); the rest derive directly.
+  const startDerived = useCallback((targetType: string) => {
+    if (!invoice) return;
+    if ((targetType === 'receipt' || targetType === 'credit_invoice') && (invoice.type === 'tax_invoice' || invoice.type === 'combined')) {
+      const limit = targetType === 'credit_invoice' ? getCreditLimit(invoice) : getOpenBalance(invoice);
+      setDerivedError(null);
+      setDerivedModal({ targetType, amount: limit > 0 ? String(Math.round(limit * 100) / 100) : '' });
+    } else {
+      createDerived(targetType);
+    }
+  }, [invoice, createDerived]);
+
+  // "Mark paid" = a receipt for the open balance (amount can be reduced in the modal).
+  const handleMarkPaid = useCallback(() => startDerived('receipt'), [startDerived]);
 
   // ── Leaving the screen never silently drops edits ─────────────────
   const hasUnsavedNew = isNew && (!!formContactName.trim() || !!formContactPhone.trim() || formItems.some((i) => (i.description || '').trim()));
@@ -1225,12 +1257,22 @@ export default function InvoiceDetailScreen() {
   if (invoice.status === 'issued') {
     primary = { label: t('invoices.sendWhatsApp', 'שלח בוואטסאפ'), icon: 'whatsapp', color: docColor, run: handleSendWhatsApp, loading: sendingWa };
   } else if ((invoice.status === 'sent' || overdue) && openBalance > 0) {
-    primary = { label: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', color: '#16a34a', run: handleMarkPaid, loading: creatingReceipt };
+    primary = { label: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', color: '#16a34a', run: handleMarkPaid, loading: creatingDerived === 'receipt' };
   } else if (invoice.status === 'paid') {
     primary = { label: t('invoices.share', 'שתף'), icon: 'share-variant', color: docColor, run: handleShare };
   }
 
   const discountAmount = Number((invoice as any).discountAmount ?? 0);
+
+  // Follow-up documents; receipt / credit are hidden once nothing is left to collect / credit (same as the web).
+  const isBalanceDoc = invoice.type === 'tax_invoice' || invoice.type === 'combined';
+  const creditLimit = getCreditLimit(invoice);
+  const derivedActions = (DERIVED_ACTIONS[invoice.type] || []).filter((a) =>
+    !(a.targetType === 'receipt' && isBalanceDoc && openBalance <= 0.001)
+    && !(a.targetType === 'credit_invoice' && isBalanceDoc && creditLimit <= 0.001));
+  const modalLimit = derivedModal?.targetType === 'credit_invoice' ? creditLimit : openBalance;
+  const modalAmount = Number(derivedModal?.amount);
+  const modalInvalid = !derivedModal || !(modalAmount > 0) || modalAmount > modalLimit + 0.001;
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
@@ -1383,11 +1425,86 @@ export default function InvoiceDetailScreen() {
             <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22, textAlign }}>{invoice.notes}</Text>
           </View>
         ) : null}
+
+        {/* Follow-up documents (receipt / combined / credit …) — same actions as the web */}
+        {derivedActions.length > 0 ? (
+          <View style={[styles.section, { backgroundColor: theme.colors.surface, gap: 8 }]}>
+            <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
+              {t('invoices.createDerived', 'הפק מסמך נגזר')}
+            </Text>
+            {derivedActions.map((a) => (
+              <Button
+                key={a.targetType}
+                mode="outlined"
+                icon={a.icon}
+                textColor={a.targetType.startsWith('credit') ? '#b91c1c' : BRAND_COLOR}
+                style={{ borderColor: a.targetType.startsWith('credit') ? '#b91c1c' : BRAND_COLOR, borderRadius: 10 }}
+                loading={creatingDerived === a.targetType && !derivedModal}
+                disabled={!!creatingDerived}
+                onPress={() => startDerived(a.targetType)}
+              >
+                {a.label}
+              </Button>
+            ))}
+            {derivedError && !derivedModal ? (
+              <Text variant="bodySmall" style={{ color: theme.colors.error, textAlign }}>{derivedError}</Text>
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
 
       {primary ? (
         <PrimaryActionBar label={primary.label} icon={primary.icon} color={primary.color} loading={primary.loading} onPress={primary.run} />
       ) : null}
+
+      {/* Amount (partial allowed) for a receipt / credit created from this tax invoice */}
+      <Portal>
+        <Modal
+          visible={!!derivedModal}
+          onDismiss={() => { if (!creatingDerived) setDerivedModal(null); }}
+          contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign, marginBottom: 6 }}>
+            {derivedModal?.targetType === 'credit_invoice' ? 'הפקת זיכוי' : 'הפקת קבלה מחשבונית'}
+          </Text>
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign, marginBottom: 12 }}>
+            {derivedModal?.targetType === 'credit_invoice'
+              ? `ניתן לזכות עד ${money(modalLimit)}`
+              : `יתרה לתשלום: ${money(modalLimit)} — אפשר להפיק קבלה חלקית`}
+          </Text>
+          <TextInput
+            label="סכום"
+            value={derivedModal?.amount ?? ''}
+            onChangeText={(v) => setDerivedModal((m) => (m ? { ...m, amount: v.replace(',', '.') } : m))}
+            mode="outlined"
+            keyboardType="decimal-pad"
+            activeOutlineColor={BRAND_COLOR}
+            style={{ textAlign }}
+            error={!!derivedModal?.amount && modalInvalid}
+          />
+          <Button compact onPress={() => setDerivedModal((m) => (m ? { ...m, amount: String(Math.round(modalLimit * 100) / 100) } : m))} textColor={BRAND_COLOR} style={{ alignSelf: 'flex-start' }}>
+            {derivedModal?.targetType === 'credit_invoice' ? 'כל הסכום' : 'כל היתרה'}
+          </Button>
+          {derivedError ? (
+            <Text variant="bodySmall" style={{ color: theme.colors.error, textAlign, marginTop: 4 }}>{derivedError}</Text>
+          ) : null}
+          <View style={{ flexDirection, gap: 10, marginTop: 14 }}>
+            <Button mode="outlined" style={{ flex: 1 }} disabled={!!creatingDerived} onPress={() => setDerivedModal(null)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              mode="contained"
+              style={{ flex: 1 }}
+              buttonColor={derivedModal?.targetType === 'credit_invoice' ? '#b91c1c' : BRAND_COLOR}
+              loading={!!creatingDerived}
+              disabled={!!creatingDerived || modalInvalid}
+              onPress={() => derivedModal && createDerived(derivedModal.targetType, modalAmount)}
+            >
+              {derivedModal?.targetType === 'credit_invoice' ? 'הפק זיכוי' : 'הפק קבלה'}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
     </View>
   );
 }

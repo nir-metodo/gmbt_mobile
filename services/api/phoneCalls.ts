@@ -7,6 +7,34 @@ export interface GetAppCallsOptions {
   [key: string]: any;
 }
 
+/** Office-number call-log document -> the app's PhoneCall (status folded to answered / missed / busy / no_answer). */
+export function mapPbxCall(c: any): PhoneCall {
+  const direction: 'inbound' | 'outbound' = String(c.direction || '').toLowerCase() === 'inbound' ? 'inbound' : 'outbound';
+  const raw = String(c.status || '').toLowerCase();
+  const duration = parseInt(String(c.duration ?? '0'), 10) || 0;
+  let status: PhoneCall['status'];
+  if (raw === 'completed' && duration > 0) status = 'answered';
+  else if (raw === 'busy') status = 'busy';
+  else if (direction === 'inbound') status = 'missed';
+  else status = 'no_answer';
+  const name = String(c.customerName || '').trim();
+  const id = String(c.callId ?? c.id ?? '');
+  return {
+    id,
+    callId: id,
+    source: 'pbx',
+    phoneNumber: String((direction === 'inbound' ? c.from : c.to) ?? ''),
+    contactName: /^(unknown|unkown|gambot)$/i.test(name) ? '' : name,
+    direction,
+    status,
+    duration,
+    startTime: c.createdOn,
+    createdAt: c.createdOn,
+    recordingUrl: c.recordingUrl || undefined,
+    agentName: c.createdByName || c.agentName || undefined,
+  };
+}
+
 export const phoneCallsApi = {
   async getAppCalls(
     organization: string,
@@ -25,7 +53,66 @@ export const phoneCallsApi = {
       id: c.id ?? c.callId ?? c.CallId,
       phoneNumber: c.phoneNumber ?? c.to ?? c.PhoneNumber ?? '',
       contactName: c.contactName ?? c.customerName ?? c.ContactName ?? '',
+      createdAt: c.createdAt ?? c.createdOn ?? c.startTime ?? '',
     }));
+  },
+
+  /**
+   * The organization's real call log (office-number calls: inbound + outbound, incl. the ones placed through
+   * the app's Gambot dialer) - the same source the web "Phone Calls" page uses. `userId` limits it to own calls.
+   */
+  async getPbxCalls(
+    organization: string,
+    options?: { userId?: string; pageSize?: number }
+  ): Promise<PhoneCall[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_PHONE_CALLS, {
+      organization,
+      pageNumber: 1,
+      pageSize: options?.pageSize ?? 100,
+      dataVisibility: options?.userId ? 'own' : 'all',
+      userId: options?.userId || '',
+      search: '',
+      direction: 'all',
+      status: 'all',
+      agentIds: [],
+      dateFrom: '',
+      dateTo: '',
+    });
+    const items = response.data?.Data ?? response.data?.data ?? [];
+    return (Array.isArray(items) ? items : []).map(mapPbxCall);
+  },
+
+  /** All office-number calls of one contact (phone in any format) - the "Calls" section of the contact card. */
+  async getCallsByContact(organization: string, contactPhone: string): Promise<PhoneCall[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CALLS_BY_CONTACT, { organization, contactPhone });
+    const items = response.data?.Data ?? response.data?.data ?? [];
+    return (Array.isArray(items) ? items : []).map(mapPbxCall);
+  },
+
+  /** AI summary, transcript and the agent's documentation of a call (same record the web call page shows). */
+  async getCallSummary(organization: string, callId: string): Promise<any | null> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_CALL_SUMMARY, { organization, callId });
+    return response.data?.Success && response.data?.Data ? response.data.Data : null;
+  },
+
+  async saveCallNotes(
+    organization: string,
+    callId: string,
+    doc: { notes: string; disposition?: string; tags?: string[] },
+    contactPhone: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.SAVE_CALL_NOTES, {
+      organization,
+      callControlId: callId,
+      notes: doc.notes,
+      disposition: doc.disposition || '',
+      tags: doc.tags || [],
+      final: true,
+      contactPhone,
+    });
+    return response.data?.success === false
+      ? { success: false, error: response.data?.error }
+      : { success: true };
   },
 
   async createAppCall(
@@ -117,6 +204,74 @@ export const phoneCallsApi = {
     return response.data?.Data || response.data?.data || response.data || {};
   },
 
+  /** Incoming calls to the office number also ring THIS user's personal phone (own extension only, enforced server-side). */
+  async setMyMobileRinging(
+    organization: string,
+    ringMobile: boolean,
+    mobilePhone?: string,
+  ): Promise<{ success: boolean; ringMobile?: boolean; mobilePhone?: string; error?: string; message?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.SET_MY_MOBILE_RINGING, { organization, ringMobile, mobilePhone });
+    return response.data || { success: false };
+  },
+
+  /** Which number the CUSTOMER sees on this user's outgoing calls: the org number ('did') or the user's own mobile ('mobile'). Own extension only. */
+  /** In-call controls for the agent's own live SIP call (the gateway does the work; hold plays the org's hold music). */
+  async sipCallControl(
+    organization: string,
+    callId: string,
+    action: 'status' | 'hold' | 'unhold' | 'mute' | 'unmute' | 'dtmf' | 'hangup',
+    digit?: string,
+  ): Promise<{ active?: boolean; answered?: boolean; held?: boolean; muted?: boolean; error?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.SIP_CALL_CONTROL, { organization, callId, action, digit });
+    return response.data || {};
+  },
+
+  /** SIP login of THIS user for the in-app phone (same credentials the browser softphone uses). */
+  async getSipCredentials(organization: string): Promise<{
+    success?: boolean; wssUrl?: string; domain?: string; sipUser?: string; sipPassword?: string; extension?: string;
+    iceServers?: { urls: string | string[]; username?: string; credential?: string }[];
+  }> {
+    const response = await axiosInstance.post(ENDPOINTS.SIP_CREDENTIALS, { organization });
+    return response.data || {};
+  },
+
+  /**
+   * Click-to-call through the SIP gateway, exactly like the web phone: the gateway rings THIS user's registered SIP
+   * endpoints (the app's in-app phone auto-answers that leg), dials the customer and bridges + records the call.
+   */
+  async sipOutboundCall(payload: {
+    organization: string;
+    to: string;
+    from: string;
+    agentId: string;
+    agentName: string;
+    customerName?: string;
+    link?: { type: string; id: string } | null;
+  }): Promise<{ success?: boolean; callId?: string; error?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.STREAM_OUTBOUND_CALL, {
+      organization: payload.organization,
+      to: payload.to,
+      from: payload.from,
+      agentId: payload.agentId,
+      agentName: payload.agentName,
+      customerName: payload.customerName || '',
+      link: payload.link || null,
+      triggerBy: 'Manually',
+      clientIdentity: payload.agentId,
+      user: { userId: payload.agentId, userName: payload.agentName },
+    });
+    return response.data || {};
+  },
+
+  async setMyOutboundCallerId(
+    organization: string,
+    outboundCallerId: 'did' | 'mobile',
+    mobilePhone?: string,
+  ): Promise<{ success: boolean; outboundCallerId?: 'did' | 'mobile'; mobilePhone?: string; error?: string; message?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.SET_MY_OUTBOUND_CALLER_ID, { organization, outboundCallerId, mobilePhone });
+    return response.data || { success: false };
+  },
+
   async gambotOutboundCall(payload: {
     organizationName: string;
     phoneNumber: string;
@@ -130,7 +285,7 @@ export const phoneCallsApi = {
     contactId?: string;
     leadId?: string;
     relatedTo?: { type: 'contact' | 'lead' | 'case'; entityId: string; entityName?: string };
-  }): Promise<{ success: boolean; callId?: string }> {
+  }): Promise<{ success: boolean; callId?: string; error?: string; message?: string }> {
     const response = await axiosInstance.post(ENDPOINTS.TELNYX_OUTBOUND_CALL, payload);
     return response.data || {};
   },
