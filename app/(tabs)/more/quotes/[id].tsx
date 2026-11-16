@@ -36,6 +36,9 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { quotesApi } from '../../../../services/api/quotes';
+import { leadsApi } from '../../../../services/api/leads';
+import axiosInstance from '../../../../services/api/axiosInstance';
+import { ENDPOINTS } from '../../../../constants/api';
 import { catalogApi, type CatalogCustomColumn, type CatalogFieldsConfig } from '../../../../services/api/catalog';
 import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { chatsApi } from '../../../../services/api/chats';
@@ -53,6 +56,12 @@ import { StatusFilterBar } from '../../../../components/StatusFilterBar';
 import { StickySaveBar } from '../../../../components/StickySaveBar';
 import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
 import { CollapsibleSection } from '../../../../components/CollapsibleSection';
+
+// Last 9 digits - matches 0501234567 / 972501234567 / +972-50-1234567 alike.
+const phoneKey = (p?: string) => {
+  const d = String(p || '').replace(/\D/g, '');
+  return d.length > 9 ? d.slice(-9) : d;
+};
 
 const STATUS_COLORS: Record<string, string> = {
   draft: '#9E9E9E',
@@ -189,6 +198,10 @@ export default function QuoteDetailScreen() {
   const [formSalesperson, setFormSalesperson] = useState('');
   const [formSalespersonId, setFormSalespersonId] = useState('');
   const [formContactId, setFormContactId] = useState('');
+  // Lead this quote belongs to (prefilled from the lead / chat, or auto-linked from the contact's open lead).
+  const [formLeadId, setFormLeadId] = useState('');
+  const [formLeadTitle, setFormLeadTitle] = useState('');
+  const [leadChoices, setLeadChoices] = useState<any[]>([]); // several open leads for the contact -> user picks
   const [formItems, setFormItems] = useState<QuoteItem[]>([]);
   const [currencyMenuVisible, setCurrencyMenuVisible] = useState(false);
   const [statusMenuVisible, setStatusMenuVisible] = useState(false);
@@ -255,6 +268,26 @@ export default function QuoteDetailScreen() {
     return () => clearTimeout(h);
   }, [inventorySearch]);
 
+  // Link the quote to the contact's lead: exactly one open lead -> linked automatically;
+  // several open leads -> the user picks (modal); none -> no link. Same rule as the web quote form.
+  const suggestLeadForPhone = useCallback(async (phone: string) => {
+    setLeadChoices([]);
+    if (!phone || !user?.organization) return;
+    try {
+      const res = await axiosInstance.post(ENDPOINTS.SEARCH_LEADS, { organization: user.organization, searchTerm: phone, limit: 30 });
+      const key = phoneKey(phone);
+      const raw = res.data;
+      const list: any[] = Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
+      const open = list.filter((l) => phoneKey(l.contactPhone || l.phoneNumber) === key && l.stageId !== 'won' && l.stageId !== 'lost');
+      if (open.length === 1) {
+        setFormLeadId(open[0].id);
+        setFormLeadTitle(open[0].title || '');
+      } else if (open.length > 1) {
+        setLeadChoices(open);
+      }
+    } catch { /* no link - the quote is still created */ }
+  }, [user?.organization]);
+
   // Put a quote from the server into state and (unless the user has unsaved edits) into the form.
   const applyServerQuote = useCallback((q: Quote) => {
     setQuote(q);
@@ -303,6 +336,8 @@ export default function QuoteDetailScreen() {
         openEditModeWithQuote(newQuote);
         markClean();
         setLoading(false);
+        // New quote opened from a chat/contact (no lead given): link to the contact's lead, or ask which one.
+        if (prefillContactPhone && !prefillLeadId) suggestLeadForPhone(prefillContactPhone);
         return;
       }
       const result = await quotesApi.getById(user.organization, id);
@@ -369,6 +404,8 @@ export default function QuoteDetailScreen() {
     setFormTitle(q.title || '');
     setFormContactName(q.contactName || '');
     setFormContactPhone(q.contactPhone || q.phoneNumber || '');
+    setFormLeadId((q as any).leadId || '');
+    setFormLeadTitle((q as any).leadTitle || '');
     setFormNotes(q.notes || '');
     setFormTerms(q.terms || '');
     setFormDate(q.date ? formatDate(q.date, 'yyyy-MM-dd') : '');
@@ -506,11 +543,14 @@ export default function QuoteDetailScreen() {
     setSelectedContact(contact);
     setFormContactId(contact.id || (contact as any).contactId || '');
     setFormContactName(contact.fullName || contact.name || '');
-    setFormContactPhone(contact.phoneNumber || (contact as any).phone || '');
+    const phone = contact.phoneNumber || (contact as any).phone || '';
+    setFormContactPhone(phone);
     setContactSearch('');
     setContactResults([]);
     setContactPickerVisible(false);
-  }, []);
+    if (id === 'new' && phone) suggestLeadForPhone(phone);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   const clearContact = useCallback(() => {
     setSelectedContact(null);
@@ -654,8 +694,14 @@ export default function QuoteDetailScreen() {
           total: Math.max(item.quantity * item.unitPrice - (item.discount || 0), 0),
         }));
 
+      // The backend stores quoteData with Overwrite, so an UPDATE must carry the whole quote (lead link, quote number,
+      // payment/signature fields...) - otherwise saving from the app would erase everything not edited in the form.
+      const baseDoc: Record<string, any> = id === 'new' ? {} : { ...(quote as any) };
       const quoteData: Partial<Quote> & { id: string } = {
+        ...baseDoc,
         id: id === 'new' ? '' : (quote?.id || ''),
+        leadId: formLeadId || undefined,
+        leadTitle: formLeadTitle || undefined,
         title: formTitle.trim(),
         contactName: formContactName.trim() || undefined,
         contactPhone: formContactPhone.trim() || undefined,
@@ -678,6 +724,18 @@ export default function QuoteDetailScreen() {
         status: (id === 'new' ? 'draft' : (quote?.status || 'draft')) as Quote['status'],
         salespersonName: formSalesperson.trim() || undefined,
       };
+      // JSON drops undefined, which would keep the old value from baseDoc - send '' so a cleared field is really cleared.
+      if (id !== 'new') {
+        (['contactName', 'contactPhone', 'contactId', 'salespersonId', 'notes', 'terms', 'date', 'validUntil', 'salespersonName'] as const).forEach((k) => {
+          if ((quoteData as any)[k] === undefined) (quoteData as any)[k] = '';
+        });
+      }
+
+      // Saving a quote that belongs to a lead moves that lead to "proposal" (same as the web quote form).
+      const moveLeadToProposal = () => {
+        if (!formLeadId) return;
+        leadsApi.moveStage(user.organization, formLeadId, 'proposal', undefined, user.fullname).catch(() => {});
+      };
 
       if (id === 'new') {
         await quotesApi.create(
@@ -686,6 +744,7 @@ export default function QuoteDetailScreen() {
           user.uID || user.userId,
           user.fullname,
         );
+        moveLeadToProposal();
         markClean();
         leaveScreen();
       } else {
@@ -695,6 +754,7 @@ export default function QuoteDetailScreen() {
           user.uID || user.userId,
           user.fullname,
         );
+        moveLeadToProposal();
         // Saved: the form is now the baseline, then pull the server-calculated values back in.
         markClean();
         await fetchQuote();
@@ -705,7 +765,7 @@ export default function QuoteDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [user, quote, id, formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formItems, calculatedTotals, formDiscount, formDiscountType, formTax, formCurrency, formSalesperson, formSalespersonId, fetchQuote, fetchQuoteTimeline, leaveScreen, markClean, t]);
+  }, [user, quote, id, formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formItems, calculatedTotals, formDiscount, formDiscountType, formTax, formCurrency, formSalesperson, formSalespersonId, formLeadId, formLeadTitle, fetchQuote, fetchQuoteTimeline, leaveScreen, markClean, t]);
 
   // One-tap status change (chips / primary button). Saved immediately, rolled back on failure.
   const handleChangeStatus = useCallback(async (newStatus: string) => {
@@ -1544,6 +1604,34 @@ export default function QuoteDetailScreen() {
           />
         ) : null}
       </KeyboardAvoidingView>
+
+      {/* Several open leads for the contact -> which one does this quote belong to? */}
+      <Portal>
+        <Modal
+          visible={leadChoices.length > 1 && !formLeadId}
+          onDismiss={() => setLeadChoices([])}
+          contentContainerStyle={[styles.inventoryModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', textAlign, marginHorizontal: 16, marginBottom: 4 }}>
+            {isRTL ? `לאיזה ליד לשייך את ההצעה? (ל${formContactName || 'איש הקשר'} יש ${leadChoices.length} לידים פתוחים)` : `Which lead does this quote belong to? (${leadChoices.length} open leads)`}
+          </Text>
+          {leadChoices.map((l) => (
+            <TouchableOpacity
+              key={l.id}
+              style={[styles.inventoryRow, { flexDirection, borderBottomColor: theme.colors.outlineVariant }]}
+              onPress={() => { setFormLeadId(l.id); setFormLeadTitle(l.title || ''); setLeadChoices([]); }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', textAlign }}>{l.title || '-'}</Text>
+                {(l.stageName || l.stageId) ? (
+                  <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign }}>{l.stageName || l.stageId}</Text>
+                ) : null}
+              </View>
+            </TouchableOpacity>
+          ))}
+          <Button onPress={() => setLeadChoices([])} style={{ marginTop: 8 }}>{isRTL ? 'ללא שיוך' : 'No lead'}</Button>
+        </Modal>
+      </Portal>
 
       {/* Contact picker Modal */}
       <Portal>

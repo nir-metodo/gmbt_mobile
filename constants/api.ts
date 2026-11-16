@@ -69,6 +69,8 @@ export const ENDPOINTS = {
   CREATE_LEAD: '/api/Webhooks/CreateLead',
   UPDATE_LEAD: '/api/Webhooks/UpdateLead',
   MOVE_LEAD_STAGE: '/api/Webhooks/MoveLeadStage',
+  GET_LEAD_QUOTES: '/api/Webhooks/GetLeadQuotes',
+  SEARCH_LEADS: '/api/Webhooks/SearchLeads',
   DELETE_LEAD: '/api/Webhooks/DeleteLead',
   GET_PIPELINE_SETTINGS: '/api/Webhooks/GetPipelineSettings',
   SAVE_PIPELINE_SETTINGS: '/api/Webhooks/SavePipelineSettings',

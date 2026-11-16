@@ -41,6 +41,7 @@ import type { LeadFieldConfig } from '../../../services/api/leads';
 import { chatsApi } from '../../../services/api/chats';
 import { quotesApi } from '../../../services/api/quotes';
 import { paymentsApi } from '../../../services/api/payments';
+import { askWonDeal, isWonStage, type WonDeal } from '../../../utils/wonDeal';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import {
@@ -497,24 +498,32 @@ export default function LeadDetailScreen() {
       const stageObj = pipelineStages.find((s) => s.name === newStage);
       const newStageId = stageObj?.id || '';
 
+      // Moving to a WON stage -> confirm the deal amount (quote / lead amount / manual) first, like the web app.
+      let deal: WonDeal | null = {};
+      if (isWonStage(stageObj) && lead.stageId !== newStageId) {
+        deal = await askWonDeal(lead, organization);
+        if (deal === null) return; // cancelled
+      }
+      const dealValue = deal.dealValue;
+
       // Optimistic update in store (updates list + detail via leadFromStore).
       // Bump modifiedOn/updatedOn too — the backend stamps it (MoveLeadStageAsync), so without it
       // the leads list "עודכן ב" sort wouldn't move the lead until a full refetch.
       const movedAtIso = new Date().toISOString();
       useLeadStore.setState((state) => ({
         leads: state.leads.map((l) =>
-          l.id === lead.id ? { ...l, stageName: newStage, stage: newStage, stageId: newStageId, modifiedOn: movedAtIso, updatedOn: movedAtIso } : l
+          l.id === lead.id ? { ...l, stageName: newStage, stage: newStage, stageId: newStageId, modifiedOn: movedAtIso, updatedOn: movedAtIso, ...(dealValue != null ? { value: dealValue } : {}) } : l
         ),
       }));
       // Also update local form
-      setForm((prev) => ({ ...prev, stageName: newStage, stage: newStage, stageId: newStageId, modifiedOn: movedAtIso }));
+      setForm((prev) => ({ ...prev, stageName: newStage, stage: newStage, stageId: newStageId, modifiedOn: movedAtIso, ...(dealValue != null ? { value: dealValue } : {}) }));
 
       try {
-        await leadsApi.moveStage(organization, lead.id, newStageId, newStage, user?.fullname || '');
+        await leadsApi.moveStage(organization, lead.id, newStageId, newStage, user?.fullname || '', deal);
 
         // Won celebration
         if (stageObj?.isWon) {
-          setWonCelebration({ title: lead.title || '', value: lead.value });
+          setWonCelebration({ title: lead.title || '', value: dealValue ?? lead.value });
           setTimeout(() => setWonCelebration(null), 5000);
         }
 

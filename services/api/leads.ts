@@ -1,6 +1,7 @@
 import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { Lead, LeadStage } from '../../types';
+import type { WonDeal } from '../../utils/wonDeal';
 
 export interface LeadFieldConfig {
   showCompany: boolean;
@@ -127,15 +128,23 @@ export const leadsApi = {
     return response.data;
   },
 
-  async moveStage(organization: string, leadId: string, stageId: string, stageName: string, userName?: string): Promise<any> {
+  // deal = amount confirmed in the won-deal dialog (see utils/wonDeal.ts); omitted -> the lead amount is left as is.
+  async moveStage(organization: string, leadId: string, stageId: string, stageName: string | undefined, userName?: string, deal?: WonDeal): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
       organization,
       leadId,
       stageId,
       stageName,
+      ...(deal || {}),
       user: { userName: userName || '' },
     });
     return response.data;
+  },
+
+  async getLeadQuotes(organization: string, leadId: string): Promise<any[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_LEAD_QUOTES, { organization, leadId });
+    const list = response.data?.quotes || [];
+    return Array.isArray(list) ? list : [];
   },
 
   async delete(organization: string, leadId: string): Promise<any> {

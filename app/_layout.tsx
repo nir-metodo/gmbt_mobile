@@ -15,6 +15,7 @@ import axiosInstance from '../services/api/axiosInstance';
 import { ENDPOINTS } from '../constants/api';
 import { getEffectiveLandingRoute, hasPermission } from '../constants/permissions';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { WonDealDialogHost } from '../components/WonDealDialogHost';
 import * as Notifications from 'expo-notifications';
 import { notificationService } from '../services/notifications';
 import { pushNotificationService } from '../services/pushNotifications';
@@ -361,6 +362,7 @@ export default function RootLayout() {
           <ErrorBoundary>
             <StatusBar style={isDark ? 'light' : 'dark'} />
             <Slot />
+            <WonDealDialogHost />
           </ErrorBoundary>
         </PaperProvider>
       </SafeAreaProvider>

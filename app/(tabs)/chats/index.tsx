@@ -68,6 +68,7 @@ import WebSocketService from '../../../services/websocket';
 import { notificationSound } from '../../../services/notificationSound';
 import { getDataVisibility, hasPermission, getLandingRoute } from '../../../constants/permissions';
 import { ENDPOINTS } from '../../../constants/api';
+import { askWonDeal, isWonStage, type WonDeal } from '../../../utils/wonDeal';
 import axiosInstance from '../../../services/api/axiosInstance';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usersApi } from '../../../services/api/users';
@@ -466,7 +467,7 @@ export default function ChatsListScreen() {
   const [groupFilter, setGroupFilter] = useState<string[]>([]);
   const [leadStageFilter, setLeadStageFilter] = useState<string[]>([]);
   const [contactGroups, setContactGroups] = useState<string[]>([]);
-  const [leadStages, setLeadStages] = useState<{ id: string; name: string; color?: string }[]>([]);
+  const [leadStages, setLeadStages] = useState<{ id: string; name: string; color?: string; isWon?: boolean }[]>([]);
 
   // WhatsApp number filter
   const [wabaNumbersList, setWabaNumbersList] = useState<WabaNumberInfo[]>([]);
@@ -733,7 +734,7 @@ export default function ChatsListScreen() {
         const raw = res.data;
         const stages = raw?.stages || raw?.Data?.stages || raw?.pipelines?.[0]?.stages || [];
         const stageArr = Array.isArray(stages) ? stages : [];
-        setLeadStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color })));
+        setLeadStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color, isWon: s.isWon })));
 
         // Build contact→lead stage map
         axiosInstance.post('/api/Webhooks/GetAllLeads', {
@@ -2159,7 +2160,7 @@ export default function ChatsListScreen() {
           const raw = res.data;
           const stages = raw?.stages || raw?.Data?.stages || raw?.pipelines?.[0]?.stages || [];
           const stageArr = Array.isArray(stages) ? stages : [];
-          setRowLeadStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color })));
+          setRowLeadStages(stageArr.map((s: any) => ({ id: s.id || s.Id, name: s.name || s.Name || s.stageName, color: s.color, isWon: s.isWon })));
         } catch { /* leave empty — modal shows a friendly message */ }
       }
     } finally {
@@ -2172,10 +2173,16 @@ export default function ChatsListScreen() {
     const stageId = stage.id || stage.Id;
     const stageName = stage.name || stage.Name || stage.stageName;
     if ((rowLead.stageId || rowLead.StageId) === stageId) { closeRowActions(); return; }
+    // Moving to a WON stage -> confirm the deal amount first (same dialog as the web app).
+    let deal: WonDeal | null = {};
+    if (isWonStage(stage)) {
+      deal = await askWonDeal({ ...rowLead, id: rowLead.id || rowLead.Id, title: rowLead.title || rowLead.Title }, user.organization);
+      if (deal === null) return;
+    }
     setRowActionBusy(true);
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
-        organization: user.organization, leadId: rowLead.id || rowLead.Id, stageId, stageName,
+        organization: user.organization, leadId: rowLead.id || rowLead.Id, stageId, stageName, ...(deal || {}),
       });
       // Reflect the new stage in the row badge immediately.
       const digits = String(rowActionChat?.phoneNumber || '').replace(/\D/g, '');

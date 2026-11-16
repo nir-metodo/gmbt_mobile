@@ -77,6 +77,7 @@ import { placeSmartCall } from '../../../utils/phoneCall';
 import { prefetchMediaList } from '../../../services/mediaPrefetcher';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
+import { askWonDeal, isWonStage, type WonDeal } from '../../../utils/wonDeal';
 import type { MediaType } from '../../../services/mediaCache';
 import type { Message, Template, QuickMessage, WabaNumberInfo } from '../../../types';
 
@@ -1064,15 +1065,21 @@ export default function ChatConversationScreen() {
     const stageName = stage.name || stage.Name || stage.stageName;
     const stageColor = stage.color || stage.Color || '';
     if (activeLead.stageId === stageId) return;
+    // Moving to a WON stage -> confirm the deal amount first (same dialog as the web app).
+    let deal: WonDeal | null = {};
+    if (isWonStage(stage)) {
+      deal = await askWonDeal(activeLead as any, user.organization);
+      if (deal === null) return;
+    }
     const movedAtIso = new Date().toISOString();
-    setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName, modifiedOn: movedAtIso, updatedOn: movedAtIso } : l)));
+    setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName, modifiedOn: movedAtIso, updatedOn: movedAtIso, ...(deal?.dealValue != null ? { value: deal.dealValue } : {}) } : l)));
     // Push the new stage into the chats store so the list badge updates immediately when the user
     // goes back — without this the lead-stage change only showed up after re-opening the app.
     addOrUpdateChat({ phoneNumber: phoneNumber as string, leadStageName: stageName, ...(stageColor ? { leadStageColor: stageColor } : {}) } as any);
     pushLocalTimeline('leadstage', isRTL ? `שלב הליד עודכן ל: ${stageName}` : `Lead stage → ${stageName}`);
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
-        organization: user.organization, leadId: activeLead.id, stageId, stageName,
+        organization: user.organization, leadId: activeLead.id, stageId, stageName, ...(deal || {}),
       });
       setTimeout(refreshTimeline, 1200);
     } catch { }

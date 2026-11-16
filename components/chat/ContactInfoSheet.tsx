@@ -14,6 +14,7 @@ import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRTL } from '../../hooks/useRTL';
 import axiosInstance from '../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
+import { askWonDeal, isWonStage, type WonDeal } from '../../utils/wonDeal';
 import ContactInternalMessages from '../ContactInternalMessages';
 
 interface Props {
@@ -182,12 +183,20 @@ export function ContactInfoSheet({ visible, onDismiss, organization, phoneNumber
 
   const handleMoveLeadStage = async (leadId: string, newStageId: string, newStageName: string) => {
     setStageMenuVisible(null);
+    // Moving to a WON stage -> confirm the deal amount first (same dialog as the web app).
+    const stageObj = pipelineStages.find((s: any) => (s.id || s.Id) === newStageId);
+    const leadObj = contactLeads.find((l: any) => l.id === leadId);
+    let deal: WonDeal | null = {};
+    if (isWonStage(stageObj) && leadObj && leadObj.stageId !== newStageId) {
+      deal = await askWonDeal(leadObj as any, organization);
+      if (deal === null) return;
+    }
     // Bump modifiedOn to match the backend stamp, keeping "updated" ordering consistent.
     const movedAtIso = new Date().toISOString();
-    setContactLeads(prev => prev.map(l => l.id === leadId ? { ...l, stageId: newStageId, stageName: newStageName, modifiedOn: movedAtIso, updatedOn: movedAtIso } : l));
+    setContactLeads(prev => prev.map(l => l.id === leadId ? { ...l, stageId: newStageId, stageName: newStageName, modifiedOn: movedAtIso, updatedOn: movedAtIso, ...(deal?.dealValue != null ? { value: deal.dealValue } : {}) } : l));
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
-        organization, leadId, stageId: newStageId, stageName: newStageName,
+        organization, leadId, stageId: newStageId, stageName: newStageName, ...(deal || {}),
       });
       onUpdate?.();
     } catch {}

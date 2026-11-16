@@ -24,6 +24,7 @@ import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { leadsApi } from '../../../services/api/leads';
 import { quotesApi } from '../../../services/api/quotes';
+import { askWonDeal, isWonStage, type WonDeal } from '../../../utils/wonDeal';
 import { tasksApi } from '../../../services/api/tasks';
 import { ENDPOINTS } from '../../../constants/api';
 import axiosInstance from '../../../services/api/axiosInstance';
@@ -1193,11 +1194,19 @@ export default function LeadsListScreen() {
         return;
       }
 
+      // Moving to a WON stage -> confirm the deal amount (quote / lead amount / manual) first, like the web app.
+      let deal: WonDeal | null = {};
+      if (isWonStage(stageObj) && lead.stageId !== newStageId) {
+        deal = await askWonDeal(lead, organization);
+        if (deal === null) return; // cancelled
+      }
+      const dealValue = deal.dealValue;
+
       // Optimistic local update. Bump the timestamp so the card floats to the TOP of the
       // target column (columns are sorted by recency), matching the "just moved" expectation.
       const movedAtIso = new Date().toISOString();
       setLeads((prev) =>
-        prev.map((l) => (l.id === lead.id ? ({ ...l, stageName: newStageName, stage: newStageName, stageId: newStageId, modifiedOn: movedAtIso, updatedOn: movedAtIso } as Lead) : l)),
+        prev.map((l) => (l.id === lead.id ? ({ ...l, stageName: newStageName, stage: newStageName, stageId: newStageId, modifiedOn: movedAtIso, updatedOn: movedAtIso, ...(dealValue != null ? { value: dealValue } : {}) } as Lead) : l)),
       );
 
       try {
@@ -1207,11 +1216,12 @@ export default function LeadsListScreen() {
           newStageId,
           newStageName,
           user?.fullname || user?.name || '',
+          deal,
         );
 
         // Won celebration
         if (stageObj?.isWon) {
-          setWonCelebration({ title: lead.title || '', value: lead.value });
+          setWonCelebration({ title: lead.title || '', value: dealValue ?? lead.value });
           setTimeout(() => setWonCelebration(null), 5000);
         }
 
@@ -1223,7 +1233,7 @@ export default function LeadsListScreen() {
         setLeads((prev) =>
           prev.map((l) =>
             l.id === lead.id
-              ? { ...l, stageName: lead.stageName, stage: lead.stage, stageId: lead.stageId }
+              ? { ...l, stageName: lead.stageName, stage: lead.stage, stageId: lead.stageId, value: lead.value }
               : l,
           ),
         );
