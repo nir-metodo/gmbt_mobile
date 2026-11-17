@@ -62,6 +62,7 @@ import {
   type DynamicSection,
 } from '../../../components/DynamicFieldsSection';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
+import { loadQuoteCatalog, buildQuoteItemsFromProducts, quoteItemTotals } from '../../../utils/quoteCatalogLines';
 import type { Lead, LeadStage, TimelineEvent, OrgUser, Template } from '../../../types';
 
 // Crash-proof date/time formatter. On Android (Hermes) `Date.toLocaleString(locale, { dateStyle, timeStyle })`
@@ -561,13 +562,16 @@ export default function LeadDetailScreen() {
         const discount = config.discount || 0;
 
         const products = Array.isArray((promptLead as any).interestedProducts) ? (promptLead as any).interestedProducts : [];
+        // Same lines as picking those products from the catalog (delivery, add-ons, promotion...).
+        const catalogData = products.length > 0 ? await loadQuoteCatalog(organization) : null;
         const items = products.length > 0
-          ? products.map((p: any) => ({ type: 'item', description: p.name || '', quantity: p.quantity || 1, unitPrice: parseFloat(p.unitPrice) || 0 }))
+          ? buildQuoteItemsFromProducts(products, catalogData || {})
           : [{ type: 'item', description: promptLead.title || 'שירות', quantity: 1, unitPrice: parseFloat(String(promptLead.value)) || 0 }];
 
-        const subtotal = items.reduce((sum: number, it: any) => sum + (it.unitPrice || 0) * (it.quantity || 1), 0);
-        const discountAmount = Math.round(subtotal * discount / 100 * 100) / 100;
-        const afterDiscount = subtotal - discountAmount;
+        const { subtotal, lineDiscounts } = quoteItemTotals(items);
+        const globalDiscount = Math.round(subtotal * discount / 100 * 100) / 100;
+        const discountAmount = globalDiscount + lineDiscounts;
+        const afterDiscount = Math.max(0, subtotal - discountAmount);
         const taxAmount = Math.round(afterDiscount * tax / 100 * 100) / 100;
         const total = Math.round((afterDiscount + taxAmount) * 100) / 100;
 
@@ -602,7 +606,7 @@ export default function LeadDetailScreen() {
         setAutoQuotePrompt(null);
 
         if (action === 'createAndNavigate' && newQuoteId) {
-          router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: newQuoteId } });
+          router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: newQuoteId, ...(products.length > 0 ? { addons: '1' } : {}) } });
         } else if (action === 'createAndSend' && newQuoteId) {
           router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: newQuoteId, autoSend: '1' } });
         }
@@ -2126,6 +2130,10 @@ export default function LeadDetailScreen() {
                     prefillContactPhone: lead?.contactPhone || lead?.phoneNumber || '',
                     prefillTitle: lead?.title || '',
                     prefillLeadId: lead?.id || '',
+                    // The lead's products of interest → the editor builds them like catalog picks (delivery, add-ons, promo).
+                    ...(Array.isArray((lead as any)?.interestedProducts) && (lead as any).interestedProducts.length > 0
+                      ? { prefillProducts: JSON.stringify((lead as any).interestedProducts) }
+                      : {}),
                   },
                 })}
               />

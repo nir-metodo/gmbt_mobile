@@ -53,6 +53,9 @@ export interface CatalogData {
   catalogItems: CatalogItem[];
   catalogCustomColumns: CatalogCustomColumn[];
   catalogFieldsConfig?: CatalogFieldsConfig;
+  /** Quote settings that drive the lines added with a product (delivery / add-ons / promotions). */
+  linkedRows?: any;
+  promotions?: any[];
 }
 
 export interface PublicCatalogConfig {
@@ -111,6 +114,8 @@ export const catalogApi = {
       catalogItems: Array.isArray(raw.catalogItems) ? raw.catalogItems : [],
       catalogCustomColumns: Array.isArray(raw.catalogCustomColumns) ? raw.catalogCustomColumns : [],
       catalogFieldsConfig: raw.catalogFieldsConfig || undefined,
+      linkedRows: raw.linkedRows,
+      promotions: Array.isArray(raw.promotions) ? raw.promotions : [],
     };
   },
 

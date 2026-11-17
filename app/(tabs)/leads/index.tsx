@@ -1269,13 +1269,16 @@ export default function LeadsListScreen() {
         const discountPct = config.discount || 0;
 
         const products = Array.isArray((promptLead as any).interestedProducts) ? (promptLead as any).interestedProducts : [];
+        // Same lines as picking those products from the catalog (delivery, add-ons, promotion...).
+        const catalogData = products.length > 0 ? await loadQuoteCatalog(organization) : null;
         const items = products.length > 0
-          ? products.map((p: any) => ({ type: 'item', description: p.name || '', quantity: p.quantity || 1, unitPrice: parseFloat(p.unitPrice) || 0 }))
+          ? buildQuoteItemsFromProducts(products, catalogData || {})
           : [{ type: 'item', description: promptLead.title || 'שירות', quantity: 1, unitPrice: parseFloat(String(promptLead.value)) || 0 }];
 
-        const subtotal = items.reduce((sum: number, it: any) => sum + (it.unitPrice || 0) * (it.quantity || 1), 0);
-        const discountAmount = Math.round(subtotal * discountPct / 100 * 100) / 100;
-        const afterDiscount = subtotal - discountAmount;
+        const { subtotal, lineDiscounts } = quoteItemTotals(items);
+        const globalDiscount = Math.round(subtotal * discountPct / 100 * 100) / 100;
+        const discountAmount = globalDiscount + lineDiscounts;
+        const afterDiscount = Math.max(0, subtotal - discountAmount);
         const taxAmount = Math.round(afterDiscount * tax / 100 * 100) / 100;
         const total = Math.round((afterDiscount + taxAmount) * 100) / 100;
 

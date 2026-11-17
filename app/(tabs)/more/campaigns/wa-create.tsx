@@ -988,7 +988,7 @@ export default function WaCreateScreen() {
                         >
                           <View style={[styles.rowBetween, { flexDirection, gap: 8 }]}>
                             <Text style={{ flex: 1, color: theme.colors.onSurface, fontWeight: '700', textAlign }} numberOfLines={1}>
-                              {t.name}
+                              {t.friendlyName || t.name}
                             </Text>
                             {pending ? (
                               <Text style={{ color: '#d97706', fontSize: 11 }}>{L('ממתינה לאישור', 'Pending')}</Text>

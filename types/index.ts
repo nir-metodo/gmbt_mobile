@@ -362,13 +362,25 @@ export interface Quote {
 
 export interface QuoteItem {
   id?: string;
-  name: string;
+  /** Legacy app lines only — the web (and now the app) keep the whole line text in `description`. */
+  name?: string;
   description?: string;
   quantity: number;
   unitPrice: number;
   discount?: number;
   total: number;
   image?: string;
+  images?: string[];
+  /** 'item' (default) | 'discount' (promotion line, subtracted before tax) */
+  type?: string;
+  /** 'delivery' | 'linked' | 'extra' — lines that come with a catalog product */
+  lineKind?: string;
+  link?: string;
+  promoId?: string;
+  /** Add-ons the product offers (shown to the customer under the product) */
+  availableExtras?: { name: string; price: number; image?: string; link?: string }[];
+  selectedByCustomer?: boolean;
+  selectedAt?: string;
 }
 
 export interface ESignatureSigner {
