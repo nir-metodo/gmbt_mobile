@@ -23,6 +23,8 @@ const TITLES: Record<string, [string, string, string]> = {
   cases: ['dashboard.cases', 'פניות', 'folder-open-outline'],
   tasks: ['dashboard.tasks', 'משימות', 'checkbox-marked-circle-outline'],
   orders: ['dashboard.orders', 'הזמנות', 'package-variant-closed'],
+  quotes: ['dashboard.quotes', 'הצעות מחיר', 'file-document-outline'],
+  invoices: ['dashboard.invoices', 'חשבוניות', 'receipt'],
   sla: ['dashboard.chatsWaiting', 'שיחות ממתינות מעבר ל-SLA', 'clock-alert-outline'],
 };
 
@@ -132,6 +134,8 @@ export default function DashboardDetailScreen() {
   // ── navigation helpers ───────────────────────────────────────────────────────────────────────
   const openCase = (id: string) => router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id } } as any);
   const openLead = (id: string) => router.push({ pathname: '/(tabs)/leads/[id]', params: { id } } as any);
+  const openQuote = (id: string) => router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id } } as any);
+  const openInvoice = (id: string) => router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id } } as any);
   const openOrder = (id: string) => router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id } } as any);
   const openChat = (phoneNumber: string) => router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber } } as any);
 
@@ -509,6 +513,163 @@ export default function DashboardDetailScreen() {
           ])}
           <SectionCard title={t('dashboard.byPriority', 'לפי עדיפות')}>
             <ExpandableBars color="#d97706" items={(d.byPriority || []).map((s: any) => ({ label: prLabel(s.priority), count: s.count }))} empty={t('dashboard.noData', 'אין נתונים')} />
+          </SectionCard>
+        </>
+      );
+    }
+
+    if (entity === 'quotes') {
+      const statusHe: Record<string, string> = {
+        draft: 'טיוטה', sent: 'נשלחה', accepted: 'אושרה', approved: 'אושרה', awaiting_payment: 'ממתינה לתשלום',
+        paid: 'שולמה', rejected: 'נדחתה', declined: 'נדחתה', expired: 'פגה תוקף',
+      };
+      const sLabel = (s: string) => (he ? statusHe[s] || s : s);
+      const row = (q: any, tag?: string): RecordItem => ({
+        key: q.quoteId,
+        primary: q.title || q.name || (q.number ? `#${q.number}` : t('dashboard.quote', 'הצעת מחיר')),
+        secondary: [q.number ? `#${q.number}` : '', q.name && q.name !== q.title ? q.name : '', q.ownerName].filter(Boolean).join(' · '),
+        tag: tag ?? fmtMoney(q.total || 0),
+        meta: fmtDate(q.createdOn),
+        onPress: () => openQuote(q.quoteId),
+      });
+      const att = d.attention || {};
+      return (
+        <>
+          {stats([
+            { label: t('dashboard.created', 'נוצרו'), value: fmtNum(d.created), tone: 'good' },
+            { label: t('dashboard.sentLabel', 'נשלחו'), value: fmtNum(d.sent) },
+            { label: t('dashboard.quotesWon', 'אושרו'), value: fmtNum(d.won), tone: 'good' },
+            { label: t('dashboard.wonValue', 'ערך שאושר'), value: fmtMoney(d.wonValue || 0), tone: 'good' },
+            { label: t('dashboard.pending', 'ממתינות לתגובה'), value: fmtNum(d.pending) },
+            ...(typeof d.winRate === 'number' && d.winRate >= 0 ? [{ label: t('dashboard.winRate', 'אחוז הצלחה'), value: `${d.winRate}%` }] : []),
+          ])}
+          {(att.waitingItems || []).length + (att.expiringItems || []).length + (att.awaitingPaymentItems || []).length > 0 ? (
+            <SectionCard title={t('dashboard.needsAttention', 'דורש תשומת לב')} icon="alert-circle-outline" color="#dc2626">
+              {(att.waitingItems || []).length > 0 ? (
+                <>
+                  {subtitle(`${t('dashboard.quotesWaiting', 'נשלחו וממתינות 5+ ימים')} (${fmtNum(att.waiting)})`)}
+                  <RecordList rows={(att.waitingItems || []).map((q: any) => row(q, `${q.daysIdle} ${t('dashboard.days', 'ימים')}`))} limit={5} />
+                </>
+              ) : null}
+              {(att.expiringItems || []).length > 0 ? (
+                <>
+                  {subtitle(`${t('dashboard.quotesExpiring', 'פגות תוקף בשבוע הקרוב')} (${fmtNum(att.expiring)})`)}
+                  <RecordList rows={(att.expiringItems || []).map((q: any) => row(q, fmtDate(q.validUntil)))} limit={5} />
+                </>
+              ) : null}
+              {(att.awaitingPaymentItems || []).length > 0 ? (
+                <>
+                  {subtitle(`${t('dashboard.quotesAwaitingPay', 'ממתינות לתשלום')} (${fmtNum(att.awaitingPayment)})`)}
+                  <RecordList rows={(att.awaitingPaymentItems || []).map((q: any) => row(q))} limit={5} />
+                </>
+              ) : null}
+            </SectionCard>
+          ) : null}
+          <SectionCard title={t('dashboard.byStatus', 'לפי סטטוס')}>
+            <ExpandableBars
+              color="#2563eb"
+              empty={t('dashboard.noData', 'אין נתונים')}
+              items={(d.byStatus || []).map((s: any) => ({
+                label: sLabel(s.status),
+                count: s.count,
+                rows: (d.items || []).filter((q: any) => q.status === s.status).map((q: any) => row(q)),
+              }))}
+            />
+          </SectionCard>
+          {isAdmin ? (
+            <SectionCard title={t('dashboard.byUser', 'לפי משתמש')}>
+              <ExpandableBars color="#7c3aed" empty={t('dashboard.noData', 'אין נתונים')} items={(d.byOwner || []).map((o: any) => ({ label: o.name, count: o.count }))} />
+            </SectionCard>
+          ) : null}
+          <SectionCard title={t('dashboard.byProduct', 'מוצרים מובילים')}>
+            <ExpandableBars color="#d97706" empty={t('dashboard.noData', 'אין נתונים')} items={(d.byProduct || []).map((p: any) => ({ label: p.name, count: p.quotes }))} />
+          </SectionCard>
+        </>
+      );
+    }
+
+    if (entity === 'invoices') {
+      const typeHe: Record<string, string> = {
+        tax_invoice: 'חשבונית מס', receipt: 'קבלה', combined: 'חשבונית מס קבלה', credit_invoice: 'חשבונית זיכוי', credit_receipt: 'קבלת זיכוי',
+      };
+      const methodHe: Record<string, string> = {
+        cash: 'מזומן', credit: 'כרטיס אשראי', credit_card: 'כרטיס אשראי', card: 'כרטיס אשראי', bank_transfer: 'העברה בנקאית', transfer: 'העברה בנקאית',
+        check: 'צ׳ק', cheque: 'צ׳ק', bit: 'ביט', paybox: 'פייבוקס', unknown: 'לא צוין',
+      };
+      const bucketHe: Record<string, string> = { current: 'לא באיחור', d30: 'איחור 1-30 יום', d60: 'איחור 31-60 יום', d60plus: 'איחור 60+ יום' };
+      const tLabel = (x: string) => (he ? typeHe[x] || x : x);
+      const row = (inv: any, tag?: string): RecordItem => ({
+        key: inv.invoiceId,
+        primary: inv.name || (inv.number ? `#${inv.number}` : t('dashboard.invoice', 'חשבונית')),
+        secondary: [tLabel(inv.type), inv.number ? `#${inv.number}` : '', inv.ownerName].filter(Boolean).join(' · '),
+        tag: tag ?? fmtMoney(inv.signedTotal ?? inv.total ?? 0),
+        tone: inv.daysOverdue > 0 ? 'bad' : '',
+        meta: fmtDate(inv.date),
+        onPress: () => openInvoice(inv.invoiceId),
+      });
+      const att = d.attention || {};
+      return (
+        <>
+          {stats([
+            { label: t('dashboard.invoicedTotal', 'חויב בתקופה'), value: fmtMoney(d.invoiced || 0), tone: 'good' },
+            { label: t('dashboard.receivedTotal', 'התקבל בתקופה'), value: fmtMoney(d.received || 0), tone: 'good' },
+            { label: t('dashboard.openBalance', 'יתרה פתוחה'), value: fmtMoney(d.openTotal || 0) },
+            { label: t('dashboard.overdueBalance', 'באיחור'), value: fmtMoney(d.overdueTotal || 0), tone: (d.overdueTotal || 0) > 0 ? 'bad' : undefined },
+            { label: t('dashboard.docs', 'מסמכים'), value: fmtNum(d.created) },
+            ...(d.avgInvoice ? [{ label: t('dashboard.avgInvoice', 'ממוצע חשבונית'), value: fmtMoney(d.avgInvoice) }] : []),
+          ])}
+          {(att.overdueItems || []).length + (att.dueSoonItems || []).length > 0 ? (
+            <SectionCard title={t('dashboard.needsAttention', 'דורש תשומת לב')} icon="alert-circle-outline" color="#dc2626">
+              {(att.overdueItems || []).length > 0 ? (
+                <>
+                  {subtitle(`${t('dashboard.invoicesOverdue', 'באיחור')} (${fmtNum(d.overdueCount)})`)}
+                  <RecordList rows={(att.overdueItems || []).map((x: any) => row(x, `${fmtMoney(x.balance || 0)} · ${x.daysOverdue} ${t('dashboard.days', 'ימים')}`))} limit={5} />
+                </>
+              ) : null}
+              {(att.dueSoonItems || []).length > 0 ? (
+                <>
+                  {subtitle(`${t('dashboard.invoicesDueSoon', 'לפירעון בשבוע הקרוב')} (${fmtNum(d.dueSoonCount)})`)}
+                  <RecordList rows={(att.dueSoonItems || []).map((x: any) => row(x, `${fmtMoney(x.balance || 0)} · ${fmtDate(x.dueDate)}`))} limit={5} />
+                </>
+              ) : null}
+            </SectionCard>
+          ) : null}
+          <SectionCard title={t('dashboard.aging', 'גיול חובות')}>
+            <ExpandableBars
+              color="#dc2626"
+              empty={t('dashboard.noData', 'אין נתונים')}
+              items={(d.aging || []).filter((a: any) => a.count > 0).map((a: any) => ({
+                label: `${he ? bucketHe[a.bucket] || a.bucket : a.bucket} · ${fmtMoney(a.value)}`,
+                count: a.count,
+                rows: (d.openItems || []).filter((x: any) => x.bucket === a.bucket).map((x: any) => row(x, fmtMoney(x.balance || 0))),
+              }))}
+            />
+          </SectionCard>
+          <SectionCard title={t('dashboard.byType', 'לפי סוג מסמך')}>
+            <ExpandableBars
+              color="#2563eb"
+              empty={t('dashboard.noData', 'אין נתונים')}
+              items={(d.byType || []).map((s: any) => ({
+                label: `${tLabel(s.type)} · ${fmtMoney(s.value)}`,
+                count: s.count,
+                rows: (d.items || []).filter((x: any) => x.type === s.type).map((x: any) => row(x)),
+              }))}
+            />
+          </SectionCard>
+          <SectionCard title={t('dashboard.byMethod', 'אמצעי תשלום')}>
+            <ExpandableBars
+              color="#16a34a"
+              empty={t('dashboard.noData', 'אין נתונים')}
+              items={(d.byMethod || []).map((m: any) => ({ label: `${he ? methodHe[m.method] || m.method : m.method} · ${fmtMoney(m.value)}`, count: m.count }))}
+            />
+          </SectionCard>
+          {isAdmin ? (
+            <SectionCard title={t('dashboard.byUser', 'לפי משתמש')}>
+              <ExpandableBars color="#7c3aed" empty={t('dashboard.noData', 'אין נתונים')} items={(d.byOwner || []).map((o: any) => ({ label: `${o.name} · ${fmtMoney(o.invoiced || 0)}`, count: o.count }))} />
+            </SectionCard>
+          ) : null}
+          <SectionCard title={t('dashboard.byProduct', 'מוצרים מובילים')}>
+            <ExpandableBars color="#d97706" empty={t('dashboard.noData', 'אין נתונים')} items={(d.byProduct || []).map((p: any) => ({ label: `${p.name} · ${fmtMoney(p.value)}`, count: p.docs }))} />
           </SectionCard>
         </>
       );

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, AppStateStatus, I18nManager, Linking } from 'react-native';
-import { Slot, router, useSegments, useRootNavigationState } from 'expo-router';
+import { Slot, router, useSegments, useRootNavigationState, usePathname } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { PaperProvider } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -22,6 +22,7 @@ import { pushNotificationService } from '../services/pushNotifications';
 import { notificationSound } from '../services/notificationSound';
 import { syncDeviceCallEventsConfig } from '../services/deviceCallEvents';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { trackPath } from '../utils/navOrigin';
 import '../i18n';
 
 const LAST_HANDLED_NOTIF_KEY = 'last_handled_notification_id';
@@ -46,6 +47,8 @@ export default function RootLayout() {
   const settingsInitialized = useSettingsStore((s) => s.settingsInitialized);
   const segments = useSegments();
   const navigationState = useRootNavigationState();
+  const pathname = usePathname();
+  useEffect(() => { trackPath(pathname); }, [pathname]);
 
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 

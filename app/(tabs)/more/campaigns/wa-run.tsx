@@ -353,6 +353,8 @@ export default function WaRunScreen() {
   // ───────────── actions ─────────────
   const goResults = () => router.replace(`${BASE}/wa-results?id=${encodeURIComponent(campaignId)}` as any);
   const goList = () => router.replace(BASE as any);
+  // Header arrow: back to wherever the user came from; list only when there is no history.
+  const goBack = () => (router.canGoBack() ? router.back() : goList());
 
   const resetBulkHistory = () => {
     if (!organization) return;
@@ -594,7 +596,7 @@ export default function WaRunScreen() {
     const finished = !!progressRun && !running;
     return (
       <View style={[styles.flex, { backgroundColor: theme.colors.background }]}>
-        <WaHeader title={campaign?.campaignName || ''} subtitle={L('שליחה', 'Sending')} onBack={goList} />
+        <WaHeader title={campaign?.campaignName || ''} subtitle={L('שליחה', 'Sending')} onBack={goBack} />
         <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
           <Section>
             <View style={{ alignItems: 'center', gap: 10, paddingVertical: 6 }}>
@@ -649,7 +651,7 @@ export default function WaRunScreen() {
   if (phase === 'scheduled' && scheduledInfo) {
     return (
       <View style={[styles.flex, { backgroundColor: theme.colors.background }]}>
-        <WaHeader title={campaign?.campaignName || ''} subtitle={L('תזמון', 'Scheduled')} onBack={goList} />
+        <WaHeader title={campaign?.campaignName || ''} subtitle={L('תזמון', 'Scheduled')} onBack={goBack} />
         <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
           <Section>
             <View style={{ alignItems: 'center', gap: 10, paddingVertical: 6 }}>

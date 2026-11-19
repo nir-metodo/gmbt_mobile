@@ -1,4 +1,5 @@
-import * as SecureStore from 'expo-secure-store';
+import * as ExpoSecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { User } from '../types';
 
@@ -20,6 +21,17 @@ const STORAGE_KEYS = {
   DEFAULT_DIALER: 'default_dialer',
   CALL_ALERT_SOUND: 'call_alert_sound',
   CALL_ALERT_VIBRATE: 'call_alert_vibrate',
+};
+
+// expo-secure-store has no web implementation (it throws "getValueWithKeyAsync is not a function"), so on web
+// (the browser dev preview) fall back to AsyncStorage (localStorage). iOS/Android keep using the secure keychain/keystore.
+const SecureStore = {
+  setItemAsync: (key: string, value: string) =>
+    Platform.OS === 'web' ? AsyncStorage.setItem(key, value) : ExpoSecureStore.setItemAsync(key, value),
+  getItemAsync: (key: string) =>
+    Platform.OS === 'web' ? AsyncStorage.getItem(key) : ExpoSecureStore.getItemAsync(key),
+  deleteItemAsync: (key: string) =>
+    Platform.OS === 'web' ? AsyncStorage.removeItem(key) : ExpoSecureStore.deleteItemAsync(key),
 };
 
 export const secureStorage = {

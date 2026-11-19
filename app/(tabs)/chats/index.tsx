@@ -192,6 +192,14 @@ function resolveBulkTemplateVar(entity: string, field: string, chat: Chat | unde
   return '';
 }
 
+// Free template variables can be bound to a per-recipient field instead of typed text (like the web's variable mapping).
+const BULK_VAR_SOURCES: { key: string; he: string; en: string; entity: string; field: string }[] = [
+  { key: 'name', he: 'שם איש קשר', en: 'Contact name', entity: 'contact', field: 'name' },
+  { key: 'firstName', he: 'שם פרטי', en: 'First name', entity: 'contact', field: 'firstName' },
+  { key: 'phone', he: 'טלפון', en: 'Phone', entity: 'contact', field: 'phone' },
+  { key: 'owner', he: 'שם הנציג (אני)', en: 'Agent (me)', entity: 'user', field: 'name' },
+];
+
 const BULK_STATUS_OPTIONS = ['Open', 'In Process', 'Closed'] as const;
 
 // Order matters — chips render left-to-right (RTL-aware) in this order, and the Category dropdown
@@ -297,6 +305,12 @@ export default function ChatsListScreen() {
   // Auto-mapped variables (contact/user/org) resolve per-recipient at send time.
   const [bulkTemplateVarValues, setBulkTemplateVarValues] = useState<Record<number, string>>({});
   const [bulkSendProgress, setBulkSendProgress] = useState<{ done: number; total: number } | null>(null);
+  // Free-text bulk: which selected chats are inside the 24h window (phone → open). Closed ones can't get free text.
+  const [bulkWindow, setBulkWindow] = useState<Record<string, boolean>>({});
+  const [bulkChecking, setBulkChecking] = useState(false);
+  // Template bulk: search box + per-variable source for the free ("open") variables (name / phone / agent… or typed text).
+  const [bulkTemplateSearch, setBulkTemplateSearch] = useState('');
+  const [bulkVarSource, setBulkVarSource] = useState<Record<number, string>>({});
   const [showBulkCategoryModal, setShowBulkCategoryModal] = useState(false);
   const [bulkCategories, setBulkCategories] = useState<string[]>([]);
   const [showBulkMoreMenu, setShowBulkMoreMenu] = useState(false);
@@ -1887,10 +1901,14 @@ export default function ChatsListScreen() {
       const m = bulkTemplateMapping.find((e) => e.index === idx);
       const entity = m?.entity || 'open';
       const field = m?.field || '';
-      if (!m || entity === 'open') return bulkTemplateVarValues[idx] || '';
+      if (!m || entity === 'open') {
+        const src = BULK_VAR_SOURCES.find((s) => s.key === bulkVarSource[idx]);
+        if (src) return resolveBulkTemplateVar(src.entity, src.field, chat, user) || '-';
+        return bulkTemplateVarValues[idx] || '';
+      }
       return resolveBulkTemplateVar(entity, field, chat, user) || bulkTemplateVarValues[idx] || '';
     },
-    [bulkTemplateMapping, bulkTemplateVarValues, user],
+    [bulkTemplateMapping, bulkTemplateVarValues, bulkVarSource, user],
   );
 
   // Live preview body for the first recipient (raw {{n}} replaced with resolved values).
@@ -1918,6 +1936,51 @@ export default function ChatsListScreen() {
     [bulkTemplateMapping, isRTL],
   );
 
+  // The conversation's own WhatsApp number (the 24h window belongs to it); else the list's current number.
+  const resolveFromFor = useCallback((phone: string): { from: string; fromNumberId: string } => {
+    const lid = chats.find((ch) => ch.phoneNumber === phone)?.lastFromNumberId;
+    if (lid) {
+      const m = availableNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === lid);
+      if (m) return { from: m.DisplayNumber || m.displayNumber || m.Label || m.label || (user as any)?.wabaNumber || '', fromNumberId: lid };
+    }
+    return resolveBulkFromNumber();
+  }, [chats, availableNumbers, user, resolveBulkFromNumber]);
+
+  // Free text only goes to chats inside the 24h window — check every selected chat while the modal is open on "text".
+  useEffect(() => {
+    if (!showBulkSendModal || bulkSendMode !== 'text' || !user?.organization || selectedPhones.length === 0) return undefined;
+    let cancelled = false;
+    setBulkChecking(true);
+    const status: Record<string, boolean> = {};
+    const queue = [...selectedPhones];
+    const worker = async () => {
+      while (queue.length > 0) {
+        const phone = queue.shift() as string;
+        try {
+          const s = await chatsApi.getConversationStatus(user.organization, phone, resolveFromFor(phone).fromNumberId || undefined);
+          status[phone] = !!(s?.IsRecipientReplyLast24Hours || s?.IsConversationLive);
+        } catch {
+          status[phone] = false;
+        }
+      }
+    };
+    Promise.all(Array.from({ length: Math.min(5, queue.length) }, worker)).then(() => {
+      if (!cancelled) { setBulkWindow({ ...status }); setBulkChecking(false); }
+    });
+    return () => { cancelled = true; };
+  }, [showBulkSendModal, bulkSendMode, selectedPhones, user?.organization, resolveFromFor]);
+
+  const bulkEligiblePhones = useMemo(() => selectedPhones.filter((p) => bulkWindow[p]), [selectedPhones, bulkWindow]);
+  const bulkBlockedPhones = useMemo(() => selectedPhones.filter((p) => bulkWindow[p] === false), [selectedPhones, bulkWindow]);
+  const bulkChatName = useCallback((phone: string) => chats.find((ch) => ch.phoneNumber === phone)?.contactName || phone, [chats]);
+
+  const filteredBulkTemplates = useMemo(() => {
+    const q = bulkTemplateSearch.trim().toLowerCase();
+    if (!q) return bulkTemplates;
+    return bulkTemplates.filter((tpl) =>
+      `${tpl.friendlyName || ''} ${tpl.name || tpl.Name || ''} ${tpl.usageType || ''} ${getTemplateBodyText(tpl)}`.toLowerCase().includes(q));
+  }, [bulkTemplates, bulkTemplateSearch]);
+
   // ---- Bulk: open send modal (loads approved templates lazily) ----
   const openBulkSend = useCallback(async () => {
     setShowBulkMoreMenu(false);
@@ -1939,6 +2002,9 @@ export default function ChatsListScreen() {
     setBulkText('');
     setBulkTemplateId('');
     setBulkTemplateVarValues({});
+    setBulkVarSource({});
+    setBulkTemplateSearch('');
+    setBulkWindow({});
     setBulkSendProgress(null);
   }, []);
 
@@ -1947,19 +2013,23 @@ export default function ChatsListScreen() {
     if (!user?.organization || selectedPhones.length === 0) return;
     if (bulkSendMode === 'text' && !bulkText.trim()) return;
     if (bulkSendMode === 'template' && !bulkTemplateId) return;
-    const { from, fromNumberId } = resolveBulkFromNumber();
+    // Free text → only chats inside the 24h window; a template can go to everyone.
+    const targets = bulkSendMode === 'text' ? selectedPhones.filter((p) => bulkWindow[p]) : selectedPhones;
+    if (targets.length === 0) return;
+    const skipped = selectedPhones.length - targets.length;
     const senderName = user.fullname || (user as any).name || 'system';
     const uid = user.uID || user.userId;
     setBulkBusy(true);
     let ok = 0;
     let failed = 0;
-    setBulkSendProgress({ done: 0, total: selectedPhones.length });
+    setBulkSendProgress({ done: 0, total: targets.length });
     // Precompute phone→Chat lookup so each recipient's {{n}} variables can be
     // auto-resolved from that contact's own fields (name, phone, …).
     const chatByPhone = new Map(chats.map((c) => [c.phoneNumber, c] as const));
     try {
-      for (let i = 0; i < selectedPhones.length; i++) {
-        const phone = selectedPhones[i];
+      for (let i = 0; i < targets.length; i++) {
+        const phone = targets[i];
+        const { from, fromNumberId } = resolveFromFor(phone);
         try {
           if (bulkSendMode === 'template') {
             // Build a per-recipient variable query: auto-mapped vars resolve from THIS
@@ -1975,20 +2045,20 @@ export default function ChatsListScreen() {
         } catch {
           failed++;
         }
-        setBulkSendProgress({ done: i + 1, total: selectedPhones.length });
+        setBulkSendProgress({ done: i + 1, total: targets.length });
       }
       Alert.alert(
         '✅',
         isRTL
-          ? `נשלחו ${ok} הודעות${failed ? `, ${failed} נכשלו (ייתכן מחוץ לחלון 24 שעות)` : ''}`
-          : `Sent ${ok}${failed ? `, ${failed} failed (may be outside the 24h window)` : ''}`,
+          ? `נשלחו ${ok} הודעות${failed ? `, ${failed} נכשלו` : ''}${skipped ? `\n${skipped} לא נשלחו — השיחה סגורה (מחוץ לחלון 24 שעות). אפשר לשלוח להן תבנית.` : ''}`
+          : `Sent ${ok}${failed ? `, ${failed} failed` : ''}${skipped ? `\n${skipped} not sent — conversation closed (outside the 24h window). Send them a template instead.` : ''}`,
       );
     } finally {
       setBulkBusy(false);
       closeBulkSend();
       exitSelection();
     }
-  }, [user, selectedPhones, bulkSendMode, bulkText, bulkTemplateId, bulkTemplateVarIndices, resolveBulkVarValue, chats, resolveBulkFromNumber, isRTL, closeBulkSend, exitSelection]);
+  }, [user, selectedPhones, bulkSendMode, bulkText, bulkTemplateId, bulkTemplateVarIndices, bulkWindow, resolveBulkVarValue, chats, resolveFromFor, isRTL, closeBulkSend, exitSelection]);
 
   // ---- Bulk: update conversation category ----
   const openBulkCategory = useCallback(async () => {
@@ -3749,6 +3819,7 @@ export default function ChatsListScreen() {
           </View>
 
           {bulkSendMode === 'text' ? (
+            <>
             <PaperInput
               mode="outlined"
               multiline
@@ -3758,8 +3829,52 @@ export default function ChatsListScreen() {
               placeholder={t('sidebar.messageText', 'תוכן ההודעה…')}
               style={{ marginBottom: 12, maxHeight: 160 }}
             />
+            {/* 24h window check: who gets the message and who can't (conversation closed) */}
+            <View style={{ marginBottom: 12, padding: 10, borderRadius: 10, backgroundColor: theme.colors.surfaceVariant, gap: 6 }}>
+              {bulkChecking ? (
+                <View style={{ flexDirection, alignItems: 'center', gap: 8 }}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12 }}>{isRTL ? 'בודק חלון 24 שעות לכל שיחה…' : 'Checking the 24h window for each chat…'}</Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={{ color: '#166534', fontSize: 13, fontWeight: '700', textAlign }}>
+                    {isRTL ? `✅ ${bulkEligiblePhones.length} שיחות יקבלו את ההודעה` : `✅ ${bulkEligiblePhones.length} chats will receive the message`}
+                  </Text>
+                  {bulkBlockedPhones.length > 0 ? (
+                    <>
+                      <Text style={{ color: '#b45309', fontSize: 13, fontWeight: '700', textAlign }}>
+                        {isRTL
+                          ? `⚠️ ${bulkBlockedPhones.length} לא יישלחו — השיחה סגורה (עברו 24 שעות)`
+                          : `⚠️ ${bulkBlockedPhones.length} won't be sent — conversation closed (24h passed)`}
+                      </Text>
+                      <Text numberOfLines={2} style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, textAlign }}>
+                        {bulkBlockedPhones.slice(0, 6).map(bulkChatName).join(', ')}{bulkBlockedPhones.length > 6 ? ` +${bulkBlockedPhones.length - 6}` : ''}
+                      </Text>
+                      <Pressable onPress={() => setBulkSendMode('template')} hitSlop={6}>
+                        <Text style={{ color: theme.colors.primary, fontSize: 12, fontWeight: '700', textAlign }}>
+                          {isRTL ? 'לשליחה גם אליהן — עבור לתבנית ←' : 'To reach them too — switch to a template →'}
+                        </Text>
+                      </Pressable>
+                    </>
+                  ) : null}
+                </>
+              )}
+            </View>
+            </>
           ) : (
             <ScrollView style={{ maxHeight: 420, marginBottom: 12 }} keyboardShouldPersistTaps="handled">
+              {bulkTemplates.length > 4 ? (
+                <PaperInput
+                  mode="outlined"
+                  dense
+                  value={bulkTemplateSearch}
+                  onChangeText={setBulkTemplateSearch}
+                  placeholder={isRTL ? 'חפש תבנית…' : 'Search template…'}
+                  left={<PaperInput.Icon icon="magnify" />}
+                  style={{ marginBottom: 8 }}
+                />
+              ) : null}
               {loadingBulkTemplates ? (
                 <ActivityIndicator style={{ marginVertical: 20 }} color={theme.colors.primary} />
               ) : bulkTemplates.length === 0 ? (
@@ -3767,14 +3882,14 @@ export default function ChatsListScreen() {
                   {t('sidebar.noTemplates', 'אין תבניות מאושרות')}
                 </Text>
               ) : (
-                bulkTemplates.map((tpl) => {
+                filteredBulkTemplates.map((tpl) => {
                   const id = tpl.id || tpl.Id || tpl.templateId || tpl.name || tpl.Name;
                   const name = tpl.friendlyName || tpl.FriendlyName || tpl.name || tpl.Name || id;
                   const selected = bulkTemplateId === id;
                   return (
                     <Pressable
                       key={id}
-                      onPress={() => { setBulkTemplateId(id); setBulkTemplateVarValues({}); }}
+                      onPress={() => { setBulkTemplateId(id); setBulkTemplateVarValues({}); setBulkVarSource({}); }}
                       style={({ pressed }) => [
                         { flexDirection, alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, gap: 10, borderRadius: 8 },
                         selected && { backgroundColor: theme.colors.primaryContainer },
@@ -3821,16 +3936,44 @@ export default function ChatsListScreen() {
                         </View>
                       );
                     }
+                    const src = bulkVarSource[idx] || '';
                     return (
-                      <View key={idx} style={{ marginBottom: 10 }}>
-                        <PaperInput
-                          mode="outlined"
-                          dense
-                          label={`{{${idx}}}`}
-                          value={bulkTemplateVarValues[idx] ?? ''}
-                          onChangeText={(v) => setBulkTemplateVarValues((prev) => ({ ...prev, [idx]: v }))}
-                          placeholder={isRTL ? 'הזן ערך…' : 'Enter value…'}
-                        />
+                      <View key={idx} style={{ marginBottom: 12 }}>
+                        <Text style={{ color: theme.colors.onSurface, fontSize: 12, fontWeight: '700', marginBottom: 6, textAlign }}>{`{{${idx}}}`}</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 6, flexDirection }}>
+                          {BULK_VAR_SOURCES.map((s) => (
+                            <Chip
+                              key={s.key}
+                              compact
+                              selected={src === s.key}
+                              onPress={() => setBulkVarSource((prev) => ({ ...prev, [idx]: s.key }))}
+                              style={{ backgroundColor: src === s.key ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+                            >
+                              {isRTL ? s.he : s.en}
+                            </Chip>
+                          ))}
+                          <Chip
+                            compact
+                            selected={!src}
+                            onPress={() => setBulkVarSource((prev) => ({ ...prev, [idx]: '' }))}
+                            style={{ backgroundColor: !src ? theme.colors.primaryContainer : theme.colors.surfaceVariant }}
+                          >
+                            {isRTL ? 'טקסט חופשי' : 'Custom text'}
+                          </Chip>
+                        </ScrollView>
+                        {src ? (
+                          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, textAlign }}>
+                            {isRTL ? 'יתמלא אוטומטית לכל נמען' : 'Filled automatically for each recipient'}
+                          </Text>
+                        ) : (
+                          <PaperInput
+                            mode="outlined"
+                            dense
+                            value={bulkTemplateVarValues[idx] ?? ''}
+                            onChangeText={(v) => setBulkTemplateVarValues((prev) => ({ ...prev, [idx]: v }))}
+                            placeholder={isRTL ? 'הזן ערך…' : 'Enter value…'}
+                          />
+                        )}
                       </View>
                     );
                   })}
@@ -3879,10 +4022,10 @@ export default function ChatsListScreen() {
               mode="contained"
               icon="send"
               loading={bulkBusy}
-              disabled={bulkBusy || (bulkSendMode === 'text' ? !bulkText.trim() : !bulkTemplateId)}
+              disabled={bulkBusy || (bulkSendMode === 'text' ? (!bulkText.trim() || bulkChecking || bulkEligiblePhones.length === 0) : !bulkTemplateId)}
               onPress={handleBulkSend}
             >
-              {t('sidebar.send', 'שלח')}
+              {`${t('sidebar.send', 'שלח')} (${bulkSendMode === 'text' ? bulkEligiblePhones.length : selectedPhones.length})`}
             </Button>
           </View>
         </Modal>

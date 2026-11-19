@@ -22,12 +22,13 @@ import {
   SegmentedButtons,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { useAuthStore } from '../../../../stores/authStore';
+import { sendDocAndAlert } from '../../../../utils/sendDocAlert';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { esignatureApi, DocumentTemplate } from '../../../../services/api/esignature';
@@ -51,6 +52,7 @@ interface CreatedSigner {
 
 export default function CreateESignatureScreen() {
   const router = useRouter();
+  const { templateId: presetTemplateId } = useLocalSearchParams<{ templateId?: string }>();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
@@ -69,10 +71,10 @@ export default function CreateESignatureScreen() {
   const [expiresInDays, setExpiresInDays] = useState('30');
 
   // Document source: upload a file OR pick an existing document template (parity with web).
-  const [documentSource, setDocumentSource] = useState<'upload' | 'template'>('upload');
+  const [documentSource, setDocumentSource] = useState<'upload' | 'template'>(presetTemplateId ? 'template' : 'upload');
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
-  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState(presetTemplateId || '');
 
   // Step 2 - Signers
   const [signers, setSigners] = useState<Signer[]>([
@@ -99,6 +101,12 @@ export default function CreateESignatureScreen() {
     () => templates.find((tpl) => tpl.id === selectedTemplateId) || null,
     [templates, selectedTemplateId],
   );
+
+  // Opened from the templates list with a template preselected → name the document after it.
+  useEffect(() => {
+    if (presetTemplateId && selectedTemplate && !documentName.trim()) setDocumentName(selectedTemplate.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTemplate]);
 
   const handlePickFile = useCallback(async () => {
     try {
@@ -259,17 +267,20 @@ export default function CreateESignatureScreen() {
     }
   }, [t]);
 
-  const handleSendWhatsApp = useCallback(async (phone: string, url: string) => {
-    try {
-      const message = encodeURIComponent(
-        `${t('esignature.title')}: ${documentName}\n${t('esignature.signHere')}: ${url}`
-      );
-      const cleanPhone = phone.replace(/\D/g, '');
-      await Linking.openURL(`whatsapp://send?phone=${cleanPhone}&text=${message}`);
-    } catch (err: any) {
-      Alert.alert(t('common.error'), err.message || t('errors.generic'));
-    }
-  }, [documentName, t]);
+  // Through the org's Gambot WhatsApp number (open window → regular message, closed → default signature template).
+  const handleSendWhatsApp = useCallback(async (phone: string, url: string, signerName?: string) => {
+    if (!user?.organization) return;
+    await sendDocAndAlert({
+      organization: user.organization,
+      phone,
+      role: 'digitalSignature',
+      user,
+      customerName: signerName || '',
+      docLabel: documentName,
+      url,
+      liveText: `שלום ${signerName || ''},\nהמסמך "${documentName}" מוכן לחתימה ✍️`,
+    });
+  }, [documentName, user]);
 
   const handleShareLink = useCallback(async (url: string) => {
     try {
@@ -490,7 +501,7 @@ export default function CreateESignatureScreen() {
         style={[styles.nextButton, { backgroundColor: theme.colors.primary }]}
         textColor="#FFFFFF"
         contentStyle={styles.nextButtonContent}
-        icon="arrow-right"
+        icon={isRTL ? 'arrow-left' : 'arrow-right'}
       >
         {t('esignature.next')}
       </Button>
@@ -684,7 +695,7 @@ export default function CreateESignatureScreen() {
                           mode="contained"
                           icon="whatsapp"
                           compact
-                          onPress={() => handleSendWhatsApp(signer.signerPhone!, signerUrl)}
+                          onPress={() => handleSendWhatsApp(signer.signerPhone!, signerUrl, signer.signerName)}
                           style={[styles.linkBtn, { backgroundColor: '#25D366' }]}
                           textColor="#FFFFFF"
                           labelStyle={{ fontSize: 12 }}

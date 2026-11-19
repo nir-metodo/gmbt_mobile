@@ -6,7 +6,6 @@ import {
   Pressable,
   RefreshControl,
   Alert,
-  KeyboardAvoidingView,
   Platform,
   ScrollView,
   useWindowDimensions,
@@ -31,6 +30,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useModalKeyboard } from '../../../../hooks/useModalKeyboard';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { inventoryApi, InventoryItem } from '../../../../services/api/inventory';
@@ -64,6 +64,7 @@ export default function InventoryScreen() {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const theme = useAppTheme();
+  const mk = useModalKeyboard(0.9);
   const { isRTL, flexDirection, textAlign } = useRTL();
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
@@ -324,12 +325,10 @@ export default function InventoryScreen() {
         <Modal
           visible={createVisible}
           onDismiss={() => { setCreateVisible(false); resetForm(); }}
-          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
+          contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }, mk.surface]}
         >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-            {/* Bounded maxHeight lets the ScrollView scroll. A bare `flex:1` collapses the content
-                to height 0 inside a Paper Modal whose container only has `maxHeight` (grey backdrop). */}
-            <ScrollView style={{ maxHeight: windowHeight * 0.78 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <View style={mk.body}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={[styles.modalHeader, { flexDirection }]}>
                 <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
                   {t('inventory.addItem')}
@@ -409,7 +408,7 @@ export default function InventoryScreen() {
                 </Button>
               </View>
             </ScrollView>
-          </KeyboardAvoidingView>
+          </View>
         </Modal>
       </Portal>
     </View>

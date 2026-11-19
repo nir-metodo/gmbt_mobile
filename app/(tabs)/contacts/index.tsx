@@ -4,7 +4,6 @@ import {
   StyleSheet,
   Pressable,
   RefreshControl,
-  Linking,
   Alert,
   ScrollView,
   BackHandler,
@@ -35,6 +34,7 @@ import { useContactStore } from '../../../stores/contactStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
+import { useRowDirection } from '../../../hooks/useRowDirection';
 import { formatPhoneNumber, formatRelativeTime, getInitials, withAlpha } from '../../../utils/formatters';
 import { useMultiSelect, SelectCheck, SelectionHeader, BulkActionBar, type BulkAction } from '../../../components/MultiSelect';
 import { BulkTagsSheet, BulkStatusSheet, BulkOwnerSheet, BulkSendSheet } from '../../../components/contacts/ContactBulkSheets';
@@ -160,6 +160,8 @@ export default function ContactsListScreen() {
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
+  // Header bar only: title on the right, actions on the left (flexDirection above would flip it under native RTL).
+  const headerDirection = useRowDirection();
   const { t, i18n } = useTranslation();
   // New strings: Hebrew for every language except English (i18n files are owned elsewhere).
   const L = useCallback((he: string, en: string) => (i18n.language === 'en' ? en : he), [i18n.language]);
@@ -465,10 +467,10 @@ export default function ContactsListScreen() {
     (contact: Contact) => {
       swipeableRefs.get(contact.id)?.close();
       if (contact.phoneNumber) {
-        Linking.openURL(`https://wa.me/${contact.phoneNumber.replace(/\D/g, '')}`);
+        router.push({ pathname: '/(tabs)/chats/[phoneNumber]', params: { phoneNumber: contact.phoneNumber } });
       }
     },
-    [swipeableRefs],
+    [swipeableRefs, router],
   );
 
   const handleDelete = useCallback(
@@ -1135,11 +1137,11 @@ export default function ContactsListScreen() {
           <View
             style={[
               styles.header,
-              { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 8, flexDirection },
+              { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 8, flexDirection: headerDirection },
             ]}
           >
             <Text style={styles.headerTitle}>{t('contacts.title')}</Text>
-            <View style={{ flexDirection, gap: 4, alignItems: 'center' }}>
+            <View style={{ flexDirection: headerDirection, gap: 4, alignItems: 'center' }}>
               <Pressable
                 onPress={() => setAdvancedFilterVisible(true)}
                 hitSlop={8}
@@ -1169,6 +1171,11 @@ export default function ContactsListScreen() {
                   </Pressable>
                 }
               >
+                <Menu.Item
+                  title={L('נתונים', 'Analytics')}
+                  leadingIcon="chart-box-outline"
+                  onPress={() => { setMenuVisible(false); router.push({ pathname: '/(tabs)/more/dashboard/detail', params: { entity: 'contacts' } } as any); }}
+                />
                 <Menu.Item
                   title={L('הודעות פנימיות', 'Internal messages')}
                   leadingIcon="message-text-outline"

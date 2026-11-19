@@ -59,6 +59,7 @@ import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
 import { InvoicePreviewModal } from '../../../../components/InvoicePreviewModal';
 import { CollapsibleSection } from '../../../../components/CollapsibleSection';
 import { sendDocumentViaGambot, MissingDefaultTemplateError } from '../../../../services/whatsappDocSender';
+import { buildInvoiceHtml, openPdf } from '../../../../utils/documentPdf';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -648,6 +649,22 @@ export default function InvoiceDetailScreen() {
     await Clipboard.setStringAsync(publicInvoiceUrl);
     Alert.alert(t('docs.linkCopied', 'הקישור הועתק'), t('invoices.linkCopiedDesc', 'קישור לצפייה בחשבונית הועתק ללוח'));
   }, [invoice, publicInvoiceUrl, t]);
+
+  // PDF of the document (built on the server from the same content as the preview) — opens in the viewer to save / share.
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const handleDownloadPdf = useCallback(async () => {
+    if (!invoice || !user?.organization || pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      const label = `${DOCUMENT_TYPES.find((d) => d.key === invoice.type)?.labelHe || invoice.type}`;
+      const name = `invoice_${invoice.documentNumber || invoice.id || 'doc'}`;
+      await openPdf(user.organization, buildInvoiceHtml(invoice, branding), name);
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err?.message || t('errors.generic'));
+    } finally {
+      setPdfBusy(false);
+    }
+  }, [invoice, user, branding, pdfBusy, t]);
 
   // ── Send to the customer via Gambot WhatsApp: open window → regular message, closed → default template ──
   const handleSendWhatsApp = useCallback(async () => {
@@ -1288,6 +1305,7 @@ export default function InvoiceDetailScreen() {
               { key: 'whatsapp', title: t('invoices.sendWhatsApp', 'שלח בוואטסאפ'), icon: 'whatsapp', onPress: handleSendWhatsApp, hidden: primary?.icon === 'whatsapp' },
               { key: 'share', title: t('invoices.share', 'שתף'), icon: 'share-variant', onPress: handleShare },
               { key: 'link', title: t('docs.copyLink', 'העתק קישור'), icon: 'link-variant', onPress: handleCopyLink },
+              { key: 'pdf', title: pdfBusy ? t('docs.pdfBusy', 'מכין PDF...') : t('docs.downloadPdf', 'הורד PDF'), icon: 'file-pdf-box', onPress: handleDownloadPdf, disabled: pdfBusy },
               { key: 'receipt', title: t('invoices.markPaid', 'סמן כשולם (הפק קבלה)'), icon: 'cash-check', onPress: handleMarkPaid, hidden: openBalance <= 0 || primary?.icon === 'cash-check' },
             ]}
           />

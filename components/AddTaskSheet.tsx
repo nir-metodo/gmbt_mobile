@@ -42,6 +42,8 @@ interface Props {
   defaultTitle?: string;
   /** Phone of the related contact, if any (helps linking + reminders). */
   relatedPhone?: string;
+  /** Pre-selected due day (yyyy-MM-dd), e.g. the day tapped in the calendar. Time defaults to 09:00 unless it is today. */
+  defaultDueDay?: string;
 }
 
 const RELATED_META: Record<string, { icon: any; he: string; en: string }> = {
@@ -67,6 +69,7 @@ export default function AddTaskSheet({
   relatedTo,
   defaultTitle,
   relatedPhone,
+  defaultDueDay,
 }: Props) {
   const theme = useAppTheme();
   const { isRTL } = useRTL();
@@ -117,6 +120,11 @@ export default function AddTaskSheet({
     // Default due date + reminder to "now" (current date & time) so the user only nudges it to the
     // nearest convenient time instead of dialing back from some arbitrary future default.
     const due = new Date();
+    if (defaultDueDay) {
+      const [yy, mm, dd] = defaultDueDay.split('-').map(Number);
+      const picked = new Date(yy, (mm || 1) - 1, dd || 1, 9, 0, 0, 0);
+      if (!isNaN(picked.getTime()) && picked.toDateString() !== due.toDateString()) due.setTime(picked.getTime());
+    }
     setDueObj(due);
     setDueIso(due.toISOString());
     setReminderObj(new Date(due));
@@ -133,7 +141,7 @@ export default function AddTaskSheet({
     setTags([]);
     setTagInput('');
     setTaskType(relatedTo?.type === 'contact' || relatedTo?.type === 'lead' ? 'phone_call' : 'general');
-  }, [visible, defaultTitle, user, relatedTo]);
+  }, [visible, defaultTitle, user, relatedTo, defaultDueDay]);
 
   // Lazily load the org users so the assignee can be switched to a teammate.
   useEffect(() => {

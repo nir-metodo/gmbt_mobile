@@ -9,6 +9,8 @@ import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { useAuthStore } from '../../../../stores/authStore';
 import { calendarApi, CalendarEvent, CalendarInfo, CalendarSettings, Connection } from '../../../../services/api/calendar';
 import { usersApi } from '../../../../services/api/users';
+import { tasksApi } from '../../../../services/api/tasks';
+import AddTaskSheet from '../../../../components/AddTaskSheet';
 import type { OrgUser } from '../../../../types';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 
@@ -139,6 +141,11 @@ export default function CalendarScreen() {
   const [calendars, setCalendars] = useState<CalendarInfo[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([]);
+  // Tasks shown on the calendar as read-only entries (due date). Never stored as events.
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [showTasks, setShowTasks] = useState(true);
+  const [taskSheetVisible, setTaskSheetVisible] = useState(false);
+  const [fabOpen, setFabOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -231,14 +238,16 @@ export default function CalendarScreen() {
     if (!org) return;
     const uid = isAdmin ? undefined : (user?.userId || user?.uID || undefined);
     try {
-      const [evts, cals, conns, usrs, prefs] = await Promise.all([
+      const [evts, cals, conns, usrs, prefs, tks] = await Promise.all([
         calendarApi.getEvents(org, uid),
         calendarApi.getCalendars(org, uid),
         calendarApi.getConnections(org),
         usersApi.getAll(org).catch(() => [] as OrgUser[]),
         calendarApi.getSettings(org, user?.userId || user?.uID || undefined),
+        tasksApi.getAll(org, user?.userId || user?.uID || undefined, 'all').catch(() => [] as any[]),
       ]);
       setEvents(evts);
+      setTasks(tks);
       setCalendars(cals);
       setConnections(conns);
       setOrgUsers(usrs);
@@ -313,10 +322,42 @@ export default function CalendarScreen() {
     [calendars],
   );
 
+  // My tasks as virtual calendar entries (due date). Done tasks are green + struck through. Built from the
+  // loaded task list, so completing a task updates the calendar with no extra sync.
+  const taskEvents = useMemo(() => {
+    if (!showTasks) return [] as CalendarEvent[];
+    const me = user?.userId || user?.uID || '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const out: CalendarEvent[] = [];
+    for (const tk of tasks) {
+      if (!tk.dueDate) continue;
+      const mine = tk.assignedToId ? tk.assignedToId === me : tk.createdById === me;
+      if (!mine) continue;
+      const d = new Date(tk.dueDate);
+      if (isNaN(d.getTime())) continue;
+      const done = tk.status === 'completed';
+      const cancelled = tk.status === 'cancelled';
+      const timed = d.getHours() !== 0 || d.getMinutes() !== 0;
+      out.push({
+        id: `task-${tk.taskId || tk.id}`,
+        calendarId: '', connectionId: '', title: tk.title || '', description: tk.description || '',
+        startDate: toLocalDateStr(d), endDate: toLocalDateStr(d),
+        startTime: timed ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : '', endTime: '',
+        allDay: !timed, location: '', color: done ? '#16a34a' : '#7c3aed', source: '', userId: '', organization: org,
+        attendeeEmail: '', linkedEntityType: '', linkedEntityId: '', linkedEntityName: '',
+        linkedEntities: [], recurrence: 'none', reminderEnabled: false, reminderMinutesBefore: 0,
+        status: done || cancelled ? 'cancelled' : 'confirmed', createdAt: '', updatedAt: '',
+        _isTask: true, _taskId: tk.taskId || tk.id, _done: done, _cancelled: cancelled,
+      } as any);
+    }
+    return out;
+  }, [tasks, showTasks, user?.userId, user?.uID, org]);
+
   // Apply the "external calendar" filter before recurrence expansion (mirrors the web).
-  const sourceFilteredEvents = useMemo(() => (
-    externalCalFilter === 'all' ? events : events.filter(e => evExternalKey(e) === externalCalFilter)
-  ), [events, externalCalFilter, evExternalKey]);
+  const sourceFilteredEvents = useMemo(() => {
+    const all = taskEvents.length > 0 ? [...events, ...taskEvents] : events;
+    return externalCalFilter === 'all' ? all : all.filter(e => evExternalKey(e) === externalCalFilter);
+  }, [events, taskEvents, externalCalFilter, evExternalKey]);
 
   // Recurring events are materialized into occurrences within the range relevant to the current view:
   // the visible month grid for the month view, or a wide window (−1..+6 months) for the list.
@@ -724,7 +765,61 @@ export default function CalendarScreen() {
     );
   };
 
+  const toggleTaskDone = async (taskId: string, done: boolean) => {
+    try {
+      const uid = user?.userId || user?.uID || '';
+      const uname = (user as any)?.fullname || user?.name || '';
+      if (done) await tasksApi.complete(org, taskId, uid, uname);
+      else await tasksApi.update(org, { taskId, status: 'pending' } as any, uid, uname);
+      // Optimistic: flip locally, then refresh from the server.
+      setTasks(prev => prev.map(tk => (tk.taskId || tk.id) === taskId ? { ...tk, status: done ? 'completed' : 'pending' } : tk));
+      loadData();
+    } catch (e: any) {
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', e?.message || 'Failed');
+    }
+  };
+
+  const renderTaskCard = (event: CalendarEvent) => {
+    const ev = event as any;
+    const done = !!ev._done;
+    const cancelled = !!ev._cancelled;
+    const color = done ? '#16a34a' : '#7c3aed';
+    const whenText = event.allDay ? formatDisplayDate(event.startDate) : `${formatDisplayDate(event.startDate)} ${formatTime(event.startTime)}`;
+    return (
+      <Card
+        key={`${event.id}-${event.startDate}`}
+        style={[styles.eventCard, { backgroundColor: theme.custom.cardBackground, borderStartWidth: 4, borderStartColor: color, opacity: done || cancelled ? 0.7 : 1 }]}
+        onPress={() => router.push({ pathname: '/(tabs)/tasks/[id]', params: { id: String(ev._taskId) } } as any)}
+      >
+        <Card.Content>
+          <View style={styles.eventHeader}>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                <MaterialCommunityIcons name="format-list-checks" size={16} color={color} />
+                <Text style={[styles.eventTitle, { color: done ? '#16a34a' : theme.colors.onSurface, flexShrink: 1, textDecorationLine: done || cancelled ? 'line-through' : 'none' }]}>{event.title}</Text>
+                <View style={[styles.tagChip, { backgroundColor: `${color}22` }]}>
+                  <Text style={[styles.tagChipText, { color }]}>{done ? (isRTL ? 'הושלמה' : 'Done') : cancelled ? (isRTL ? 'בוטלה' : 'Cancelled') : (isRTL ? 'משימה' : 'Task')}</Text>
+                </View>
+              </View>
+              <Text style={[styles.eventDate, { color: theme.colors.onSurfaceVariant }]}>{whenText}</Text>
+            </View>
+            {!cancelled && (
+              <IconButton
+                icon={done ? 'check-circle' : 'checkbox-blank-circle-outline'}
+                size={26}
+                iconColor={done ? '#16a34a' : theme.colors.onSurfaceVariant}
+                onPress={() => toggleTaskDone(String(ev._taskId), !done)}
+                accessibilityLabel={done ? (isRTL ? 'החזר לפתוחה' : 'Reopen') : (isRTL ? 'סמן כהושלמה' : 'Mark done')}
+              />
+            )}
+          </View>
+        </Card.Content>
+      </Card>
+    );
+  };
+
   const renderEventCard = (event: CalendarEvent) => {
+    if ((event as any)._isTask) return renderTaskCard(event);
     const isRecurring = !!event.recurrence && event.recurrence !== 'none';
     const linkedUserNames = (event.linkedEntities || []).filter(l => l.type === 'user').map(l => l.name);
     const status = (event.status || 'confirmed').toLowerCase();
@@ -868,6 +963,17 @@ export default function CalendarScreen() {
             </Chip>
           );
         })}
+        <Chip
+          icon="format-list-checks"
+          selected={showTasks}
+          showSelectedOverlay
+          onPress={() => setShowTasks(v => !v)}
+          compact
+          style={[{ backgroundColor: isDark ? theme.colors.surfaceVariant : '#f3f4f6' }, showTasks && styles.filterChipActive]}
+          textStyle={[{ fontSize: 12, color: theme.colors.onSurfaceVariant }, showTasks && styles.filterChipTextActive]}
+        >
+          {isRTL ? 'משימות' : 'Tasks'}
+        </Chip>
       </View>
 
       {/* External-calendar filter — only when there are external calendars with synced events. */}
@@ -1086,7 +1192,27 @@ export default function CalendarScreen() {
       )}
 
       {/* FAB */}
-      <FAB icon="plus" style={styles.fab} onPress={openCreateModal} color="white" />
+      <FAB.Group
+        open={fabOpen}
+        visible
+        icon={fabOpen ? 'close' : 'plus'}
+        color="white"
+        fabStyle={{ backgroundColor: BRAND_COLOR }}
+        onStateChange={({ open }) => setFabOpen(open)}
+        actions={[
+          { icon: 'format-list-checks', label: isRTL ? 'משימה חדשה' : 'New task', onPress: () => setTaskSheetVisible(true) },
+          { icon: 'calendar-plus', label: isRTL ? 'אירוע חדש' : 'New event', onPress: openCreateModal },
+        ]}
+      />
+
+      <AddTaskSheet
+        visible={taskSheetVisible}
+        onDismiss={() => setTaskSheetVisible(false)}
+        onCreated={() => { setTaskSheetVisible(false); loadData(); }}
+        organization={org}
+        user={user}
+        defaultDueDay={selectedDay}
+      />
 
       {/* Create/Edit Modal */}
       <Portal>

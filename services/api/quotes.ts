@@ -2,6 +2,9 @@ import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { Quote } from '../../types';
 
+// Keeps the chat "open quote" indicator fresh after any quote change.
+import { invalidateOpenDocs } from '../../utils/openDocs';
+
 export const quotesApi = {
   async getAll(
     organization: string,
@@ -61,6 +64,7 @@ export const quotesApi = {
       userId: userId || '',
       userName: userName || '',
     });
+    invalidateOpenDocs(organization);
     return response.data;
   },
 
@@ -77,6 +81,7 @@ export const quotesApi = {
       userId: userId || '',
       userName: userName || '',
     });
+    invalidateOpenDocs(organization);
     return response.data;
   },
 
@@ -85,6 +90,7 @@ export const quotesApi = {
       organization,
       quoteId,
     });
+    invalidateOpenDocs(organization);
     return response.data;
   },
 };

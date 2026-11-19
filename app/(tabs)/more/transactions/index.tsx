@@ -7,7 +7,6 @@ import {
   ScrollView,
   Linking,
   Alert,
-  KeyboardAvoidingView,
   Platform,
 } from 'react-native';
 import {
@@ -30,8 +29,10 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
+import { sendDocAndAlert } from '../../../../utils/sendDocAlert';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useModalKeyboard } from '../../../../hooks/useModalKeyboard';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { paymentsApi, type Transaction } from '../../../../services/api/payments';
@@ -42,6 +43,7 @@ import { StatusFilterBar } from '../../../../components/StatusFilterBar';
 import { SummaryHeader } from '../../../../components/SummaryHeader';
 import { DocumentListItem } from '../../../../components/DocumentListItem';
 import { EmptyState } from '../../../../components/EmptyState';
+import PaymentFormSheet from '../../../../components/PaymentFormSheet';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -79,6 +81,7 @@ export default function TransactionsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
+  const mk = useModalKeyboard(0.85);
   const { isRTL, flexDirection, textAlign } = useRTL();
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
@@ -94,16 +97,6 @@ export default function TransactionsScreen() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('');
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createForm, setCreateForm] = useState({
-    amount: '',
-    description: '',
-    customerName: '',
-    customerPhone: '',
-    customerEmail: '',
-    payments: '1',
-  });
-  const [creating, setCreating] = useState(false);
-
   const fetchTransactions = useCallback(async () => {
     if (!organization) { setLoading(false); return; }
     setLoading(true);
@@ -124,54 +117,6 @@ export default function TransactionsScreen() {
     await fetchTransactions();
     setRefreshing(false);
   }, [fetchTransactions]);
-
-  const handleCreatePayment = useCallback(async () => {
-    const amount = parseFloat(createForm.amount);
-    if (!amount || amount <= 0) {
-      Alert.alert(he ? 'שגיאה' : 'Error', he ? 'נא להזין סכום תקין' : 'Please enter a valid amount');
-      return;
-    }
-    setCreating(true);
-    try {
-      const result = await paymentsApi.createPaymentLink(organization, {
-        amount,
-        description: createForm.description,
-        customerName: createForm.customerName,
-        customerPhone: createForm.customerPhone,
-        customerEmail: createForm.customerEmail,
-        payments: parseInt(createForm.payments) || 1,
-      });
-      if (result.success) {
-        setShowCreateModal(false);
-        setCreateForm({ amount: '', description: '', customerName: '', customerPhone: '', customerEmail: '', payments: '1' });
-        await fetchTransactions();
-        if (result.gambotPaymentUrl || result.paymentUrl) {
-          Alert.alert(
-            he ? 'קישור תשלום נוצר' : 'Payment Link Created',
-            he ? 'האם לפתוח את הקישור?' : 'Open the payment link?',
-            [
-              { text: he ? 'לא' : 'No', style: 'cancel' },
-              { text: he ? 'פתח' : 'Open', onPress: () => Linking.openURL(result.gambotPaymentUrl || result.paymentUrl || '') },
-              ...(createForm.customerPhone ? [{
-                text: he ? 'שלח בוואטסאפ' : 'WhatsApp',
-                onPress: () => {
-                  const link = result.gambotPaymentUrl || result.paymentUrl || '';
-                  const text = encodeURIComponent(`${he ? 'שלום' : 'Hi'} ${createForm.customerName},\n${he ? 'קישור לתשלום' : 'Payment link'}:\n${link}\n${he ? 'סכום' : 'Amount'}: ₪${amount.toFixed(2)}`);
-                  Linking.openURL(`whatsapp://send?phone=${createForm.customerPhone}&text=${text}`);
-                },
-              }] : []),
-            ],
-          );
-        }
-      } else {
-        Alert.alert(he ? 'שגיאה' : 'Error', result.error || (he ? 'יצירת תשלום נכשלה' : 'Payment creation failed'));
-      }
-    } catch {
-      Alert.alert(he ? 'שגיאה' : 'Error', he ? 'יצירת תשלום נכשלה' : 'Payment creation failed');
-    } finally {
-      setCreating(false);
-    }
-  }, [organization, createForm, he, fetchTransactions]);
 
   // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
   const debouncedSearch = useDebouncedValue(searchQuery, 350);
@@ -353,109 +298,13 @@ export default function TransactionsScreen() {
         </Modal>
       </Portal>
 
-      {/* Create Payment modal */}
-      <Portal>
-        <Modal
-          visible={showCreateModal}
-          onDismiss={() => setShowCreateModal(false)}
-          contentContainerStyle={[styles.detailModal, { backgroundColor: theme.colors.surface }]}
-        >
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <View style={[{ flexDirection, alignItems: 'center', marginBottom: 16 }]}>
-                <MaterialCommunityIcons name="credit-card-plus-outline" size={22} color={BRAND_COLOR} />
-                <Text
-                  variant="titleMedium"
-                  style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, marginStart: 8, textAlign }}
-                >
-                  {he ? 'יצירת סליקה חדשה' : 'Create New Payment'}
-                </Text>
-              </View>
-
-              <TextInput
-                label={he ? 'סכום (₪) *' : 'Amount (₪) *'}
-                value={createForm.amount}
-                onChangeText={(v) => setCreateForm((f) => ({ ...f, amount: v }))}
-                keyboardType="decimal-pad"
-                mode="outlined"
-                style={styles.formInput}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-              />
-              <TextInput
-                label={he ? 'תיאור' : 'Description'}
-                value={createForm.description}
-                onChangeText={(v) => setCreateForm((f) => ({ ...f, description: v }))}
-                mode="outlined"
-                style={styles.formInput}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-              />
-              <TextInput
-                label={he ? 'שם לקוח' : 'Customer Name'}
-                value={createForm.customerName}
-                onChangeText={(v) => setCreateForm((f) => ({ ...f, customerName: v }))}
-                mode="outlined"
-                style={styles.formInput}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-              />
-              <TextInput
-                label={he ? 'טלפון לקוח' : 'Customer Phone'}
-                value={createForm.customerPhone}
-                onChangeText={(v) => setCreateForm((f) => ({ ...f, customerPhone: v }))}
-                keyboardType="phone-pad"
-                mode="outlined"
-                style={styles.formInput}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-              />
-              <TextInput
-                label={he ? 'מייל לקוח' : 'Customer Email'}
-                value={createForm.customerEmail}
-                onChangeText={(v) => setCreateForm((f) => ({ ...f, customerEmail: v }))}
-                keyboardType="email-address"
-                mode="outlined"
-                style={styles.formInput}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-              />
-              <TextInput
-                label={he ? 'מספר תשלומים' : 'Installments'}
-                value={createForm.payments}
-                onChangeText={(v) => setCreateForm((f) => ({ ...f, payments: v }))}
-                keyboardType="number-pad"
-                mode="outlined"
-                style={styles.formInput}
-                outlineColor={theme.colors.outline}
-                activeOutlineColor={BRAND_COLOR}
-              />
-
-              <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-                <Button
-                  mode="contained"
-                  onPress={handleCreatePayment}
-                  loading={creating}
-                  disabled={creating}
-                  style={{ flex: 1, borderRadius: 10 }}
-                  buttonColor={BRAND_COLOR}
-                  textColor="#FFF"
-                >
-                  {he ? 'צור קישור תשלום' : 'Create Payment Link'}
-                </Button>
-                <Button
-                  mode="outlined"
-                  onPress={() => setShowCreateModal(false)}
-                  style={{ borderRadius: 10 }}
-                  textColor={theme.colors.onSurface}
-                >
-                  {he ? 'ביטול' : 'Cancel'}
-                </Button>
-              </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </Modal>
-      </Portal>
+      {/* New payment — same form as the web (link to a record, VAT, items) */}
+      <PaymentFormSheet
+        visible={showCreateModal}
+        onDismiss={() => setShowCreateModal(false)}
+        onDone={fetchTransactions}
+        user={user}
+      />
     </View>
   );
 }
@@ -482,6 +331,8 @@ function TransactionDetail({
   const cfg = STATUS_CONFIG[tx.status] || STATUS_CONFIG.pending;
   const amount = parseFloat(String(tx.amount)) || 0;
   const shareLink = tx.gambotPaymentUrl || tx.paymentUrl;
+  const authUser = useAuthStore((st) => st.user);
+  const [sendingWa, setSendingWa] = React.useState(false);
 
   return (
     <ScrollView showsVerticalScrollIndicator={false}>
@@ -582,13 +433,24 @@ function TransactionDetail({
 
           {tx.customerPhone ? (
             <Pressable
-              onPress={() => {
-                const text = encodeURIComponent(
-                  `${he ? 'שלום' : 'Hi'} ${tx.customerName || ''},\n${he ? 'קישור לתשלום' : 'Payment link'}:\n${shareLink}\n${he ? 'סכום' : 'Amount'}: ₪${amount.toFixed(2)}`,
-                );
-                Linking.openURL(`whatsapp://send?phone=${tx.customerPhone}&text=${text}`);
+              disabled={sendingWa}
+              onPress={async () => {
+                if (!authUser?.organization) return;
+                setSendingWa(true);
+                await sendDocAndAlert({
+                  organization: authUser.organization,
+                  phone: tx.customerPhone || '',
+                  role: 'sendPaymentLink',
+                  user: authUser as any,
+                  customerName: tx.customerName || '',
+                  docLabel: `תשלום על סך ₪${amount.toFixed(2)}`,
+                  url: shareLink || '',
+                  liveText: `שלום ${tx.customerName || ''},\nקישור לתשלום על סך ₪${amount.toFixed(2)}:`,
+                });
+                setSendingWa(false);
               }}
               style={{
+                opacity: sendingWa ? 0.6 : 1,
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: 8,

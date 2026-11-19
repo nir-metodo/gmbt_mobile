@@ -6,7 +6,6 @@ import {
   Pressable,
   RefreshControl,
   Alert,
-  KeyboardAvoidingView,
   Platform,
   ScrollView,
   Linking,
@@ -30,6 +29,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useModalKeyboard } from '../../../../hooks/useModalKeyboard';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
 import { suppliersApi, Supplier } from '../../../../services/api/suppliers';
@@ -45,6 +45,7 @@ export default function SuppliersScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
+  const mk = useModalKeyboard(0.8);
   const { isRTL, flexDirection, textAlign } = useRTL();
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
@@ -287,8 +288,8 @@ export default function SuppliersScreen() {
       <FAB icon="plus" style={[styles.fab, { bottom: insets.bottom + 16 }]} color="#fff" onPress={openCreate} />
 
       <Portal>
-        <Modal visible={modalVisible} onDismiss={() => setModalVisible(false)} contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <Modal visible={modalVisible} onDismiss={() => setModalVisible(false)} contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }, mk.surface]}>
+          <View style={mk.body}>
             <ScrollView>
               <Text variant="titleMedium" style={{ textAlign, marginBottom: 16, fontWeight: '700' }}>
                 {editingSupplier ? t('common.edit') : t('common.add')} {t('more.suppliers')}
@@ -356,7 +357,7 @@ export default function SuppliersScreen() {
                 </Button>
               </View>
             </ScrollView>
-          </KeyboardAvoidingView>
+          </View>
         </Modal>
       </Portal>
     </View>

@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRowDirection } from '../../hooks/useRowDirection';
 import { PeriodKey, PERIOD_KEYS, PERIOD_LABEL_FALLBACK } from '../../utils/datePresets';
+import { ForwardChevron } from '../ForwardChevron';
 
 export const BRAND = '#2e6155';
 
@@ -163,7 +164,7 @@ export function SectionCard({ title, icon, color = BRAND, onPress, children, rig
           {icon ? <MaterialCommunityIcons name={icon as any} size={18} color={color} /> : null}
           <Text style={{ flex: 1, fontSize: 15, fontWeight: '700', color: theme.colors.onSurface }}>{title}</Text>
           {right}
-          {onPress ? <MaterialCommunityIcons name="chevron-left" size={20} color={theme.colors.onSurfaceVariant} /> : null}
+          {onPress ? <ForwardChevron size={20} color={theme.colors.onSurfaceVariant} /> : null}
         </View>
       ) : null}
       {children}

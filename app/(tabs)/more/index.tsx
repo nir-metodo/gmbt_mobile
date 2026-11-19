@@ -60,6 +60,7 @@ const MENU_SECTIONS: MenuSection[] = [
       { key: 'phoneCalls', icon: 'phone-outline', labelKey: 'more.phoneCalls', route: '/(tabs)/more/phone-calls', color: '#2563eb', permission: 'phoneCalls', requiresTelephony: true },
       { key: 'email', icon: 'email-send-outline', labelKey: 'more.email', route: '/(tabs)/more/email', color: '#dc2626', permission: 'emailInbox' },
       { key: 'media', icon: 'folder-image', labelKey: 'more.media', route: '/(tabs)/more/media', color: '#0ea5e9', permission: 'mediaManager' },
+      { key: 'templates', icon: 'message-text-outline', labelKey: 'more.templates', route: '/(tabs)/more/templates', color: '#0284c7', permission: 'templates' },
     ],
   },
   {

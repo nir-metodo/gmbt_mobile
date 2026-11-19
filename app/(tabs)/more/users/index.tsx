@@ -9,7 +9,6 @@ import {
   Platform,
   UIManager,
   ScrollView,
-  KeyboardAvoidingView,
 } from 'react-native';
 import {
   Appbar,
@@ -35,6 +34,7 @@ import { useTranslation } from 'react-i18next';
 import { usersApi } from '../../../../services/api/users';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
+import { useModalKeyboard } from '../../../../hooks/useModalKeyboard';
 import { useAuthStore } from '../../../../stores/authStore';
 import { OrgUser } from '../../../../types';
 import { getInitials } from '../../../../utils/formatters';
@@ -99,6 +99,7 @@ const EMPTY_USER: Omit<OrgUser, 'id'> = {
 
 export default function UsersScreen() {
   const theme = useAppTheme();
+  const mk = useModalKeyboard(0.9);
   const { isRTL, textAlign } = useRTL();
   const { t } = useTranslation();
   const router = useRouter();
@@ -336,9 +337,9 @@ export default function UsersScreen() {
         <Modal
           visible={modalVisible}
           onDismiss={() => { setModalVisible(false); setEditingUser(null); }}
-          contentContainerStyle={[s.modal, { backgroundColor: theme.colors.surface }]}
+          contentContainerStyle={[s.modal, { backgroundColor: theme.colors.surface }, mk.surface]}
         >
-          <KeyboardAvoidingView behavior="padding" style={{ maxHeight: '100%' }}>
+          <View style={mk.body}>
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={[s.modalHeader, { flexDirection: 'row' }]}>
               <Text variant="titleLarge" style={{ color: theme.colors.onSurface, flex: 1, textAlign: isRTL ? 'right' : 'left', fontWeight: '700' }}>
@@ -562,7 +563,7 @@ export default function UsersScreen() {
               </Button>
             </View>
           </ScrollView>
-          </KeyboardAvoidingView>
+          </View>
         </Modal>
       </Portal>
 

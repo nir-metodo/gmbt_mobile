@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRowDirection } from '../../hooks/useRowDirection';
 import { BRAND, fmtNum } from './ui';
+import { ForwardChevron } from '../ForwardChevron';
 
 export interface RecordItem {
   key: string;
@@ -47,7 +48,7 @@ export function RecordRow({ r }: { r: RecordItem }) {
         ) : null}
         {r.meta ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{r.meta}</Text> : null}
       </View>
-      {r.onPress ? <MaterialCommunityIcons name="chevron-left" size={18} color={theme.colors.onSurfaceVariant} /> : null}
+      {r.onPress ? <ForwardChevron size={18} color={theme.colors.onSurfaceVariant} /> : null}
     </Wrap>
   );
 }

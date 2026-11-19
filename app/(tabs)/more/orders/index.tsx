@@ -39,7 +39,7 @@ import {
 } from '../../../../services/api/orders';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
 import { ListPaginationFooter } from '../../../../components/ListPaginationFooter';
-import { formatDate, formatCurrency } from '../../../../utils/formatters';
+import { formatDate, formatDateTime, formatCurrency } from '../../../../utils/formatters';
 import { ScreenHeader } from '../../../../components/ScreenHeader';
 import { ListToolbar } from '../../../../components/ListToolbar';
 import { StatusFilterBar } from '../../../../components/StatusFilterBar';
@@ -76,6 +76,11 @@ const STATUS_ICONS: Record<string, string> = {
   cancelled: 'close-circle-outline',
   refunded: 'cash-refund',
 };
+
+const CHANNEL_HE: Record<string, string> = { website: 'אתר', instagram: 'אינסטגרם', whatsapp: 'וואטסאפ', phone: 'טלפון', store: 'חנות פיזית', email: 'מייל', shopify: 'Shopify' };
+const channelLabel = (id: string) => CHANNEL_HE[id] || id;
+/* Orders store ISO currency codes (ILS); the list shows the symbol. */
+const currencySymbol = (c?: string) => (!c || c === 'ILS' || c === '₪' ? '₪' : c === 'USD' ? '$' : c === 'EUR' ? '€' : c);
 
 function getStatusColor(statusId: string, statuses: OrderStatusConfig[]): string {
   return statuses.find((s) => s.id === statusId)?.color
@@ -423,6 +428,39 @@ export default function OrdersScreen() {
     router.push({ pathname: '/(tabs)/more/orders/[id]', params: { id: order.id } });
   }, [router]);
 
+  // Everything worth knowing about an order without opening it: who, what, where it stands, who handles it.
+  const orderDetails = useCallback((o: Order) => {
+    const rows: { icon: string; text: string }[] = [];
+    if (o.customerPhone) rows.push({ icon: 'phone-outline', text: o.customerPhone });
+    const products = (o.items || [])
+      .map((i: any) => {
+        const name = i.productName || i.name;
+        if (!name) return '';
+        return Number(i.quantity) > 1 ? `${name} ×${i.quantity}` : String(name);
+      })
+      .filter(Boolean);
+    if (products.length > 0) {
+      const shown = products.slice(0, 2).join(', ');
+      rows.push({ icon: 'package-variant-closed', text: products.length > 2 ? `${shown} +${products.length - 2}` : shown });
+    }
+    if (o.trackingNumber) rows.push({ icon: 'truck-outline', text: o.trackingNumber });
+    else if (o.shippingCarrier) rows.push({ icon: 'truck-outline', text: o.shippingCarrier });
+    if (o.assignedTo) rows.push({ icon: 'account-circle-outline', text: o.assignedTo });
+    return rows;
+  }, []);
+
+  const orderPills = useCallback((o: Order) => {
+    const pills: { label: string; color: string }[] = [];
+    if (o.paymentStatus === 'paid' || (o.isPaid === true && o.paymentStatus !== 'partial')) {
+      pills.push({ label: t('orders.paid', 'שולם'), color: '#10b981' });
+    } else if (o.paymentStatus === 'partial') {
+      pills.push({ label: t('orders.partial', 'חלקי'), color: '#f59e0b' });
+    }
+    const channel = o.salesChannel || (o.source && o.source !== 'manual' ? o.source : '');
+    if (channel) pills.push({ label: t('orders.source_' + channel, { defaultValue: channelLabel(channel) }), color: '#64748b' });
+    return pills;
+  }, [t]);
+
   const renderOrderCard = useCallback(
     ({ item }: { item: Order }) => {
       const normalizedStatus = normalizeOrderStatus(item.status);
@@ -435,15 +473,17 @@ export default function OrdersScreen() {
             item.customerName && item.orderNumber ? `#${item.orderNumber}` : '',
             itemCount > 0 ? `${itemCount} ${t('orders.items')}` : '',
           ].filter(Boolean).join(' · ')}
-          amount={total > 0 ? formatCurrency(total, item.currency || '₪') : ''}
+          details={orderDetails(item)}
+          pills={orderPills(item)}
+          amount={total > 0 ? formatCurrency(total, currencySymbol(item.currency)) : ''}
           statusLabel={getStatusLabel(normalizedStatus)}
           statusColor={getStatusColor(normalizedStatus, statuses)}
-          date={item.createdAt ? formatDate(item.createdAt) : ''}
+          date={item.createdAt ? formatDateTime(item.createdAt) : ''}
           onPress={() => openOrder(item)}
         />
       );
     },
-    [statuses, getStatusLabel, openOrder, t],
+    [statuses, getStatusLabel, openOrder, t, orderDetails, orderPills],
   );
 
   const renderKanbanCard = useCallback((item: Order) => {

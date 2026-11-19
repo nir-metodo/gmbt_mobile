@@ -29,6 +29,7 @@ import {
   fetchWhatsAppNumbers,
 } from '../../../../services/api/dashboard';
 import { PERIOD_LABEL_FALLBACK } from '../../../../utils/datePresets';
+import { ForwardChevron } from '../../../../components/ForwardChevron';
 
 type Slot<T = any> = T | null | undefined; // undefined = loading, null = nothing to show
 
@@ -84,7 +85,7 @@ function KpiCard({
         <Text numberOfLines={1} style={{ flex: 1, fontSize: 13, fontWeight: '600', color: theme.colors.onSurfaceVariant }}>
           {title}
         </Text>
-        <MaterialCommunityIcons name="chevron-left" size={16} color={theme.colors.onSurfaceVariant} />
+        <ForwardChevron size={16} color={theme.colors.onSurfaceVariant} />
       </View>
       <View style={{ flexDirection: dir, alignItems: 'baseline', gap: 4, marginTop: 8 }}>
         <Text style={{ fontSize: 28, fontWeight: '800', color: theme.colors.onSurface }}>{value}</Text>
@@ -535,7 +536,7 @@ export default function DashboardScreen() {
                   <MaterialCommunityIcons name={it.icon as any} size={20} color={it.tone === 'bad' ? '#dc2626' : '#d97706'} />
                   <Text style={{ flex: 1, fontSize: 13, color: '#1e293b' }}>{it.label}</Text>
                   <Text style={{ fontSize: 16, fontWeight: '800', color: it.tone === 'bad' ? '#dc2626' : '#d97706' }}>{fmtNum(it.count)}</Text>
-                  <MaterialCommunityIcons name="chevron-left" size={18} color="#94a3b8" />
+                  <ForwardChevron size={18} color="#94a3b8" />
                 </Pressable>
               ))
             )}

@@ -147,6 +147,7 @@ export const ENDPOINTS = {
   DOC_TEMPLATES_GET_ALL: '/api/Webhooks/DocTemplates_GetAll',
 
   // Results of web forms + document-template forms/signed documents (the "submissions" viewer)
+  WEBFORMS_GET_ALL: '/api/Webhooks/WebForms_GetAll',
   WEBFORMS_GET_SUBMISSIONS: '/api/Webhooks/WebForms_GetSubmissions',
   WEBFORMS_SUBMISSION_PDF: '/api/Webhooks/WebForms_SubmissionPdf',
   DOC_TEMPLATES_GET_SUBMISSIONS: '/api/Webhooks/DocTemplates_GetSubmissions',

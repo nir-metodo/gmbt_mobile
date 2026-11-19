@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { View, StyleSheet, FlatList, Pressable, RefreshControl, Dimensions, Alert } from 'react-native';
+import { View, StyleSheet, FlatList, Pressable, RefreshControl, Dimensions, Alert, Share, BackHandler, TextInput, ScrollView } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { Text, FAB, ActivityIndicator, Portal, Modal, Button, IconButton, Menu } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { KanbanBoard, type KanbanColumn } from '../../../../components/KanbanBoard';
@@ -23,7 +24,13 @@ import { StatusFilterBar } from '../../../../components/StatusFilterBar';
 import { SummaryHeader } from '../../../../components/SummaryHeader';
 import { DocumentListItem } from '../../../../components/DocumentListItem';
 import { EmptyState } from '../../../../components/EmptyState';
+import { useMultiSelect, SelectionHeader, BulkActionBar, type BulkAction } from '../../../../components/MultiSelect';
+import { invoicesApi } from '../../../../services/api/invoices';
+import { usersApi } from '../../../../services/api/users';
+import { sendQuoteViaGambot } from '../../../../services/quoteWhatsApp';
+import { buildQuoteHtml, joinDocuments, openPdf } from '../../../../utils/documentPdf';
 
+const MAX_PDF_DOCS = 30;
 const STATUSES = ['draft', 'sent', 'accepted', 'awaiting_payment', 'paid', 'rejected', 'expired'] as const;
 /** Quotes that still wait for the customer / payment — summed in the header. */
 const OPEN_STATUSES = ['sent', 'accepted', 'awaiting_payment'];
@@ -237,6 +244,175 @@ export default function QuotesListScreen() {
     else { setSortField(field as SortField); setSortDirection('desc'); }
   }, [sortField]);
 
+  // ── Multi-select + bulk actions (long-press a row) ──
+  const sel = useMultiSelect();
+  const clearSelection = sel.clear;
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState('');
+  const [bulkStatusOpen, setBulkStatusOpen] = useState(false);
+  const [bulkOwnerOpen, setBulkOwnerOpen] = useState(false);
+  const [orgUsers, setOrgUsers] = useState<any[]>([]);
+  const [orgUsersLoading, setOrgUsersLoading] = useState(false);
+  const [ownerSearch, setOwnerSearch] = useState('');
+  const org = user?.organization || '';
+
+  useEffect(() => {
+    if (!sel.active) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      clearSelection();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [sel.active, clearSelection]);
+  useEffect(() => { if (viewMode !== 'list') clearSelection(); }, [viewMode, clearSelection]);
+
+  const selectedQuotes = useMemo(() => quotes.filter((q) => sel.selected.has(q.id)), [quotes, sel.selected]);
+  const selectionTotal = useMemo(() => selectedQuotes.reduce((s, q) => s + (q.total || 0), 0), [selectedQuotes]);
+  const quoteUrl = useCallback((q: Quote) => `https://www.gambot.co.il/quote?org=${encodeURIComponent(org)}&id=${encodeURIComponent(q.id)}`, [org]);
+  const linksText = useCallback(
+    () => selectedQuotes
+      .map((q) => `${q.title}${q.quoteNumber ? ` #${q.quoteNumber}` : ''}${q.contactName ? ` · ${q.contactName}` : ''} · ${formatCurrency(q.total || 0, currencySymbol(q.currency))}\n${quoteUrl(q)}`)
+      .join('\n\n'),
+    [selectedQuotes, quoteUrl],
+  );
+
+  const bulkCopyLinks = useCallback(async () => {
+    await Clipboard.setStringAsync(linksText());
+    Alert.alert('הקישורים הועתקו', `${selectedQuotes.length} קישורים הועתקו ללוח`);
+  }, [linksText, selectedQuotes.length]);
+
+  const bulkShareLinks = useCallback(async () => {
+    try { await Share.share({ message: linksText() }); } catch { /* cancelled */ }
+  }, [linksText]);
+
+  const bulkPdf = useCallback(async () => {
+    if (selectedQuotes.length > MAX_PDF_DOCS) {
+      Alert.alert('PDF', `ניתן לאחד עד ${MAX_PDF_DOCS} הצעות בקובץ אחד.`);
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      setBulkProgress('מכין PDF…');
+      const branding = await invoicesApi.getBranding(org).catch(() => null);
+      await openPdf(org, joinDocuments(selectedQuotes.map((q) => buildQuoteHtml(q, branding))), `quotes_${selectedQuotes.length}`);
+      clearSelection();
+    } catch (e: any) {
+      Alert.alert('שגיאה', e?.message || 'יצירת ה-PDF נכשלה');
+    } finally {
+      setBulkProgress('');
+      setBulkBusy(false);
+    }
+  }, [selectedQuotes, org, clearSelection]);
+
+  const bulkSetStatus = useCallback(async (status: string) => {
+    setBulkStatusOpen(false);
+    const targets = selectedQuotes.filter((q) => q.status !== status);
+    if (targets.length === 0) return;
+    setBulkBusy(true);
+    const errors: string[] = [];
+    let ok = 0;
+    for (let i = 0; i < targets.length; i++) {
+      setBulkProgress(`מעדכן ${i + 1}/${targets.length}`);
+      try {
+        await quotesApi.update(org, { id: targets[i].id, status: status as any }, user?.uID || user?.userId, user?.fullname);
+        ok++;
+      } catch (e: any) {
+        errors.push(`${targets[i].title}: ${e?.message || 'שגיאה'}`);
+      }
+    }
+    setBulkProgress('');
+    setBulkBusy(false);
+    clearSelection();
+    fetchQuotes();
+    Alert.alert(`עודכנו ${ok} מתוך ${targets.length}`, errors.slice(0, 4).join('\n') || undefined);
+  }, [selectedQuotes, org, user, clearSelection, fetchQuotes]);
+
+  // Transfer ownership = change the quote's salesperson for every selected quote.
+  const openOwnerPicker = useCallback(async () => {
+    setOwnerSearch('');
+    setBulkOwnerOpen(true);
+    if (orgUsers.length === 0 && org) {
+      setOrgUsersLoading(true);
+      try { setOrgUsers(await usersApi.getAll(org)); } catch { setOrgUsers([]); }
+      finally { setOrgUsersLoading(false); }
+    }
+  }, [orgUsers.length, org]);
+
+  const bulkSetOwner = useCallback(async (userId: string, userName: string) => {
+    setBulkOwnerOpen(false);
+    const targets = selectedQuotes.filter((q) => (q as any).salespersonId !== userId);
+    if (targets.length === 0) { Alert.alert('העברת בעלות', 'כל ההצעות שנבחרו כבר שייכות ל' + userName); return; }
+    setBulkBusy(true);
+    const errors: string[] = [];
+    let ok = 0;
+    for (let i = 0; i < targets.length; i++) {
+      setBulkProgress(`מעביר ${i + 1}/${targets.length}`);
+      try {
+        await quotesApi.update(org, { id: targets[i].id, salespersonId: userId, salespersonName: userName } as any, user?.uID || user?.userId, user?.fullname);
+        ok++;
+      } catch (e: any) {
+        errors.push(`${targets[i].title}: ${e?.message || 'שגיאה'}`);
+      }
+    }
+    setBulkProgress('');
+    setBulkBusy(false);
+    clearSelection();
+    fetchQuotes();
+    Alert.alert(`הועברו ${ok} הצעות ל${userName}`, errors.slice(0, 4).join('\n') || undefined);
+  }, [selectedQuotes, org, user, clearSelection, fetchQuotes]);
+
+  const bulkWhatsApp = useCallback(() => {
+    const withPhone = selectedQuotes.filter((q) => !!(q.phoneNumber || q.contactPhone));
+    if (withPhone.length === 0) {
+      Alert.alert('שליחה בוואטסאפ', 'לאף אחד מהלקוחות שנבחרו אין מספר טלפון.');
+      return;
+    }
+    const skipped = selectedQuotes.length - withPhone.length;
+    Alert.alert(
+      `שליחה ל-${withPhone.length} לקוחות`,
+      `כל לקוח יקבל את הצעת המחיר שלו בוואטסאפ (בהודעה רגילה, או בתבנית כשהשיחה סגורה). הצעות בסטטוס טיוטה יסומנו כ"נשלחה".${skipped ? `\n${skipped} הצעות ידולגו (אין טלפון).` : ''}`,
+      [
+        { text: 'ביטול', style: 'cancel' },
+        {
+          text: 'שלח',
+          onPress: async () => {
+            setBulkBusy(true);
+            let viaTemplate = 0;
+            let ok = 0;
+            const errors: string[] = [];
+            for (let i = 0; i < withPhone.length; i++) {
+              setBulkProgress(`שולח ${i + 1}/${withPhone.length}`);
+              try {
+                const mode = await sendQuoteViaGambot(user, withPhone[i]);
+                if (mode === 'template') viaTemplate++;
+                ok++;
+              } catch (e: any) {
+                errors.push(`${withPhone[i].title}: ${e?.message || 'שגיאה'}`);
+              }
+            }
+            setBulkProgress('');
+            setBulkBusy(false);
+            clearSelection();
+            fetchQuotes();
+            Alert.alert(
+              `נשלחו ${ok} מתוך ${withPhone.length}`,
+              [viaTemplate ? `${viaTemplate} נשלחו בתבנית (שיחה סגורה)` : '', errors.length ? `\nלא הצליחו:\n${errors.slice(0, 4).join('\n')}${errors.length > 4 ? `\n…ועוד ${errors.length - 4}` : ''}` : ''].filter(Boolean).join('\n') || undefined,
+            );
+          },
+        },
+      ],
+    );
+  }, [selectedQuotes, user, clearSelection, fetchQuotes]);
+
+  const bulkActions = useMemo<BulkAction[]>(() => [
+    { key: 'wa', icon: 'whatsapp', label: 'וואטסאפ', onPress: bulkWhatsApp, color: '#16a34a' },
+    { key: 'status', icon: 'swap-horizontal', label: 'שנה סטטוס', onPress: () => setBulkStatusOpen(true), color: '#7c3aed' },
+    { key: 'owner', icon: 'account-arrow-right', label: 'העבר בעלות', onPress: openOwnerPicker, color: '#0284c7' },
+    { key: 'copy', icon: 'link-variant', label: 'העתק קישורים', onPress: bulkCopyLinks },
+    { key: 'share', icon: 'share-variant', label: 'שתף', onPress: bulkShareLinks },
+    { key: 'pdf', icon: 'file-pdf-box', label: 'PDF אחד', onPress: bulkPdf, color: '#dc2626' },
+  ], [bulkWhatsApp, openOwnerPicker, bulkCopyLinks, bulkShareLinks, bulkPdf]);
+
   // ── Kanban (board view) ──
   const kanbanColumns = useMemo<KanbanColumn<Quote>[]>(() => {
     const grouped: Record<string, Quote[]> = {};
@@ -274,11 +450,14 @@ export default function QuotesListScreen() {
             : formatDate(item.createdOn || item.createdAt || '')}
           dateWarning={expired}
           viewCount={item.viewCount}
-          onPress={() => openQuote(item)}
+          selecting={sel.active}
+          selected={sel.active && sel.isSelected(item.id)}
+          onLongPress={() => sel.start(item.id)}
+          onPress={() => (sel.active ? sel.toggle(item.id) : openQuote(item))}
         />
       );
     },
-    [openQuote, t],
+    [openQuote, t, sel.active, sel.isSelected, sel.toggle, sel.start],
   );
 
   const renderEmpty = useCallback(() => {
@@ -312,18 +491,43 @@ export default function QuotesListScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.colors.background }]}>
+      {sel.active ? (
+        <>
+          <SelectionHeader
+            count={sel.count}
+            total={filteredAndSorted.length}
+            onClose={clearSelection}
+            onSelectAll={() => sel.selectAll(filteredAndSorted.map((q) => q.id))}
+            label="נבחרו"
+          />
+          <View style={[styles.selStrip, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.outlineVariant }]}>
+            <Text style={{ color: theme.colors.onSurface, fontWeight: '700', fontSize: 13 }}>{'סה"כ '}{formatCurrency(selectionTotal)}</Text>
+            {bulkProgress ? <Text style={{ color: theme.colors.primary, fontWeight: '700', fontSize: 13 }}>{bulkProgress}</Text> : null}
+          </View>
+        </>
+      ) : (
       <ScreenHeader
         title={t('quotes.title')}
         onBack={() => router.back()}
         actions={
-          <IconButton
-            icon={viewMode === 'list' ? 'view-column' : 'view-list'}
-            iconColor={theme.custom.headerText}
-            size={22}
-            onPress={() => setViewMode((v) => (v === 'list' ? 'kanban' : 'list'))}
-          />
+          <>
+            <IconButton
+              icon="chart-box-outline"
+              iconColor={theme.custom.headerText}
+              size={22}
+              accessibilityLabel="נתונים"
+              onPress={() => router.push({ pathname: '/(tabs)/more/dashboard/detail', params: { entity: 'quotes' } } as any)}
+            />
+            <IconButton
+              icon={viewMode === 'list' ? 'view-column' : 'view-list'}
+              iconColor={theme.custom.headerText}
+              size={22}
+              onPress={() => setViewMode((v) => (v === 'list' ? 'kanban' : 'list'))}
+            />
+          </>
         }
       />
+      )}
 
       <ListToolbar
         query={searchQuery}
@@ -441,12 +645,14 @@ export default function QuotesListScreen() {
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[theme.colors.primary]} tintColor={theme.colors.primary} />
           }
-          contentContainerStyle={[styles.listContent, filteredAndSorted.length === 0 && styles.listContentEmpty]}
+          extraData={sel.selected}
+          contentContainerStyle={[styles.listContent, filteredAndSorted.length === 0 && styles.listContentEmpty, sel.active && { paddingBottom: 120 + insets.bottom }]}
           ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
           showsVerticalScrollIndicator={false}
         />
       )}
 
+      {sel.active ? <BulkActionBar actions={bulkActions} busy={bulkBusy} /> : (
       <FAB
         icon="plus"
         onPress={createQuote}
@@ -454,9 +660,73 @@ export default function QuotesListScreen() {
         color="#FFFFFF"
         label={t('quotes.addQuote')}
       />
+      )}
 
       {/* Long-press on a board card → quick status change */}
       <Portal>
+        <Modal
+          visible={bulkOwnerOpen}
+          onDismiss={() => setBulkOwnerOpen(false)}
+          contentContainerStyle={[styles.statusPickerModal, { backgroundColor: theme.colors.surface, maxHeight: '75%' }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}>
+            {'העבר בעלות — '}{sel.count}{' הצעות'}
+          </Text>
+          <TextInput
+            value={ownerSearch}
+            onChangeText={setOwnerSearch}
+            placeholder="חפש משתמש…"
+            placeholderTextColor={theme.colors.onSurfaceVariant}
+            style={{ borderWidth: 1, borderColor: theme.colors.outline, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 8, color: theme.colors.onSurface, textAlign }}
+          />
+          <ScrollView keyboardShouldPersistTaps="handled">
+            {orgUsersLoading ? <ActivityIndicator style={{ marginVertical: 16 }} color={theme.colors.primary} /> : null}
+            {orgUsers
+              .filter((u) => !ownerSearch.trim() || String(u.fullname || u.userName || '').toLowerCase().includes(ownerSearch.trim().toLowerCase()))
+              .map((u) => {
+                const name = u.fullname || u.userName || u.email || '';
+                const isMe = (u.uID || u.userId) === (user?.uID || user?.userId);
+                return (
+                  <Pressable
+                    key={u.uID || u.id}
+                    onPress={() => bulkSetOwner(u.uID || u.id, name)}
+                    style={({ pressed }) => [styles.statusPickerOption, { backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent' }]}
+                  >
+                    <MaterialCommunityIcons name="account-circle-outline" size={20} color={theme.colors.primary} />
+                    <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface }}>{name}{isMe ? ' (אני)' : ''}</Text>
+                  </Pressable>
+                );
+              })}
+          </ScrollView>
+          <Button mode="text" onPress={() => setBulkOwnerOpen(false)} style={{ marginTop: 8 }} textColor={theme.colors.onSurfaceVariant}>
+            {t('common.cancel')}
+          </Button>
+        </Modal>
+        <Modal
+          visible={bulkStatusOpen}
+          onDismiss={() => setBulkStatusOpen(false)}
+          contentContainerStyle={[styles.statusPickerModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '700', marginBottom: 12 }}>
+            {'שנה סטטוס ל-'}{sel.count}{' הצעות'}
+          </Text>
+          {STATUSES.map((status) => {
+            const color = getStatusColor(status);
+            return (
+              <Pressable
+                key={status}
+                onPress={() => bulkSetStatus(status)}
+                style={({ pressed }) => [styles.statusPickerOption, { backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent' }]}
+              >
+                <MaterialCommunityIcons name={(STATUS_ICONS[status] || 'file-document') as any} size={18} color={color} />
+                <Text variant="bodyMedium" style={{ flex: 1, color: theme.colors.onSurface }}>{t(`quotes.${status}`)}</Text>
+              </Pressable>
+            );
+          })}
+          <Button mode="text" onPress={() => setBulkStatusOpen(false)} style={{ marginTop: 8 }} textColor={theme.colors.onSurfaceVariant}>
+            {t('common.cancel')}
+          </Button>
+        </Modal>
         <Modal
           visible={!!statusPickerQuote}
           onDismiss={() => setStatusPickerQuote(null)}
@@ -506,6 +776,7 @@ const styles = StyleSheet.create({
   listContent: { padding: 14, paddingBottom: 100 },
   listContentEmpty: { flexGrow: 1 },
   fab: { position: 'absolute', borderRadius: 16 },
+  selStrip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth },
   activeDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4 },
   errorBanner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
   kanbanCard: {

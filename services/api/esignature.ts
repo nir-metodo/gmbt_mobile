@@ -106,7 +106,8 @@ export const esignatureApi = {
   // List document templates available in the org. If any template is explicitly flagged for
   // signature use (useForSignature / signatureEnabled), we return only those; otherwise all
   // templates are returned — mirroring the web e-signature editor which lists every template.
-  async getDocumentTemplates(organization: string): Promise<DocumentTemplate[]> {
+  // ll skips the signature-flag filter (a fill-in form link works for any template).
+  async getDocumentTemplates(organization: string, all = false): Promise<DocumentTemplate[]> {
     const response = await axiosInstance.post(ENDPOINTS.DOC_TEMPLATES_GET_ALL, { organization });
     const raw = response.data;
     const items: any[] = raw?.Data ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
@@ -119,7 +120,7 @@ export const esignatureApi = {
       signatureEnabled: t.signatureEnabled ?? t.SignatureEnabled,
     })).filter((t) => t.id);
     const flagged = mapped.filter((t) => t.useForSignature === true || t.signatureEnabled === true);
-    return flagged.length > 0 ? flagged : mapped;
+    return !all && flagged.length > 0 ? flagged : mapped;
   },
 
   // Create a signature request straight from a document template (no manual field placement —
@@ -136,6 +137,9 @@ export const esignatureApi = {
     userId?: string;
     userName?: string;
     requiresSequentialSigning?: boolean;
+    /** Standalone fill-in form link (no signature) — the response carries ormUrl. */
+    fillOnly?: boolean;
+    variables?: Record<string, string>;
   }): Promise<any> {
     const response = await axiosInstance.post(ENDPOINTS.ESIGNATURE_CREATE_FROM_TEMPLATE, payload);
     return response.data;

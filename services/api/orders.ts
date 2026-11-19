@@ -31,7 +31,19 @@ export interface Order {
   updatedAt?: string;
   shippingAddress?: string;
   paymentMethod?: string;
+  /** The backend stores the creation time as `createdOn` (the web reads that field). */
+  createdOn?: string;
+  salesChannel?: string;
+  trackingNumber?: string;
+  shippingCarrier?: string;
+  assignedTo?: string;
+  paymentStatus?: string;
+  isPaid?: boolean;
 }
+
+/** Orders are saved with `createdOn`; the screens read `createdAt` — without this the list had no date and the date sort did nothing. */
+const withCreatedAt = <T extends { createdAt?: string; createdOn?: string }>(o: T): T =>
+  o && !o.createdAt && o.createdOn ? { ...o, createdAt: o.createdOn } : o;
 
 export interface OrderNote {
   id?: string;
@@ -93,7 +105,7 @@ export const ordersApi = {
     });
     const raw = response.data;
     const items = raw?.orders || raw?.Orders || raw?.data || raw?.Data || (Array.isArray(raw) ? raw : []);
-    return Array.isArray(items) ? items : [];
+    return Array.isArray(items) ? items.map(withCreatedAt) : [];
   },
 
   async getById(organization: string, orderId: string): Promise<Order | null> {
@@ -101,7 +113,8 @@ export const ordersApi = {
       organization,
       orderId,
     });
-    return response.data?.order || response.data?.Order || response.data || null;
+    const found = response.data?.order || response.data?.Order || response.data || null;
+    return found ? withCreatedAt(found) : null;
   },
 
   async create(organization: string, order: Partial<Order> & { customerName?: string; discount?: number; isPaid?: boolean; orderNumber?: string; dynamicData?: Record<string, any> }, userId?: string, userName?: string): Promise<any> {

@@ -68,7 +68,7 @@ const WEEKDAYS_HE = ['א׳', 'ב׳', 'ג׳', 'ד׳', 'ה׳', 'ו׳', 'ש׳'];
 const WEEKDAYS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export default function WaCreateScreen() {
-  const { duplicateFrom, editId: editParam } = useLocalSearchParams<{ duplicateFrom?: string; editId?: string }>();
+  const { duplicateFrom, editId: editParam, templateId: templateParam } = useLocalSearchParams<{ duplicateFrom?: string; editId?: string; templateId?: string }>();
   const duplicateId = duplicateFrom ? String(duplicateFrom) : '';
   const editId = editParam ? String(editParam) : '';
   const sourceId = editId || duplicateId;
@@ -171,6 +171,7 @@ export default function WaCreateScreen() {
         setColumns(cols);
         const primary = nums.find((n) => n.IsPrimary) || nums[0];
         setFromNumberId(src?.fromNumberId || primary?.PhoneNumberId || '');
+        if (!src && templateParam && tpls.some((t) => templateKey(t) === String(templateParam))) setTplId(String(templateParam));
         if (src) {
           setSource(src);
           setName(isEdit ? String(src.campaignName || '') : `${src.campaignName || ''} ${L('(עותק)', '(copy)')}`.trim());

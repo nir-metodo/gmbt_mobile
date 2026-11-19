@@ -187,7 +187,7 @@ export async function fetchOrgUsers(org: string): Promise<{ id: string; name: st
 
 // ── Drill-down (time-range aware breakdowns) ─────────────────────────────────────────────────────
 
-export type DrillEntity = 'cases' | 'leads' | 'contacts' | 'messages' | 'tasks' | 'orders';
+export type DrillEntity = 'cases' | 'leads' | 'contacts' | 'messages' | 'tasks' | 'orders' | 'quotes' | 'invoices';
 
 export interface DrillParams {
   org: string;

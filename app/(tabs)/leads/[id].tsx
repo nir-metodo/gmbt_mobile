@@ -30,6 +30,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useLeadStore } from '../../../stores/leadStore';
 import { useAuthStore } from '../../../stores/authStore';
+import { sendDocAndAlert } from '../../../utils/sendDocAlert';
 import { placeSmartCall } from '../../../utils/phoneCall';
 import { contactsApi } from '../../../services/api/contacts';
 import axiosInstance from '../../../services/api/axiosInstance';
@@ -41,6 +42,7 @@ import type { LeadFieldConfig } from '../../../services/api/leads';
 import { chatsApi } from '../../../services/api/chats';
 import { quotesApi } from '../../../services/api/quotes';
 import { paymentsApi } from '../../../services/api/payments';
+import PaymentFormSheet from '../../../components/PaymentFormSheet';
 import { askWonDeal, isWonStage, type WonDeal } from '../../../utils/wonDeal';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
@@ -268,12 +270,6 @@ export default function LeadDetailScreen() {
   // Payment / clearing state
   const [clearingEnabled, setClearingEnabled] = useState(false);
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentDescription, setPaymentDescription] = useState('');
-  const [paymentInstallments, setPaymentInstallments] = useState(1);
-  const [paymentLoading, setPaymentLoading] = useState(false);
-  const [paymentResult, setPaymentResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
-
   // Stage transition effects
   const [wonCelebration, setWonCelebration] = useState<{ title: string; value?: number | string } | null>(null);
   const [autoQuotePrompt, setAutoQuotePrompt] = useState<{ lead: Lead; config: NonNullable<LeadStage['autoQuote']> } | null>(null);
@@ -770,45 +766,8 @@ export default function LeadDetailScreen() {
   }, [organization, lead, noteText, noteAttachment, user, t, fetchLeadTimeline]);
 
   const handleOpenPayment = useCallback(() => {
-    setPaymentAmount(lead?.value?.toString() || '');
-    setPaymentDescription(lead?.title || '');
-    setPaymentInstallments(1);
-    setPaymentResult(null);
     setPaymentModalVisible(true);
-  }, [lead]);
-
-  const handleCreatePaymentLink = useCallback(async () => {
-    if (!organization || !lead) return;
-    const amt = parseFloat(paymentAmount);
-    if (!amt || amt <= 0) {
-      Alert.alert(t('common.error'), t('payments.enterAmount', 'Please enter an amount'));
-      return;
-    }
-    setPaymentLoading(true);
-    try {
-      const res = await paymentsApi.createPaymentLink(organization, {
-        amount: amt,
-        description: paymentDescription,
-        customerName: lead.contactName || '',
-        customerPhone: lead.contactPhone || lead.phoneNumber || '',
-        entityType: 'lead',
-        entityId: lead.id,
-        payments: paymentInstallments,
-      });
-      if (res.success) {
-        setPaymentResult({
-          success: true,
-          url: res.gambotPaymentUrl || res.paymentUrl,
-        });
-      } else {
-        setPaymentResult({ success: false, error: res.error || t('common.error') });
-      }
-    } catch (err: any) {
-      setPaymentResult({ success: false, error: err?.message || t('common.error') });
-    } finally {
-      setPaymentLoading(false);
-    }
-  }, [organization, lead, paymentAmount, paymentDescription, paymentInstallments, t]);
+  }, []);
 
   const handleSave = useCallback(async (): Promise<boolean> => {
     if (!organization) return false;
@@ -2510,211 +2469,25 @@ export default function LeadDetailScreen() {
           </KeyboardAvoidingView>
       </Modal>
 
-      {/* Payment Modal */}
-      <Modal
+      {/* Payment — same form as the web; takes the lead's products as items */}
+      <PaymentFormSheet
         visible={paymentModalVisible}
-        transparent
-          animationType="fade"
-          onRequestClose={() => setPaymentModalVisible(false)}
-        >
-          <Pressable
-            style={styles.stagePickerOverlay}
-            onPress={() => setPaymentModalVisible(false)}
-          >
-            <Pressable
-              onPress={(e) => e.stopPropagation()}
-              style={[
-                styles.stagePickerSheet,
-                { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 16 },
-              ]}
-            >
-              <View style={[{ flexDirection, alignItems: 'center', gap: 8, marginBottom: 16 }]}>
-                <MaterialCommunityIcons name="credit-card-outline" size={22} color="#2e6155" />
-                <Text
-                  variant="titleMedium"
-                  style={{ color: theme.colors.onSurface, fontWeight: '700', flex: 1, textAlign }}
-                >
-                  {t('payments.chargePayment', 'סליקה ותשלומים')}
-                </Text>
-              </View>
-
-              {paymentResult?.success ? (
-                <View style={{ alignItems: 'center', paddingVertical: 12 }}>
-                  <MaterialCommunityIcons name="check-circle" size={56} color="#16a34a" />
-                  <Text variant="titleMedium" style={{ color: '#16a34a', fontWeight: '700', marginTop: 8, textAlign: 'center' }}>
-                    {t('payments.linkCreated', 'לינק תשלום נוצר!')}
-                  </Text>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, textAlign: 'center' }}>
-                    {t('payments.amount', 'סכום')}: ₪{parseFloat(paymentAmount).toFixed(2)}
-                  </Text>
-                  {paymentResult.url ? (
-                    <Pressable
-                      onPress={() => {
-                        if (paymentResult.url) Linking.openURL(paymentResult.url);
-                      }}
-                      style={{
-                        marginTop: 12,
-                        paddingHorizontal: 16,
-                        paddingVertical: 10,
-                        backgroundColor: '#f0fdf4',
-                        borderWidth: 1,
-                        borderColor: '#bbf7d0',
-                        borderRadius: 10,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                      }}
-                    >
-                      <MaterialCommunityIcons name="open-in-new" size={16} color="#2e6155" />
-                      <Text variant="bodySmall" style={{ color: '#2e6155', fontWeight: '600' }}>
-                        {t('payments.openLink', 'פתח קישור תשלום')}
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                  {paymentResult.url && (lead?.contactPhone || lead?.phoneNumber) ? (
-                    <Pressable
-                      onPress={() => {
-                        const phone = lead?.contactPhone || lead?.phoneNumber || '';
-                        const text = encodeURIComponent(
-                          `${t('common.hello', 'שלום')} ${lead?.contactName || ''},\n${t('payments.paymentLink', 'קישור לתשלום')}:\n${paymentResult.url}\n${t('payments.amount', 'סכום')}: ₪${parseFloat(paymentAmount).toFixed(2)}`
-                        );
-                        Linking.openURL(`whatsapp://send?phone=${phone}&text=${text}`);
-                      }}
-                      style={{
-                        marginTop: 8,
-                        paddingHorizontal: 16,
-                        paddingVertical: 10,
-                        backgroundColor: '#25D366',
-                        borderRadius: 10,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                      }}
-                    >
-                      <MaterialCommunityIcons name="whatsapp" size={16} color="#FFF" />
-                      <Text variant="bodySmall" style={{ color: '#FFF', fontWeight: '600' }}>
-                        {t('payments.sendWhatsApp', 'שלח בוואטסאפ')}
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                  <View style={[styles.modalActions, { flexDirection, marginTop: 16 }]}>
-                    <Button
-                      mode="outlined"
-                      onPress={() => { setPaymentResult(null); }}
-                      style={styles.addTaskModalBtn}
-                      textColor={theme.colors.onSurface}
-                    >
-                      {t('payments.newPayment', 'תשלום נוסף')}
-                    </Button>
-                    <Button
-                      mode="contained"
-                      onPress={() => setPaymentModalVisible(false)}
-                      style={[styles.addTaskModalBtn, { backgroundColor: '#2e6155' }]}
-                      textColor="#FFFFFF"
-                    >
-                      {t('common.close', 'סגור')}
-                    </Button>
-                  </View>
-                </View>
-              ) : (
-                <>
-                  {paymentResult?.error ? (
-                    <View style={{ padding: 10, backgroundColor: '#fef2f2', borderRadius: 8, marginBottom: 12 }}>
-                      <Text variant="bodySmall" style={{ color: '#991b1b' }}>{paymentResult.error}</Text>
-                    </View>
-                  ) : null}
-
-                  {lead?.contactName ? (
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, textAlign }}>
-                      {t('payments.customer', 'לקוח')}: <Text style={{ fontWeight: '600', color: theme.colors.onSurface }}>{lead.contactName}</Text>
-                      {lead.contactPhone || lead.phoneNumber ? ` • ${lead.contactPhone || lead.phoneNumber}` : ''}
-                    </Text>
-                  ) : null}
-
-                  <FormField
-                    label={t('payments.amount', 'סכום (₪)')}
-                    value={paymentAmount}
-                    onChangeText={setPaymentAmount}
-                    theme={theme}
-                    textAlign={textAlign}
-                    writingDirection={writingDirection}
-                    keyboardType="numeric"
-                    placeholder="0.00"
-                  />
-
-                  <FormField
-                    label={t('payments.description', 'תיאור')}
-                    value={paymentDescription}
-                    onChangeText={setPaymentDescription}
-                    theme={theme}
-                    textAlign={textAlign}
-                    writingDirection={writingDirection}
-                    placeholder={t('payments.descPlaceholder', 'תיאור העסקה')}
-                  />
-
-                  <Text
-                    variant="labelMedium"
-                    style={{ color: theme.colors.onSurfaceVariant, marginBottom: 6, textAlign }}
-                  >
-                    {t('payments.installments', 'תשלומים')}
-                  </Text>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={[styles.formStageRow, { flexDirection }]}
-                  >
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => {
-                      const isSelected = paymentInstallments === n;
-                      return (
-                        <Chip
-                          key={n}
-                          selected={isSelected}
-                          onPress={() => setPaymentInstallments(n)}
-                          compact
-                          style={[
-                            styles.formStageChip,
-                            isSelected
-                              ? { backgroundColor: withAlpha('#2e6155', 0.145), borderColor: '#2e6155', borderWidth: 1 }
-                              : { backgroundColor: theme.colors.surfaceVariant },
-                          ]}
-                          textStyle={{
-                            fontSize: 12,
-                            color: isSelected ? '#2e6155' : theme.colors.onSurfaceVariant,
-                            fontWeight: isSelected ? '600' : '400',
-                          }}
-                        >
-                          {n === 1 ? (t('payments.onePayment', '1') ) : `${n}`}
-                        </Chip>
-                      );
-                    })}
-                  </ScrollView>
-
-                  <View style={[styles.modalActions, { flexDirection, marginTop: 16 }]}>
-                    <Button
-                      mode="outlined"
-                      onPress={() => setPaymentModalVisible(false)}
-                      style={styles.addTaskModalBtn}
-                      textColor={theme.colors.onSurface}
-                    >
-                      {t('common.cancel')}
-                    </Button>
-                    <Button
-                      mode="contained"
-                      onPress={handleCreatePaymentLink}
-                      loading={paymentLoading}
-                      disabled={paymentLoading}
-                      style={[styles.addTaskModalBtn, { backgroundColor: '#2e6155' }]}
-                      textColor="#FFFFFF"
-                      icon="link-variant"
-                    >
-                      {t('payments.createLink', 'צור לינק תשלום')}
-                    </Button>
-                  </View>
-                </>
-              )}
-            </Pressable>
-          </Pressable>
-      </Modal>
+        onDismiss={() => setPaymentModalVisible(false)}
+        user={user}
+        entityType="lead"
+        entityId={lead?.id}
+        amount={lead?.value?.toString() || ''}
+        description={lead?.title || ''}
+        customerName={lead?.contactName || ''}
+        customerPhone={lead?.contactPhone || lead?.phoneNumber || ''}
+        customerEmail={(lead as any)?.email || (lead as any)?.contactEmail || ''}
+        items={((lead as any)?.interestedProducts || []).map((pr: any) => ({
+          name: pr.name || pr.productName || '',
+          unitPrice: Number(pr.unitPrice ?? pr.price) || 0,
+          quantity: Number(pr.quantity) || 1,
+          sku: pr.sku || pr.productId || undefined,
+        }))}
+      />
 
       {/* Won Celebration Overlay */}
       <Modal

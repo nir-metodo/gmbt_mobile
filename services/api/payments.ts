@@ -61,6 +61,8 @@ export interface Transaction {
   lastViewedAt?: string;
 }
 
+import { invalidateOpenDocs } from '../../utils/openDocs';
+
 export const paymentsApi = {
   async getClearingSettings(organization: string): Promise<ClearingSettings | null> {
     try {
@@ -91,6 +93,14 @@ export const paymentsApi = {
       entityType?: string;
       entityId?: string;
       payments?: number;
+      /** Line items (name / unitPrice / quantity) — shown on the payment page and used for the invoice. */
+      items?: Array<{ name: string; unitPrice: number; quantity: number; sku?: string; image?: string }>;
+      /** The amount already includes VAT (default). When false the caller must have added the VAT to `amount`. */
+      vatInclusive?: boolean;
+      /** The record shown in the "linked record" column (contact / lead). Defaults to the lead when entityType is 'lead'. */
+      linkedRecordType?: string;
+      linkedRecordId?: string;
+      linkedRecordName?: string;
     },
   ): Promise<PaymentLinkResult> {
     const response = await axiosInstance.post(ENDPOINTS.CREATE_PAYMENT_LINK, {
@@ -103,10 +113,13 @@ export const paymentsApi = {
       entityType: params.entityType || '',
       entityId: params.entityId || '',
       payments: params.payments || 1,
-      linkedRecordType: params.entityType === 'lead' ? 'lead' : '',
-      linkedRecordId: params.entityType === 'lead' ? params.entityId : '',
-      linkedRecordName: params.customerName || '',
+      linkedRecordType: params.linkedRecordType ?? (params.entityType === 'lead' ? 'lead' : ''),
+      linkedRecordId: params.linkedRecordId ?? (params.entityType === 'lead' ? params.entityId : ''),
+      linkedRecordName: params.linkedRecordName ?? (params.customerName || ''),
+      items: params.items && params.items.length > 0 ? params.items : undefined,
+      vatInclusive: params.vatInclusive,
     });
+    invalidateOpenDocs(organization);
     return response.data;
   },
 

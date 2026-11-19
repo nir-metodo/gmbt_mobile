@@ -3,6 +3,7 @@ package com.gambot.callevents
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 
 /**
@@ -32,6 +33,11 @@ class BootReceiver : BroadcastReceiver() {
     } catch (e: Exception) {
       Log.e("GambotCallEvents", "BootReceiver scheduler failed: ${e.message}")
     }
+    // Android 15+ forbids starting a dataSync foreground service from a BOOT_COMPLETED receiver (Play Console
+    // "restricted foreground service types at boot"). After a reboot the WorkManager jobs above bring it back instead.
+    val isBoot = action == Intent.ACTION_BOOT_COMPLETED || action == "android.intent.action.QUICKBOOT_POWERON"
+    if (isBoot && Build.VERSION.SDK_INT >= 35) return
+
     // Best-effort: also try the always-on foreground service (may be blocked from background on
     // newer Android when triggered by an update — the WorkManager backup above covers that case).
     try {

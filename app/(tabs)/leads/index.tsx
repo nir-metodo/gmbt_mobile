@@ -30,9 +30,11 @@ import { ENDPOINTS } from '../../../constants/api';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
+import { useRowDirection } from '../../../hooks/useRowDirection';
 import { getDataVisibility } from '../../../constants/permissions';
 import { formatCurrency, formatDate, formatRelativeTime, getInitials, withAlpha } from '../../../utils/formatters';
 import { placeSmartCall } from '../../../utils/phoneCall';
+import { loadQuoteCatalog, buildQuoteItemsFromProducts, quoteItemTotals } from '../../../utils/quoteCatalogLines';
 import { spacing, borderRadius } from '../../../constants/theme';
 import type { Lead, LeadStage } from '../../../types';
 
@@ -327,6 +329,8 @@ export default function LeadsListScreen() {
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
+  // Header bar only: title on the right, actions on the left (flexDirection above would flip it under native RTL).
+  const headerDirection = useRowDirection();
   const { t } = useTranslation();
   // Inline he/en strings for the new UI (no i18n file changes).
   const tr = useCallback((he: string, en: string) => (isRTL ? he : en), [isRTL]);
@@ -1764,12 +1768,12 @@ export default function LeadsListScreen() {
       <View
         style={[
           styles.header,
-          { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top, flexDirection },
+          { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top, flexDirection: headerDirection },
         ]}
       >
         <Text style={styles.headerTitle}>{t('leads.title')}</Text>
 
-        <View style={[styles.segment, { flexDirection }]}>
+        <View style={[styles.segment, { flexDirection: headerDirection }]}>
           {([
             { key: 'list' as const, icon: 'format-list-bulleted', label: tr('רשימה', 'List') },
             { key: 'pipeline' as const, icon: 'view-column-outline', label: tr('לוח', 'Board') },
@@ -1790,7 +1794,7 @@ export default function LeadsListScreen() {
           })}
         </View>
 
-        <View style={[styles.headerActions, { flexDirection }]}>
+        <View style={[styles.headerActions, { flexDirection: headerDirection }]}>
           <Pressable
             onPress={() => setAdvancedFilterVisible(true)}
             hitSlop={8}
@@ -1816,6 +1820,11 @@ export default function LeadsListScreen() {
               </Pressable>
             }
           >
+            <Menu.Item
+              leadingIcon="chart-box-outline"
+              title={tr('נתונים', 'Analytics')}
+              onPress={() => { setMoreMenuVisible(false); router.push({ pathname: '/(tabs)/more/dashboard/detail', params: { entity: 'leads' } } as any); }}
+            />
             <Menu.Item
               leadingIcon="bookmark-plus-outline"
               title={tr('שמור תצוגה נוכחית', 'Save current view')}

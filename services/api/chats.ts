@@ -480,10 +480,11 @@ export const chatsApi = {
     return Array.isArray(raw) ? raw : raw?.Data || raw?.data || [];
   },
 
-  async getConversationExpiration(organization: string, phoneNumber: string): Promise<string | null> {
+  async getConversationExpiration(organization: string, phoneNumber: string, fromNumberId?: string): Promise<string | null> {
     const response = await axiosInstance.post(ENDPOINTS.GET_CONVERSATION_EXPIRATION, {
       organization,
       phoneNumber,
+      ...(fromNumberId ? { fromNumberId } : {}),
     });
     const data = response.data;
     if (data && typeof data === 'string' && data.trim()) return data.trim();

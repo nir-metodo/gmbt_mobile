@@ -1060,6 +1060,11 @@ export default function CasesListScreen() {
               }
             >
               <Menu.Item
+                leadingIcon="chart-box-outline"
+                title={tr('נתונים', 'Analytics')}
+                onPress={() => { setMoreMenuVisible(false); router.push({ pathname: '/(tabs)/more/dashboard/detail', params: { entity: 'cases' } } as any); }}
+              />
+              <Menu.Item
                 leadingIcon="bookmark-plus-outline"
                 title={tr('שמור תצוגה נוכחית', 'Save current view')}
                 onPress={() => { setMoreMenuVisible(false); setShowSaveViewModal(true); }}

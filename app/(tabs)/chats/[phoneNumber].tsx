@@ -59,6 +59,7 @@ import {
   conversationStatusColors,
 } from '../../../utils/conversationStatus';
 import { numId, numLabel, numIsPrimary, getPrimaryNumberId, inferMessageNumberId } from '../../../utils/wabaNumbers';
+import { getCurrentPath } from '../../../utils/navOrigin';
 
 import WebSocketService from '../../../services/websocket';
 import { MessageBubble } from '../../../components/chat/MessageBubble';
@@ -68,6 +69,8 @@ import { MediaTitleSheet } from '../../../components/chat/MediaTitleSheet';
 import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
 import ForwardMessageSheet from '../../../components/chat/ForwardMessageSheet';
 import AddTaskSheet from '../../../components/AddTaskSheet';
+import SendPaymentLinkSheet from '../../../components/SendPaymentLinkSheet';
+import OpenDocsChips from '../../../components/OpenDocsChips';
 import ZoomableImage from '../../../components/ZoomableImage';
 import { chatsApi } from '../../../services/api/chats';
 import { contactsApi } from '../../../services/api/contacts';
@@ -294,13 +297,18 @@ export default function ChatConversationScreen() {
   const router = useRouter();
   // The chat lives in its own tab, so a plain router.back() does not reliably return to the
   // order/lead that opened it. When the caller passes `returnTo`, go back to exactly that record.
+  // Without an explicit returnTo we go back to whatever screen opened the chat (a form, a lead,
+  // a contact…), captured on first render — otherwise Back lands on the chats list.
+  const originPath = useRef(getCurrentPath()).current;
   const goBack = useCallback(() => {
     if (returnTo) {
       router.navigate(returnTo as any);
+    } else if (originPath && originPath !== '/' && !/^\/(\(tabs\)\/)?chats\/[^/]+$/.test(originPath)) {
+      router.navigate(originPath as any);
     } else {
       router.back();
     }
-  }, [returnTo, router]);
+  }, [returnTo, originPath, router]);
   const insets = useSafeAreaInsets();
   const theme = useAppTheme();
   const { isRTL } = useRTL();
@@ -343,6 +351,7 @@ export default function ChatConversationScreen() {
   const [mediaTitleMessage, setMediaTitleMessage] = useState<Message | null>(null);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [showPaymentSheet, setShowPaymentSheet] = useState(false);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   const [isSendingTemplate, setIsSendingTemplate] = useState(false);
@@ -2773,15 +2782,19 @@ export default function ChatConversationScreen() {
   const getMentionUserName = (u: any) =>
     u.UserName || u.FullName || u.userName || u.fullname || u.name || u.Email || u.email || '';
 
+  // Gambot AI is always the first mentionable "user" in a chat (same as the web): the backend runs the instruction
+  // when the internal message mentions uID "gambot-ai" (CreateInternalMessage → HandleGambotAiMention).
+  const GAMBOT_AI_MENTION = useMemo(() => ({ uID: 'gambot-ai', UserName: 'Gambot AI', Email: 'AI Assistant — ביצוע פעולות', isGambotAi: true }), []);
   const filteredMentionUsers = useMemo(() => {
-    if (!mentionQuery) return orgUsers.slice(0, 8);
-    return orgUsers
+    const all = [GAMBOT_AI_MENTION, ...orgUsers.filter((u: any) => (u.uID || u.userId || u.uid) !== 'gambot-ai')];
+    if (!mentionQuery) return all.slice(0, 8);
+    return all
       .filter((u: any) =>
         getMentionUserName(u).toLowerCase().includes(mentionQuery) ||
         (u.Email || u.email || '').toLowerCase().includes(mentionQuery),
       )
       .slice(0, 8);
-  }, [orgUsers, mentionQuery]);
+  }, [orgUsers, mentionQuery, GAMBOT_AI_MENTION]);
 
   const handleSelectMention = useCallback((mentionUser: any) => {
     const name = getMentionUserName(mentionUser);
@@ -3490,6 +3503,9 @@ export default function ChatConversationScreen() {
               <Menu.Item leadingIcon="open-in-new" title={isRTL ? 'פתח רשומת פנייה' : 'Open case'} onPress={openCaseRecord} />
             </Menu>
           )}
+
+          {/* Open quote / pending payment of this contact (tap → the quote / transactions) */}
+          <OpenDocsChips organization={user?.organization} phone={phoneNumber as string} />
 
           {/* Tags row — horizontal chips + "add tag" chip */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginStart: 4 }}>
@@ -4777,6 +4793,10 @@ export default function ChatConversationScreen() {
                 activeLead
                   ? { icon: 'account-star-outline', label: t('chats.openLead', 'פתח ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); openLeadRecord(); } }
                   : { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
+                // New quote for this contact — the quote form auto-links the contact's open lead (same as the web quick action).
+                { icon: 'file-document-plus-outline', label: isRTL ? 'הצעת מחיר' : 'Quote', color: '#2563eb', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: 'new', prefillContactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
+                { icon: 'cash-fast', label: isRTL ? 'בקשת תשלום' : 'Request payment', color: '#16a34a', action: () => { setShowQuickActionsSheet(false); setShowPaymentSheet(true); } },
+                { icon: 'receipt', label: isRTL ? 'חשבונית' : 'Invoice', color: '#0d9488', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: 'new', prefillContactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
                 activeCase
                   ? { icon: 'ticket-confirmation-outline', label: t('chats.openCase', 'פתח פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); openCaseRecord(); } }
                   : { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
@@ -4870,6 +4890,16 @@ export default function ChatConversationScreen() {
           defaultTitle={taskSeedText
             ? taskSeedText.slice(0, 80)
             : (contactName ? `${t('contacts.phoneCall', 'שיחת טלפון')} - ${contactName}` : undefined)}
+        />
+
+        <SendPaymentLinkSheet
+          visible={showPaymentSheet}
+          onDismiss={() => setShowPaymentSheet(false)}
+          user={user}
+          customerName={contactName}
+          customerPhone={phoneNumber as string}
+          entityType={activeLead ? 'lead' : undefined}
+          entityId={activeLead?.id}
         />
 
         {/* Add Note Modal — keyboard-safe bottom sheet */}
@@ -5342,10 +5372,15 @@ export default function ChatConversationScreen() {
                       pressed && { backgroundColor: theme.colors.surfaceVariant },
                     ]}
                   >
-                    <MaterialCommunityIcons name="account-circle-outline" size={18} color={theme.colors.primary} />
+                    <MaterialCommunityIcons name={u.isGambotAi ? 'robot-outline' : 'account-circle-outline'} size={18} color={u.isGambotAi ? '#059669' : theme.colors.primary} />
                     <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginStart: 8 }}>
                       {getMentionUserName(u)}
                     </Text>
+                    {u.isGambotAi ? (
+                      <Text variant="labelSmall" style={{ color: '#059669', marginStart: 8 }}>
+                        {isRTL ? 'ביצוע פעולות' : 'runs actions'}
+                      </Text>
+                    ) : null}
                   </Pressable>
                 ))
               ) : orgUsersLoading ? (

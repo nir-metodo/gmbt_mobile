@@ -311,6 +311,8 @@ export default function EmailCampaignPreviewScreen() {
 
   const goResults = () => router.replace({ pathname: '/(tabs)/more/campaigns/email-results', params: { id } } as any);
   const goList = () => router.replace('/(tabs)/more/campaigns' as any);
+  // Header arrow: back to wherever the user came from (list, results…), list only when there is no history.
+  const goBack = () => (router.canGoBack() ? router.back() : goList());
 
   const headerTitle = isSchedule ? (he ? 'אישור תזמון' : 'Confirm schedule') : he ? 'אישור הודעה ונמענים' : 'Review & confirm';
 
@@ -345,7 +347,7 @@ export default function EmailCampaignPreviewScreen() {
   if (phase === 'scheduled') {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-        <EmailScreenHeader title={headerTitle} onBack={goList} />
+        <EmailScreenHeader title={headerTitle} onBack={goBack} />
         <View style={styles.centered}>
           <MaterialCommunityIcons name="calendar-check" size={64} color={BRAND} />
           <Text style={[styles.doneTitle, { color: theme.colors.onSurface }]}>{he ? 'הקמפיין תוזמן' : 'Campaign scheduled'}</Text>
@@ -370,7 +372,7 @@ export default function EmailCampaignPreviewScreen() {
     const finished = ['completed', 'sent', 'completedwitherrors', 'failed'].includes(finishedKey);
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-        <EmailScreenHeader title={he ? 'תוצאות שליחה' : 'Send progress'} onBack={goList} />
+        <EmailScreenHeader title={he ? 'תוצאות שליחה' : 'Send progress'} onBack={goBack} />
         <ScrollView contentContainerStyle={styles.doneWrap}>
           <MaterialCommunityIcons name={finished ? 'check-circle' : 'send-check'} size={64} color={BRAND} />
           <Text style={[styles.doneTitle, { color: theme.colors.onSurface }]}>
