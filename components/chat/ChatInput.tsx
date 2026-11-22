@@ -87,6 +87,11 @@ interface ChatInputProps {
   aiReplyEnabled?: boolean;
   isGeneratingAiReply?: boolean;
   onGenerateAiReply?: () => void;
+  // Quick timeline note: when provided, a "הערה / Note" chip appears above the composer (opposite end from
+  // the WhatsApp-number chip). While it is on, the composer turns yellow and Send saves the text as an
+  // internal note on the customer's timeline instead of sending it to the customer. Resolve `false` on failure
+  // so the text stays in the composer.
+  onSaveNote?: (text: string) => Promise<boolean | void> | boolean | void;
 }
 
 function formatRecordingTime(seconds: number): string {
@@ -116,8 +121,11 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   aiReplyEnabled,
   isGeneratingAiReply,
   onGenerateAiReply,
+  onSaveNote,
 }, ref) => {
   const [text, setText] = useState('');
+  const [noteMode, setNoteMode] = useState(false);
+  const [savingNote, setSavingNote] = useState(false);
   // Caret tracking (for the "/" trigger anywhere in the text). `forcedSelection` is only set briefly after a
   // programmatic insert so the caret lands right after the inserted text instead of at the end.
   const [selection, setSelection] = useState({ start: 0, end: 0 });
@@ -201,24 +209,38 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
   // until the query actually changes.
   useEffect(() => {
     if (!onSlashQueryChange) return;
-    const ctx = findSlashContext(text, selection.start);
+    const ctx = noteMode ? null : findSlashContext(text, selection.start);
     const q = ctx ? ctx.query : null;
     if (q === lastSlashQueryRef.current) return;
     lastSlashQueryRef.current = q;
     onSlashQueryChange(q);
-  }, [text, selection.start, onSlashQueryChange]);
+  }, [text, selection.start, onSlashQueryChange, noteMode]);
 
   const handleChangeText = useCallback((val: string) => {
     setText(val);
-    onTextChange?.(val);
-  }, [onTextChange]);
+    // Note mode is plain text: no @mention / quick-message pickers.
+    if (!noteMode) onTextChange?.(val);
+  }, [onTextChange, noteMode]);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const trimmed = text.trim();
-    if (!trimmed || isSending) return;
+    if (!trimmed || isSending || savingNote) return;
+    if (noteMode && onSaveNote) {
+      setSavingNote(true);
+      try {
+        const ok = await onSaveNote(trimmed);
+        if (ok !== false) {
+          setText('');
+          setNoteMode(false);
+        }
+      } finally {
+        setSavingNote(false);
+      }
+      return;
+    }
     onSend(trimmed);
     setText('');
-  }, [text, isSending, onSend]);
+  }, [text, isSending, savingNote, noteMode, onSaveNote, onSend]);
 
   const permissionGrantedRef = useRef(false);
 
@@ -387,9 +409,11 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
 
       {/* Internal note banner removed per UX cleanup */}
 
-      {/* Multi-number selector chip */}
-      {hasMultipleNumbers && !isRecording && (
-        <View style={styles.numberSelectorRow}>
+      {/* Chips row: WhatsApp-number selector at the start side, quick-note toggle at the opposite end.
+          Plain 'row' + space-between follows the app's native RTL (start = right in Hebrew, left in English). */}
+      {(hasMultipleNumbers || !!onSaveNote) && !isRecording && !hasRecorded && (
+        <View style={[styles.numberSelectorRow, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+          {hasMultipleNumbers ? (
           <Pressable
             onPress={() => setShowNumberPicker(!showNumberPicker)}
             style={[styles.numberChip, { backgroundColor: theme.dark ? '#334155' : '#e2e8f0' }]}
@@ -400,6 +424,28 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             </Text>
             <MaterialCommunityIcons name="chevron-down" size={14} color={theme.colors.primary} />
           </Pressable>
+          ) : <View />}
+          {onSaveNote ? (
+            <Pressable
+              onPress={() => { setNoteMode((v) => !v); setShowNumberPicker(false); setTimeout(() => inputRef.current?.focus(), 50); }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: noteMode }}
+              style={[
+                styles.numberChip,
+                {
+                  gap: 4,
+                  backgroundColor: noteMode ? '#FFB300' : (theme.dark ? '#3E3500' : '#FFF8E1'),
+                  borderWidth: 1,
+                  borderColor: theme.dark ? '#FFE082' : '#FFB300',
+                },
+              ]}
+            >
+              <MaterialCommunityIcons name="note-text-outline" size={13} color={noteMode ? '#3E2723' : (theme.dark ? '#FFE082' : '#8D6E63')} />
+              <Text style={{ fontSize: 11, fontWeight: '700', color: noteMode ? '#3E2723' : (theme.dark ? '#FFE082' : '#8D6E63') }}>
+                {t('chats.noteChip', 'הערה')}
+              </Text>
+            </Pressable>
+          ) : null}
           {showNumberPicker && (
             <View style={[styles.numberDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outline }]}>
               {wabaNumbers!.map((num) => {
@@ -472,15 +518,20 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               styles.inputContainer,
               {
                 flexDirection: isRTL ? 'row-reverse' : 'row',
-                backgroundColor: isInternalNote
+                backgroundColor: (isInternalNote || noteMode)
                   ? (theme.dark ? '#3E3500' : '#FFF9C4')
                   : (theme.dark ? '#2a3942' : '#FFFFFF'),
-                borderColor: isInternalNote
+                borderColor: (isInternalNote || noteMode)
                   ? (theme.dark ? '#FFE082' : '#FFB300')
                   : 'transparent',
               },
             ]}
           >
+            {noteMode ? (
+              <View style={styles.iconBtn}>
+                <MaterialCommunityIcons name="note-text-outline" size={22} color={theme.dark ? '#FFE082' : '#8D6E63'} />
+              </View>
+            ) : (
             <Pressable
               onPress={onAttachmentPress}
               disabled={disabled}
@@ -493,6 +544,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
                 color={theme.dark ? '#8696a0' : '#54656f'}
               />
             </Pressable>
+            )}
 
             <TextInput
               ref={inputRef}
@@ -500,7 +552,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               onChangeText={handleChangeText}
               onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
               selection={forcedSelection}
-              placeholder={isInternalNote ? (isRTL ? 'הקלד @ לאזכורים...' : 'Type @ to mention...') : (isRTL ? 'הקלד @ לאזכורים, / להודעות מהירות...' : 'Type @ to mention, / for quick messages...')}
+              placeholder={noteMode ? (isRTL ? 'כתוב הערה לציר הזמן (לא נשלחת ללקוח)...' : 'Write a timeline note (not sent to the customer)...') : isInternalNote ? (isRTL ? 'הקלד @ לאזכורים...' : 'Type @ to mention...') : (isRTL ? 'הקלד @ לאזכורים, / להודעות מהירות...' : 'Type @ to mention, / for quick messages...')}
               placeholderTextColor={theme.dark ? '#8696a0' : '#667781'}
               multiline
               maxLength={4096}
@@ -519,7 +571,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             />
 
             {/* ✨ Generate AI Response — drafts a reply from the conversation into the composer */}
-            {aiReplyEnabled && onGenerateAiReply && (
+            {!noteMode && aiReplyEnabled && onGenerateAiReply && (
               <Pressable
                 onPress={onGenerateAiReply}
                 disabled={isGeneratingAiReply || disabled}
@@ -535,7 +587,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
               </Pressable>
             )}
 
-            {onQuickMessagePress && !hasText && (
+            {!noteMode && onQuickMessagePress && !hasText && (
               <Pressable
                 onPress={onQuickMessagePress}
                 hitSlop={4}
@@ -548,7 +600,22 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         )}
 
         {/* Send / Mic button — circular WhatsApp style */}
-        {hasText ? (
+        {noteMode && !isRecording && !hasRecorded ? (
+          // Note mode: the button saves the note to the timeline (disabled until there is text) — no mic here.
+          <Pressable
+            onPress={handleSend}
+            disabled={!hasText || savingNote || disabled}
+            accessibilityLabel={isRTL ? 'שמור הערה' : 'Save note'}
+            style={({ pressed }) => [
+              styles.sendBtn,
+              { backgroundColor: pressed ? '#F57C00' : '#FFB300', opacity: !hasText ? 0.5 : 1 },
+            ]}
+          >
+            {savingNote
+              ? <ActivityIndicator size="small" color="#3E2723" />
+              : <MaterialCommunityIcons name="check" size={24} color="#3E2723" />}
+          </Pressable>
+        ) : hasText ? (
           <Pressable
             onPress={handleSend}
             disabled={isSending || disabled}

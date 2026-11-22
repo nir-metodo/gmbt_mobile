@@ -1,0 +1,10 @@
+{
+  "platforms": ["android", "apple"],
+  "android": {
+    "modules": ["com.gambot.callui.CallUiModule"]
+  },
+  "apple": {
+    "modules": ["CallUiModule"],
+    "appDelegateSubscribers": ["CallUiAppDelegate"]
+  }
+}

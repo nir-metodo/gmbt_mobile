@@ -46,7 +46,8 @@ import { useSettingsStore } from '../../../../stores/settingsStore';
 import { useActiveCallStore } from '../../../../stores/activeCallStore';
 import { makeAppCall, makeGambotCall, tryInAppSipCall } from '../../../../utils/phoneCall';
 import { sipPhone } from '../../../../services/sip/sipPhone';
-import { RecordingPlayer } from '../../../../components/phone-calls/RecordingPlayer';
+import CallDetailPanel from '../../../../components/phone-calls/CallDetailPanel';
+import { useMissedCallsStore } from '../../../../stores/missedCallsStore';
 import { getDataVisibility } from '../../../../constants/permissions';
 import { PhoneCall, CallRule } from '../../../../types';
 import {
@@ -129,45 +130,6 @@ interface CallItemProps {
 
 function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQuickAction, onDial, org }: CallItemProps) {
   const dirIcon = getDirectionIcon(call.direction, call.status);
-  const [showFullTranscript, setShowFullTranscript] = useState(false);
-  // Summary / transcript / agent documentation of office-number calls (same record as the web call page), loaded when expanded.
-  const [info, setInfo] = useState<any | null>(null);
-  const [notesDraft, setNotesDraft] = useState('');
-  const [notesState, setNotesState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const callKey = call.callId || call.id;
-
-  useEffect(() => {
-    if (!expanded || call.source !== 'pbx' || info || !callKey) return;
-    let cancelled = false;
-    phoneCallsApi.getCallSummary(org, callKey).then((data) => {
-      if (cancelled || !data) return;
-      setInfo(data);
-      setNotesDraft(data.documentation?.notes || '');
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [expanded, call.source, callKey, org, info]);
-
-  const saveNotes = useCallback(async () => {
-    setNotesState('saving');
-    try {
-      const doc = info?.documentation || {};
-      const res = await phoneCallsApi.saveCallNotes(org, callKey, { notes: notesDraft, disposition: doc.disposition, tags: doc.tags }, call.phoneNumber);
-      if (!res.success) throw new Error(res.error || 'save failed');
-      setInfo((prev: any) => ({ ...(prev || {}), documentation: { ...(prev?.documentation || {}), notes: notesDraft } }));
-      setNotesState('saved');
-    } catch {
-      setNotesState('error');
-    }
-  }, [org, callKey, notesDraft, info, call.phoneNumber]);
-
-  const summaryText: string | undefined = info?.summary || call.aiSummary;
-  const transcriptText: string | undefined = info?.transcription || call.transcription;
-  const actionItems: string[] = (info?.extractedActions || [])
-    .map((a: any) => a?.description)
-    .filter(Boolean)
-    .concat(call.aiActionItems || []);
-  const savedNotes: string = info?.documentation?.notes || '';
-
   return (
     <Surface style={[itemStyles.card, { backgroundColor: themeColors.surface }]} elevation={1}>
       <Pressable onPress={onPress} style={[itemStyles.row, { flexDirection: 'row' }]}>
@@ -241,11 +203,6 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
               </Text>
             </View>
           )}
-
-          {call.recordingUrl && (
-            <RecordingPlayer uri={call.recordingUrl} durationSec={call.duration} />
-          )}
-
           {call.agentName && !/^gambot$/i.test(call.agentName) ? (
             <View style={[itemStyles.detailRow, { flexDirection: 'row' }]}>
               <Text variant="labelMedium" style={{ color: themeColors.onSurfaceVariant }}>
@@ -257,106 +214,7 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
             </View>
           ) : null}
 
-          {summaryText ? (
-            <View style={itemStyles.section}>
-              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
-                <MaterialCommunityIcons name="brain" size={16} color="#7B2D8E" />
-                <Text variant="labelMedium" style={{ color: '#7B2D8E', marginHorizontal: 6 }}>
-                  {t('phoneCalls.aiSummary')}
-                </Text>
-              </View>
-              <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', marginTop: 4 }}>
-                {summaryText}
-              </Text>
-            </View>
-          ) : null}
-
-          {/* Agent documentation - editable, same record as on the web call page */}
-          {call.source === 'pbx' ? (
-            <View style={itemStyles.section}>
-              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
-                <MaterialCommunityIcons name="note-edit-outline" size={16} color={BRAND_COLOR} />
-                <Text variant="labelMedium" style={{ color: BRAND_COLOR, marginHorizontal: 6 }}>
-                  {t('phoneCalls.agentNotes')}
-                </Text>
-              </View>
-              <TextInput
-                mode="outlined"
-                multiline
-                dense
-                value={notesDraft}
-                onChangeText={(v) => { setNotesDraft(v); setNotesState('idle'); }}
-                placeholder={t('phoneCalls.notesPlaceholder')}
-                style={{ marginTop: 6, minHeight: 64, backgroundColor: themeColors.surface }}
-                outlineColor={BRAND_COLOR + '40'}
-                activeOutlineColor={BRAND_COLOR}
-                textAlign={isRTL ? 'right' : 'left'}
-              />
-              <View style={[itemStyles.detailRow, { flexDirection: 'row', marginTop: 6, marginBottom: 0 }]}>
-                <Button
-                  mode="contained"
-                  compact
-                  buttonColor={BRAND_COLOR}
-                  loading={notesState === 'saving'}
-                  disabled={notesState === 'saving' || notesDraft === savedNotes}
-                  onPress={saveNotes}
-                >
-                  {t('common.save')}
-                </Button>
-                {notesState === 'saved' ? (
-                  <Text variant="labelSmall" style={{ color: '#2A9D8F', marginHorizontal: 8 }}>{t('phoneCalls.noteSaved')}</Text>
-                ) : null}
-                {notesState === 'error' ? (
-                  <Text variant="labelSmall" style={{ color: '#E63946', marginHorizontal: 8 }}>{t('phoneCalls.noteSaveFailed')}</Text>
-                ) : null}
-              </View>
-            </View>
-          ) : null}
-
-          {transcriptText ? (
-            <View style={itemStyles.section}>
-              <Pressable
-                onPress={() => setShowFullTranscript(!showFullTranscript)}
-                style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}
-              >
-                <MaterialCommunityIcons name="text-box-outline" size={16} color={BRAND_COLOR} />
-                <Text variant="labelMedium" style={{ color: BRAND_COLOR, marginHorizontal: 6, flex: 1, textAlign: isRTL ? 'right' : 'left' }}>
-                  {t('phoneCalls.transcription')}
-                </Text>
-                <MaterialCommunityIcons
-                  name={showFullTranscript ? 'chevron-up' : 'chevron-down'}
-                  size={16}
-                  color={BRAND_COLOR}
-                />
-              </Pressable>
-              <Text
-                variant="bodySmall"
-                numberOfLines={showFullTranscript ? undefined : 3}
-                style={{ color: themeColors.onSurfaceVariant, textAlign: isRTL ? 'right' : 'left', marginTop: 4 }}
-              >
-                {transcriptText}
-              </Text>
-            </View>
-          ) : null}
-
-          {actionItems.length > 0 && (
-            <View style={itemStyles.section}>
-              <View style={[itemStyles.sectionHeader, { flexDirection: 'row' }]}>
-                <MaterialCommunityIcons name="clipboard-check-outline" size={16} color="#FF6B35" />
-                <Text variant="labelMedium" style={{ color: '#FF6B35', marginHorizontal: 6 }}>
-                  {t('phoneCalls.actionItems')}
-                </Text>
-              </View>
-              {actionItems.map((item: string, idx: number) => (
-                <View key={idx} style={[itemStyles.actionItem, { flexDirection: 'row' }]}>
-                  <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }}>•</Text>
-                  <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant, flex: 1, marginHorizontal: 6, textAlign: isRTL ? 'right' : 'left' }}>
-                    {item}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          )}
+          <CallDetailPanel call={call} org={org} isRTL={isRTL} t={t as any} themeColors={themeColors} />
 
           <Divider style={{ marginVertical: 8 }} />
 
@@ -365,16 +223,6 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={[itemStyles.quickActions, { flexDirection: 'row' }]}
           >
-            <Button
-              icon="calendar-plus"
-              mode="contained-tonal"
-              compact
-              style={itemStyles.quickBtn}
-              labelStyle={itemStyles.quickBtnLabel}
-              onPress={() => onQuickAction('createFollowUp', call)}
-            >
-              {t('phoneCalls.createFollowUp')}
-            </Button>
             <Button
               icon="account-edit"
               mode="contained-tonal"
@@ -751,6 +599,10 @@ export default function PhoneCallsTabScreen() {
   useFocusEffect(
     useCallback(() => {
       fetchCalls();
+      // Opening the screen with unanswered calls waiting: show them first, then clear the "More" badge.
+      const missedStore = useMissedCallsStore.getState();
+      if (missedStore.unseen > 0) setFilter('missed');
+      missedStore.markSeen();
     }, [fetchCalls])
   );
 

@@ -95,6 +95,12 @@ export const phoneCallsApi = {
     return response.data?.Success && response.data?.Data ? response.data.Data : null;
   },
 
+  /** Transcribes + summarizes a call's recording on demand (calls that got no automatic summary) and saves it on the call. */
+  async generateCallSummary(organization: string, callId: string, recordingUrl: string, contactPhone: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.TRIGGER_CALL_SUMMARY, { organization, callId, recordingUrl, contactPhone, language: 'he' }, { timeout: 120000 });
+    return response.data;
+  },
+
   async saveCallNotes(
     organization: string,
     callId: string,
@@ -219,10 +225,11 @@ export const phoneCallsApi = {
   async sipCallControl(
     organization: string,
     callId: string,
-    action: 'status' | 'hold' | 'unhold' | 'mute' | 'unmute' | 'dtmf' | 'hangup',
+    action: 'status' | 'hold' | 'unhold' | 'mute' | 'unmute' | 'dtmf' | 'hangup' | 'transfer',
     digit?: string,
-  ): Promise<{ active?: boolean; answered?: boolean; held?: boolean; muted?: boolean; error?: string }> {
-    const response = await axiosInstance.post(ENDPOINTS.SIP_CALL_CONTROL, { organization, callId, action, digit });
+    transferTo?: { targetUserId?: string; number?: string },
+  ): Promise<{ active?: boolean; answered?: boolean; held?: boolean; muted?: boolean; transfer?: '' | 'ringing' | 'done' | 'failed'; error?: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.SIP_CALL_CONTROL, { organization, callId, action, digit, ...(transferTo || {}) });
     return response.data || {};
   },
 

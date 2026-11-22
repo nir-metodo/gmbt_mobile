@@ -1,11 +1,10 @@
-import { Linking, AppState, AppStateStatus, Platform } from 'react-native';
+import { Linking, AppState, AppStateStatus, Platform, Alert } from 'react-native';
+import i18n from '../i18n';
 import { phoneCallsApi } from '../services/api/phoneCalls';
 import { useSettingsStore } from '../stores/settingsStore';
 import { CallEvents } from '../modules/call-events';
 import { useActiveCallStore } from '../stores/activeCallStore';
 import { sipPhone } from '../services/sip/sipPhone';
-import { useDialSheetStore } from '../stores/dialSheetStore';
-
 interface MakeCallOptions {
   phoneNumber: string;
   organization: string;
@@ -147,7 +146,7 @@ export async function makeGambotCall(options: GambotCallOptions): Promise<Gambot
 
     // SIP calls get the in-call control bar (hold / mute / keypad / hang up).
     if (result.success && result.callId && useSettingsStore.getState().telephonyProvider === 'sip') {
-      useActiveCallStore.getState().start({ callId: result.callId, organization, phoneNumber });
+      useActiveCallStore.getState().start({ callId: result.callId, organization, phoneNumber, name: customerName });
     }
 
     return {
@@ -195,7 +194,7 @@ export async function tryInAppSipCall(opts: {
       link: linkType && linkId ? { type: linkType, id: linkId } : null,
     });
     if (res.callId) {
-      useActiveCallStore.getState().start({ callId: res.callId, organization, phoneNumber });
+      useActiveCallStore.getState().start({ callId: res.callId, organization, phoneNumber, name: customerName });
       return true;
     }
   } catch { /* fall back */ }
@@ -293,9 +292,10 @@ export function getDefaultDialer(): DialerKind {
 }
 
 /**
- * Entry point for every "Call" button (chats, contacts, leads, cases, quotes...). Opens the call sheet with the user's DEFAULT
- * dialer ready, plus a small "switch to the other dialer" option below it. When the org has no system dialer there is nothing to
- * choose, so the phone's own dialer opens straight away. Callers fire-and-forget; the sheet handles the call and any errors.
+ * Entry point for every "Call" button (chats, contacts, leads, cases, quotes...). Dials IMMEDIATELY - no confirmation sheet - with
+ * the user's default dialer (Settings → Default dialer: the organization's line, or the phone's own dialer). What the customer sees
+ * on a system-dialer call (the office number or the user's own mobile) is the user's "Customer sees my mobile number" setting,
+ * applied server-side. Also reports a failed bridge call / the "your phone will ring" notice, so callers just fire-and-forget.
  */
 export async function placeSmartCall(opts: SmartCallOptions): Promise<SmartCallResult> {
   if (!opts.phoneNumber) return { mode: 'native', success: false, error: 'missing_phone' };
@@ -307,9 +307,15 @@ export async function placeSmartCall(opts: SmartCallOptions): Promise<SmartCallR
     st = useSettingsStore.getState();
   }
 
-  if (!st.telephonySolutionAvailable) return executeCall(opts, 'phone');
-
-  // 'native' on purpose: the sheet reports progress itself (callers show the 'your phone will ring' alert for mode 'gambot').
-  useDialSheetStore.getState().open(opts);
-  return { mode: 'native', success: true };
+  try {
+    const res = await executeCall(opts, getDefaultDialer());
+    // A bridge call (non-SIP provider) rings the user's phone first - tell them. SIP calls show the in-call bar instead.
+    if (res.mode === 'gambot' && res.success && useSettingsStore.getState().telephonyProvider !== 'sip') {
+      Alert.alert(i18n.t('phoneCalls.gambotCallTitle', 'Gambot Call'), i18n.t('phoneCalls.callInitiated', 'Call initiated. Your phone will ring shortly.'));
+    }
+    return res;
+  } catch {
+    Alert.alert(i18n.t('common.error'), i18n.t('phoneCalls.gambotCallFailed', 'Failed to initiate call'));
+    return { mode: 'native', success: false, error: 'call_failed' };
+  }
 }

@@ -211,6 +211,7 @@ export const ENDPOINTS = {
   GET_CALL_RECORDING: '/api/Webhooks/GetCallRecording',
   GET_CALL_BY_ID: '/api/Webhooks/GetCallById',
   GET_CALL_SUMMARY: '/api/Webhooks/GetCallSummary',
+  TRIGGER_CALL_SUMMARY: '/api/Webhooks/TriggerCallSummary',
   GET_CALLS_BY_CONTACT: '/api/Webhooks/GetCallsByContact',
   SAVE_CALL_NOTES: '/api/webhooks/telnyx/SaveCallNotes',
   GET_CALL_TIMELINE: '/api/Webhooks/GetTimelineByCallId',
@@ -274,6 +275,8 @@ export const ENDPOINTS = {
   UNREGISTER_DEVICE: '/api/Webhooks/UnregisterDeviceToken',
   REGISTER_PUSH_TOKEN: '/api/Webhooks/RegisterPushToken',
   UNREGISTER_PUSH_TOKEN: '/api/Webhooks/UnregisterPushToken',
+  REGISTER_VOIP_TOKEN: '/api/Webhooks/RegisterVoipToken',
+  UNREGISTER_VOIP_TOKEN: '/api/Webhooks/UnregisterVoipToken',
   UPDATE_PUSH_SETTINGS: '/api/Webhooks/UpdatePushNotificationSettings',
   GET_PUSH_SETTINGS: '/api/Webhooks/GetPushNotificationSettings',
 
@@ -340,6 +343,10 @@ export const ENDPOINTS = {
   CREATE_CALENDAR_EVENT: '/api/Webhooks/CreateCalendarEvent',
   UPDATE_CALENDAR_EVENT: '/api/Webhooks/UpdateCalendarEvent',
   DELETE_CALENDAR_EVENT: '/api/Webhooks/DeleteCalendarEvent',
+  // What happened with an event (held / no-show / ...) + its timeline
+  UPDATE_CALENDAR_EVENT_OUTCOME: '/api/Webhooks/UpdateCalendarEventOutcome',
+  GET_ENTITY_TIMELINE: '/api/Webhooks/GetEntityTimeline',
+  ADD_ENTITY_TIMELINE_NOTE: '/api/Webhooks/AddEntityTimelineNote',
   GET_CALENDARS: '/api/Webhooks/GetCalendars',
   SYNC_CALENDAR: '/api/Webhooks/SyncCalendarFromProvider',
   GET_CONNECTIONS: '/api/Webhooks/GetConnections',

@@ -1,0 +1,34 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <!-- Full-screen "incoming call" over the lock screen (Android 14+ lets the user revoke it: see CallUi.canUseFullScreenIntent). -->
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+  <application>
+    <!-- Receives every FCM message instead of expo-notifications' own service (priority -1) and forwards everything that is not a call to it. -->
+    <service
+      android:name="com.gambot.callui.CallMessagingService"
+      android:exported="false">
+      <intent-filter android:priority="100">
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+      </intent-filter>
+    </service>
+
+    <activity
+      android:name="com.gambot.callui.IncomingCallActivity"
+      android:exported="false"
+      android:launchMode="singleInstance"
+      android:taskAffinity=""
+      android:excludeFromRecents="true"
+      android:showWhenLocked="true"
+      android:turnScreenOn="true"
+      android:screenOrientation="portrait"
+      android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />
+
+    <receiver
+      android:name="com.gambot.callui.CallActionReceiver"
+      android:exported="false" />
+  </application>
+</manifest>

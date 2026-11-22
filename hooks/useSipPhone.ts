@@ -4,6 +4,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useSipPhoneStore } from '../stores/sipPhoneStore';
 import { sipPhone } from '../services/sip/sipPhone';
+import { attachCallUiEvents } from '../services/sip/callUiBridge';
 
 /**
  * Keeps the app's SIP phone registered while the app is in the foreground (organizations on the SIP trunk only).
@@ -14,16 +15,25 @@ export function useSipPhone() {
   const organization = useAuthStore((s) => s.user?.organization);
   const available = useSettingsStore((s) => s.telephonySolutionAvailable);
   const provider = useSettingsStore((s) => s.telephonyProvider);
+  const userId = useAuthStore((s) => s.user?.uID || s.user?.userId);
   const enabled = !!organization && available && provider === 'sip';
 
   useEffect(() => {
     if (!enabled || !organization || !sipPhone.isSupported()) return undefined;
+    const detachCallUi = attachCallUiEvents(organization, userId || '');
 
-    if (AppState.currentState === 'active') sipPhone.start(organization).catch(() => {});
+    // The user may have pressed Answer on the native full-screen call (app was closed / locked): arm the auto-answer BEFORE registering,
+    // so the PBX's ring - which starts the moment we register - is answered at once.
+    const begin = () => {
+      sipPhone.pickUpNativeAnswer();
+      sipPhone.start(organization).catch(() => {});
+    };
+    if (AppState.currentState === 'active') begin();
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') sipPhone.start(organization).catch(() => {});
+      if (state === 'active') begin();
       // A call in progress keeps its audio when the user switches app / locks the screen; the phone is dropped once it ends.
-      else if (state === 'background' && !useSipPhoneStore.getState().inCall) sipPhone.stop();
+      // An accepted call that has not arrived yet keeps the phone registered too.
+      else if (state === 'background' && !useSipPhoneStore.getState().inCall && !sipPhone.isAutoAnswerArmed()) sipPhone.stop();
     });
     const unsubCall = useSipPhoneStore.subscribe((s, prev) => {
       if (prev.inCall && !s.inCall && AppState.currentState !== 'active') sipPhone.stop();
@@ -31,7 +41,8 @@ export function useSipPhone() {
     return () => {
       sub.remove();
       unsubCall();
+      detachCallUi();
       sipPhone.stop();
     };
-  }, [enabled, organization]);
+  }, [enabled, organization, userId]);
 }

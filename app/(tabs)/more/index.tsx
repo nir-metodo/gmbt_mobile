@@ -8,6 +8,7 @@ import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { useAuthStore } from '../../../stores/authStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
+import { useMissedCallsStore } from '../../../stores/missedCallsStore';
 import { hasPermission } from '../../../constants/permissions';
 import AddTaskSheet from '../../../components/AddTaskSheet';
 
@@ -102,6 +103,7 @@ export default function MoreScreen() {
   const user = useAuthStore((s) => s.user);
   const orgFeatureToggles = useAuthStore((s) => s.orgFeatureToggles);
   const telephonyEnabled = useSettingsStore((s) => s.telephonyEnabled);
+  const missedUnseen = useMissedCallsStore((s) => s.unseen);
 
   const [query, setQuery] = useState('');
   const [quickMenuVisible, setQuickMenuVisible] = useState(false);
@@ -231,6 +233,11 @@ export default function MoreScreen() {
                         size={28}
                         color={item.color}
                       />
+                      {item.key === 'phoneCalls' && missedUnseen > 0 && (
+                        <View style={styles.missedBadge}>
+                          <Text style={styles.missedBadgeText}>{missedUnseen > 99 ? '99+' : missedUnseen}</Text>
+                        </View>
+                      )}
                     </View>
                     <Text
                       variant="labelMedium"
@@ -316,6 +323,23 @@ const styles = StyleSheet.create({
   },
   cardPressed: {
     opacity: 0.6,
+  },
+  missedBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 5,
+    borderRadius: 10,
+    backgroundColor: '#E63946',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  missedBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
   },
   iconCircle: {
     width: 56,

@@ -21,6 +21,7 @@ const STORAGE_KEYS = {
   DEFAULT_DIALER: 'default_dialer',
   CALL_ALERT_SOUND: 'call_alert_sound',
   CALL_ALERT_VIBRATE: 'call_alert_vibrate',
+  RINGTONE: 'call_ringtone',
 };
 
 // expo-secure-store has no web implementation (it throws "getValueWithKeyAsync is not a function"), so on web
@@ -140,6 +141,14 @@ export const appStorage = {
   async getDefaultDialer(): Promise<'system' | 'phone' | ''> {
     const v = await AsyncStorage.getItem(STORAGE_KEYS.DEFAULT_DIALER);
     return v === 'system' || v === 'phone' ? v : '';
+  },
+
+  // Ringtone for calls that ring in the app (id from utils/ringtones; empty = default).
+  async setRingtone(id: string) {
+    await AsyncStorage.setItem(STORAGE_KEYS.RINGTONE, id || '');
+  },
+  async getRingtone(): Promise<string> {
+    return (await AsyncStorage.getItem(STORAGE_KEYS.RINGTONE)) || '';
   },
 
   async clearAll() {

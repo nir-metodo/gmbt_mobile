@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next';
 import { useSipPhoneStore } from '../../stores/sipPhoneStore';
 import { useActiveCallStore } from '../../stores/activeCallStore';
 import { useAuthStore } from '../../stores/authStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { getRingtone } from '../../utils/ringtones';
 import { sipPhone } from '../../services/sip/sipPhone';
 
 /** Full-screen "incoming call" for a call that rings in the app's SIP phone. Answer opens the call (the in-call bar takes over). */
@@ -24,7 +26,7 @@ export default function IncomingCallOverlay() {
     (async () => {
       try {
         await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-        const { sound: s } = await Audio.Sound.createAsync(require('../../assets/sounds/notification.wav'), { isLooping: true, shouldPlay: true, volume: 1 });
+        const { sound: s } = await Audio.Sound.createAsync(getRingtone(useSettingsStore.getState().ringtone).source, { isLooping: true, shouldPlay: true, volume: 1 });
         if (cancelled) { s.unloadAsync().catch(() => {}); return; }
         sound = s;
       } catch { /* vibration only */ }
@@ -44,7 +46,7 @@ export default function IncomingCallOverlay() {
     const call = incoming;
     const ok = await sipPhone.answerIncoming();
     if (ok && call.callId && organization) {
-      useActiveCallStore.getState().start({ callId: call.callId, organization, phoneNumber: call.from });
+      useActiveCallStore.getState().start({ callId: call.callId, organization, phoneNumber: call.from, name: call.name, answered: true });
     }
   };
 

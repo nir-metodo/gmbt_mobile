@@ -34,8 +34,45 @@ export interface CalendarEvent {
   shared?: boolean;
   // Event status: 'confirmed' | 'tentative' | 'cancelled' (mirrors the web calendar).
   status?: string;
+  // What happened with the event: '' (scheduled) | 'held' | 'no_show' | 'postponed' | 'cancelled'.
+  outcome?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TimelineItem {
+  id: string;
+  type: string; // created | rescheduled | outcome | status | owner | note
+  text?: string;
+  from?: string;
+  to?: string;
+  userName?: string;
+  createdOn?: string;
+}
+
+// "Did the meeting happen?" outcomes (mirrors the web calendar).
+export const OUTCOME_META: Record<string, { he: string; en: string; icon: string; bg: string; fg: string }> = {
+  held:      { he: 'התקיימה',              en: 'Held',      icon: 'check-circle-outline', bg: '#dcfce7', fg: '#166534' },
+  no_show:   { he: 'לא התקיימה (לא הגיע)', en: 'No-show',   icon: 'account-off-outline',  bg: '#fee2e2', fg: '#991b1b' },
+  postponed: { he: 'נדחתה',                en: 'Postponed', icon: 'calendar-clock',       bg: '#fef3c7', fg: '#92400e' },
+  cancelled: { he: 'בוטלה',                en: 'Cancelled', icon: 'close-circle-outline', bg: '#e5e7eb', fg: '#374151' },
+};
+export const OUTCOME_KEYS = Object.keys(OUTCOME_META);
+const AWAITING_WINDOW_DAYS = 14;
+
+// An event that already ended (over an hour ago, within the last 2 weeks) with no outcome yet is
+// "awaiting update" — the card then offers one-tap Held / No-show / Postponed buttons.
+export function isAwaitingOutcome(ev: Pick<CalendarEvent, 'startDate' | 'endDate' | 'endTime' | 'startTime' | 'allDay' | 'outcome' | 'status'>): boolean {
+  if (ev.outcome) return false;
+  if ((ev.status || '').toLowerCase() === 'cancelled') return false;
+  const sd = (ev.startDate || '').split('T')[0];
+  const ed = (ev.endDate || '').split('T')[0] || sd;
+  if (!ed) return false;
+  const time = ev.allDay ? '23:59' : (ev.endTime || ev.startTime || '23:59');
+  const end = new Date(`${ed}T${time}`).getTime();
+  if (Number.isNaN(end)) return false;
+  const age = Date.now() - end;
+  return age > 60 * 60 * 1000 && age < AWAITING_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 }
 
 export interface CalendarInfo {
@@ -116,6 +153,7 @@ function normalizeEvent(raw: any): CalendarEvent {
     pushReminderEnabled: raw.pushReminderEnabled ?? raw.PushReminderEnabled ?? false,
     shared: (raw.shared ?? raw.Shared) !== false, // legacy events (no field) default to shared
     status: (raw.status || raw.Status || 'confirmed').toString().toLowerCase(),
+    outcome: (raw.outcome || raw.Outcome || '').toString().toLowerCase(),
     createdAt: raw.createdAt || raw.CreatedAt || '',
     updatedAt: raw.updatedAt || raw.UpdatedAt || '',
   };
@@ -147,6 +185,24 @@ export const calendarApi = {
       id: eventId,
       ...event,
     });
+    return response.data;
+  },
+
+  // Record what happened with an event; optional note is saved in the event's timeline.
+  async setOutcome(organization: string, eventId: string, outcome: string, note: string, userName: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.UPDATE_CALENDAR_EVENT_OUTCOME, {
+      organization, id: eventId, outcome, note, userName,
+    });
+    return response.data;
+  },
+
+  async getTimeline(organization: string, entityType: 'event' | 'email', key: string): Promise<TimelineItem[]> {
+    const response = await axiosInstance.post(ENDPOINTS.GET_ENTITY_TIMELINE, { organization, entityType, key });
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
+  async addTimelineNote(organization: string, entityType: 'event' | 'email', key: string, text: string, userName: string): Promise<any> {
+    const response = await axiosInstance.post(ENDPOINTS.ADD_ENTITY_TIMELINE_NOTE, { organization, entityType, key, text, userName });
     return response.data;
   },
 

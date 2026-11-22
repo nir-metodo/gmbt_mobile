@@ -399,18 +399,26 @@ export default function ChatsListScreen() {
   // Full resync of the chat list (same fetch as pull-to-refresh). Shows the top refresh spinner
   // even when a stale list is already on screen, so the user gets a clear indication that the app
   // is fetching the current chats instead of silently sitting on old data.
+  const fullLoadPromiseRef = useRef<Promise<void> | null>(null);
   const refreshChatsFull = useCallback(async (showIndicator = true) => {
     if (!user?.organization) return;
-    if (fullLoadInFlightRef.current) return; // a full load is already running — don't double-fetch
+    // A full load is already running — don't double-fetch, but let the caller wait for THAT load: callers chain
+    // "scroll to top" after this, and returning immediately made them scroll before the fresh rows had landed.
+    if (fullLoadInFlightRef.current) { await fullLoadPromiseRef.current?.catch(() => {}); return; }
     fullLoadInFlightRef.current = true;
     if (showIndicator) setRefreshing(true);
-    try {
+    const run = (async () => {
       await loadChats(user.organization, currentUserId, chatsDV || 'all');
       // Stamp ONLY on success. A failed fetch leaves the clock stale so the next focus/foreground
       // retries automatically instead of trusting a load that never delivered fresh data.
       lastFullLoadRef.current = Date.now();
+    })();
+    fullLoadPromiseRef.current = run;
+    try {
+      await run;
     } finally {
       fullLoadInFlightRef.current = false;
+      fullLoadPromiseRef.current = null;
       if (showIndicator) setRefreshing(false);
     }
   }, [user?.organization, loadChats, currentUserId, chatsDV]);
@@ -3272,6 +3280,11 @@ export default function ChatsListScreen() {
         onEndReached={onEndReachedChats}
         onEndReachedThreshold={0.4}
         contentContainerStyle={styles.listContent}
+        // FlashList v2 keeps the currently visible row in place when rows are inserted ABOVE it (enabled by default, meant for
+        // chat bubbles). Here that is exactly the bug: after the app was closed, the cached list from last time is on screen,
+        // the fresh load prepends the newer conversations, and the list stays on the old top row — the new ones are hidden above
+        // the viewport until you scroll up. This list is newest-first, so it must always grow downward from the top.
+        maintainVisibleContentPosition={{ disabled: true }}
       />
 
       {!selectionMode && (

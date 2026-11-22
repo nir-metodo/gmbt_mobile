@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gambot",
     "slug": "gambot-mobile",
-    "version": "2.0.6",
+    "version": "2.0.9",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -16,10 +16,15 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.gambot.mobile",
-      "buildNumber": "111",
+      "buildNumber": "114",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": [
+          "voip",
+          "audio",
+          "remote-notification"
+        ],
         "NSCameraUsageDescription": "Gambot needs access to your camera to take photos and videos to share in chats.",
         "NSPhotoLibraryUsageDescription": "Gambot needs access to your photo library to share images and media files in chats.",
         "NSLocationWhenInUseUsageDescription": "Gambot uses your location to verify that you are at your workplace when clocking in or out (location-based time reporting).",
@@ -35,7 +40,7 @@
     },
     "android": {
       "package": "com.gambot.mobile",
-      "versionCode": 161,
+      "versionCode": 166,
       "minSdkVersion": 26,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
@@ -45,15 +50,6 @@
       },
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_MEDIA_VIDEO",
-        "android.permission.VIBRATE",
-        "android.permission.RECEIVE_BOOT_COMPLETED",
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_MEDIA_VIDEO",
         "android.permission.VIBRATE",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.POST_NOTIFICATIONS",
@@ -66,6 +62,10 @@
         "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
         "android.permission.WAKE_LOCK",
         "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO"
       ]
     },
     "web": {

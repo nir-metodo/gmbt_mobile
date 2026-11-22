@@ -67,11 +67,14 @@ import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/
 import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { MediaTitleSheet } from '../../../components/chat/MediaTitleSheet';
 import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
+import LeadStagesMenuBody from '../../../components/chat/LeadStagesMenuBody';
+import LeadSourceFormCard from '../../../components/chat/LeadSourceFormCard';
 import ForwardMessageSheet from '../../../components/chat/ForwardMessageSheet';
 import AddTaskSheet from '../../../components/AddTaskSheet';
 import SendPaymentLinkSheet from '../../../components/SendPaymentLinkSheet';
 import OpenDocsChips from '../../../components/OpenDocsChips';
 import ZoomableImage from '../../../components/ZoomableImage';
+import { RecordingPlayer } from '../../../components/phone-calls/RecordingPlayer';
 import { chatsApi } from '../../../services/api/chats';
 import { contactsApi } from '../../../services/api/contacts';
 import { usersApi } from '../../../services/api/users';
@@ -1067,28 +1070,33 @@ export default function ChatConversationScreen() {
   const activeLeadStageLabel = resolveStageName(pipelineStages, activeLead) || activeLead?.stageName || activeLead?.stage || '';
   const activeCaseStageLabel = resolveStageName(caseStages, activeCase) || activeCase?.stageName || activeCase?.stage || '';
 
-  const handleMoveLeadStage = useCallback(async (stage: any) => {
+  // `targetLead` = the lead whose stage is being changed (the active one by default; the menu can also change a PREVIOUS lead).
+  const handleMoveLeadStage = useCallback(async (stage: any, targetLead?: any) => {
     setShowLeadStageMenu(false);
-    if (!user?.organization || !activeLead) return;
+    const lead = targetLead?.id ? targetLead : activeLead;
+    if (!user?.organization || !lead) return;
     const stageId = stage.id || stage.Id;
     const stageName = stage.name || stage.Name || stage.stageName;
     const stageColor = stage.color || stage.Color || '';
-    if (activeLead.stageId === stageId) return;
+    if (lead.stageId === stageId) return;
     // Moving to a WON stage -> confirm the deal amount first (same dialog as the web app).
     let deal: WonDeal | null = {};
     if (isWonStage(stage)) {
-      deal = await askWonDeal(activeLead as any, user.organization);
+      deal = await askWonDeal(lead as any, user.organization);
       if (deal === null) return;
     }
     const movedAtIso = new Date().toISOString();
-    setContactLeads((prev) => prev.map((l) => (l.id === activeLead.id ? { ...l, stageId, stageName, modifiedOn: movedAtIso, updatedOn: movedAtIso, ...(deal?.dealValue != null ? { value: deal.dealValue } : {}) } : l)));
+    setContactLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, stageId, stageName, modifiedOn: movedAtIso, updatedOn: movedAtIso, ...(deal?.dealValue != null ? { value: deal.dealValue } : {}) } : l)));
     // Push the new stage into the chats store so the list badge updates immediately when the user
     // goes back — without this the lead-stage change only showed up after re-opening the app.
-    addOrUpdateChat({ phoneNumber: phoneNumber as string, leadStageName: stageName, ...(stageColor ? { leadStageColor: stageColor } : {}) } as any);
+    // (The list badge shows the ACTIVE lead only, so a previous lead's change doesn't touch it.)
+    if (lead.id === activeLead?.id) {
+      addOrUpdateChat({ phoneNumber: phoneNumber as string, leadStageName: stageName, ...(stageColor ? { leadStageColor: stageColor } : {}) } as any);
+    }
     pushLocalTimeline('leadstage', isRTL ? `שלב הליד עודכן ל: ${stageName}` : `Lead stage → ${stageName}`);
     try {
       await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, {
-        organization: user.organization, leadId: activeLead.id, stageId, stageName, ...(deal || {}),
+        organization: user.organization, leadId: lead.id, stageId, stageName, ...(deal || {}),
       });
       setTimeout(refreshTimeline, 1200);
     } catch { }
@@ -1113,13 +1121,14 @@ export default function ChatConversationScreen() {
     } catch { }
   }, [user?.organization, activeCase, phoneNumber, addOrUpdateChat, pushLocalTimeline, refreshTimeline, isRTL]);
 
-  const openLeadRecord = useCallback(() => {
-    if (!activeLead?.id) return;
+  const openLeadRecord = useCallback((targetLead?: any) => {
+    const lead = targetLead?.id ? targetLead : activeLead;
+    if (!lead?.id) return;
     setShowLeadStageMenu(false);
     // The lead screen resolves the record from the lead store; hand it over the record we already
     // loaded for this contact so it opens even when the Leads list was never loaded in this session.
-    useLeadStore.getState().setSelectedLead(activeLead as any);
-    router.push({ pathname: '/(tabs)/leads/[id]', params: { id: activeLead.id } } as any);
+    useLeadStore.getState().setSelectedLead(lead as any);
+    router.push({ pathname: '/(tabs)/leads/[id]', params: { id: lead.id } } as any);
   }, [activeLead, router]);
 
   const openCaseRecord = useCallback(() => {
@@ -1172,20 +1181,14 @@ export default function ChatConversationScreen() {
 
     setIsInitiatingCall(true);
     try {
-      const result = await placeSmartCall({
+      // placeSmartCall dials right away and shows the "your phone will ring" notice itself.
+      await placeSmartCall({
         phoneNumber: phoneNumber as string,
         organization: user.organization,
         user,
         customerName: contactName,
         contactId: phoneNumber as string,
       });
-
-      if (result.mode === 'gambot' && result.success) {
-        Alert.alert(
-          t('phoneCalls.gambotCallTitle', 'Gambot Call'),
-          t('phoneCalls.callInitiated', 'Call initiated. Your phone will ring shortly.'),
-        );
-      }
     } catch {
       Alert.alert(t('common.error'), t('phoneCalls.gambotCallFailed', 'Failed to initiate call'));
     } finally {
@@ -1252,6 +1255,29 @@ export default function ChatConversationScreen() {
       setSavingNote(false);
     }
   }, [noteText, noteMentions, user, phoneNumber, isRTL, pushLocalTimeline, refreshTimeline, sendInternalMessage]);
+
+  // Quick note straight from the chat composer ("הערה" chip): saves a plain internal note on the customer's
+  // timeline (same API as the timeline sheet) and never reaches the customer. Resolves false on failure so the
+  // composer keeps the text.
+  const handleSaveQuickNote = useCallback(async (text: string): Promise<boolean> => {
+    const note = text.trim();
+    if (!note || !user?.organization || !phoneNumber) return false;
+    try {
+      const senderName = user.fullname || (user as any).displayName || '';
+      const senderId = (user as any).userId || (user as any).uID || (user as any).uid || '';
+      const { contactsApi } = await import('../../../services/api/contacts');
+      const saveRes = await contactsApi.addTimelineEntry(user.organization, phoneNumber as string, note, senderId, senderName);
+      if (saveRes && (saveRes.Success === false || saveRes.success === false)) {
+        throw new Error(saveRes.Message || saveRes.message || 'save failed');
+      }
+      pushLocalTimeline('note', note);
+      setTimeout(refreshTimeline, 1200);
+      return true;
+    } catch {
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', isRTL ? 'שמירת ההערה נכשלה' : 'Failed to save note');
+      return false;
+    }
+  }, [user, phoneNumber, isRTL, pushLocalTimeline, refreshTimeline]);
 
   // Load available owners for assign
   const handleOpenAssignOwner = useCallback(async () => {
@@ -2998,6 +3024,20 @@ export default function ChatConversationScreen() {
           calendar_event: '#009688',
         };
         const entryType = (entry.timelineType || entry.TimelineType || entry.type || 'note').toLowerCase();
+        // Lead-form submission (Facebook / Instagram / website form): shown like an incoming message card.
+        if (entryType === 'lead_source_form') {
+          const leadTs = entry.createdOn || entry.timestamp || entry.CreatedOn || '';
+          return (
+            <View style={{ marginHorizontal: 12, marginVertical: 6 }}>
+              <LeadSourceFormCard entry={entry} isRTL={lang === 'he'} />
+              {leadTs ? (
+                <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant, marginTop: 2, paddingHorizontal: 4, textAlign: lang === 'he' ? 'right' : 'left' }}>
+                  {formatMessageTime(leadTs)}
+                </Text>
+              ) : null}
+            </View>
+          );
+        }
         const icon = iconMap[entryType] || 'information-outline';
         const iconColor = colorMap[entryType] || '#2e6155';
         const entryText = (entry.note || entry.text || entry.description || entry.Note || entry.content || '') || buildTimelineText(entry, lang === 'he');
@@ -3037,6 +3077,9 @@ export default function ChatConversationScreen() {
                     {noteExpanded ? (lang === 'he' ? 'צפה פחות' : 'View less') : (lang === 'he' ? 'צפה עוד' : 'View more')}
                   </Text>
                 </TouchableOpacity>
+              ) : null}
+              {entry.recordingUrl ? (
+                <RecordingPlayer uri={String(entry.recordingUrl)} durationSec={Number(entry.duration) || undefined} />
               ) : null}
               <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2, gap: 6 }}>
                 {entryBy ? (
@@ -3457,21 +3500,23 @@ export default function ChatConversationScreen() {
                   <Text style={{ fontSize: 11, fontWeight: '600', color: '#16a34a', marginStart: 4 }} numberOfLines={1}>
                     {activeLeadStageLabel || (isRTL ? 'ליד' : 'Lead')}
                   </Text>
+                  {contactLeads.length > 1 && (
+                    <Text style={{ fontSize: 10.5, fontWeight: '700', color: '#16a34a', marginStart: 4, opacity: 0.85 }}>+{contactLeads.length - 1}</Text>
+                  )}
                   <MaterialCommunityIcons name="chevron-down" size={14} color="#16a34a" style={{ marginStart: 2 }} />
                 </Pressable>
               }
-              contentStyle={{ backgroundColor: theme.colors.surface }}
+              contentStyle={{ backgroundColor: theme.colors.surface, minWidth: 230 }}
             >
-              {pipelineStages.map((stage: any) => (
-                <Menu.Item
-                  key={stage.id || stage.Id}
-                  title={stage.name || stage.Name || stage.stageName}
-                  leadingIcon={activeLead.stageId === (stage.id || stage.Id) ? 'check' : undefined}
-                  onPress={() => handleMoveLeadStage(stage)}
-                />
-              ))}
-              <Divider />
-              <Menu.Item leadingIcon="open-in-new" title={isRTL ? 'פתח רשומת ליד' : 'Open lead'} onPress={openLeadRecord} />
+              <LeadStagesMenuBody
+                leads={contactLeads}
+                activeLeadId={activeLead.id}
+                stages={pipelineStages}
+                resolveStageName={resolveStageName}
+                isRTL={isRTL}
+                onPickStage={handleMoveLeadStage}
+                onOpen={openLeadRecord}
+              />
             </Menu>
           )}
 
@@ -3861,6 +3906,28 @@ export default function ChatConversationScreen() {
                     {t('chats.internalMessageShort', 'הודעה לצוות')}
                   </Text>
                 </Pressable>
+
+                {/* 📝 Quick timeline note — same composer as the open-window "הערה" chip */}
+                <Pressable
+                  onPress={() => setShowAddNoteModal(true)}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 4,
+                    backgroundColor: pressed ? (theme.dark ? '#3E3500' : '#FFF8E1') : 'transparent',
+                    borderWidth: 1,
+                    borderColor: '#FFB300',
+                    paddingVertical: 7,
+                    borderRadius: 18,
+                  })}
+                >
+                  <MaterialCommunityIcons name="note-text-outline" size={15} color={theme.dark ? '#FFE082' : '#8D6E63'} />
+                  <Text numberOfLines={1} style={{ color: theme.dark ? '#FFE082' : '#8D6E63', fontSize: 12, fontWeight: '700' }}>
+                    {t('chats.noteChip', 'הערה')}
+                  </Text>
+                </Pressable>
               </View>
             </View>
           </>
@@ -3891,6 +3958,7 @@ export default function ChatConversationScreen() {
               aiReplyEnabled={aiReplyEnabled}
               isGeneratingAiReply={isGeneratingAiReply}
               onGenerateAiReply={handleGenerateAiReply}
+              onSaveNote={handleSaveQuickNote}
             />
           </>
         )}
@@ -5098,6 +5166,14 @@ export default function ChatConversationScreen() {
                       const taskId = entry.taskId || entry.TaskId || (ty.startsWith('task') ? (entry.entityId || entry.relatedId) : '');
                       const isTask = ty.startsWith('task') && !!taskId;
                       const isNote = ty === 'note' || ty === 'internal_mention';
+                      if (ty === 'lead_source_form') {
+                        return (
+                          <View key={entry.timelineEntryId || entry.id || idx} style={{ marginBottom: 14 }}>
+                            <LeadSourceFormCard entry={entry} isRTL={isRTL} />
+                            {ts ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: isRTL ? 'right' : 'left' }}>{formatMessageTime(ts)}</Text> : null}
+                          </View>
+                        );
+                      }
                       return (
                         <View key={entry.timelineEntryId || entry.id || idx} style={{ flexDirection: isRTL ? 'row-reverse' : 'row', marginBottom: 14, gap: 10 }}>
                           <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: isNote ? '#fff3e0' : '#e8f0ee', alignItems: 'center', justifyContent: 'center' }}>
@@ -5105,6 +5181,9 @@ export default function ChatConversationScreen() {
                           </View>
                           <View style={{ flex: 1 }}>
                             <Text style={{ color: theme.colors.onSurface, fontSize: 14, lineHeight: 20, textAlign: isRTL ? 'right' : 'left' }}>{text}</Text>
+                            {entry.recordingUrl ? (
+                              <RecordingPlayer uri={String(entry.recordingUrl)} durationSec={Number(entry.duration) || undefined} />
+                            ) : null}
                             <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
                               {by ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{by}</Text> : null}
                               {ts ? <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{formatMessageTime(ts)}</Text> : null}

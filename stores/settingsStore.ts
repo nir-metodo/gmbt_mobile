@@ -45,6 +45,8 @@ interface SettingsState {
   defaultScreen: string;
   // Dialer every call button opens first: 'system' (organization line), 'phone' (device dialer) or '' = automatic.
   defaultDialer: 'system' | 'phone' | '';
+  // Ringtone for calls that ring in the app (id from utils/ringtones; '' = default).
+  ringtone: string;
   // True once locally-persisted settings (incl. defaultScreen) have been loaded.
   settingsInitialized: boolean;
   isLoading: boolean;
@@ -54,6 +56,7 @@ interface SettingsState {
   setLanguage: (lang: 'en' | 'he') => Promise<void>;
   setDefaultScreen: (route: string) => Promise<void>;
   setDefaultDialer: (value: 'system' | 'phone' | '') => Promise<void>;
+  setRingtone: (id: string) => Promise<void>;
   loadTelephonySettings: (organization: string, userId?: string) => Promise<void>;
   setCallAlertSound: (enabled: boolean) => void;
   setCallAlertVibrate: (enabled: boolean) => void;
@@ -101,6 +104,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   caseAssignedNotification: true,
   defaultScreen: '',
   defaultDialer: '',
+  ringtone: '',
   settingsInitialized: false,
   isLoading: false,
 
@@ -113,12 +117,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       const callAlertVibrateEnabled = await appStorage.getCallAlertVibrate();
       const defaultScreen = await appStorage.getDefaultScreen();
       const defaultDialer = await appStorage.getDefaultDialer();
+      const ringtone = await appStorage.getRingtone();
       i18n.changeLanguage(language);
       const shouldBeRTL = language === 'he';
       if (I18nManager.isRTL !== shouldBeRTL) {
         I18nManager.forceRTL(shouldBeRTL);
       }
-      set({ theme, language, reportDeviceCallEventsEnabled, callAlertSoundEnabled, callAlertVibrateEnabled, defaultScreen, defaultDialer });
+      set({ theme, language, reportDeviceCallEventsEnabled, callAlertSoundEnabled, callAlertVibrateEnabled, defaultScreen, defaultDialer, ringtone });
     } finally {
       // Never block app launch on a settings read failure.
       set({ settingsInitialized: true });
@@ -151,6 +156,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     set({ defaultDialer: value });
   },
 
+  setRingtone: async (id) => {
+    await appStorage.setRingtone(id);
+    set({ ringtone: id });
+  },
+
   loadTelephonySettings: async (organization, userId) => {
     try {
       const settings = await phoneCallsApi.getTelephonySettings(organization);
@@ -174,7 +184,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         telephonyProvider: provider,
         usableCallerNumbers: usable,
         defaultCallerId: callerIdOk ? settings.defaultCallerId : (usable[0]?.number || ''),
-        myExtension: mine ? { extension: mine.extension, enabled: !!mine.enabled, ringMobile: mine.ringMobile === true, mobilePhone: mine.mobilePhone || '', outboundCallerId: mine.outboundCallerId === 'mobile' ? 'mobile' : 'did' } : null,
+        myExtension: mine ? { extension: mine.extension, enabled: !!mine.enabled, ringMobile: mine.ringMobile === true, mobilePhone: mine.mobilePhone || '', outboundCallerId: mine.outboundCallerId === 'did' ? 'did' : 'mobile' } : null, // default = the user's own mobile (only an explicit "did" keeps the org number)
         telephonySolutionAvailable: pbxOn && allowedByExtension && (legacyAllowed || provider === 'sip'),
       });
     } catch {

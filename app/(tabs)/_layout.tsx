@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Tabs, useSegments, usePathname } from 'expo-router';
-import { StyleSheet, View } from 'react-native';
+import { AppState, StyleSheet, View } from 'react-native';
 import { Badge, useTheme } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
@@ -9,10 +9,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useMissedCallsStore } from '../../stores/missedCallsStore';
+import { notificationService } from '../../services/notifications';
 import { useRTL } from '../../hooks/useRTL';
 import ActiveCallBar from '../../components/phone-calls/ActiveCallBar';
 import IncomingCallOverlay from '../../components/phone-calls/IncomingCallOverlay';
-import DialSheet from '../../components/phone-calls/DialSheet';
 import { useSipPhone } from '../../hooks/useSipPhone';
 import { hasPermission } from '../../constants/permissions';
 import { fontSize, spacing } from '../../constants/theme';
@@ -45,9 +46,31 @@ export default function TabsLayout() {
 
   useEffect(() => {
     if (user?.organization) {
-      loadTelephonySettings(user.organization, (user as any)?.uID || (user as any)?.userId);
+      loadTelephonySettings(user.organization, (user as any)?.uID || (user as any)?.userId).then(() => {
+        // Default: every user dials from his OWN number (through the PBX). An extension that has no mobile number saved yet gets the one
+        // from the user's profile; an explicit "organization number" choice is never overridden.
+        const ext = useSettingsStore.getState().myExtension;
+        const profilePhone = String((user as any)?.phoneNumber || (user as any)?.PhoneNumber || (user as any)?.phone || '').replace(/[^\d+]/g, '');
+        if (ext?.enabled && !ext.mobilePhone && ext.outboundCallerId !== 'did' && profilePhone.length >= 7) {
+          useSettingsStore.getState().setMyOutboundCallerId(user.organization, 'mobile', profilePhone).catch(() => {});
+        }
+      }).catch(() => {});
     }
   }, [user?.organization]);
+
+  // Unanswered inbound calls since the calls screen was last opened -> red badge on "More" (and on its "Phone calls" card).
+  const missedUnseen = useMissedCallsStore((s) => s.unseen);
+  useEffect(() => {
+    const org = user?.organization;
+    if (!org || !telephonyEnabled) return undefined;
+    const uid = (user as any)?.uID || (user as any)?.userId;
+    const refresh = () => { useMissedCallsStore.getState().refresh(org, uid); };
+    refresh();
+    const appSub = AppState.addEventListener('change', (st) => { if (st === 'active') refresh(); });
+    // A push (e.g. the "missed call" alert) arriving while the app is open updates the badge right away.
+    const pushSub = notificationService.addNotificationReceivedListener(() => { setTimeout(refresh, 1500); });
+    return () => { appSub.remove(); pushSub.remove(); };
+  }, [user?.organization, telephonyEnabled]);
 
   const tabs: TabConfig[] = [
     {
@@ -85,6 +108,7 @@ export default function TabsLayout() {
       icon: 'dots-grid',
       iconFocused: 'dots-grid',
       permission: null,
+      badge: telephonyEnabled ? missedUnseen : 0,
     },
   ];
 
@@ -214,7 +238,6 @@ export default function TabsLayout() {
     </Tabs>
     <ActiveCallBar />
     <IncomingCallOverlay />
-    <DialSheet />
     </View>
   );
 }

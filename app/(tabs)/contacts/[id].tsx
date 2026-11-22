@@ -39,7 +39,7 @@ import { phoneCallsApi } from '../../../services/api/phoneCalls';
 import axiosInstance from '../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../constants/api';
 import { placeSmartCall } from '../../../utils/phoneCall';
-import { RecordingPlayer } from '../../../components/phone-calls/RecordingPlayer';
+import CallDetailPanel from '../../../components/phone-calls/CallDetailPanel';
 import { cleanPhoneNumber } from '../../../utils/phoneNumber';
 import PhoneNumberInput from '../../../components/PhoneNumberInput';
 import { useAppTheme } from '../../../hooks/useAppTheme';
@@ -1976,6 +1976,8 @@ function RelatedRecordsSection({
   flexDirection: 'row' | 'row-reverse';
   router: any;
 }) {
+  const orgId = useAuthStore((s) => s.user?.organization) || '';
+  const [openCallId, setOpenCallId] = useState<string | null>(null);
   if (loading) {
     return (
       <View style={styles.sectionEmpty}>
@@ -2023,7 +2025,8 @@ function RelatedRecordsSection({
             const when = call.createdAt ? formatDate(/[zZ]|[+-]\d{2}:?\d{2}$/.test(call.createdAt) ? call.createdAt : call.createdAt + 'Z', 'dd/MM/yyyy HH:mm') : '';
             return (
               <React.Fragment key={call.id}>
-              <View
+              <Pressable
+                onPress={() => setOpenCallId((cur) => (cur === call.id ? null : call.id))}
                 style={[styles.relatedCard, { backgroundColor: theme.colors.surfaceVariant, flexDirection }]}
               >
                 <MaterialCommunityIcons name={icon as any} size={20} color={color} />
@@ -2039,8 +2042,13 @@ function RelatedRecordsSection({
                 {call.recordingUrl ? (
                   <MaterialCommunityIcons name="microphone" size={18} color="#FF6B35" />
                 ) : null}
-              </View>
-              {call.recordingUrl ? <RecordingPlayer uri={call.recordingUrl} durationSec={call.duration} /> : null}
+                <MaterialCommunityIcons name={openCallId === call.id ? 'chevron-up' : 'chevron-down'} size={20} color={theme.colors.onSurfaceVariant} />
+              </Pressable>
+              {openCallId === call.id ? (
+                <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
+                  <CallDetailPanel call={call} org={orgId} isRTL={isRTL} t={t} themeColors={theme.colors} />
+                </View>
+              ) : null}
               </React.Fragment>
             );
           })}

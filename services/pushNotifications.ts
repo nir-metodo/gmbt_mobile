@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axiosInstance from './api/axiosInstance';
 import { ENDPOINTS } from '../constants/api';
+import { CallUi } from '../modules/call-ui';
 
 export interface PushNotificationSettings {
   incomingMessages: boolean;
@@ -120,10 +121,37 @@ export const pushNotificationService = {
     }
   },
 
+  /**
+   * iPhone: register the PushKit (VoIP) token so an incoming call can wake the app with the system call screen. Safe to call often
+   * (idempotent on the backend); a no-op on Android / in builds without the native call screen / before iOS has issued the token.
+   */
+  async registerVoipToken(organization: string, userId: string, token?: string | null): Promise<void> {
+    try {
+      if (Platform.OS !== 'ios') return;
+      const voipToken = token || CallUi.getVoipToken();
+      if (!voipToken) return;
+      await axiosInstance.post(ENDPOINTS.REGISTER_VOIP_TOKEN, { organization, userId, voipToken, sandbox: CallUi.isVoipSandbox() });
+    } catch {
+      /* best effort - retried at the next login / app start */
+    }
+  },
+
+  async unregisterVoipToken(): Promise<void> {
+    try {
+      if (Platform.OS !== 'ios') return;
+      const voipToken = CallUi.getVoipToken();
+      if (voipToken) await axiosInstance.post(ENDPOINTS.UNREGISTER_VOIP_TOKEN, { voipToken });
+    } catch {
+      /* best effort */
+    }
+  },
+
   async registerPushToken(organization: string, userId: string): Promise<string | null> {
     if (!Device.isDevice) {
       return null;
     }
+    // Independent of the Expo token below (and of its dedup): the VoIP token has its own registration.
+    pushNotificationService.registerVoipToken(organization, userId).catch(() => {});
 
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
     let finalStatus = existingStatus;
@@ -199,6 +227,7 @@ export const pushNotificationService = {
   // request token). Without this, the previous account's token lingers server-side and keeps
   // delivering its messages to this device even after switching accounts.
   async unregisterPushToken(organization: string, userId: string): Promise<void> {
+    await pushNotificationService.unregisterVoipToken();
     try {
       let expoPushToken: string | null = null;
       // Prefer the OS token (no prompt when permission is already granted).

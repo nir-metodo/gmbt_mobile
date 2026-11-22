@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, Image, Linking, ActivityIndicator, Platform, Alert, Vibration } from 'react-native';
+import { View, StyleSheet, ScrollView, Pressable, Image, Linking, ActivityIndicator, Platform, Alert, Vibration, AppState } from 'react-native';
 import type { MD3Theme } from 'react-native-paper';
 import {
   Appbar,
@@ -30,6 +30,10 @@ import axiosInstance from '../../../../services/api/axiosInstance';
 import { ENDPOINTS } from '../../../../constants/api';
 import { enableDeviceCallEvents, disableDeviceCallEvents } from '../../../../services/deviceCallEvents';
 import Constants from 'expo-constants';
+import { Audio } from 'expo-av';
+import { RINGTONES, getRingtone } from '../../../../utils/ringtones';
+import { CallUi } from '../../../../modules/call-ui';
+import { CallEvents } from '../../../../modules/call-events';
 
 const BRAND_COLOR = '#2e6155';
 
@@ -92,6 +96,16 @@ export default function SettingsScreen() {
   const [themeDialogVisible, setThemeDialogVisible] = useState(false);
   const [defaultScreenDialogVisible, setDefaultScreenDialogVisible] = useState(false);
   const [dialerDialogVisible, setDialerDialogVisible] = useState(false);
+  const [ringtoneDialogVisible, setRingtoneDialogVisible] = useState(false);
+  // Android: can a call pop up over the lock screen (notifications on + full-screen notifications allowed)?
+  const [fullScreenCallsOk, setFullScreenCallsOk] = useState(true);
+  useEffect(() => {
+    const check = () => setFullScreenCallsOk(CallUi.areNotificationsEnabled() && CallUi.canUseFullScreenIntent());
+    check();
+    const sub = AppState.addEventListener('change', (st) => { if (st === 'active') check(); });
+    return () => sub.remove();
+  }, []);
+  const previewRef = React.useRef<Audio.Sound | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [cacheSize, setCacheSize] = useState<string>('...');
   const [clearingCache, setClearingCache] = useState(false);
@@ -167,6 +181,25 @@ export default function SettingsScreen() {
     }
     setDialerDialogVisible(false);
   }, [settings]);
+  // Ringtone for calls that ring in the app: choosing a tone saves it and plays a preview.
+  const stopRingtonePreview = useCallback(() => {
+    const snd = previewRef.current;
+    previewRef.current = null;
+    if (snd) snd.unloadAsync().catch(() => {});
+  }, []);
+  useEffect(() => stopRingtonePreview, [stopRingtonePreview]);
+  const handleRingtoneChange = useCallback(async (id: string) => {
+    stopRingtonePreview();
+    try { await settings.setRingtone(id === 'default' ? '' : id); } catch { /* applied locally */ }
+    try {
+      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync(getRingtone(id).source, { shouldPlay: true, volume: 1 });
+      previewRef.current = sound;
+      sound.setOnPlaybackStatusUpdate((st) => { if (st.isLoaded && st.didJustFinish) stopRingtonePreview(); });
+    } catch { /* preview is optional */ }
+  }, [settings, stopRingtonePreview]);
+  const currentRingtone = getRingtone(settings.ringtone);
+
   const handleThemeChange = useCallback(async (mode: string) => {
     try {
       await settings.setTheme(mode as 'light' | 'dark' | 'system');
@@ -401,8 +434,8 @@ export default function SettingsScreen() {
                 iconColor={BRAND_COLOR}
                 label={t('settings.defaultDialer', isRTL ? 'חייגן ברירת מחדל' : 'Default dialer')}
                 description={currentDialer === 'system'
-                  ? (isRTL ? 'חייגן המערכת (קו הארגון) - בכל כפתור חיוג באפליקציה. אפשר לעבור לחייגן הטלפון בכל שיחה.' : "System dialer (the organization's line) - on every call button in the app. You can switch to the phone's dialer on any call.")
-                  : (isRTL ? 'חייגן הטלפון - בכל כפתור חיוג באפליקציה. אפשר לעבור לחייגן המערכת בכל שיחה.' : "Phone dialer - on every call button in the app. You can switch to the system dialer on any call.")}
+                  ? (isRTL ? 'חייגן המערכת (קו הארגון) - כל כפתור חיוג באפליקציה מחייג מיד, בלי חלון אישור.' : "System dialer (the organization's line) - every call button in the app dials immediately, with no confirmation sheet.")
+                  : (isRTL ? 'חייגן הטלפון - כל כפתור חיוג באפליקציה מחייג מיד, בלי חלון אישור.' : "Phone dialer - every call button in the app dials immediately, with no confirmation sheet.")}
                 isRTL={isRTL}
                 themeColors={theme.colors}
                 onPress={() => setDialerDialogVisible(true)}
@@ -452,6 +485,41 @@ export default function SettingsScreen() {
                 themeColors={theme.colors}
                 right={<Switch value={settings.myExtension?.outboundCallerId === 'mobile'} onValueChange={handleOutboundCallerId} color={BRAND_COLOR} />}
               />
+            </>
+          )}
+          {settings.telephonySolutionAvailable && (
+            <>
+              <Divider style={s.divider} />
+              <SettingRow
+                icon="music-note"
+                iconColor="#E11D48"
+                label={isRTL ? 'צליל שיחה נכנסת' : 'Incoming call ringtone'}
+                description={`${isRTL ? currentRingtone.he : currentRingtone.en} - ${isRTL ? 'הצליל שמושמע כששיחה מצלצלת באפליקציה. לחצו לבחירה.' : 'plays when a call rings in the app. Tap to choose.'}`}
+                isRTL={isRTL}
+                themeColors={theme.colors}
+                onPress={() => setRingtoneDialogVisible(true)}
+                right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
+              />
+              {Platform.OS === 'android' && CallUi.isSupported() && settings.telephonyProvider === 'sip' && (
+                <>
+                  <Divider style={s.divider} />
+                  <SettingRow
+                    icon={fullScreenCallsOk ? 'phone-ring' : 'phone-alert'}
+                    iconColor={fullScreenCallsOk ? '#16a34a' : '#dc2626'}
+                    label={t('phoneCalls.incomingWhenClosed', 'שיחות נכנסות כשהאפליקציה סגורה')}
+                    description={fullScreenCallsOk
+                      ? t('phoneCalls.incomingWhenClosedOk', 'פעיל - שיחה תקפוץ גם כשהמסך נעול')
+                      : t('phoneCalls.incomingWhenClosedFix', 'לחצו כדי לאפשר הצגת שיחה על כל המסך')}
+                    isRTL={isRTL}
+                    themeColors={theme.colors}
+                    onPress={() => {
+                      if (!CallUi.areNotificationsEnabled() || !CallUi.canUseFullScreenIntent()) CallUi.openFullScreenIntentSettings();
+                      else CallEvents.requestIgnoreBatteryOptimizations().catch(() => {});
+                    }}
+                    right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
+                  />
+                </>
+              )}
             </>
           )}
           <Divider style={s.divider} />
@@ -716,6 +784,29 @@ export default function SettingsScreen() {
               ))}
             </RadioButton.Group>
           </Dialog.Content>
+        </Dialog>
+      </Portal>
+
+      {/* ── Incoming call ringtone Dialog ── */}
+      <Portal>
+        <Dialog visible={ringtoneDialogVisible} onDismiss={() => { stopRingtonePreview(); setRingtoneDialogVisible(false); }} style={{ borderRadius: 20 }}>
+          <Dialog.Title>{isRTL ? 'צליל שיחה נכנסת' : 'Incoming call ringtone'}</Dialog.Title>
+          <Dialog.Content>
+            <RadioButton.Group value={currentRingtone.id} onValueChange={(v) => handleRingtoneChange(v)}>
+              {RINGTONES.map((r) => (
+                <Pressable key={r.id} onPress={() => handleRingtoneChange(r.id)} style={[s.themeRow, { flexDirection: 'row' }]}>
+                  <MaterialCommunityIcons name="music-note" size={22} color={theme.colors.onSurface} />
+                  <View style={{ flex: 1, marginHorizontal: 12 }}>
+                    <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, textAlign: isRTL ? 'right' : 'left' }}>{isRTL ? r.he : r.en}</Text>
+                  </View>
+                  <RadioButton value={r.id} color={BRAND_COLOR} />
+                </Pressable>
+              ))}
+            </RadioButton.Group>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => { stopRingtonePreview(); setRingtoneDialogVisible(false); }}>{isRTL ? 'סגור' : 'Close'}</Button>
+          </Dialog.Actions>
         </Dialog>
       </Portal>
 

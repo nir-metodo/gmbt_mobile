@@ -7,7 +7,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Calendar from 'expo-calendar';
 import GambotDateTimePicker from '../../../../components/GambotDateTimePicker';
 import { useAuthStore } from '../../../../stores/authStore';
-import { calendarApi, CalendarEvent, CalendarInfo, CalendarSettings, Connection } from '../../../../services/api/calendar';
+import { calendarApi, CalendarEvent, CalendarInfo, CalendarSettings, Connection, OUTCOME_META, isAwaitingOutcome } from '../../../../services/api/calendar';
+import EventOutcomeSection from '../../../../components/calendar/EventOutcomeSection';
 import { usersApi } from '../../../../services/api/users';
 import { tasksApi } from '../../../../services/api/tasks';
 import AddTaskSheet from '../../../../components/AddTaskSheet';
@@ -818,8 +819,24 @@ export default function CalendarScreen() {
     );
   };
 
+  const meUserName = () => (user as any)?.fullname || user?.name || '';
+
+  // One-tap "did the meeting happen?" from the card. Updates the list optimistically and rolls back on failure.
+  const quickSetOutcome = async (event: CalendarEvent, outcome: string) => {
+    const prev = event.outcome || '';
+    setEvents(list => list.map(e => (e.id === event.id ? { ...e, outcome } : e)));
+    try {
+      await calendarApi.setOutcome(org, event.id, outcome, '', meUserName());
+    } catch (e: any) {
+      setEvents(list => list.map(x => (x.id === event.id ? { ...x, outcome: prev } : x)));
+      Alert.alert(isRTL ? 'שגיאה' : 'Error', e?.message || (isRTL ? 'העדכון נכשל' : 'Update failed'));
+    }
+  };
+
   const renderEventCard = (event: CalendarEvent) => {
     if ((event as any)._isTask) return renderTaskCard(event);
+    const outcomeMeta = event.outcome ? OUTCOME_META[event.outcome] : undefined;
+    const awaitingOutcome = !(event.recurrence && event.recurrence !== 'none') && isAwaitingOutcome(event);
     const isRecurring = !!event.recurrence && event.recurrence !== 'none';
     const linkedUserNames = (event.linkedEntities || []).filter(l => l.type === 'user').map(l => l.name);
     const status = (event.status || 'confirmed').toLowerCase();
@@ -853,11 +870,34 @@ export default function CalendarScreen() {
                   <Text style={[styles.tagChipText, { color: '#b91c1c' }]}>{statusLabel('cancelled', isRTL)}</Text>
                 </View>
               )}
+              {outcomeMeta && (
+                <View style={[styles.tagChip, { backgroundColor: outcomeMeta.bg }]}>
+                  <Text style={[styles.tagChipText, { color: outcomeMeta.fg }]}>{isRTL ? outcomeMeta.he : outcomeMeta.en}</Text>
+                </View>
+              )}
             </View>
             <Text style={[styles.eventDate, { color: theme.colors.onSurfaceVariant }]}>{whenText}</Text>
           </View>
           <IconButton icon="delete-outline" size={20} iconColor="#ef4444" onPress={() => handleDelete(event)} />
         </View>
+        {awaitingOutcome ? (
+          <View style={{ marginTop: 6, padding: 8, borderRadius: 10, backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a' }}>
+            <Text style={{ fontWeight: '700', color: '#92400e', textAlign: isRTL ? 'right' : 'left' }}>
+              ❔ {isRTL ? 'האם הפגישה התקיימה?' : 'Did it happen?'}
+            </Text>
+            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+              {(['held', 'no_show', 'postponed'] as const).map(k => (
+                <Pressable
+                  key={k}
+                  onPress={() => quickSetOutcome(event, k)}
+                  style={{ paddingVertical: 6, paddingHorizontal: 12, borderRadius: 999, backgroundColor: OUTCOME_META[k].bg }}
+                >
+                  <Text style={{ fontWeight: '700', color: OUTCOME_META[k].fg }}>{isRTL ? OUTCOME_META[k].he : OUTCOME_META[k].en}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        ) : null}
         {event.location ? (
           <View style={styles.eventDetail}>
             <MaterialCommunityIcons name="map-marker-outline" size={14} color={theme.colors.onSurfaceVariant} />
@@ -1710,6 +1750,22 @@ export default function CalendarScreen() {
               )}
             </View>
               </>
+            )}
+
+            {/* What happened with the event + its timeline (existing events only) */}
+            {editingEvent && !(editingEvent as any)._isTask && (
+              <EventOutcomeSection
+                org={org}
+                eventId={editingEvent.id}
+                outcome={editingEvent.outcome || ''}
+                awaiting={!(editingEvent.recurrence && editingEvent.recurrence !== 'none') && isAwaitingOutcome(editingEvent)}
+                userName={meUserName()}
+                isRTL={isRTL}
+                onOutcomeChanged={(o) => {
+                  setEvents(list => list.map(e => (e.id === editingEvent.id ? { ...e, outcome: o } : e)));
+                  setEditingEvent(prev => (prev ? { ...prev, outcome: o } : prev));
+                }}
+              />
             )}
 
             {/* Action buttons */}

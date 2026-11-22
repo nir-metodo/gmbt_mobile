@@ -1,6 +1,8 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 import { phoneCallsApi } from '../api/phoneCalls';
 import { useSipPhoneStore } from '../../stores/sipPhoneStore';
+import { useActiveCallStore } from '../../stores/activeCallStore';
+import { CallUi } from '../../modules/call-ui';
 
 /**
  * The app's own phone: a SIP/WebRTC endpoint registered on the Gambot PBX (the same Asterisk gateway and the same per-user login
@@ -14,6 +16,7 @@ import { useSipPhoneStore } from '../../stores/sipPhoneStore';
  */
 
 const BRIDGE_WINDOW_MS = 60_000;
+const AUTO_ANSWER_WINDOW_MS = 60_000;
 
 let JsSIP: any = null;
 let loadFailed = false;
@@ -50,6 +53,31 @@ class SipPhone {
   private startedFor = '';
   private starting: Promise<boolean> | null = null;
   private bridgeUntil = 0;
+  /** The user pressed Answer on the native call screen (app was closed / locked): the INVITE that follows is answered without ringing. */
+  private autoAnswer: { callId: string; from: string; name: string; until: number } | null = null;
+
+  /** Arm the auto-answer for the call the user accepted on the native call screen (see modules/call-ui). */
+  armAutoAnswer(a: { callId: string; from: string; name: string }) {
+    const armed = { ...a, until: Date.now() + AUTO_ANSWER_WINDOW_MS };
+    this.autoAnswer = armed;
+    // The call never arrived (answered by a colleague meanwhile / the caller hung up): drop the system call instead of leaving it "connected".
+    setTimeout(() => {
+      if (this.autoAnswer === armed) { this.autoAnswer = null; CallUi.endCall(a.callId); }
+    }, 25_000);
+  }
+
+  /** True while an accepted call is still on its way (the app must stay registered even if it is backgrounded). */
+  isAutoAnswerArmed(): boolean {
+    return !!this.autoAnswer && Date.now() < this.autoAnswer.until;
+  }
+
+  /** Reads the "Answer" the user chose on the native call screen (Android) and arms the auto-answer. True when one was found. */
+  pickUpNativeAnswer(): boolean {
+    const p = CallUi.consumePendingAction();
+    if (!p || p.action !== 'answer') return false;
+    this.armAutoAnswer({ callId: p.callId, from: p.from, name: p.name });
+    return true;
+  }
 
   isSupported(): boolean {
     return load();
@@ -140,7 +168,7 @@ class SipPhone {
     return { mediaConstraints: { audio: true, video: false }, pcConfig: { iceServers: this.iceServers } };
   }
 
-  private bind(session: any) {
+  private bind(session: any, callId = '') {
     this.session = session;
     const store = useSipPhoneStore.getState();
     const done = () => {
@@ -148,6 +176,7 @@ class SipPhone {
       const s = useSipPhoneStore.getState();
       s.setIncoming(null);
       s.setInCall(false);
+      if (callId) CallUi.endCall(callId); // iPhone: dismiss the system call (CallKit); Android: nothing left to cancel
     };
     session.on('accepted', () => { store.setIncoming(null); store.setInCall(true); });
     session.on('confirmed', () => { store.setIncoming(null); store.setInCall(true); });
@@ -176,6 +205,23 @@ class SipPhone {
     }
     // A click-to-call leg that belongs to another of this user's devices (the browser, say): not ours to answer or ring.
     if (outLeg) { decline(); return; }
+
+    // The user already pressed Answer on the native call screen (the app was closed / locked): connect straight away, no second ring screen.
+    // (The pending answer may not have been read yet when the INVITE arrives first - read it now.)
+    if (!this.isAutoAnswerArmed()) this.pickUpNativeAnswer();
+    const aa = this.autoAnswer;
+    if (aa && Date.now() < aa.until && (!aa.callId || !callId || aa.callId === callId)) {
+      this.autoAnswer = null;
+      this.bind(session, callId || aa.callId);
+      if (!(await ensureMicPermission())) { decline(); return; }
+      try {
+        session.answer(this.answerOptions());
+        CallUi.cancelIncoming(callId);
+        const org = this.startedFor;
+        if (callId && org) useActiveCallStore.getState().start({ callId, organization: org, phoneNumber: from || aa.from, name: name || aa.name, answered: true });
+      } catch { decline(); }
+      return;
+    }
 
     // A real incoming call: ring in the app until the agent answers / declines (or it is answered elsewhere / hung up).
     this.bind(session);
