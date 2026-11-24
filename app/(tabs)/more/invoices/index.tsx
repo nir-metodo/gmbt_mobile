@@ -38,34 +38,10 @@ import { EmptyState } from '../../../../components/EmptyState';
 import { useMultiSelect, SelectionHeader, BulkActionBar, type BulkAction } from '../../../../components/MultiSelect';
 import { sendDocumentViaGambot, MissingDefaultTemplateError } from '../../../../services/whatsappDocSender';
 import { buildInvoiceHtml, joinDocuments, openPdf } from '../../../../utils/documentPdf';
+import { InvoiceRowActions, getOpenBalance, BULK_DERIVE, publicUrlOf } from '../../../../components/InvoiceRowActions';
 
 const BRAND_COLOR = '#2e6155';
 const MAX_PDF_DOCS = 30;
-
-/** Unpaid balance of an issued tax invoice / tax-invoice-receipt (mirrors the invoice screen + web getOpenBalance). */
-function getOpenBalance(inv: Invoice): number {
-  if (!inv.isLocked) return 0;
-  if (inv.type !== 'tax_invoice' && inv.type !== 'combined') return 0;
-  if (inv.status === 'cancelled') return 0;
-  const total = Number(inv.total) || 0;
-  const balance = inv.balanceDue != null
-    ? Number(inv.balanceDue)
-    : total - (Number(inv.paidAmount) || 0) - (Number(inv.creditedAmount) || 0);
-  return balance > 0.001 ? balance : 0;
-}
-
-/** Follow-up documents that make sense in bulk (credit documents need an amount per document → single only). */
-const BULK_DERIVE: Record<string, { targetType: string; label: string; icon: string }[]> = {
-  tax_invoice: [
-    { targetType: 'receipt', label: 'הפק קבלות', icon: 'receipt' },
-    { targetType: 'combined', label: 'חשבונית מס קבלה', icon: 'file-check-outline' },
-  ],
-  combined: [{ targetType: 'receipt', label: 'הפק קבלות', icon: 'receipt' }],
-  transaction: [{ targetType: 'tax_invoice', label: 'הפק חשבוניות מס', icon: 'file-document-outline' }],
-};
-
-const publicUrlOf = (org: string, inv: Invoice) =>
-  `https://www.gambot.co.il/invoice?org=${encodeURIComponent(org)}&id=${encodeURIComponent(inv.id || '')}`;
 
 export default function InvoicesScreen() {
   const router = useRouter();
@@ -437,10 +413,11 @@ export default function InvoicesScreen() {
         selected={sel.active && sel.isSelected(item.id as string)}
         onLongPress={() => item.id && sel.start(item.id)}
         onPress={() => (sel.active ? sel.toggle(item.id as string) : router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: item.id } }))}
+        actions={<InvoiceRowActions invoice={item} user={user} onChanged={() => { fetchInvoices(1); fetchSummary(); }} />}
       />
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router, t, sel.active, sel.isSelected, sel.toggle, sel.start]);
+  }, [router, t, user, fetchInvoices, fetchSummary, sel.active, sel.isSelected, sel.toggle, sel.start]);
 
   const advancedCount = countInvoiceFilters(filters);
   const filtering = statusFilter !== 'all' || typeFilter !== 'all' || !!debouncedSearch || advancedCount > 0;

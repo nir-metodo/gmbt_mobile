@@ -27,6 +27,8 @@ interface DocumentListItemProps {
   details?: { icon: string; text: string }[];
   /** Extra status pills next to the main one (payment, channel…). */
   pills?: { label: string; color: string }[];
+  /** Quick actions at the end of the bottom row (e.g. WhatsApp + "..." menu). Hidden while selecting. */
+  actions?: React.ReactNode;
   onPress: () => void;
   /** Long-press starts multi-select (when the screen supports it). */
   onLongPress?: () => void;
@@ -47,6 +49,7 @@ export function DocumentListItem({
   viewCount,
   details,
   pills,
+  actions,
   onPress,
   onLongPress,
   selecting,
@@ -125,6 +128,7 @@ export function DocumentListItem({
           {date ? (
             <Text style={{ color: dateWarning ? theme.colors.error : theme.colors.onSurfaceVariant, fontSize: 12 }}>{date}</Text>
           ) : null}
+          {actions && !selecting ? actions : null}
         </View>
       </View>
     </Pressable>

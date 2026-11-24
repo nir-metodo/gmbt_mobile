@@ -27,6 +27,8 @@ import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { esignatureApi } from '../../../../services/api/esignature';
 import { sendDocAndAlert } from '../../../../utils/sendDocAlert';
+import { withSharer } from '../../../../utils/esignatureLink';
+import { viewPdf } from '../../../../utils/pdfViewer';
 import { formatDate, withAlpha } from '../../../../utils/formatters';
 import { borderRadius } from '../../../../constants/theme';
 import type { ESignatureDocument, ESignatureSigner } from '../../../../types';
@@ -104,10 +106,10 @@ export default function ESignatureDetailScreen() {
 
   const getSigningUrl = (signer: ESignatureSigner) => {
     if (signer.signingToken) {
-      return `https://gambot.co.il/${orgName}/esignature/${id}/sign/${signer.signingToken}`;
+      return withSharer(`https://gambot.co.il/${orgName}/esignature/${id}/sign/${signer.signingToken}`, user);
     }
     if (document?.token) {
-      return `https://gambot.co.il/${orgName}/esignature/${id}/sign/${document.token}`;
+      return withSharer(`https://gambot.co.il/${orgName}/esignature/${id}/sign/${document.token}`, user);
     }
     return null;
   };
@@ -143,7 +145,7 @@ export default function ESignatureDetailScreen() {
     if (!document) return;
     try {
       const link = document.token
-        ? `https://gambot.co.il/${orgName}/esignature/${id}/sign/${document.token}`
+        ? withSharer(`https://gambot.co.il/${orgName}/esignature/${id}/sign/${document.token}`, user)
         : document.documentName || document.title;
       await Share.share({ message: `${document.documentName || document.title}\n${link}` });
     } catch {
@@ -155,7 +157,7 @@ export default function ESignatureDetailScreen() {
     const url = document?.documentUrl || document?.originalFileUrl;
     if (!url) return;
     try {
-      await Linking.openURL(url);
+      await viewPdf(url, document?.documentName || document?.title);
     } catch {
       Alert.alert(t('common.error'), t('errors.generic'));
     }
@@ -165,7 +167,7 @@ export default function ESignatureDetailScreen() {
     const url = document?.signedFileUrl || document?.documentUrl;
     if (!url) return;
     try {
-      await Linking.openURL(url);
+      await viewPdf(url, document?.documentName || document?.title);
     } catch {
       Alert.alert(t('common.error'), t('errors.generic'));
     }

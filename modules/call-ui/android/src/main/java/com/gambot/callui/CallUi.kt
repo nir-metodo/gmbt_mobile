@@ -25,6 +25,7 @@ object CallUi {
   const val EXTRA_CALL_ID = "callId"
   const val EXTRA_FROM = "from"
   const val EXTRA_NAME = "name"
+  const val EXTRA_BRIEF = "brief"
   const val EXTRA_ANSWER_NOW = "answerNow"
   private const val PREFS = "gambot_call_ui"
   private const val PENDING_TTL_MS = 60_000L
@@ -46,6 +47,9 @@ object CallUi {
       false
     }
   }
+
+  /** Creates the call channel if it does not exist yet (so its settings page can be opened before the first call). */
+  fun ensureChannelPublic(ctx: Context) = ensureChannel(ctx)
 
   private fun ensureChannel(ctx: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -73,14 +77,14 @@ object CallUi {
   }
 
   /** Shows the incoming call: heads-up while the phone is in use, the full-screen call screen when it is locked / off. */
-  fun showIncoming(ctx: Context, callId: String, name: String, from: String) {
+  fun showIncoming(ctx: Context, callId: String, name: String, from: String, brief: List<String> = emptyList()) {
     if (callId.isNotEmpty() && activeCallId == callId) return
     activeCallId = callId
     ensureChannel(ctx)
 
     fun activityIntent(answerNow: Boolean) = Intent(ctx, IncomingCallActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-      putExtra(EXTRA_CALL_ID, callId); putExtra(EXTRA_FROM, from); putExtra(EXTRA_NAME, name); putExtra(EXTRA_ANSWER_NOW, answerNow)
+      putExtra(EXTRA_CALL_ID, callId); putExtra(EXTRA_FROM, from); putExtra(EXTRA_NAME, name); putExtra(EXTRA_BRIEF, ArrayList(brief)); putExtra(EXTRA_ANSWER_NOW, answerNow)
     }
     val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     val screenPi = PendingIntent.getActivity(ctx, 9001, activityIntent(false), flags)
@@ -95,7 +99,10 @@ object CallUi {
     val builder = NotificationCompat.Builder(ctx, CHANNEL_ID)
       .setSmallIcon(smallIcon(ctx))
       .setContentTitle(who)
-      .setContentText(if (name.isNotBlank() && from.isNotBlank()) from else tr("שיחה נכנסת", "Incoming call"))
+      .setContentText(
+        if (brief.isNotEmpty()) brief.take(2).joinToString(" · ")
+        else if (name.isNotBlank() && from.isNotBlank()) from else tr("שיחה נכנסת", "Incoming call")
+      )
       .setCategory(NotificationCompat.CATEGORY_CALL)
       .setPriority(NotificationCompat.PRIORITY_MAX)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)

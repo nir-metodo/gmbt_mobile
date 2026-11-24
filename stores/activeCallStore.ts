@@ -32,7 +32,7 @@ export const useActiveCallStore = create<ActiveCallState>((set) => ({
     call: {
       callId: c.callId, organization: c.organization, phoneNumber: c.phoneNumber, name: c.name,
       startedAt: Date.now(), answered: !!c.answered, held: false, muted: false,
-      speaker: false, expanded: !!c.answered, notes: '',
+      speaker: false, expanded: true, notes: '', // the call page opens at once (dialing), the user can minimize it
     },
   }),
   patch: (p) => set((s) => (s.call ? { call: { ...s.call, ...p } } : s)),

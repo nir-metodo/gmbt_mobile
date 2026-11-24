@@ -7,6 +7,7 @@ import {
   Alert,
   ScrollView,
   BackHandler,
+  Keyboard,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
@@ -35,7 +36,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
 import { useRowDirection } from '../../../hooks/useRowDirection';
-import { formatPhoneNumber, formatRelativeTime, getInitials, withAlpha } from '../../../utils/formatters';
+import { formatPhoneNumberRaw as formatPhoneNumber, formatRelativeTime, getInitials, withAlpha } from '../../../utils/formatters';
 import { useMultiSelect, SelectCheck, SelectionHeader, BulkActionBar, type BulkAction } from '../../../components/MultiSelect';
 import { BulkTagsSheet, BulkStatusSheet, BulkOwnerSheet, BulkSendSheet } from '../../../components/contacts/ContactBulkSheets';
 import { contactsApi } from '../../../services/api/contacts';
@@ -1134,7 +1135,9 @@ export default function ContactsListScreen() {
       ) : (
         <>
           {/* Header: title + filters + one overflow menu */}
-          <View
+          <Pressable
+            onPress={Keyboard.dismiss}
+            accessible={false}
             style={[
               styles.header,
               { backgroundColor: theme.custom.headerBackground, paddingTop: insets.top + 8, flexDirection: headerDirection },
@@ -1211,7 +1214,7 @@ export default function ContactsListScreen() {
                 ) : null}
               </Menu>
             </View>
-          </View>
+          </Pressable>
 
           {/* Always-visible search */}
           <View style={[styles.searchWrap, { backgroundColor: theme.custom.headerBackground }]}>

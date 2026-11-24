@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -40,7 +40,14 @@ const DOC_COLOR = '#7c3aed';
 const sourceKeyOf = (kind: string, id: string) => `${kind}:${id}`;
 const recordKey = (r: SubmissionRecord) => `${r.kind}:${r.id}`;
 
-export default function ResponsesView() {
+export interface ResponsesInitialFilter {
+  kind: 'form' | 'document';
+  sourceId: string;
+  /** Changes on every request so the same form can be opened twice. */
+  nonce: number;
+}
+
+export default function ResponsesView({ initialFilter }: { initialFilter?: ResponsesInitialFilter | null }) {
   const router = useRouter();
   const theme = useAppTheme();
   const { t } = useTranslation();
@@ -117,9 +124,22 @@ export default function ResponsesView() {
   const sourcesInKind = useMemo(() => (kind === 'all' ? sources : sources.filter((s) => s.kind === kind)), [sources, kind]);
 
   // Changing the kind / source invalidates per-field filters (fields differ between forms).
+  // A source asked for from outside ("view responses" on a form / document card) survives the kind-change reset below.
+  const pendingSource = useRef<string | null>(null);
   useEffect(() => {
-    setSourceKey('all');
+    setSourceKey(pendingSource.current ?? 'all');
+    pendingSource.current = null;
   }, [kind]);
+  useEffect(() => {
+    if (!initialFilter) return;
+    const key = sourceKeyOf(initialFilter.kind, initialFilter.sourceId);
+    if (kind === initialFilter.kind) {
+      setSourceKey(key);
+    } else {
+      pendingSource.current = key;
+      setKind(initialFilter.kind);
+    }
+  }, [initialFilter?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     setFieldFilters({});
   }, [sourceKey, kind]);

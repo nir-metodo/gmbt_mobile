@@ -48,6 +48,42 @@ class CallUiModule : Module() {
       (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).areNotificationsEnabled()
     }
 
+    /** Xiaomi / MIUI: the app's "Other permissions" page (pop-up windows while in background, show on lock screen); other phones: the app details page. */
+    Function("openDevicePermissionSettings") {
+      val ctx = appContext.reactContext ?: return@Function false
+      val pkg = ctx.packageName
+      val attempts = listOf(
+        Intent("miui.intent.action.APP_PERM_EDITOR").setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.PermissionsEditorActivity").putExtra("extra_pkgname", pkg),
+        Intent("miui.intent.action.APP_PERM_EDITOR").setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.AppPermissionsEditorActivity").putExtra("extra_pkgname", pkg),
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg"))
+      )
+      for (intent in attempts) {
+        try {
+          intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          ctx.startActivity(intent)
+          return@Function true
+        } catch (e: Exception) { /* try the next one */ }
+      }
+      false
+    }
+
+    /** The incoming-call notification channel's own settings (sound / pop-up on screen / importance). */
+    Function("openCallChannelSettings") {
+      val ctx = appContext.reactContext ?: return@Function false
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@Function false
+      try {
+        CallUi.ensureChannelPublic(ctx)
+        val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+          .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+          .putExtra(Settings.EXTRA_CHANNEL_ID, CallUi.CHANNEL_ID)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ctx.startActivity(intent)
+        true
+      } catch (e: Exception) {
+        false
+      }
+    }
+
     Function("openFullScreenIntentSettings") {
       val ctx = appContext.reactContext ?: return@Function false
       try {

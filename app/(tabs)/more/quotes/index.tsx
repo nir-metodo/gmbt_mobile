@@ -23,6 +23,7 @@ import { ListToolbar } from '../../../../components/ListToolbar';
 import { StatusFilterBar } from '../../../../components/StatusFilterBar';
 import { SummaryHeader } from '../../../../components/SummaryHeader';
 import { DocumentListItem } from '../../../../components/DocumentListItem';
+import { QuoteRowActions } from '../../../../components/QuoteRowActions';
 import { EmptyState } from '../../../../components/EmptyState';
 import { useMultiSelect, SelectionHeader, BulkActionBar, type BulkAction } from '../../../../components/MultiSelect';
 import { invoicesApi } from '../../../../services/api/invoices';
@@ -450,6 +451,7 @@ export default function QuotesListScreen() {
             : formatDate(item.createdOn || item.createdAt || '')}
           dateWarning={expired}
           viewCount={item.viewCount}
+          actions={<QuoteRowActions quote={item} user={user} onChanged={fetchQuotes} />}
           selecting={sel.active}
           selected={sel.active && sel.isSelected(item.id)}
           onLongPress={() => sel.start(item.id)}
@@ -457,7 +459,7 @@ export default function QuotesListScreen() {
         />
       );
     },
-    [openQuote, t, sel.active, sel.isSelected, sel.toggle, sel.start],
+    [openQuote, t, sel.active, sel.isSelected, sel.toggle, sel.start, user, fetchQuotes],
   );
 
   const renderEmpty = useCallback(() => {

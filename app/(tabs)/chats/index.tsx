@@ -205,7 +205,7 @@ const BULK_STATUS_OPTIONS = ['Open', 'In Process', 'Closed'] as const;
 // Order matters — chips render left-to-right (RTL-aware) in this order, and the Category dropdown
 // follows immediately after. 'notReviewedByHuman' is placed LAST so it sits right next to Category
 // (more accessible); 'internal' takes its former slot.
-const FILTER_OPTIONS = ['all', 'unread', 'internal', 'open', 'closed', 'myChats', 'notReviewedByHuman'] as const;
+const STATUS_OPTIONS = ['all', 'open', 'closed', 'internal', 'notReviewedByHuman'] as const;
 
 interface SavedView {
   id: string;
@@ -355,6 +355,7 @@ export default function ChatsListScreen() {
 
   const [categoryMenuVisible, setCategoryMenuVisible] = useState(false);
   const [ownerMenuVisible, setOwnerMenuVisible] = useState(false);
+  const [statusMenuVisible, setStatusMenuVisible] = useState(false);
   const [groupMenuVisible, setGroupMenuVisible] = useState(false);
   const [leadStageMenuVisible, setLeadStageMenuVisible] = useState(false);
   const [newChatVisible, setNewChatVisible] = useState(false);
@@ -1700,6 +1701,7 @@ export default function ChatsListScreen() {
   const hasMoreChats = !debouncedSearch.trim() && displayLimit < filteredChats.length;
 
   // Any non-default filter active → surfaces the "נקה סינון" (clear) chip, mirroring the web panel.
+  const statusActive = (STATUS_OPTIONS as readonly string[]).includes(filter) && filter !== 'all';
   const hasActiveFilters =
     !!viewFilters ||
     filter !== 'all' ||
@@ -2895,30 +2897,45 @@ export default function ChatsListScreen() {
               {t('sidebar.clearFilters', 'נקה סינון')}
             </Chip>
           )}
-          {FILTER_OPTIONS.map((f) => (
-            <Chip
-              key={f}
-              selected={filter === f}
-              onPress={() => { orgDefaultAppliedRef.current = true; setViewFilters(null); setFilter(f); setActiveViewId(''); }}
-              showSelectedOverlay
-              compact
-              style={[
-                styles.filterChip,
-                filter === f
-                  ? { backgroundColor: theme.colors.primaryContainer }
-                  : { backgroundColor: theme.colors.surfaceVariant },
-              ]}
-              textStyle={[
-                styles.filterChipText,
-                filter === f && {
-                  color: theme.colors.primary,
-                  fontWeight: '600',
-                },
-              ]}
-            >
-              {t(`chats.${f}`)}
-            </Chip>
-          ))}
+          {/* One "Status" dropdown instead of a chip per option (unread / mine already live in the view tabs above). */}
+          <Menu
+            visible={statusMenuVisible}
+            onDismiss={() => setStatusMenuVisible(false)}
+            anchor={
+              <Chip
+                icon="flag-outline"
+                onPress={() => setStatusMenuVisible(true)}
+                compact
+                style={[
+                  styles.filterChip,
+                  statusActive
+                    ? { backgroundColor: theme.colors.primaryContainer }
+                    : { backgroundColor: theme.colors.surfaceVariant },
+                ]}
+                textStyle={[
+                  styles.filterChipText,
+                  statusActive && { color: theme.colors.primary, fontWeight: '600' },
+                ]}
+              >
+                {statusActive ? t(`chats.${filter}`) : vt('סטטוס', 'Status')}
+              </Chip>
+            }
+          >
+            {STATUS_OPTIONS.map((f) => (
+              <Menu.Item
+                key={f}
+                title={f === 'all' ? t('common.all') : t(`chats.${f}`)}
+                leadingIcon={(f === 'all' ? !statusActive : filter === f) ? 'check' : undefined}
+                onPress={() => {
+                  orgDefaultAppliedRef.current = true;
+                  setViewFilters(null);
+                  setFilter(f);
+                  setActiveViewId('');
+                  setStatusMenuVisible(false);
+                }}
+              />
+            ))}
+          </Menu>
 
           {categories.length > 1 && (
             <Menu

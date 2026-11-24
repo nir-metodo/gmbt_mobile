@@ -101,6 +101,24 @@ export const CallUi = {
     }
   },
 
+  /** Xiaomi: the app's extra permissions page (pop-ups in the background / lock screen); elsewhere the app details page. false on a build without it. */
+  openDevicePermissionSettings(): boolean {
+    try {
+      return !!Native && Native.openDevicePermissionSettings?.() === true;
+    } catch {
+      return false;
+    }
+  },
+
+  /** The call notification channel's settings (sound, pop-up). false on a build without it. */
+  openCallChannelSettings(): boolean {
+    try {
+      return !!Native && Native.openCallChannelSettings?.() === true;
+    } catch {
+      return false;
+    }
+  },
+
   openFullScreenIntentSettings(): boolean {
     try {
       return !!Native && Native.openFullScreenIntentSettings?.() === true;

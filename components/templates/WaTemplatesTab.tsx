@@ -127,8 +127,8 @@ export default function WaTemplatesTab() {
           </View>
           {def ? (
             <View style={{ marginTop: 4, gap: 2 }}>
-              <Text style={{ alignSelf: isRTL ? 'flex-end' : 'flex-start', fontSize: 11, fontWeight: '700', color: '#047857', backgroundColor: '#d1fae5', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 1 }}>
-                {isRTL ? 'תבנית ברירת מחדל' : 'Default template'}
+              <Text style={{ alignSelf: isRTL ? 'flex-end' : 'flex-start', fontSize: 11, fontWeight: '700', color: def.setup ? '#1d4ed8' : '#047857', backgroundColor: def.setup ? '#dbeafe' : '#d1fae5', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 1 }}>
+                {def.setup ? (isRTL ? 'תבנית הקמה' : 'Setup template') : (isRTL ? 'תבנית ברירת מחדל' : 'Default template')}
               </Text>
               {def.use ? <Text style={{ fontSize: 12, color: '#047857', textAlign, lineHeight: 17 }}>{isRTL ? 'משמשת ל: ' : 'Used for: '}{def.use}</Text> : null}
             </View>

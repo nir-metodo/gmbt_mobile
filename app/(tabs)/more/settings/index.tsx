@@ -513,8 +513,22 @@ export default function SettingsScreen() {
                     isRTL={isRTL}
                     themeColors={theme.colors}
                     onPress={() => {
-                      if (!CallUi.areNotificationsEnabled() || !CallUi.canUseFullScreenIntent()) CallUi.openFullScreenIntentSettings();
-                      else CallEvents.requestIgnoreBatteryOptimizations().catch(() => {});
+                      if (!CallUi.areNotificationsEnabled() || !CallUi.canUseFullScreenIntent()) { CallUi.openFullScreenIntentSettings(); return; }
+                      // Everything Android can check is on - but Xiaomi & co. hide more switches that no API can read (pop-ups in the
+                      // background, lock screen, the ring itself). Never leave the tap silent: offer where to look.
+                      const openApp = () => { if (!CallUi.openDevicePermissionSettings()) Linking.openSettings().catch(() => {}); };
+                      Alert.alert(
+                        t('phoneCalls.incomingWhenClosed', 'שיחות נכנסות כשהאפליקציה סגורה'),
+                        isRTL
+                          ? 'כדי שהשיחה תצלצל ותקפוץ על כל המסך (גם כשהטלפון נעול) ודאו שבהרשאות האפליקציה מופעלים: "הצג חלונות קופצים כשרצה ברקע" ו"הצג במסך הנעילה" (בטלפוני Xiaomi), ושצליל ההתראה של "שיחות נכנסות" לא מושתק.'
+                          : 'For calls to ring and appear full screen (even when locked), make sure the app permissions allow "Display pop-up windows while running in the background" and "Show on lock screen" (Xiaomi phones), and that the "Incoming calls" notification sound is not muted.',
+                        [
+                          { text: isRTL ? 'הרשאות האפליקציה' : 'App permissions', onPress: openApp },
+                          { text: isRTL ? 'צליל והתראות שיחה' : 'Call sound & alerts', onPress: () => { if (!CallUi.openCallChannelSettings()) openApp(); } },
+                          { text: isRTL ? 'פטור מחיסכון בסוללה' : 'Battery exemption', onPress: () => { CallEvents.requestIgnoreBatteryOptimizations().then((ok) => { if (ok && CallEvents.isIgnoringBatteryOptimizations()) Alert.alert('', isRTL ? 'האפליקציה כבר פטורה מחיסכון בסוללה' : 'The app is already exempt from battery optimization'); }).catch(() => {}); } },
+                          { text: isRTL ? 'סגור' : 'Close', style: 'cancel' },
+                        ]
+                      );
                     }}
                     right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
                   />
@@ -606,7 +620,7 @@ export default function SettingsScreen() {
             description={t('settings.callRulesDesc')}
             isRTL={isRTL}
             themeColors={theme.colors}
-            onPress={() => router.push('/(tabs)/more/phone-calls' as any)}
+            onPress={() => router.push('/(tabs)/calls' as any)}
             right={<MaterialCommunityIcons name="chevron-right" size={22} color={theme.colors.onSurfaceVariant} style={{ transform: [{ scaleX: isRTL ? -1 : 1 }] }} />}
           />
         </Surface></>

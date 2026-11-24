@@ -27,6 +27,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
+import { placeSmartCall } from '../../../../utils/phoneCall';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { useModalKeyboard } from '../../../../hooks/useModalKeyboard';
@@ -212,7 +213,7 @@ export default function SuppliersScreen() {
       {(item.phone || item.email) && (
         <View style={[styles.cardDetails, { flexDirection }]}>
           {item.phone ? (
-            <Pressable onPress={() => Linking.openURL(`tel:${item.phone}`)} style={[styles.detailChip, { flexDirection }]}>
+            <Pressable onPress={() => placeSmartCall({ phoneNumber: item.phone as string, organization: user?.organization || '', user, customerName: item.name })} style={[styles.detailChip, { flexDirection }]}>
               <MaterialCommunityIcons name="phone-outline" size={14} color={theme.colors.onSurfaceVariant} />
               <Text variant="bodySmall" style={{ marginHorizontal: 4, color: theme.colors.primary }}>{item.phone}</Text>
             </Pressable>

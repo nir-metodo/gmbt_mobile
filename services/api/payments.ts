@@ -59,6 +59,9 @@ export interface Transaction {
   updatedAt?: { _seconds: number } | string;
   viewCount?: number;
   lastViewedAt?: string;
+  /** Who created the payment link / charge (server-stamped from the caller's token). */
+  createdById?: string;
+  createdByName?: string;
 }
 
 import { invalidateOpenDocs } from '../../utils/openDocs';

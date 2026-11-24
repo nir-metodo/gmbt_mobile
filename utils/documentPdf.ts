@@ -1,4 +1,4 @@
-import { Linking } from 'react-native';
+import { viewPdf } from './pdfViewer';
 import axiosInstance from '../services/api/axiosInstance';
 import { DOCUMENT_TYPES, INVOICE_STATUSES, type Invoice } from '../services/api/invoices';
 import { formatDate, formatCurrency } from './formatters';
@@ -215,8 +215,11 @@ export function buildQuoteHtml(q: any, branding: any): string {
         description: it.name || it.description,
         sub: it.name && it.description ? it.description : undefined,
         quantity: it.quantity,
-        unitPrice: it.unitPrice,
-        total: it.total || (it.quantity || 0) * (it.unitPrice || 0),
+        // promotion lines are subtracted from the quote (web stores them as positive per-unit amounts)
+        unitPrice: it.type === 'discount' ? -Math.abs(it.unitPrice || 0) : it.unitPrice,
+        total: it.type === 'discount'
+          ? -((it.quantity || 1) * Math.abs(it.unitPrice || 0))
+          : it.total || (it.quantity || 0) * (it.unitPrice || 0),
       })),
     totals,
     grand: { label: 'סה״כ לתשלום', value: formatNum(q.total || 0, sym) },
@@ -242,8 +245,8 @@ export async function renderPdfUrl(organization: string, html: string, name: str
   return url;
 }
 
-/** Builds the PDF and opens it (the viewer offers save / share). */
+/** Builds the PDF and shows it in the in-app viewer (share / open externally from there). */
 export async function openPdf(organization: string, html: string, name: string): Promise<void> {
   const url = await renderPdfUrl(organization, html, name);
-  await Linking.openURL(url);
+  await viewPdf(url, name);
 }

@@ -29,6 +29,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { useAuthStore } from '../../../../stores/authStore';
 import { sendDocAndAlert } from '../../../../utils/sendDocAlert';
+import { withSharer } from '../../../../utils/esignatureLink';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { esignatureApi, DocumentTemplate } from '../../../../services/api/esignature';
@@ -654,7 +655,7 @@ export default function CreateESignatureScreen() {
 
             {signingLinks.map((signer: CreatedSigner, index: number) => {
               const signerUrl = signer.signingToken
-                ? `https://gambot.co.il/${orgName}/esignature/${docId}/sign/${signer.signingToken}`
+                ? withSharer(`https://gambot.co.il/${orgName}/esignature/${docId}/sign/${signer.signingToken}`, user)
                 : '';
 
               return (

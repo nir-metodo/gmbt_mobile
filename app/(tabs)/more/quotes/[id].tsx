@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   FlatList,
   BackHandler,
+  Linking,
 } from 'react-native';
 import {
   Text,
@@ -61,6 +62,14 @@ import { StickySaveBar } from '../../../../components/StickySaveBar';
 import { PrimaryActionBar } from '../../../../components/PrimaryActionBar';
 import { CollapsibleSection } from '../../../../components/CollapsibleSection';
 import { resolveFromNumberId } from '../../../../services/whatsappDocSender';
+import {
+  addCatalogProductToItems,
+  buildQuoteItemsFromProducts,
+  loadQuoteCatalog,
+  getLinkedRowsConfig,
+  newExtraRow,
+  quoteItemTotals,
+} from '../../../../utils/quoteCatalogLines';
 
 // Last 9 digits - matches 0501234567 / 972501234567 / +972-50-1234567 alike.
 const phoneKey = (p?: string) => {
@@ -149,10 +158,27 @@ function getCurrencySymbol(currency: string): string {
   return found?.symbol || currency || '₪';
 }
 
+// A line's text lives in `description` (same as the web). Older app lines kept a title in `name` plus
+// a `description` — merge them into the single text field so nothing is hidden or dropped.
+function normalizeLine(i: QuoteItem): QuoteItem {
+  const name = (i.name || '').trim();
+  if (!name) {
+    const { name: _unused, ...rest } = i;
+    return rest as QuoteItem;
+  }
+  const desc = (i.description || '').trim();
+  const text = desc && !desc.startsWith(name) ? `${name}\n${desc}` : desc || name;
+  const { name: _n, ...rest } = i;
+  return { ...rest, description: text } as QuoteItem;
+}
+
+const lineText = (i: QuoteItem): string => String(i.description || i.name || '');
+const isEmptyExtraLine = (i: QuoteItem): boolean => i.lineKind === 'extra' && !lineText(i).trim();
+
 function createEmptyItem(): QuoteItem {
   return {
     id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-    name: '',
+    type: 'item',
     description: '',
     quantity: 1,
     unitPrice: 0,
@@ -163,8 +189,9 @@ function createEmptyItem(): QuoteItem {
 
 export default function QuoteDetailScreen() {
   const router = useRouter();
-  const { id, prefillContactName, prefillContactPhone, prefillTitle, prefillLeadId } = useLocalSearchParams<{
+  const { id, prefillContactName, prefillContactPhone, prefillTitle, prefillLeadId, prefillProducts } = useLocalSearchParams<{
     id: string;
+    prefillProducts?: string;
     prefillContactName?: string;
     prefillContactPhone?: string;
     prefillTitle?: string;
@@ -239,8 +266,8 @@ export default function QuoteDetailScreen() {
         cu: formCurrency,
         sp: formSalespersonId || formSalesperson,
         it: formItems
-          .filter((i) => (i.name || '').trim())
-          .map((i) => [i.name, i.description || '', i.quantity, i.unitPrice, i.discount || 0]),
+          .filter((i) => lineText(i).trim())
+          .map((i) => [lineText(i), i.quantity, i.unitPrice, i.discount || 0, i.type || '', i.lineKind || '']),
       }),
     [formTitle, formContactName, formContactPhone, formContactId, formNotes, formTerms, formDate, formValidUntil, formDiscount, formDiscountType, formTax, formCurrency, formSalesperson, formSalespersonId, formItems],
   );
@@ -329,13 +356,25 @@ export default function QuoteDetailScreen() {
             defaultCurrency = branding.defaultCurrency || 'ILS';
           }
         } catch { /* use defaults */ }
+        // Quote opened from a lead: pull the lead's chosen catalog products in (with their delivery /
+        // promotion / add-on lines, exactly as the web does) instead of starting from an empty quote.
+        let prefillItems: QuoteItem[] = [];
+        if (prefillProducts) {
+          try {
+            const products = JSON.parse(prefillProducts);
+            if (Array.isArray(products) && products.length > 0) {
+              const cat = await loadQuoteCatalog(user.organization);
+              prefillItems = buildQuoteItemsFromProducts(products, cat, { keepExtraRows: true }) as QuoteItem[];
+            }
+          } catch { /* malformed param - start with an empty quote */ }
+        }
         const newQuote: Quote = {
           id: 'new',
           title: prefillTitle || '',
           contactName: prefillContactName || '',
           contactPhone: prefillContactPhone || '',
           currency: defaultCurrency,
-          items: [],
+          items: prefillItems,
           status: 'draft',
           subtotal: 0,
           discount: 0,
@@ -383,7 +422,7 @@ export default function QuoteDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.organization, id, t]);
+  }, [user?.organization, id, t, prefillProducts]);
 
   useEffect(() => {
     fetchQuote();
@@ -431,7 +470,7 @@ export default function QuoteDetailScreen() {
     setFormSalesperson(q.salespersonName || '');
     setFormSalespersonId((q as any).salespersonId || '');
     setFormContactId((q as any).contactId || '');
-    setFormItems(q.items && q.items.length > 0 ? q.items.map((i) => ({ ...i })) : [createEmptyItem()]);
+    setFormItems(q.items && q.items.length > 0 ? q.items.map((i) => normalizeLine({ ...i })) : [createEmptyItem()]);
   }, []);
 
   // Cached list item → fill the form instantly (the background refresh below only overwrites a clean form).
@@ -487,15 +526,13 @@ export default function QuoteDetailScreen() {
   }, [dirty, handleBack]);
 
   const calculatedTotals = useMemo(() => {
-    const subtotal = formItems.reduce((sum, item) => {
-      const itemTotal = item.quantity * item.unitPrice;
-      const discounted = itemTotal - (item.discount || 0);
-      return sum + Math.max(discounted, 0);
-    }, 0);
+    // Priced lines add up; promotion lines (type 'discount') are subtracted before tax — same maths as the web.
+    const { subtotal, lineDiscounts } = quoteItemTotals(formItems);
     const discountValue = parseFloat(formDiscount) || 0;
-    const discountAmount = formDiscountType === 'percent'
+    const generalDiscount = formDiscountType === 'percent'
       ? subtotal * (discountValue / 100)
       : discountValue;
+    const discountAmount = generalDiscount + lineDiscounts;
     const taxRate = parseFloat(formTax) || 0;
     const afterDiscount = Math.max(subtotal - discountAmount, 0);
     const taxAmount = afterDiscount * (taxRate / 100);
@@ -519,6 +556,70 @@ export default function QuoteDetailScreen() {
   const addItem = useCallback(() => {
     setFormItems((prev) => [...prev, createEmptyItem()]);
   }, []);
+
+  // Catalog + the quote settings (delivery / add-ons / promotions) that drive the lines a product brings with it.
+  const [quoteCatalog, setQuoteCatalog] = useState<{ catalog: any[]; catalogCustomColumns: any[]; branding: any }>({
+    catalog: [],
+    catalogCustomColumns: [],
+    branding: {},
+  });
+  useEffect(() => {
+    if (!user?.organization) return;
+    loadQuoteCatalog(user.organization).then(setQuoteCatalog).catch(() => {});
+  }, [user?.organization]);
+
+  // The add-ons a quote can offer = the add-ons of every product line on it (de-duplicated by name).
+  const extraOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { name: string; price: number; image?: string; link?: string }[] = [];
+    formItems.forEach((it) => {
+      if ((it.type && it.type !== 'item') || it.lineKind) return;
+      let extras: any[] = Array.isArray(it.availableExtras) ? it.availableExtras : [];
+      if (!extras.length) {
+        const first = lineText(it).split('\n')[0].trim();
+        const ci = quoteCatalog.catalog
+          .filter((c) => c.name && first.startsWith(String(c.name).trim()))
+          .sort((a, b) => String(b.name).trim().length - String(a.name).trim().length)[0];
+        extras = Array.isArray(ci?.extras) ? ci.extras : [];
+      }
+      extras.forEach((ex) => {
+        const key = String(ex?.name || '').trim();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        out.push({ name: key, price: Number(ex.price) || 0, image: ex.image || '', link: ex.link || '' });
+      });
+    });
+    return out;
+  }, [formItems, quoteCatalog.catalog]);
+
+  const addExtraRow = useCallback(() => {
+    setFormItems((prev) => [
+      ...prev.filter((i) => lineText(i).trim() || Number(i.unitPrice) > 0 || i.lineKind),
+      { ...newExtraRow(), id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, total: 0 } as QuoteItem,
+    ]);
+  }, []);
+
+  // Choosing an add-on fills the row (name, price, image, link); choosing "none" clears it back to a placeholder.
+  const pickExtra = useCallback((index: number, name: string) => {
+    setFormItems((prev) => {
+      const o = extraOptions.find((x) => x.name === name);
+      const updated = [...prev];
+      const base = { ...updated[index] };
+      delete (base as any).selectedByCustomer;
+      delete (base as any).selectedAt;
+      const unitPrice = o ? o.price || 0 : 0;
+      updated[index] = {
+        ...base,
+        description: o ? o.name : '',
+        unitPrice,
+        quantity: base.quantity || 1,
+        image: o?.image || '',
+        link: o?.link || '',
+        total: unitPrice * (base.quantity || 1),
+      };
+      return updated;
+    });
+  }, [extraOptions]);
 
   const removeItem = useCallback((index: number) => {
     setFormItems((prev) => {
@@ -682,29 +783,42 @@ export default function QuoteDetailScreen() {
       }
       description = parts.join(' · ');
     }
-    const newItem: QuoteItem = {
-      id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-      name: title === '—' ? '' : title,
-      description,
-      quantity: 1,
+    // Same lines as the web editor: the product plus its delivery / promotion / related lines and the
+    // add-on rows (the product's own custom-column text only when the org did not mark columns for quotes).
+    const hasQuoteColumns = catalogColumns.some((c: any) => c.showInQuote);
+    const ci = {
+      ...item,
+      name: item.name || (title === '—' ? '' : title),
+      description: hasQuoteColumns ? item.description : description,
       unitPrice: price,
-      discount: 0,
-      total: price,
     };
-    setFormItems((prev) => [...prev, newItem]);
+    setFormItems((prev) => {
+      const next = addCatalogProductToItems(prev, ci, {
+        branding: quoteCatalog.branding,
+        catalogCustomColumns: catalogColumns,
+      }) as QuoteItem[];
+      return next.map((it) => ({
+        ...it,
+        id: it.id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        total: it.type === 'discount' ? 0 : Math.max((it.quantity || 0) * (it.unitPrice || 0) - (it.discount || 0), 0),
+      }));
+    });
     setInventoryVisible(false);
     setInventorySearch('');
-  }, [catalogColumns, catalogFieldsConfig, catalogColumnTokens, isCatalogTokenVisible, isRTL]);
+  }, [catalogColumns, catalogFieldsConfig, catalogColumnTokens, isCatalogTokenVisible, isRTL, quoteCatalog.branding]);
 
   const handleSave = useCallback(async () => {
     if (!user?.organization || !formTitle.trim()) return;
     setSaving(true);
     try {
+      // Empty add-on rows are editor-only placeholders — never saved (they would reach the PDF / public page).
       const validItems = formItems
-        .filter((item) => (item.name || item.description || '').trim())
+        .filter((item) => lineText(item).trim() && !isEmptyExtraLine(item))
         .map((item) => ({
           ...item,
-          total: Math.max(item.quantity * item.unitPrice - (item.discount || 0), 0),
+          total: item.type === 'discount'
+            ? -((item.quantity || 0) * Math.abs(item.unitPrice || 0))
+            : Math.max(item.quantity * item.unitPrice - (item.discount || 0), 0),
         }));
 
       // The backend stores quoteData with Overwrite, so an UPDATE must carry the whole quote (lead link, quote number,
@@ -1250,6 +1364,17 @@ export default function QuoteDetailScreen() {
                 >
                   {t('quotes.fromCatalog') || 'מהקטלוג'}
                 </Button>
+                {extraOptions.length > 0 && getLinkedRowsConfig(quoteCatalog.branding?.linkedRows).extras.enabled && (
+                  <Button
+                    mode="text"
+                    compact
+                    onPress={addExtraRow}
+                    textColor="#7c3aed"
+                    labelStyle={{ fontSize: 12 }}
+                  >
+                    🧩 {isRTL ? 'תוספת' : 'Add-on'}
+                  </Button>
+                )}
                 <IconButton
                   icon="plus-circle"
                   iconColor={theme.colors.primary}
@@ -1263,8 +1388,22 @@ export default function QuoteDetailScreen() {
               <View key={item.id || index}>
                 {index > 0 && <Divider style={{ marginVertical: 12, backgroundColor: theme.colors.outlineVariant }} />}
                 <View style={[styles.itemEditHeader, { flexDirection }]}>
-                  <Text variant="labelLarge" style={{ color: theme.colors.onSurfaceVariant, fontWeight: '600' }}>
-                    {t('quotes.items')} #{index + 1}
+                  <Text
+                    variant="labelLarge"
+                    style={{
+                      color: item.type === 'discount' ? '#dc2626' : item.lineKind === 'extra' ? '#7c3aed' : theme.colors.onSurfaceVariant,
+                      fontWeight: '600',
+                    }}
+                  >
+                    {item.type === 'discount'
+                      ? `🏷️ ${isRTL ? 'הנחה / מבצע' : 'Discount / promotion'}`
+                      : item.lineKind === 'extra'
+                        ? `🧩 ${isRTL ? 'תוספת' : 'Add-on'}`
+                        : item.lineKind === 'delivery'
+                          ? `🚚 ${isRTL ? 'הובלה והתקנה' : 'Delivery & installation'}`
+                          : item.lineKind === 'linked'
+                            ? `🔗 ${isRTL ? 'שורה נלווית' : 'Related line'}`
+                            : `${t('quotes.items')} #${index + 1}`}
                   </Text>
                   {formItems.length > 1 && (
                     <IconButton
@@ -1275,16 +1414,70 @@ export default function QuoteDetailScreen() {
                     />
                   )}
                 </View>
-                <TextInput
-                  label={t('quotes.itemDescription')}
-                  value={item.name}
-                  onChangeText={(v) => updateItem(index, 'name', v)}
-                  mode="outlined"
-                  dense
-                  style={[styles.formInputDense, { textAlign }]}
-                  outlineColor={theme.colors.outline}
-                  activeOutlineColor={theme.colors.primary}
-                />
+                {item.lineKind === 'extra' ? (
+                  <View style={{ backgroundColor: '#faf5ff', borderColor: '#e9d5ff', borderWidth: 1, borderRadius: 10, padding: 8, marginBottom: 6 }}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: item.selectedByCustomer ? '#15803d' : '#7c3aed', textAlign, marginBottom: 6 }}>
+                      {item.selectedByCustomer
+                        ? `✅ ${isRTL ? 'הלקוח בחר תוספת זו בקישור ההצעה' : 'The customer chose this add-on on the quote link'}`
+                        : isRTL ? 'בחר תוספת לפי שם / תמונה' : 'Pick an add-on by name / image'}
+                    </Text>
+                    {extraOptions.length === 0 ? (
+                      <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, textAlign }}>
+                        {lineText(item) || (isRTL ? 'אין תוספות — הוסף מוצר מהקטלוג שיש לו תוספות' : 'No add-ons — add a catalog product that has add-ons')}
+                      </Text>
+                    ) : (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, flexDirection }}>
+                        {extraOptions.map((o) => {
+                          const selected = lineText(item) === o.name;
+                          return (
+                            <Pressable
+                              key={o.name}
+                              onPress={() => pickExtra(index, selected ? '' : o.name)}
+                              style={{
+                                width: 110,
+                                padding: 4,
+                                borderRadius: 8,
+                                borderWidth: 2,
+                                borderColor: selected ? '#7c3aed' : theme.colors.outlineVariant,
+                                backgroundColor: selected ? '#ede9fe' : theme.custom.cardBackground,
+                                alignItems: 'center',
+                              }}
+                            >
+                              {!!o.image && <Image source={{ uri: o.image }} style={{ width: '100%', height: 64, borderRadius: 6 }} contentFit="cover" />}
+                              <Text numberOfLines={2} style={{ fontSize: 11, textAlign: 'center', marginTop: 3, color: theme.colors.onSurface }}>{o.name}</Text>
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: '#6d28d9' }}>{formatCurrency(o.price || 0, editCurrSymbol)}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                    )}
+                  </View>
+                ) : (
+                  <TextInput
+                    label={t('quotes.itemDescription')}
+                    value={lineText(item)}
+                    onChangeText={(v) => updateItem(index, 'description', v)}
+                    mode="outlined"
+                    dense
+                    multiline
+                    style={[styles.formInputDense, { textAlign }]}
+                    outlineColor={theme.colors.outline}
+                    activeOutlineColor={theme.colors.primary}
+                  />
+                )}
+                {!!item.link && (!item.type || item.type === 'item') && (
+                  <Pressable onPress={() => Linking.openURL(item.link as string).catch(() => {})}>
+                    <Text style={{ fontSize: 11, color: '#2563eb', textAlign, marginBottom: 4 }} numberOfLines={1}>
+                      🔗 {item.lineKind === 'delivery'
+                        ? (isRTL ? 'תנאי הובלה והתקנה באתר' : 'Delivery & installation terms')
+                        : item.lineKind === 'linked'
+                          ? (isRTL ? 'עמוד המוצר באתר' : 'Product page')
+                          : item.lineKind === 'extra'
+                            ? (isRTL ? 'עמוד התוספת באתר' : 'Add-on page')
+                            : (isRTL ? 'פרטים באתר' : 'Details on site')}
+                    </Text>
+                  </Pressable>
+                )}
                 <View style={[styles.itemFieldsRow, { flexDirection }]}>
                   <TextInput
                     label={t('quotes.quantity')}
@@ -1308,26 +1501,30 @@ export default function QuoteDetailScreen() {
                     outlineColor={theme.colors.outline}
                     activeOutlineColor={theme.colors.primary}
                   />
-                  <TextInput
-                    label={t('quotes.discount')}
-                    value={String(item.discount || 0)}
-                    onChangeText={(v) => updateItem(index, 'discount', parseFloat(v) || 0)}
-                    mode="outlined"
-                    dense
-                    keyboardType="numeric"
-                    style={[styles.formInputDense, { flex: 1, textAlign }]}
-                    outlineColor={theme.colors.outline}
-                    activeOutlineColor={theme.colors.primary}
-                  />
+                  {item.type !== 'discount' && (
+                    <TextInput
+                      label={t('quotes.discount')}
+                      value={String(item.discount || 0)}
+                      onChangeText={(v) => updateItem(index, 'discount', parseFloat(v) || 0)}
+                      mode="outlined"
+                      dense
+                      keyboardType="numeric"
+                      style={[styles.formInputDense, { flex: 1, textAlign }]}
+                      outlineColor={theme.colors.outline}
+                      activeOutlineColor={theme.colors.primary}
+                    />
+                  )}
                 </View>
                 <Text
                   variant="labelMedium"
-                  style={{ color: theme.colors.primary, fontWeight: '600', textAlign, marginTop: 4 }}
+                  style={{ color: item.type === 'discount' ? '#dc2626' : theme.colors.primary, fontWeight: '600', textAlign, marginTop: 4 }}
                 >
-                  {t('quotes.total')}: {formatCurrency(
-                    Math.max(item.quantity * item.unitPrice - (item.discount || 0), 0),
-                    editCurrSymbol,
-                  )}
+                  {t('quotes.total')}: {item.type === 'discount'
+                    ? `-${formatCurrency((item.quantity || 0) * Math.abs(item.unitPrice || 0), editCurrSymbol)}`
+                    : formatCurrency(
+                        Math.max(item.quantity * item.unitPrice - (item.discount || 0), 0),
+                        editCurrSymbol,
+                      )}
                 </Text>
               </View>
             ))}

@@ -30,6 +30,8 @@ interface MenuItem {
   featureKey?: string; // org-level feature toggle key
   featureDefault?: boolean; // default if toggle not set
   requiresTelephony?: boolean; // only show when org telephony is enabled
+  onlyWithCallsTab?: boolean; // shown only when the bottom bar has the Calls tab (Contacts moved here)
+  hideWithCallsTab?: boolean; // hidden when the bottom bar already has the Calls tab
 }
 
 interface MenuSection {
@@ -58,7 +60,8 @@ const MENU_SECTIONS: MenuSection[] = [
     key: 'communication',
     titleKey: 'more.sectionCommunication',
     items: [
-      { key: 'phoneCalls', icon: 'phone-outline', labelKey: 'more.phoneCalls', route: '/(tabs)/more/phone-calls', color: '#2563eb', permission: 'phoneCalls', requiresTelephony: true },
+      { key: 'phoneCalls', icon: 'phone-outline', labelKey: 'more.phoneCalls', route: '/(tabs)/more/phone-calls', color: '#2563eb', permission: 'phoneCalls', requiresTelephony: true, hideWithCallsTab: true },
+      { key: 'contacts', icon: 'account-group-outline', labelKey: 'tabs.contacts', route: '/(tabs)/contacts', color: BRAND_COLOR, permission: 'contacts', onlyWithCallsTab: true },
       { key: 'email', icon: 'email-send-outline', labelKey: 'more.email', route: '/(tabs)/more/email', color: '#dc2626', permission: 'emailInbox' },
       { key: 'media', icon: 'folder-image', labelKey: 'more.media', route: '/(tabs)/more/media', color: '#0ea5e9', permission: 'mediaManager' },
       { key: 'templates', icon: 'message-text-outline', labelKey: 'more.templates', route: '/(tabs)/more/templates', color: '#0284c7', permission: 'templates' },
@@ -111,6 +114,9 @@ export default function MoreScreen() {
 
   const canCreateTask = hasPermission(user?.Permissions, user?.SecurityRole, 'tasks');
 
+  // Same rule as the bottom bar (_layout.tsx): telephony on + calls permission -> "Calls" tab replaces "Contacts".
+  const callsTabVisible = !!telephonyEnabled && hasPermission(user?.Permissions, user?.SecurityRole, 'phoneCalls' as any);
+
   const visibleSections = useMemo(() => {
     const q = query.trim().toLowerCase();
     return MENU_SECTIONS.map((section) => ({
@@ -118,6 +124,8 @@ export default function MoreScreen() {
       items: section.items.filter((item) => {
         if (item.adminOnly && user?.SecurityRole?.toLowerCase() !== 'admin') return false;
         if (item.requiresTelephony && !telephonyEnabled) return false;
+        if (item.onlyWithCallsTab && !callsTabVisible) return false;
+        if (item.hideWithCallsTab && callsTabVisible) return false;
         if (item.permission && !hasPermission(user?.Permissions, user?.SecurityRole, item.permission as any)) return false;
         if (item.permissionAny && !item.permissionAny.some((p) => hasPermission(user?.Permissions, user?.SecurityRole, p as any))) return false;
         if (item.featureKey) {
@@ -128,7 +136,7 @@ export default function MoreScreen() {
         return true;
       }),
     })).filter((section) => section.items.length > 0);
-  }, [user, orgFeatureToggles, telephonyEnabled, query, t]);
+  }, [user, orgFeatureToggles, telephonyEnabled, callsTabVisible, query, t]);
 
   const totalVisible = useMemo(
     () => visibleSections.reduce((n, s) => n + s.items.length, 0),

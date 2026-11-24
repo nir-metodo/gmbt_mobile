@@ -24,6 +24,7 @@ import { Audio } from 'expo-av';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { useRTL } from '../../hooks/useRTL';
+import { keepKeyboardOnTouch } from '../../utils/keyboardDismiss';
 import type { WabaNumberInfo } from '../../types';
 
 // A "/" quick-message trigger is a '/' at the start of the text or right after whitespace, located BEFORE
@@ -382,6 +383,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
 
   return (
     <View
+      onTouchStart={keepKeyboardOnTouch}
       style={[
         styles.outerContainer,
         {

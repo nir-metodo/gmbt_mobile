@@ -23,18 +23,18 @@ export const ROLES: { key: string; icon: string; he: string; en: string; systemN
   { key: 'sendInvoice', icon: 'receipt', he: 'חשבונית', en: 'Send an invoice', systemName: 'gambot_default_invoice', vars: { 1: 'contact.firstName', 2: 'hardcoded' }, descHe: 'משמשת לשליחת חשבונית / קבלה בוואטסאפ כשהשיחה סגורה.', descEn: 'Used to send an invoice / receipt on WhatsApp when the conversation is closed.' },
   { key: 'sendPaymentLink', icon: 'cash-fast', he: 'קישור לתשלום', en: 'Send a payment link', systemName: 'gambot_default_payment', vars: { 1: 'contact.firstName', 2: 'hardcoded' }, descHe: 'משמשת לשליחת קישור לתשלום כשהשיחה סגורה.', descEn: 'Used to send a payment link when the conversation is closed.' },
   { key: 'digitalSignature', icon: 'draw', he: 'חתימה דיגיטלית', en: 'Digital signature', systemName: 'gambot_default_signature', vars: { 1: 'contact.firstName', 2: 'hardcoded' }, descHe: 'משמשת לבקשת חתימה דיגיטלית על מסמך כשהשיחה סגורה.', descEn: 'Used to request a digital signature on a document when the conversation is closed.' },
-  { key: 'sendForm', icon: 'clipboard-text-outline', he: 'טופס / מסמך למילוי', en: 'Send a form / document', systemName: 'gambot_default_form', vars: { 1: 'contact.firstName', 2: 'hardcoded' }, descHe: 'משמשת לשליחת טופס דיגיטלי או מסמך למילוי כשהשיחה סגורה.', descEn: 'Used to send a digital form or a document to fill when the conversation is closed.' },
+  { key: 'sendForm', icon: 'clipboard-text-outline', he: 'קישור (טופס / מסמך / קטלוג)', en: 'Send a link (form / document / catalog)', systemName: 'gambot_default_form', vars: { 1: 'contact.firstName', 2: 'hardcoded' }, descHe: 'תבנית אחת לכל קישור שנשלח ללקוח — טופס, מסמך למילוי, קטלוג או פריט — כשהשיחה סגורה.', descEn: 'One template for any link sent to the customer — form, fill-in document, catalog or item — when the conversation is closed.' },
 ];
 
 /** For the templates list: the role (quote / invoice / ...) a default template belongs to + where it is used.
  *  Also covers the ready-made starters created with the account (createdFrom = 'onboarding'). */
-export function defaultTemplateInfo(t: any, isRTL: boolean): { title?: string; use: string } | null {
+export function defaultTemplateInfo(t: any, isRTL: boolean): { title?: string; use: string; setup?: boolean } | null {
   const name = String(t?.name || '');
   const role = ROLES.find((r) => name.startsWith(r.systemName));
   if (role) return { title: `${isRTL ? role.he : role.en} (${isRTL ? 'ברירת מחדל' : 'default'})`, use: isRTL ? role.descHe : role.descEn };
   if (t?.createdFrom === 'onboarding') {
     const use = String(t.sourceNote || '').replace(/^נוצרה אוטומטית על ידי גמבוט בעת יצירת החשבון\.\s*/, '').trim();
-    return { use };
+    return { use, setup: true };
   }
   return null;
 }

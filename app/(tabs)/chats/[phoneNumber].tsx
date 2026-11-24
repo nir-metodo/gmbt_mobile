@@ -70,6 +70,7 @@ import { ContactInfoSheet } from '../../../components/chat/ContactInfoSheet';
 import LeadStagesMenuBody from '../../../components/chat/LeadStagesMenuBody';
 import LeadSourceFormCard from '../../../components/chat/LeadSourceFormCard';
 import ForwardMessageSheet from '../../../components/chat/ForwardMessageSheet';
+import TemplateSendSheet from '../../../components/chat/TemplateSendSheet';
 import AddTaskSheet from '../../../components/AddTaskSheet';
 import SendPaymentLinkSheet from '../../../components/SendPaymentLinkSheet';
 import OpenDocsChips from '../../../components/OpenDocsChips';
@@ -358,10 +359,6 @@ export default function ChatConversationScreen() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   const [isSendingTemplate, setIsSendingTemplate] = useState(false);
-  // Whether a default ("open conversation") template is configured for this org / selected number.
-  // null = not yet checked; false = none configured → the quick-send button is shown disabled/greyed
-  // so it doesn't confuse the user, and tapping it explains how to set one in Settings.
-  const [hasDefaultTemplate, setHasDefaultTemplate] = useState<boolean | null>(null);
   // Synchronous guard against double template sends. `isSendingTemplate` is React state and
   // updates asynchronously, so two fast taps can both pass the check and send the template
   // twice to the customer. A ref flips immediately and blocks the second call.
@@ -377,12 +374,6 @@ export default function ChatConversationScreen() {
   const [scheduleMessageType, setScheduleMessageType] = useState<'text' | 'template'>('text');
   const [scheduleTemplate, setScheduleTemplate] = useState<Template | null>(null);
   const [scheduleVarValues, setScheduleVarValues] = useState<Record<number, string>>({});
-  const [selectedTemplateForVars, setSelectedTemplateForVars] = useState<Template | null>(null);
-  const [templateVariableValues, setTemplateVariableValues] = useState<Record<number, string>>({});
-  // Quick / Manual tab state inside template modal
-  const [templateActiveTab, setTemplateActiveTab] = useState<'quick' | 'manual'>('quick');
-  const [quickTemplateSearch, setQuickTemplateSearch] = useState('');
-  const [quickOpenVarValues, setQuickOpenVarValues] = useState<Record<string, string>>({});
   const flatListRef = useRef<FlatList<ListItem>>(null);
   const scrollBtnRef = useRef<ScrollToBottomHandle>(null);
   const chatInputRef = useRef<ChatInputRef>(null);
@@ -750,7 +741,19 @@ export default function ChatConversationScreen() {
 
   // Keep the shared activeWabaNumber (used for sending) in sync with the number being viewed.
   // Critical: without this the global value stays stuck on the previous contact's number.
+  // Only the FOCUSED instance may write the shared value. A notification tap pushes a second instance
+  // of this screen while the first stays mounted; with two chats on different numbers each instance
+  // kept overwriting activeWabaNumber with its own number, re-triggering the other's effect forever
+  // ("Maximum update depth exceeded").
+  const [screenFocused, setScreenFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, [])
+  );
   useEffect(() => {
+    if (!screenFocused) return;
     if (viewedNumberId) {
       if (viewedNumberId !== activeWabaNumber) setActiveWabaNumber(viewedNumberId);
       return;
@@ -768,7 +771,7 @@ export default function ChatConversationScreen() {
         setActiveWabaNumber(user.wabaNumber);
       }
     }
-  }, [user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers, viewedNumberId, assignedNums]);
+  }, [screenFocused, user?.wabaNumber, activeWabaNumber, setActiveWabaNumber, wabaNumbers, viewedNumberId, assignedNums]);
 
   const [conversationLive, setConversationLive] = useState<boolean | null>(null);
   const [recipientReplied24h, setRecipientReplied24h] = useState<boolean | null>(null);
@@ -1242,7 +1245,8 @@ export default function ChatConversationScreen() {
           throw new Error(saveRes.Message || saveRes.message || 'save failed');
         }
       }
-      pushLocalTimeline('note', noteText.trim());
+      // A note with @mentions is an internal message that already shows inline; only plain notes get the local timeline row.
+      if (noteMentions.length === 0) pushLocalTimeline('note', noteText.trim());
       setNoteText('');
       setNoteMentions([]);
       setShowNoteMentionPicker(false);
@@ -1353,146 +1357,6 @@ export default function ChatConversationScreen() {
     setShowTemplateSelector(true);
   }, [loadTemplates]);
 
-  // Resolve the default ("open conversation") template id for the current org / selected number.
-  // Shared by both the quick-send handler and the "is a default configured?" detection effect so
-  // the greyed-out state and the actual send path always agree on what counts as "configured".
-  const resolveDefaultTemplate = useCallback(async (): Promise<{ templateId: string; savedMappings: any[] }> => {
-    let templateId = '';
-    if (activeWabaNumber && allWabaNumbers.length > 1) {
-      const selectedNum = allWabaNumbers.find((n) => (n.PhoneNumberId || n.phoneNumberId) === activeWabaNumber);
-      if (selectedNum?.DefaultTemplateId || selectedNum?.defaultTemplateId) {
-        templateId = selectedNum.DefaultTemplateId || selectedNum.defaultTemplateId || '';
-      }
-    }
-    let savedMappings: any[] = [];
-    if (!templateId && user?.organization) {
-      const defRes = await axiosInstance.post(ENDPOINTS.GET_DEFAULT_MESSAGE_TEMPLATES, { organization: user.organization });
-      // Tolerate both wrapped ({ Data: { templates } }) and unwrapped ({ templates }) shapes.
-      const root = defRes.data?.Data ?? defRes.data;
-      const tplAssignment = root?.templates?.openConversation;
-      templateId = Array.isArray(tplAssignment?.templateId)
-        ? (tplAssignment.templateId[0] || '')
-        : (tplAssignment?.templateId || '');
-      savedMappings = Array.isArray(tplAssignment?.varMappings)
-        ? tplAssignment.varMappings.filter((m: any) => !Array.isArray(m.index) && m.index != null)
-        : [];
-    }
-    return { templateId, savedMappings };
-  }, [activeWabaNumber, allWabaNumbers, user]);
-
-  // Guidance shown when no default template is configured — points the user to where to set one.
-  const noDefaultTemplateMessage = isRTL
-    ? 'לא הוגדרה תבנית ברירת מחדל. כדי להשתמש בשליחה מהירה, היכנס להגדרות ← הודעות ברירת מחדל וצור או בחר תבנית פתיחת שיחה.'
-    : 'No default template is set. To use quick-send, go to Settings → Default Messages and create or select an open-conversation template.';
-
-  const handleSendDefaultTemplate = useCallback(async () => {
-    if (!user?.organization || !phoneNumber || isSendingTemplate) return;
-    if (sendingTemplateRef.current) return; // already sending — block double tap
-    // No default configured → don't silently fail; explain how to set one (matches web).
-    if (hasDefaultTemplate === false) {
-      Alert.alert(t('chats.noDefaultTemplate', 'תבנית ברירת מחדל'), noDefaultTemplateMessage);
-      return;
-    }
-    sendingTemplateRef.current = true;
-    setIsSendingTemplate(true);
-    setShowTemplateSelector(false);
-    try {
-      const { templateId, savedMappings } = await resolveDefaultTemplate();
-
-      if (!templateId) {
-        setHasDefaultTemplate(false);
-        Alert.alert(t('chats.noDefaultTemplate', 'תבנית ברירת מחדל'), noDefaultTemplateMessage);
-        return;
-      }
-
-      // Resolve template variables like the web does
-      const fullName = chat?.contactName || '';
-      const resolveVarValue = (source: string, hardcodedValue?: string) => {
-        if (source === 'hardcoded') return hardcodedValue || '';
-        if (source === 'contact.firstName') return fullName.split(' ')[0] || fullName || (phoneNumber as string) || '';
-        if (source === 'contact.lastName') return fullName.split(' ').slice(1).join(' ') || '';
-        if (source === 'contact.name') return fullName || (phoneNumber as string) || '';
-        if (source === 'contact.email') return (chat as any)?.email || '';
-        if (source === 'contact.phoneNumber') return (phoneNumber as string) || '';
-        if (source === 'user.organization') return user?.organization || '';
-        if (source === 'user.UserName') return user?.fullname || user?.displayName || '';
-        return hardcodedValue || '';
-      };
-
-      const makeVarEntry = (idx: number, value: string, label?: string) => ({
-        index: idx,
-        bodyVarIndex: idx,
-        Variable: `dynamic_var${idx}`,
-        variableLabel: label || `{{${idx}}}`,
-        dataSource1: 'data_source1_HardCoded',
-        dataSource2: '',
-        conditionOperator: '',
-        parameters_hardCoded_Text: value,
-        field1: [],
-        field2: [],
-        table1: '',
-        table2: '',
-        retrieveFields: [],
-      });
-
-      let templateVariableQuery: any[];
-      if (savedMappings.length > 0) {
-        templateVariableQuery = savedMappings.map((m: any) =>
-          makeVarEntry(m.index, resolveVarValue(m.source, m.hardcodedValue), m.label || `{{${m.index}}}`)
-        );
-      } else {
-        templateVariableQuery = [
-          makeVarEntry(1, chat?.contactName || (phoneNumber as string) || '', 'שם לקוח'),
-          makeVarEntry(2, user?.fullname || user?.displayName || user?.organization || '', 'שם משתמש'),
-        ];
-      }
-
-      const result = await chatsApi.sendTemplateMessage(
-        user.organization,
-        phoneNumber as string,
-        templateId,
-          user.uID || user.userId,
-          templateVariableQuery,
-          sendFromNumberId,
-        );
-      if (result?.Success === false) {
-        const rawMsg = result?.Message || '';
-        const friendlyMsg = rawMsg.includes('BadRequest')
-          ? (isRTL ? 'התבנית טרם אושרה על ידי Meta — המתן לאישור ונסה שוב' : 'Template not yet approved by Meta')
-          : rawMsg || t('chats.templateSendError');
-        throw new Error(friendlyMsg);
-      }
-      loadMessages(user.organization, phoneNumber as string);
-      // Don't call fetchConversationStatus - template send does NOT open the conversation window
-      // Only inbound messages from the customer open the window
-      setConversationLive(true);
-      setRecipientReplied24h(false); // Waiting for customer reply
-    } catch (err: any) {
-      const msg = err?.response?.data?.Message || err?.message || t('chats.templateSendError');
-      Alert.alert(t('common.error'), msg);
-    } finally {
-      sendingTemplateRef.current = false;
-      setIsSendingTemplate(false);
-    }
-  }, [user, phoneNumber, isSendingTemplate, hasDefaultTemplate, noDefaultTemplateMessage, resolveDefaultTemplate, chat, loadMessages, isRTL, t, sendFromNumberId]);
-
-  // Detect whether a default template exists once the conversation is known to be closed (the
-  // template banner is shown). Drives the greyed-out / disabled state of the quick-send button so
-  // the user isn't offered an action that can't work. Re-checks when the selected WABA number
-  // changes (per-number defaults) and resets on chat switch.
-  useEffect(() => {
-    if (canSendFreeText || isStatusLoading || !user?.organization || !phoneNumber) {
-      setHasDefaultTemplate(null);
-      return;
-    }
-    let cancelled = false;
-    setHasDefaultTemplate(null);
-    resolveDefaultTemplate()
-      .then(({ templateId }) => { if (!cancelled) setHasDefaultTemplate(!!templateId); })
-      .catch(() => { if (!cancelled) setHasDefaultTemplate(false); });
-    return () => { cancelled = true; };
-  }, [canSendFreeText, isStatusLoading, user?.organization, phoneNumber, activeWabaNumber, resolveDefaultTemplate]);
-
   const getTemplateBodyText = useCallback((template: Template) => {
     const body = template.components?.find(
       (c: any) => c.type === 'BODY',
@@ -1507,25 +1371,6 @@ export default function ChatConversationScreen() {
     const indices = [...new Set(matches.map((m) => parseInt(m.replace(/\{\{|\}\}/g, ''), 10)))].sort((a, b) => a - b);
     return indices;
   }, [getTemplateBodyText]);
-
-  const handleSendTemplate = useCallback(
-    async (template: Template) => {
-      if (!user?.organization || !phoneNumber || isSendingTemplate) return;
-      const indices = getTemplateVariableIndices(template);
-      if (indices.length > 0) {
-        // Close template selector first — two modals open simultaneously blocks the second on iOS
-        setShowTemplateSelector(false);
-        setSelectedTemplateForVars(template);
-        setTemplateVariableValues(
-          Object.fromEntries(indices.map((i) => [i, ''])),
-        );
-        return;
-      }
-      setShowTemplateSelector(false);
-      await doSendTemplate(template, []);
-    },
-    [user, phoneNumber, isSendingTemplate, getTemplateVariableIndices],
-  );
 
   const doSendTemplate = useCallback(
     async (template: Template, templateVariableQuery: any[]) => {
@@ -1550,8 +1395,6 @@ export default function ChatConversationScreen() {
         if (result?.Success === false) {
           throw new Error(result?.Message || t('chats.templateSendError'));
         }
-        setSelectedTemplateForVars(null);
-        setTemplateVariableValues({});
         loadMessages(user.organization, phoneNumber);
         // Template send does NOT open conversation - set waiting for reply state
         setConversationLive(true);
@@ -1566,15 +1409,6 @@ export default function ChatConversationScreen() {
     },
     [user, phoneNumber, loadMessages, t, fetchConversationStatus, sendFromNumberId],
   );
-
-  const handleSendTemplateWithVariables = useCallback(() => {
-    if (!selectedTemplateForVars) return;
-    const indices = getTemplateVariableIndices(selectedTemplateForVars);
-    const templateVariableQuery = indices.map((idx, i) =>
-      buildTemplateVarEntry(idx, templateVariableValues[idx] ?? '', i + 1),
-    );
-    doSendTemplate(selectedTemplateForVars, templateVariableQuery);
-  }, [selectedTemplateForVars, getTemplateVariableIndices, templateVariableValues, doSendTemplate]);
 
   // Quick send helpers
   const resolveQuickVar = useCallback((entity: string, field: string): string => {
@@ -1621,52 +1455,6 @@ export default function ChatConversationScreen() {
 
     return '';
   }, [chat, phoneNumber, user]);
-
-  const quickTemplates = useMemo(() =>
-    templates.filter(t => t.showInQuickSend),
-  [templates]);
-
-  // Quick-tab results: with no search term we show only the ⚡ quick-send templates; the moment the
-  // user searches we expand across ALL approved templates so any template can be found & sent here.
-  const quickTemplateResults = useMemo(() => {
-    const q = quickTemplateSearch.trim().toLowerCase();
-    if (!q) return quickTemplates;
-    return templates.filter(t =>
-      (t.friendlyName || '').toLowerCase().includes(q) ||
-      (t.usageType || '').toLowerCase().includes(q) ||
-      (t.name || '').toLowerCase().includes(q));
-  }, [quickTemplateSearch, quickTemplates, templates]);
-
-  const handleQuickTemplateSend = useCallback((template: Template) => {
-    let mapping: Array<{index: number; entity: string; field: string}> = [];
-    try { mapping = JSON.parse(template.variableMappingJson || '[]'); } catch {}
-
-    const bodyComp = (template.components || []).find((c: any) => c.type === 'BODY');
-    const bodyText = bodyComp?.text || '';
-    const varMatches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)];
-    const varIndices = [...new Set(varMatches.map((m: RegExpMatchArray) => parseInt(m[1])))].sort((a, b) => a - b) as number[];
-
-    const hasOpenVars = varIndices.some(idx => {
-      const mapEntry = mapping.find(m => m.index === idx);
-      return !mapEntry || mapEntry.entity === 'open';
-    });
-
-    if (hasOpenVars) {
-      // Show variable inputs for open vars
-      setQuickOpenVarValues({});
-      setSelectedTemplateForVars({ ...template, _quickMode: true } as any);
-      return;
-    }
-
-    const templateVariableQuery = varIndices.map((idx, i) => {
-      const mapEntry = mapping.find(m => m.index === idx);
-      const entity = mapEntry?.entity || 'open';
-      const field  = mapEntry?.field  || '';
-      return buildTemplateVarEntry(idx, resolveQuickVar(entity, field), i + 1);
-    });
-
-    doSendTemplate(template, templateVariableQuery);
-  }, [resolveQuickVar, doSendTemplate]);
 
   const handleOpenSchedule = useCallback(() => {
     setScheduleText('');
@@ -2174,7 +1962,8 @@ export default function ChatConversationScreen() {
     if (messageMode === 'internal') {
       msgs = msgs.filter((m) => m.type === 'internal' || (m as any).isInternalMessage === true);
     } else {
-      msgs = msgs.filter((m) => m.type !== 'internal' && (m as any).isInternalMessage !== true && m.type !== 'reaction');
+      // Internal team notes (incl. Gambot AI's replies to an @Gambot AI instruction) show inline in the conversation, like the web.
+      msgs = msgs.filter((m) => m.type !== 'reaction');
     }
     if (starredFilter) {
       msgs = msgs.filter((m) => m.isStarred === true);
@@ -3825,44 +3614,12 @@ export default function ChatConversationScreen() {
               >
                 <MaterialCommunityIcons name="card-text-outline" size={20} color="#fff" />
                 <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>
-                  {t('chats.chooseTemplate', 'בחר תבנית לשליחה')}
+                  {t('chats.chooseTemplate', 'שלח תבנית')}
                 </Text>
               </Pressable>
 
               {/* Secondary options — small chips */}
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                {/* ⚡ Send default template — greyed out when no default template is configured. onPress stays
-                    active in that case (only sending is blocked) so tapping it explains how to set one. */}
-                <Pressable
-                  onPress={handleSendDefaultTemplate}
-                  disabled={isSendingTemplate || isStatusLoading}
-                  style={({ pressed }) => {
-                    const noDefault = hasDefaultTemplate === false;
-                    return {
-                      flex: 1,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 4,
-                      backgroundColor: noDefault
-                        ? (theme.dark ? '#3f3f46' : '#e5e7eb')
-                        : (pressed ? '#d97706' : '#f59e0b'),
-                      paddingVertical: 8,
-                      borderRadius: 18,
-                      opacity: (isSendingTemplate || isStatusLoading) ? 0.6 : (noDefault ? 0.7 : 1),
-                    };
-                  }}
-                >
-                  {isSendingTemplate
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <MaterialCommunityIcons name="lightning-bolt" size={15} color={hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff'} />}
-                  <Text numberOfLines={1} style={{ color: hasDefaultTemplate === false ? (theme.dark ? '#a1a1aa' : '#6b7280') : '#fff', fontSize: 12, fontWeight: '700' }}>
-                    {isSendingTemplate
-                      ? t('chats.sending', 'שולח...')
-                      : t('chats.defaultTemplateShort', 'ברירת מחדל')}
-                  </Text>
-                </Pressable>
-
                 {/* 🕐 Schedule message — independent of conversation-status fetch. */}
                 <Pressable
                   onPress={handleOpenSchedule}
@@ -3964,320 +3721,20 @@ export default function ChatConversationScreen() {
         )}
         </View>
 
-        {/* Template Selector Modal — Quick / Manual tabs */}
-        <Modal
+        {/* Send template: pick (list opens automatically) → live preview → fill variables → send */}
+        <TemplateSendSheet
           visible={showTemplateSelector}
-          transparent
-          animationType="slide"
-          onRequestClose={() => { Keyboard.dismiss(); setShowTemplateSelector(false); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }}
-        >
-          <KeyboardAvoidingView
-            style={{ flex: 1 }}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
-          >
-          <View style={styles.modalOverlay}>
-            <View style={[styles.templateSheet, { backgroundColor: theme.colors.surface, paddingBottom: insets.bottom + 12 }]}>
-              <View style={styles.actionSheetHandle} />
-
-              {/* Header */}
-              <View style={styles.templateSheetHeader}>
-                <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1 }}>
-                  {isRTL ? 'שלח תבנית' : 'Send Template'}
-                </Text>
-                <IconButton icon="close" size={20} onPress={() => { setShowTemplateSelector(false); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }} />
-              </View>
-
-              {/* Tab bar */}
-              <View style={{ flexDirection: 'row', borderBottomWidth: 1.5, borderBottomColor: theme.colors.outlineVariant || '#e5e7eb', marginHorizontal: 12, marginBottom: 8 }}>
-                {([
-                  { key: 'quick',  label: isRTL ? '⚡ מהיר'  : '⚡ Quick'  },
-                  { key: 'manual', label: isRTL ? '✏️ ידני' : '✏️ Manual' },
-                ] as const).map(tab => (
-                  <Pressable
-                    key={tab.key}
-                    onPress={() => { setTemplateActiveTab(tab.key); setQuickTemplateSearch(''); setQuickOpenVarValues({}); }}
-                    style={{
-                      paddingVertical: 10, paddingHorizontal: 18,
-                      borderBottomWidth: 2.5,
-                      borderBottomColor: templateActiveTab === tab.key ? '#6c63ff' : 'transparent',
-                      marginBottom: -1.5,
-                    }}
-                  >
-                    <Text style={{ fontSize: 14, fontWeight: templateActiveTab === tab.key ? '700' : '400', color: templateActiveTab === tab.key ? '#6c63ff' : theme.colors.onSurfaceVariant }}>
-                      {tab.label}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              {isLoadingTemplates ? (
-                <View style={[styles.loadingContainer, { minHeight: 140 }]}>
-                  <ActivityIndicator size="large" color={theme.colors.primary} />
-                </View>
-              ) : templateActiveTab === 'quick' ? (
-                /* ── Quick tab ── */
-                <>
-                  <View style={[styles.templateSearchWrap, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', borderColor: theme.colors.outline, marginHorizontal: 12, marginBottom: 6 }]}>
-                    <MaterialCommunityIcons name="magnify" size={18} color={theme.colors.onSurfaceVariant} />
-                    <TextInput
-                      placeholder={isRTL ? 'חפש בכל התבניות לפי שם או סוג...' : 'Search all templates by name or type...'}
-                      placeholderTextColor={theme.colors.onSurfaceVariant}
-                      style={[styles.templateSearchInput, { color: theme.colors.onSurface }]}
-                      value={quickTemplateSearch}
-                      onChangeText={setQuickTemplateSearch}
-                    />
-                  </View>
-                  {quickTemplateResults.length === 0 ? (
-                    <View style={[styles.emptyTemplates, { minHeight: 100 }]}>
-                      <MaterialCommunityIcons name="lightning-bolt-outline" size={36} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.35 }} />
-                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
-                        {quickTemplateSearch.trim()
-                          ? (isRTL ? 'לא נמצאו תבניות תואמות.' : 'No matching templates.')
-                          : (isRTL ? 'אין תבניות מהירות.\nסמן ⚡ בהגדרות תבניות, או חפש כאן כדי למצוא כל תבנית.' : 'No Quick templates.\nMark ⚡ in settings, or search here to find any template.')}
-                      </Text>
-                    </View>
-                  ) : (
-                    <FlatList
-                      data={quickTemplateResults}
-                      keyExtractor={(item, i) => item.id || item.templateId || `q-${i}`}
-                      style={{ maxHeight: 380 }}
-                      renderItem={({ item }) => {
-                        let mapping: Array<{index: number; entity: string; field: string}> = [];
-                        try { mapping = JSON.parse(item.variableMappingJson || '[]'); } catch {}
-                        const bodyComp = (item.components || []).find((c: any) => c.type === 'BODY');
-                        const bodyText = bodyComp?.text || '';
-                        const varMatches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)];
-                        const varIndices = [...new Set(varMatches.map((m: any) => parseInt(m[1])))].sort((a, b) => a - b) as number[];
-                        // Auto-resolved default per variable from the saved mapping. Empty for
-                        // "open" (manual) variables. The user can override any value below.
-                        const autoValueFor = (idx: number) => {
-                          const me = mapping.find(m => m.index === idx);
-                          if (!me || me.entity === 'open') return '';
-                          return resolveQuickVar(me.entity, me.field);
-                        };
-                        const effValue = (idx: number) => {
-                          const key = `${item.id}_${idx}`;
-                          return quickOpenVarValues[key] !== undefined ? quickOpenVarValues[key] : autoValueFor(idx);
-                        };
-                        const isAutoMapped = (idx: number) => {
-                          const me = mapping.find(m => m.index === idx);
-                          return !!me && me.entity !== 'open';
-                        };
-                        const missing = varIndices.some(idx => !effValue(idx).trim());
-                        return (
-                          <View style={[styles.templateItem, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                              <View style={{ flex: 1 }}>
-                                <Text style={{ fontWeight: '700', color: theme.colors.onSurface, fontSize: 14 }}>
-                                  {item.friendlyName || item.name}
-                                </Text>
-                                {item.friendlyName && item.name && item.friendlyName !== item.name && (
-                                  <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant, marginTop: 1 }} numberOfLines={1}>{item.name}</Text>
-                                )}
-                                {item.usageType && (
-                                  <Text style={{ fontSize: 11, color: '#6c63ff', marginTop: 1 }}>{item.usageType}</Text>
-                                )}
-                                <Text numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, marginTop: 2 }}>
-                                  {getTemplateBodyText(item)}
-                                </Text>
-                              </View>
-                            </View>
-                            {/* All variable inputs — auto-mapped values are pre-filled and editable */}
-                            {varIndices.map(idx => (
-                              <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                <Text style={{ fontSize: 12, color: '#6c63ff', minWidth: 30 }}>{`{{${idx}}}`}</Text>
-                                <TextInput
-                                  placeholder={isRTL ? 'הזן ערך...' : 'Enter value...'}
-                                  placeholderTextColor={theme.colors.onSurfaceVariant}
-                                  value={effValue(idx)}
-                                  onChangeText={v => setQuickOpenVarValues(prev => ({ ...prev, [`${item.id}_${idx}`]: v }))}
-                                  style={{ flex: 1, borderWidth: 1, borderColor: isAutoMapped(idx) ? '#6c63ff' : theme.colors.outline, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, color: theme.colors.onSurface, backgroundColor: theme.colors.background }}
-                                />
-                                {isAutoMapped(idx) && (
-                                  <Text style={{ fontSize: 10, color: '#6c63ff', fontWeight: '700' }}>{isRTL ? 'אוטו' : 'AUTO'}</Text>
-                                )}
-                              </View>
-                            ))}
-                            <Pressable
-                              onPress={() => {
-                                const templateVariableQuery = varIndices.map((idx, i) =>
-                                  buildTemplateVarEntry(idx, effValue(idx), i + 1)
-                                );
-                                setShowTemplateSelector(false);
-                                doSendTemplate(item, templateVariableQuery);
-                              }}
-                              disabled={isSendingTemplate || missing}
-                              style={({ pressed }) => ({
-                                flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-                                backgroundColor: pressed ? '#1a7a5e' : '#25D366',
-                                paddingVertical: 9, borderRadius: 8,
-                                opacity: (isSendingTemplate || missing) ? 0.5 : 1,
-                              })}
-                            >
-                              <MaterialCommunityIcons name="send" size={16} color="#fff" />
-                              <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>
-                                {isRTL ? 'התחל שיחה' : 'Start Chat'}
-                              </Text>
-                            </Pressable>
-                          </View>
-                        );
-                      }}
-                    />
-                  )}
-                </>
-              ) : (
-                /* ── Manual tab ── */
-                <>
-                  {templates.length > 3 && (
-                    <View style={[styles.templateSearchWrap, { backgroundColor: theme.dark ? 'rgba(255,255,255,0.06)' : '#f3f4f6', borderColor: theme.colors.outline, marginHorizontal: 12, marginBottom: 6 }]}>
-                      <MaterialCommunityIcons name="magnify" size={18} color={theme.colors.onSurfaceVariant} />
-                      <TextInput
-                        placeholder={t('chats.searchTemplates', 'חיפוש תבנית...')}
-                        placeholderTextColor={theme.colors.onSurfaceVariant}
-                        style={[styles.templateSearchInput, { color: theme.colors.onSurface }]}
-                        value={searchQuery}
-                        onChangeText={setSearchQuery}
-                      />
-                    </View>
-                  )}
-                  {templates.length === 0 ? (
-                    <View style={styles.emptyTemplates}>
-                      <MaterialCommunityIcons name="file-document-outline" size={48} color={theme.colors.onSurfaceVariant} style={{ opacity: 0.4 }} />
-                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 12 }}>
-                        {t('chats.noTemplatesAvailable')}
-                      </Text>
-                    </View>
-                  ) : (
-                    <FlatList
-                      data={searchQuery.trim()
-                        ? templates.filter(tpl => (tpl.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || (tpl.friendlyName || '').toLowerCase().includes(searchQuery.toLowerCase()) || (getTemplateBodyText(tpl) || '').toLowerCase().includes(searchQuery.toLowerCase()))
-                        : templates}
-                      keyExtractor={(item, index) => item.id || item.templateId || `${item.name}-${index}`}
-                      style={{ maxHeight: 400 }}
-                      renderItem={({ item }) => (
-                        <Pressable
-                          onPress={() => handleSendTemplate(item)}
-                          disabled={isSendingTemplate}
-                          style={({ pressed }) => [styles.templateItem, { backgroundColor: pressed ? theme.colors.surfaceVariant : 'transparent', opacity: isSendingTemplate ? 0.6 : 1 }]}
-                        >
-                          <View style={{ flex: 1 }}>
-                            <Text variant="bodyLarge" style={{ fontWeight: '600', color: theme.colors.onSurface }}>
-                              {item.friendlyName || item.name}
-                            </Text>
-                            {item.friendlyName && (
-                              <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }}>{item.name}</Text>
-                            )}
-                            <Text variant="bodySmall" numberOfLines={2} style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-                              {getTemplateBodyText(item) || `${item.language} · ${item.category}`}
-                            </Text>
-                          </View>
-                          <MaterialCommunityIcons name="send" size={20} color={theme.colors.primary} />
-                        </Pressable>
-                      )}
-                    />
-                  )}
-                </>
-              )}
-            </View>
-          </View>
-          </KeyboardAvoidingView>
-        </Modal>
-
-        {/* Template Variables Modal - when template has {{1}}, {{2}}, etc. */}
-        <Modal
-          visible={!!selectedTemplateForVars}
-          transparent
-          animationType="slide"
-          onRequestClose={() => {
-            Keyboard.dismiss();
-            setSelectedTemplateForVars(null);
-            setTemplateVariableValues({});
+          onClose={() => setShowTemplateSelector(false)}
+          templates={templates}
+          loading={isLoadingTemplates}
+          organization={user?.organization || ''}
+          resolveVar={resolveQuickVar}
+          isSending={isSendingTemplate}
+          onSend={(tpl, idxs, vals) => {
+            setShowTemplateSelector(false);
+            doSendTemplate(tpl, idxs.map((idx, i) => buildTemplateVarEntry(idx, vals[idx] ?? '', i + 1)));
           }}
-        >
-          <KeyboardAvoidingView
-            style={{ flex: 1 }}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
-          >
-          <View style={styles.modalOverlay}>
-            <View
-              style={[
-                styles.templateSheet,
-                {
-                  backgroundColor: theme.colors.surface,
-                  paddingBottom: insets.bottom + 12,
-                },
-              ]}
-            >
-              <View style={styles.actionSheetHandle} />
-              <View style={styles.templateSheetHeader}>
-                <Text
-                  variant="titleMedium"
-                  style={{
-                    fontWeight: '700',
-                    color: theme.colors.onSurface,
-                    flex: 1,
-                  }}
-                >
-                  {selectedTemplateForVars?.name || t('chats.fillTemplateVariables')}
-                </Text>
-                <IconButton
-                  icon="close"
-                  size={20}
-                  onPress={() => {
-                    setSelectedTemplateForVars(null);
-                    setTemplateVariableValues({});
-                  }}
-                />
-              </View>
-              {selectedTemplateForVars && (
-                <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ padding: 16 }}>
-                  {(getTemplateVariableIndices(selectedTemplateForVars)).map((idx) => (
-                    <View key={idx} style={{ marginBottom: 12 }}>
-                      <Text
-                        variant="labelMedium"
-                        style={{
-                          color: theme.colors.onSurfaceVariant,
-                          marginBottom: 6,
-                        }}
-                      >
-                        {`{{${idx}}}`}
-                      </Text>
-                      <TextInput
-                        value={templateVariableValues[idx] ?? ''}
-                        onChangeText={(v) =>
-                          setTemplateVariableValues((prev) => ({ ...prev, [idx]: v }))
-                        }
-                        placeholder={t('chats.enterValue')}
-                        placeholderTextColor={theme.colors.onSurfaceVariant}
-                        style={[
-                          styles.scheduleInput,
-                          {
-                            borderColor: theme.dark ? 'rgba(255,255,255,0.15)' : '#d1d5db',
-                            backgroundColor: theme.dark ? 'rgba(255,255,255,0.05)' : '#f9fafb',
-                            color: theme.colors.onSurface,
-                            fontSize: 15,
-                            writingDirection: isRTL ? 'rtl' : 'ltr',
-                          },
-                        ]}
-                      />
-                    </View>
-                  ))}
-                  <Button
-                    mode="contained"
-                    onPress={handleSendTemplateWithVariables}
-                    disabled={isSendingTemplate}
-                    style={{ marginTop: 8 }}
-                  >
-                    {isSendingTemplate ? t('common.sending') : (isRTL ? 'התחל שיחה' : 'Start Chat')}
-                  </Button>
-                </ScrollView>
-              )}
-            </View>
-          </View>
-          </KeyboardAvoidingView>
-        </Modal>
+        />
 
         {/* Schedule Message Modal */}
         <Modal
@@ -4858,16 +4315,13 @@ export default function ChatConversationScreen() {
                   : { icon: 'check-circle-outline', label: t('chats.closeConversation', 'סגור שיחה'), color: '#607D8B', action: () => { setShowQuickActionsSheet(false); handleChangeStatus('Closed'); } },
                 { icon: 'tag-plus-outline', label: t('chats.addTagShort', 'הוסף תיוג'), color: '#009688', action: () => { setShowQuickActionsSheet(false); setShowAddTagInline(true); } },
                 { icon: 'clipboard-check-outline', label: t('tasks.addTask', 'הוסף משימה'), color: '#2196F3', action: () => { setShowQuickActionsSheet(false); setTaskSeedText(''); setShowCreateTaskModal(true); } },
-                activeLead
-                  ? { icon: 'account-star-outline', label: t('chats.openLead', 'פתח ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); openLeadRecord(); } }
-                  : { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
+                // Always "create" (opening an existing lead/case is done from its chip in the meta bar).
+                { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/leads/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
                 // New quote for this contact — the quote form auto-links the contact's open lead (same as the web quick action).
                 { icon: 'file-document-plus-outline', label: isRTL ? 'הצעת מחיר' : 'Quote', color: '#2563eb', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/quotes/[id]', params: { id: 'new', prefillContactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
                 { icon: 'cash-fast', label: isRTL ? 'בקשת תשלום' : 'Request payment', color: '#16a34a', action: () => { setShowQuickActionsSheet(false); setShowPaymentSheet(true); } },
                 { icon: 'receipt', label: isRTL ? 'חשבונית' : 'Invoice', color: '#0d9488', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/invoices/[id]', params: { id: 'new', prefillContactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
-                activeCase
-                  ? { icon: 'ticket-confirmation-outline', label: t('chats.openCase', 'פתח פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); openCaseRecord(); } }
-                  : { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
+                { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => { setShowQuickActionsSheet(false); router.push({ pathname: '/(tabs)/more/cases/[id]', params: { id: 'new', contactPhone: phoneNumber as string, prefillContactName: contactName } } as any); } },
                 { icon: 'clock-outline', label: t('chats.scheduleMessage', 'תזמן הודעה'), color: '#607D8B', action: () => { setShowQuickActionsSheet(false); setShowScheduleModal(true); } },
                 { icon: 'image-multiple', label: t('chats.mediaLibrary', 'מדיה'), color: '#7C4DFF', action: () => { setShowQuickActionsSheet(false); setMediaPanelVisible(true); } },
               ] as { icon: string; label: string; color: string; action: () => void }[]).map((item) => (

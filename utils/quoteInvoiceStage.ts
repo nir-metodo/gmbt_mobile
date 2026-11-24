@@ -36,7 +36,10 @@ export async function getInvoiceParamsForStage(
 ): Promise<InvoiceFromQuoteParams | null> {
   if (!org || !quote?.id || quote.status === newStatus || quote.invoiceGeneratedId) return null;
   try {
-    const cfg = (await getStages(org)).find((s) => s.id === newStatus)?.autoInvoice;
+    // Same default as the web (getStageAutoInvoice): an explicit stage setting always wins; when none was ever
+    // saved the "paid" stage defaults to ON with a tax invoice + receipt.
+    const stage = (await getStages(org)).find((s) => s.id === newStatus);
+    const cfg = stage?.autoInvoice ?? (newStatus === 'paid' ? { enabled: true, docType: 'combined' } : undefined);
     if (!cfg?.enabled) return null;
     return {
       id: 'new',

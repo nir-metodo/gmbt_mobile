@@ -117,13 +117,16 @@ const CURRENCY_OPTIONS = ['ILS', 'USD', 'EUR', 'GBP'];
 const LEAD_SOURCES = [
   'Google Ads', 'Facebook Ads', 'Instagram Ads', 'LinkedIn', 'TikTok',
   'Organic Search', 'Direct', 'Referral', 'Email Marketing',
-  'SMS Campaign', 'Gambot Campaign', 'Social Media', 'Other',
+  'SMS Campaign', 'Gambot Campaign', 'Social Media', 'Manual', 'Other',
 ];
 
 const LEAD_CHANNELS = [
   'WhatsApp Message', 'Landing Page / Form', 'Phone Call', 'Website Chat',
-  'Email', 'Walk-in', 'Event / Conference', 'Social Media DM', 'Botomation', 'Other',
+  'Email', 'Walk-in', 'Event / Conference', 'Social Media DM', 'Botomation', 'gambot', 'Other',
 ];
+
+// Display labels for channel values that are stored as a web-style code.
+const CHANNEL_LABELS: Record<string, string> = { gambot: 'Gambot' };
 
 const LEAD_STATUSES = ['Active', 'Interested', 'Not Interested', 'On Hold', 'Archived'];
 
@@ -279,6 +282,9 @@ export default function LeadDetailScreen() {
       ? { ...lead }
       : {
           ...EMPTY_LEAD,
+          // A lead created by hand defaults to source "Manual" / channel "Gambot" (same as the web form).
+          source: 'Manual',
+          medium: 'gambot',
           contactPhone: prefillPhone || '',
           contactName: prefillContactName || '',
         },
@@ -1561,7 +1567,7 @@ export default function LeadDetailScreen() {
                         fontWeight: isSelected ? '600' : '400',
                       }}
                     >
-                      {ch}
+                      {CHANNEL_LABELS[ch] || ch}
                     </Chip>
                   );
                 })}
@@ -2090,9 +2096,13 @@ export default function LeadDetailScreen() {
                     prefillTitle: lead?.title || '',
                     prefillLeadId: lead?.id || '',
                     // The lead's products of interest → the editor builds them like catalog picks (delivery, add-ons, promo).
-                    ...(Array.isArray((lead as any)?.interestedProducts) && (lead as any).interestedProducts.length > 0
-                      ? { prefillProducts: JSON.stringify((lead as any).interestedProducts) }
-                      : {}),
+                    // Prefer the live selection on the form (products just picked, even if not saved yet) over the stored lead.
+                    ...(() => {
+                      const live = Array.isArray((form as any)?.interestedProducts) ? (form as any).interestedProducts : null;
+                      const stored = Array.isArray((lead as any)?.interestedProducts) ? (lead as any).interestedProducts : [];
+                      const products = live && live.length > 0 ? live : stored;
+                      return products.length > 0 ? { prefillProducts: JSON.stringify(products) } : {};
+                    })(),
                   },
                 })}
               />
@@ -2481,7 +2491,7 @@ export default function LeadDetailScreen() {
         customerName={lead?.contactName || ''}
         customerPhone={lead?.contactPhone || lead?.phoneNumber || ''}
         customerEmail={(lead as any)?.email || (lead as any)?.contactEmail || ''}
-        items={((lead as any)?.interestedProducts || []).map((pr: any) => ({
+        items={(((form as any)?.interestedProducts?.length ? (form as any).interestedProducts : (lead as any)?.interestedProducts) || []).map((pr: any) => ({
           name: pr.name || pr.productName || '',
           unitPrice: Number(pr.unitPrice ?? pr.price) || 0,
           quantity: Number(pr.quantity) || 1,

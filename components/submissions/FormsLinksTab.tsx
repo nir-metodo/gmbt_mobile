@@ -15,7 +15,7 @@ import ShareLinkSheet from './ShareLinkSheet';
 const FORM_COLOR = '#0d9488';
 
 /** Web forms: copy the public link or send it to a customer in one tap. */
-export default function FormsLinksTab() {
+export default function FormsLinksTab({ onViewResponses }: { onViewResponses?: (formId: string) => void }) {
   const theme = useAppTheme();
   const { isRTL, flexDirection, textAlign } = useRTL();
   const tr = (he: string, en: string) => (isRTL ? he : en);
@@ -76,6 +76,11 @@ export default function FormsLinksTab() {
               {published ? tr('מפורסם', 'Published') : tr('טיוטה', 'Draft')}
             </Text>
           </View>
+          {onViewResponses ? (
+            <Pressable onPress={() => onViewResponses(item.id)} hitSlop={8} style={[styles.iconBtn, { backgroundColor: '#ccfbf1' }]}>
+              <MaterialCommunityIcons name="inbox-full-outline" size={20} color={FORM_COLOR} />
+            </Pressable>
+          ) : null}
           <Pressable onPress={() => copy(item)} hitSlop={8} style={[styles.iconBtn, { backgroundColor: theme.colors.surfaceVariant }]}>
             <MaterialCommunityIcons name="content-copy" size={20} color={theme.colors.onSurface} />
           </Pressable>

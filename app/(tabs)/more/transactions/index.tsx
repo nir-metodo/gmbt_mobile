@@ -22,6 +22,7 @@ import {
   Button,
   TextInput,
   FAB,
+  IconButton,
 } from 'react-native-paper';
 import { FlashList } from '@shopify/flash-list';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -43,11 +44,34 @@ import { StatusFilterBar } from '../../../../components/StatusFilterBar';
 import { SummaryHeader } from '../../../../components/SummaryHeader';
 import { DocumentListItem } from '../../../../components/DocumentListItem';
 import { EmptyState } from '../../../../components/EmptyState';
+import { TransactionRowActions } from '../../../../components/TransactionRowActions';
 import PaymentFormSheet from '../../../../components/PaymentFormSheet';
 
 const BRAND_COLOR = '#2e6155';
 
 type StatusFilter = '' | 'paid' | 'pending' | 'failed';
+type DateRangeKey = 'all' | 'today' | 'yesterday' | '7d' | 'month';
+const DATE_RANGE_KEYS: DateRangeKey[] = ['all', 'today', 'yesterday', '7d', 'month'];
+const DATE_RANGE_LABEL: Record<DateRangeKey, { he: string; en: string }> = {
+  all: { he: 'כל התאריכים', en: 'All dates' },
+  today: { he: 'היום', en: 'Today' },
+  yesterday: { he: 'אתמול', en: 'Yesterday' },
+  '7d': { he: '7 ימים', en: '7 days' },
+  month: { he: 'החודש', en: 'This month' },
+};
+const NO_SENDER = '__none';
+
+/** Local-day [from, to) bounds of a preset range. */
+function rangeBounds(key: DateRangeKey): [number, number] | null {
+  if (key === 'all') return null;
+  const n = new Date();
+  const today = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+  const day = 86400000;
+  if (key === 'today') return [today, today + day];
+  if (key === 'yesterday') return [today - day, today];
+  if (key === '7d') return [today - 6 * day, today + day];
+  return [new Date(n.getFullYear(), n.getMonth(), 1).getTime(), today + day];
+}
 
 const STATUS_CONFIG: Record<string, { icon: string; color: string; labelHe: string; labelEn: string }> = {
   paid: { icon: 'check-circle', color: '#16a34a', labelHe: 'שולם', labelEn: 'Paid' },
@@ -97,6 +121,9 @@ export default function TransactionsScreen() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('');
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [dateRange, setDateRange] = useState<DateRangeKey>('all');
+  const [senderFilter, setSenderFilter] = useState('');
+  const [filterSheetVisible, setFilterSheetVisible] = useState(false);
   const fetchTransactions = useCallback(async () => {
     if (!organization) { setLoading(false); return; }
     setLoading(true);
@@ -121,8 +148,25 @@ export default function TransactionsScreen() {
   // Debounce search so the list re-filters once typing pauses (no per-keystroke flicker).
   const debouncedSearch = useDebouncedValue(searchQuery, 350);
 
-  const filtered = useMemo(() => {
+  // Who created the payments (sent the link / charged): id -> name.
+  const senders = useMemo(() => {
+    const m = new Map<string, string>();
+    transactions.forEach((tx) => { if (tx.createdById) m.set(tx.createdById, tx.createdByName || tx.createdById); });
+    return Array.from(m, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [transactions]);
+
+  // Everything but the status filter: the totals strip and the status counts describe this set.
+  const scoped = useMemo(() => {
     let list = [...transactions];
+    const bounds = rangeBounds(dateRange);
+    if (bounds) {
+      list = list.filter((tx) => {
+        const ms = parseTxDate(tx.createdAt)?.getTime() || 0;
+        return ms >= bounds[0] && ms < bounds[1];
+      });
+    }
+    if (senderFilter === NO_SENDER) list = list.filter((tx) => !tx.createdById);
+    else if (senderFilter) list = list.filter((tx) => tx.createdById === senderFilter);
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.trim().toLowerCase();
       list = list.filter(
@@ -131,9 +175,15 @@ export default function TransactionsScreen() {
           (tx.customerPhone || '').includes(q) ||
           (tx.customerEmail || '').toLowerCase().includes(q) ||
           (tx.description || '').toLowerCase().includes(q) ||
+          (tx.createdByName || '').toLowerCase().includes(q) ||
           (tx.transactionId || '').toLowerCase().includes(q),
       );
     }
+    return list;
+  }, [transactions, dateRange, senderFilter, debouncedSearch]);
+
+  const filtered = useMemo(() => {
+    let list = [...scoped];
     if (statusFilter) {
       list = list.filter((tx) => tx.status === statusFilter);
     }
@@ -143,29 +193,33 @@ export default function TransactionsScreen() {
       return dateB - dateA;
     });
     return list;
-  }, [transactions, debouncedSearch, statusFilter]);
+  }, [scoped, statusFilter]);
 
   // Client-side pagination over the filtered list (search still spans everything).
   const { visible: visibleTx, hasMore: txHasMore, loadMore: txLoadMore, loadAll: txLoadAll, count: txCount } = useWindowedList(filtered, {
     pageSize: 30,
-    resetKey: `${debouncedSearch}|${statusFilter}`,
+    resetKey: `${debouncedSearch}|${statusFilter}|${dateRange}|${senderFilter}`,
   });
 
   const stats = useMemo(() => {
-    const total = transactions.length;
-    const paid = transactions.filter((tx) => tx.status === 'paid').length;
-    const pending = transactions.filter((tx) => tx.status === 'pending').length;
-    const totalAmount = transactions
-      .filter((tx) => tx.status === 'paid')
-      .reduce((sum, tx) => sum + (parseFloat(String(tx.amount)) || 0), 0);
-    return { total, paid, pending, totalAmount };
-  }, [transactions]);
+    const amt = (tx: Transaction) => parseFloat(String(tx.amount)) || 0;
+    const total = scoped.length;
+    const paidList = scoped.filter((tx) => tx.status === 'paid');
+    const pendingList = scoped.filter((tx) => tx.status === 'pending');
+    const totalAmount = paidList.reduce((s, tx) => s + amt(tx), 0);
+    const pendingAmount = pendingList.reduce((s, tx) => s + amt(tx), 0);
+    const rate = total > 0 ? Math.round((paidList.length / total) * 100) : 0;
+    const avg = paidList.length > 0 ? totalAmount / paidList.length : 0;
+    return { total, paid: paidList.length, pending: pendingList.length, totalAmount, pendingAmount, rate, avg };
+  }, [scoped]);
+
+  const filtersActive = dateRange !== 'all' || !!senderFilter;
 
   const renderItem = useCallback(
     ({ item }: { item: Transaction }) => {
       const cfg = STATUS_CONFIG[item.status] || STATUS_CONFIG.pending;
       const amount = parseFloat(String(item.amount)) || 0;
-      const subtitle = [item.description, item.entityType, item.payments && item.payments > 1 ? `${item.payments}x` : '']
+      const subtitle = [item.description, item.entityType, item.payments && item.payments > 1 ? `${item.payments}x` : '', item.createdByName ? `${he ? 'נשלח ע"י' : 'by'} ${item.createdByName}` : '']
         .filter(Boolean).join(' · ');
       return (
         <DocumentListItem
@@ -177,10 +231,11 @@ export default function TransactionsScreen() {
           date={formatTxDate(item.createdAt, lang)}
           viewCount={item.viewCount}
           onPress={() => setSelectedTx(item)}
+          actions={<TransactionRowActions tx={item} user={user} />}
         />
       );
     },
-    [he, lang],
+    [he, lang, user],
   );
 
   const openCreate = useCallback(() => setShowCreateModal(true), []);
@@ -205,26 +260,46 @@ export default function TransactionsScreen() {
       <ListToolbar
         query={searchQuery}
         onChangeQuery={setSearchQuery}
-        placeholder={he ? 'חיפוש לפי שם, טלפון, תיאור...' : 'Search by name, phone, description...'}
+        placeholder={he ? 'חיפוש לפי שם, טלפון, תיאור, שולח...' : 'Search by name, phone, description, sender...'}
+        trailing={
+          <View>
+            <IconButton
+              icon="filter-variant"
+              size={22}
+              iconColor={filtersActive ? BRAND_COLOR : theme.colors.onSurfaceVariant}
+              onPress={() => setFilterSheetVisible(true)}
+            />
+            {filtersActive ? <View style={styles.filterDot} /> : null}
+          </View>
+        }
       />
 
       {!loading && transactions.length > 0 ? (
-        <SummaryHeader
-          items={[
-            { label: he ? 'סה"כ שולם' : 'Total paid', value: formatCurrency(stats.totalAmount), color: '#16a34a' },
-            { label: he ? 'ממתינים' : 'Pending', value: String(stats.pending), color: '#d97706' },
-          ]}
-        />
+        <>
+          <SummaryHeader
+            items={[
+              { label: he ? 'סה"כ שולם' : 'Total paid', value: formatCurrency(stats.totalAmount), color: '#16a34a' },
+              { label: he ? 'ממתין לתשלום' : 'Awaiting', value: formatCurrency(stats.pendingAmount), color: '#d97706' },
+            ]}
+          />
+          <SummaryHeader
+            items={[
+              { label: he ? 'עסקאות' : 'Transactions', value: String(stats.total) },
+              { label: he ? 'אחוז תשלום' : 'Paid rate', value: `${stats.rate}%`, color: BRAND_COLOR },
+              { label: he ? 'ממוצע' : 'Average', value: formatCurrency(stats.avg) },
+            ]}
+          />
+        </>
       ) : null}
 
       <StatusFilterBar
         allLabel={he ? 'הכל' : 'All'}
-        allCount={transactions.length}
+        allCount={scoped.length}
         options={(['paid', 'pending', 'failed'] as const).map((k) => ({
           key: k,
           label: he ? STATUS_CONFIG[k].labelHe : STATUS_CONFIG[k].labelEn,
           color: STATUS_CONFIG[k].color,
-          count: transactions.filter((tx) => tx.status === k).length,
+          count: scoped.filter((tx) => tx.status === k).length,
         }))}
         value={statusFilter || 'all'}
         onChange={(k) => setStatusFilter(k === 'all' ? '' : (k as StatusFilter))}
@@ -275,6 +350,42 @@ export default function TransactionsScreen() {
         onPress={openCreate}
         label={he ? 'סליקה חדשה' : 'New Payment'}
       />
+
+      <Portal>
+        {/* Filters: date + who sent */}
+        <Modal
+          visible={filterSheetVisible}
+          onDismiss={() => setFilterSheetVisible(false)}
+          contentContainerStyle={[styles.detailModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <ScrollView keyboardShouldPersistTaps="handled">
+            <Text style={{ fontWeight: '700', marginBottom: 8, textAlign }}>{he ? 'לפי תאריך' : 'By date'}</Text>
+            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', flexWrap: 'wrap', gap: 8 }}>
+              {DATE_RANGE_KEYS.map((k) => (
+                <Chip key={k} selected={dateRange === k} showSelectedCheck={false} onPress={() => setDateRange(k)}>
+                  {he ? DATE_RANGE_LABEL[k].he : DATE_RANGE_LABEL[k].en}
+                </Chip>
+              ))}
+            </View>
+            {senders.length > 0 ? (
+              <>
+                <Text style={{ fontWeight: '700', marginTop: 20, marginBottom: 8, textAlign }}>{he ? 'לפי מי שלח' : 'By sender'}</Text>
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', flexWrap: 'wrap', gap: 8 }}>
+                  <Chip selected={!senderFilter} showSelectedCheck={false} onPress={() => setSenderFilter('')}>{he ? 'כולם' : 'Everyone'}</Chip>
+                  {senders.map((s) => (
+                    <Chip key={s.id} selected={senderFilter === s.id} showSelectedCheck={false} onPress={() => setSenderFilter(s.id)}>{s.name}</Chip>
+                  ))}
+                  <Chip selected={senderFilter === NO_SENDER} showSelectedCheck={false} onPress={() => setSenderFilter(NO_SENDER)}>{he ? 'אוטומטי / לא ידוע' : 'Automatic / unknown'}</Chip>
+                </View>
+              </>
+            ) : null}
+          </ScrollView>
+          <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', gap: 12, marginTop: 20 }}>
+            <Button mode="outlined" style={{ flex: 1, borderRadius: 12 }} onPress={() => { setDateRange('all'); setSenderFilter(''); }}>{he ? 'נקה' : 'Clear'}</Button>
+            <Button mode="contained" buttonColor={BRAND_COLOR} style={{ flex: 1, borderRadius: 12 }} onPress={() => setFilterSheetVisible(false)}>{he ? 'הצג' : 'Show'}</Button>
+          </View>
+        </Modal>
+      </Portal>
 
       {/* Detail modal */}
       <Portal>
@@ -386,6 +497,9 @@ function TransactionDetail({
       ) : null}
       {tx.description ? (
         <DetailRow icon="text-box-outline" label={he ? 'תיאור' : 'Description'} value={tx.description} theme={theme} flexDirection={flexDirection} />
+      ) : null}
+      {tx.createdByName ? (
+        <DetailRow icon="account-arrow-right-outline" label={he ? 'נשלח ע"י' : 'Sent by'} value={tx.createdByName} theme={theme} flexDirection={flexDirection} />
       ) : null}
       <DetailRow icon="calendar-outline" label={he ? 'תאריך' : 'Date'} value={formatTxDate(tx.createdAt, lang)} theme={theme} flexDirection={flexDirection} />
       {tx.status === 'paid' ? (
@@ -533,6 +647,7 @@ const styles = StyleSheet.create({
     gap: 6,
     alignItems: 'center',
   },
+  filterDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4, backgroundColor: '#F4B400' },
   filterChip: { height: 28 },
   filterChipText: { fontSize: 11, lineHeight: 16 },
   listContent: { padding: 14, paddingBottom: 100 },

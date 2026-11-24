@@ -14,7 +14,7 @@ import ShareLinkSheet, { type ShareContact } from './ShareLinkSheet';
 const DOC_COLOR = '#7c3aed';
 
 /** Document templates: send a fill-in link to a customer, or open a signature request from the template. */
-export default function DocTemplatesTab() {
+export default function DocTemplatesTab({ onViewResponses }: { onViewResponses?: (templateId: string) => void }) {
   const theme = useAppTheme();
   const router = useRouter();
   const { isRTL, flexDirection, textAlign } = useRTL();
@@ -80,6 +80,11 @@ export default function DocTemplatesTab() {
             <Text numberOfLines={1} style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, textAlign }}>{item.category || item.description}</Text>
           ) : null}
         </View>
+        {onViewResponses ? (
+          <Pressable onPress={() => onViewResponses(item.id)} hitSlop={8} style={[styles.iconBtn, { backgroundColor: '#ede9fe' }]}>
+            <MaterialCommunityIcons name="inbox-full-outline" size={20} color={DOC_COLOR} />
+          </Pressable>
+        ) : null}
         <Pressable onPress={() => setSharing(item)} hitSlop={8} style={[styles.iconBtn, { backgroundColor: '#dcfce7' }]}>
           <MaterialCommunityIcons name="link-variant" size={20} color="#16a34a" />
         </Pressable>
@@ -98,7 +103,7 @@ export default function DocTemplatesTab() {
     <View style={{ flex: 1 }}>
       <ListToolbar query={search} onChangeQuery={setSearch} placeholder={tr('חיפוש מסמך...', 'Search documents...')} />
       <Text style={{ fontSize: 12, color: theme.colors.onSurfaceVariant, textAlign, paddingHorizontal: 16, paddingBottom: 4 }}>
-        {tr('🔗 קישור למילוי · ✍️ בקשת חתימה', '🔗 fill-in link · ✍️ signature request')}
+        {tr('📥 תשובות · 🔗 קישור למילוי · ✍️ בקשת חתימה', '📥 responses · 🔗 fill-in link · ✍️ signature request')}
       </Text>
       {loading ? (
         <View style={styles.centered}><ActivityIndicator size="large" color={DOC_COLOR} /></View>

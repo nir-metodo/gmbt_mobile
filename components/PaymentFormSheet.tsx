@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, View, Alert, Pressable, ScrollView, Linking, ActivityIndicator, Switch } from 'react-native';
+import { Modal, View, Alert, Pressable, ScrollView, Linking, ActivityIndicator, Switch, Share, TextInput as RNTextInput } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useRTL } from '../hooks/useRTL';
+import { useAppTheme } from '../hooks/useAppTheme';
+import { withAlpha } from '../utils/formatters';
 import { paymentsApi } from '../services/api/payments';
 import { contactsApi } from '../services/api/contacts';
 import { leadsApi } from '../services/api/leads';
@@ -109,6 +111,21 @@ export default function PaymentFormSheet({
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
 
+  // Looks the contact up by phone (last 9 digits must match exactly) and fills the email (and the name when asked) if still empty.
+  const fillEmailFromContact = useCallback(async (phone: string, alsoName = false) => {
+    const key = digits(phone).slice(-9);
+    if (!organization || key.length < 9) return;
+    try {
+      const rows: any[] = await contactsApi.search(organization, key, 10);
+      const hit = rows.find((c: any) => digits(c.phoneNumber || c.PhoneNumber || c.id).slice(-9) === key);
+      if (!hit) return;
+      const email = String(hit.email || hit.Email || '').trim();
+      if (email) setCustEmail((prev) => prev || email);
+      const nm = String(hit.name || hit.fullName || hit.Name || '').trim();
+      if (alsoName && nm) setCustName((prev) => prev || nm);
+    } catch { /* the email can still be typed in */ }
+  }, [organization]);
+
   // ── reset every time the sheet opens ──
   useEffect(() => {
     if (!visible) return;
@@ -146,6 +163,8 @@ export default function PaymentFormSheet({
         })
         .catch(() => {});
     }
+    // The email lives on the contact, not on the lead / quote — pull it in like the web does.
+    if (!customerEmail && customerPhone) fillEmailFromContact(customerPhone, !customerName);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
@@ -211,6 +230,7 @@ export default function PaymentFormSheet({
     if (rec.name) setCustName(rec.name);
     if (rec.phone) setCustPhone(rec.phone);
     setCustEmail(rec.email || '');
+    if (!rec.email && rec.phone) fillEmailFromContact(rec.phone);
     setPickerOpen(false);
     setLinkSearch('');
   };
@@ -332,39 +352,109 @@ export default function PaymentFormSheet({
     setSendingWa(false);
   };
 
-  const chip = (active: boolean) => ({
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1,
-    borderColor: active ? BRAND : '#d1d5db', backgroundColor: active ? '#e8f5f0' : '#fff',
-  } as const);
+  const theme = useAppTheme();
+  const ink = theme.colors.onSurface;
+  const sub = theme.colors.onSurfaceVariant;
+  const hairline = withAlpha(ink, 0.12);
+  const cardBg = withAlpha(ink, 0.035);
   const rowDir = isRTL ? 'row-reverse' : 'row';
   const align = isRTL ? 'right' : 'left';
+  const [copied, setCopied] = useState(false);
+  const [amountFocused, setAmountFocused] = useState(false);
+
+  const pill = (active: boolean) => ({
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1,
+    borderColor: active ? BRAND : hairline, backgroundColor: active ? withAlpha(BRAND, 0.12) : 'transparent',
+  } as const);
+
+  // A titled section card (plain function, not a component — keeps the inputs inside from losing focus on re-render).
+  const card = (title: string, icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'], children: React.ReactNode) => (
+    <View style={{ borderWidth: 1, borderColor: hairline, backgroundColor: cardBg, borderRadius: 18, padding: 14, marginBottom: 14, gap: 4 }}>
+      <View style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: withAlpha(BRAND, 0.12), alignItems: 'center', justifyContent: 'center' }}>
+          <MaterialCommunityIcons name={icon} size={16} color={BRAND} />
+        </View>
+        <Text style={{ fontSize: 14, fontWeight: '700', color: ink, textAlign: align }}>{title}</Text>
+      </View>
+      {children}
+    </View>
+  );
+
+  const copyLink = async () => {
+    if (!result) return;
+    await Clipboard.setStringAsync(result.url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const shareLink = async () => {
+    if (!result) return;
+    const amountTxt = result.amount.toFixed(2);
+    try {
+      await Share.share({
+        message: `${custName ? `שלום ${custName},\n` : ''}קישור לתשלום על סך ₪${amountTxt}:\n${result.url}`,
+      });
+    } catch { /* user dismissed */ }
+  };
 
   const renderResult = () => (
-    <View style={{ alignItems: 'center', paddingVertical: 12, gap: 10 }}>
-      <MaterialCommunityIcons name="check-circle" size={56} color="#16a34a" />
-      <Text variant="titleMedium" style={{ color: '#16a34a', fontWeight: '700' }}>{tr('לינק תשלום נוצר!', 'Payment link created!')}</Text>
-      <Text variant="bodySmall" style={{ color: '#64748b' }}>{tr('סכום', 'Amount')}: ₪{result!.amount.toFixed(2)}</Text>
-      <View style={{ backgroundColor: '#f8fafc', borderColor: '#e2e8f0', borderWidth: 1, borderRadius: 10, padding: 10, alignSelf: 'stretch' }}>
-        <Text selectable style={{ fontSize: 12, color: '#334155', textAlign: 'center' }}>{result!.url}</Text>
+    <View style={{ alignItems: 'stretch', paddingVertical: 8, gap: 14 }}>
+      <View style={{ alignItems: 'center', gap: 6 }}>
+        <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: withAlpha('#16a34a', 0.14), alignItems: 'center', justifyContent: 'center' }}>
+          <MaterialCommunityIcons name="check-bold" size={38} color="#16a34a" />
+        </View>
+        <Text style={{ fontSize: 20, fontWeight: '800', color: ink }}>{tr('קישור התשלום מוכן', 'Payment link is ready')}</Text>
+        <Text style={{ fontSize: 30, fontWeight: '800', color: BRAND }}>₪{result!.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+        {custName ? <Text style={{ fontSize: 13, color: sub }}>{custName}</Text> : null}
       </View>
-      <View style={{ flexDirection: rowDir, gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-        <Pressable onPress={() => { Clipboard.setStringAsync(result!.url); Alert.alert(tr('הועתק', 'Copied')); }} style={[chip(false), { flexDirection: rowDir, gap: 6, alignItems: 'center' }]}>
-          <MaterialCommunityIcons name="content-copy" size={15} color="#475569" />
-          <Text style={{ fontSize: 13, color: '#475569' }}>{tr('העתק', 'Copy')}</Text>
-        </Pressable>
-        <Pressable onPress={() => Linking.openURL(result!.url)} style={[chip(false), { flexDirection: rowDir, gap: 6, alignItems: 'center' }]}>
-          <MaterialCommunityIcons name="open-in-new" size={15} color={BRAND} />
-          <Text style={{ fontSize: 13, color: BRAND }}>{tr('פתח', 'Open')}</Text>
-        </Pressable>
-        {custPhone ? (
-          <Pressable disabled={sendingWa} onPress={sendWhatsApp} style={{ opacity: sendingWa ? 0.6 : 1, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, backgroundColor: '#25D366', flexDirection: rowDir, gap: 6, alignItems: 'center' }}>
-            <MaterialCommunityIcons name="whatsapp" size={16} color="#fff" />
-            <Text style={{ fontSize: 13, color: '#fff', fontWeight: '600' }}>{tr('שלח בוואטסאפ', 'Send on WhatsApp')}</Text>
+
+      {/* the link */}
+      <Pressable onPress={copyLink} style={{ flexDirection: rowDir, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: hairline, backgroundColor: cardBg, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 12 }}>
+        <MaterialCommunityIcons name="link-variant" size={20} color={BRAND} />
+        <Text numberOfLines={1} selectable style={{ flex: 1, fontSize: 13, color: ink, textAlign: 'left', writingDirection: 'ltr' }}>{result!.url}</Text>
+        <MaterialCommunityIcons name={copied ? 'check' : 'content-copy'} size={18} color={copied ? '#16a34a' : sub} />
+      </Pressable>
+
+      {/* send by WhatsApp — the number can be typed here if the record has none */}
+      {!custPhone ? (
+        <FormTextField
+          label={tr('טלפון לשליחה בוואטסאפ', 'Phone to send on WhatsApp')}
+          value={custPhone}
+          onChangeText={setCustPhone}
+          keyboardType="phone-pad"
+          style={{ marginBottom: 0 }}
+        />
+      ) : null}
+      <Pressable
+        disabled={sendingWa || !custPhone}
+        onPress={sendWhatsApp}
+        style={({ pressed }) => ({ opacity: !custPhone ? 0.45 : sendingWa ? 0.6 : pressed ? 0.88 : 1, height: 52, borderRadius: 16, backgroundColor: '#25D366', flexDirection: rowDir, gap: 10, alignItems: 'center', justifyContent: 'center' })}
+      >
+        {sendingWa ? <ActivityIndicator color="#fff" /> : <MaterialCommunityIcons name="whatsapp" size={22} color="#fff" />}
+        <Text style={{ fontSize: 16, color: '#fff', fontWeight: '700' }}>
+          {custPhone ? tr(`שלח בוואטסאפ ל${custName || custPhone}`, `Send on WhatsApp to ${custName || custPhone}`) : tr('שלח בוואטסאפ', 'Send on WhatsApp')}
+        </Text>
+      </Pressable>
+
+      <View style={{ flexDirection: rowDir, gap: 10 }}>
+        {([
+          { key: 'copy', icon: copied ? 'check' : 'content-copy', label: copied ? tr('הועתק', 'Copied') : tr('העתק קישור', 'Copy link'), color: copied ? '#16a34a' : BRAND, onPress: copyLink },
+          { key: 'share', icon: 'share-variant', label: tr('שתף', 'Share'), color: BRAND, onPress: shareLink },
+          { key: 'open', icon: 'open-in-new', label: tr('פתח', 'Open'), color: BRAND, onPress: () => Linking.openURL(result!.url) },
+        ] as const).map((b) => (
+          <Pressable
+            key={b.key}
+            onPress={b.onPress}
+            style={({ pressed }) => ({ flex: 1, height: 70, borderRadius: 16, borderWidth: 1, borderColor: hairline, backgroundColor: pressed ? withAlpha(BRAND, 0.1) : cardBg, alignItems: 'center', justifyContent: 'center', gap: 4 })}
+          >
+            <MaterialCommunityIcons name={b.icon} size={22} color={b.color} />
+            <Text style={{ fontSize: 12, fontWeight: '600', color: b.color }}>{b.label}</Text>
           </Pressable>
-        ) : null}
+        ))}
       </View>
-      <Pressable onPress={() => setResult(null)} style={{ marginTop: 6 }}>
-        <Text style={{ color: '#64748b', fontSize: 13 }}>{tr('תשלום נוסף', 'New payment')}</Text>
+
+      <Pressable onPress={() => setResult(null)} style={{ alignSelf: 'center', paddingVertical: 8 }}>
+        <Text style={{ color: sub, fontSize: 14, fontWeight: '600' }}>{tr('+ תשלום נוסף', '+ New payment')}</Text>
       </Pressable>
     </View>
   );
@@ -376,159 +466,200 @@ export default function PaymentFormSheet({
         <TaskFormBody>
           {result ? renderResult() : (
             <>
-              {/* Who the payment belongs to */}
-              <FormSectionLabel icon="link-variant">{tr('שיוך לרשומה', 'Link to record')}</FormSectionLabel>
-              {linked ? (
-                <View style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#bbf7d0', backgroundColor: '#f0fdf4' }}>
-                  <MaterialCommunityIcons name="link-variant" size={18} color={BRAND} />
-                  <View style={{ flex: 1 }}>
-                    <Text numberOfLines={1} style={{ fontWeight: '700', color: '#166534', textAlign: align }}>{linked.name || custName || tr('רשומה ללא שם', 'Unnamed record')}</Text>
-                    <Text numberOfLines={1} style={{ fontSize: 12, color: '#15803d', textAlign: align }}>
-                      {linkTypeLabel(linked.type)}{(linked.phone || custPhone) ? ` • ${linked.phone || custPhone}` : ''}
-                    </Text>
-                  </View>
-                  <Pressable onPress={clearLinked} hitSlop={8}>
-                    <MaterialCommunityIcons name="close-circle" size={20} color="#64748b" />
-                  </Pressable>
+              {/* ── Amount ── */}
+              <View style={{ alignItems: 'center', paddingVertical: 14, marginBottom: 14, borderRadius: 20, backgroundColor: withAlpha(BRAND, 0.07), borderWidth: 1.5, borderColor: amountFocused ? BRAND : withAlpha(BRAND, 0.18) }}>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: sub, marginBottom: 2 }}>{tr('סכום לתשלום', 'Amount to charge')}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  <Text style={{ fontSize: 30, fontWeight: '800', color: BRAND }}>₪</Text>
+                  <RNTextInput
+                    value={amount}
+                    onChangeText={setAmount}
+                    keyboardType="decimal-pad"
+                    placeholder="0"
+                    placeholderTextColor={withAlpha(ink, 0.25)}
+                    onFocus={() => setAmountFocused(true)}
+                    onBlur={() => setAmountFocused(false)}
+                    selectionColor={BRAND}
+                    style={{ minWidth: 90, fontSize: 40, fontWeight: '800', color: BRAND, textAlign: 'center', paddingVertical: 2 }}
+                  />
                 </View>
-              ) : !pickerOpen ? (
-                <Pressable onPress={() => setPickerOpen(true)} style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, padding: 12, borderRadius: 10, borderWidth: 1, borderStyle: 'dashed', borderColor: '#cbd5e1' }}>
-                  <MaterialCommunityIcons name="account-search-outline" size={18} color="#94a3b8" />
-                  <Text style={{ color: '#475569', flex: 1, textAlign: align }}>{tr('שייך לאיש קשר / ליד / הזמנה / פנייה', 'Link to a contact / lead / order / case')}</Text>
-                </Pressable>
-              ) : null}
-              {!linked && pickerOpen ? (
-                <View style={{ borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 10, padding: 10, backgroundColor: '#f8fafc', gap: 8 }}>
-                  <View style={{ flexDirection: rowDir, gap: 6, flexWrap: 'wrap' }}>
-                    {(['contact', 'lead', 'order', 'case'] as LinkType[]).map((lt) => (
-                      <Pressable key={lt} onPress={() => { setLinkType(lt); setLinkSearch(''); setLinkRecords([]); }} style={chip(linkType === lt)}>
-                        <Text style={{ fontSize: 13, color: linkType === lt ? BRAND : '#475569', fontWeight: linkType === lt ? '700' : '400' }}>{linkTypeLabel(lt)}</Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                  <FormTextField label={tr('חיפוש לפי שם / טלפון', 'Search by name / phone')} value={linkSearch} onChangeText={setLinkSearch} />
-                  <View style={{ maxHeight: 190, borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, backgroundColor: '#fff' }}>
-                    {linkLoading ? (
-                      <View style={{ padding: 14, alignItems: 'center' }}><ActivityIndicator color={BRAND} /></View>
-                    ) : linkRecords.length === 0 ? (
-                      <Text style={{ padding: 14, textAlign: 'center', color: '#94a3b8' }}>{tr('לא נמצאו רשומות', 'No records found')}</Text>
-                    ) : (
-                      <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                        {linkRecords.map((r, i) => (
-                          <Pressable key={`${r.id}_${i}`} onPress={() => pickRecord(r)} style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
-                            <Text numberOfLines={1} style={{ flex: 1, color: '#334155', textAlign: align }}>{r.name || tr('(ללא שם)', '(no name)')}</Text>
-                            {r.phone ? <Text style={{ fontSize: 12, color: '#94a3b8' }}>{r.phone}</Text> : null}
-                          </Pressable>
-                        ))}
-                      </ScrollView>
-                    )}
-                  </View>
-                  <Pressable onPress={() => setPickerOpen(false)}><Text style={{ color: '#64748b', fontSize: 13 }}>{tr('ביטול', 'Cancel')}</Text></Pressable>
+                <View style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, marginTop: 4 }}>
+                  <Switch value={vatInclusive} onValueChange={setVatInclusive} trackColor={{ true: BRAND }} />
+                  <Text style={{ color: sub, fontSize: 13 }}>{tr('הסכום כולל מע"מ', 'Amount includes VAT')}</Text>
                 </View>
-              ) : null}
-
-              {/* Amount + VAT */}
-              <FormTextField
-                label={`${tr('סכום', 'Amount')} (₪)`}
-                value={amount}
-                onChangeText={setAmount}
-                keyboardType="decimal-pad"
-              />
-              <View style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, marginTop: 2 }}>
-                <Switch value={vatInclusive} onValueChange={setVatInclusive} trackColor={{ true: BRAND }} />
-                <Text style={{ color: '#475569', flex: 1, textAlign: align }}>
-                  {tr('כולל מע"מ', 'VAT inclusive')}
-                  {!vatInclusive && baseAmount > 0 ? <Text style={{ color: '#dc2626', fontWeight: '600' }}>{`  (+${VAT_RATE}% ${tr('מע"מ', 'VAT')} = ₪${amountWithVat.toFixed(2)})`}</Text> : null}
-                </Text>
+                {!vatInclusive && baseAmount > 0 ? (
+                  <Text style={{ marginTop: 6, color: '#dc2626', fontWeight: '700', fontSize: 13 }}>
+                    {`+${VAT_RATE}% ${tr('מע"מ', 'VAT')}  →  ${tr('ללקוח יחויב', 'Customer pays')} ₪${amountWithVat.toFixed(2)}`}
+                  </Text>
+                ) : null}
               </View>
 
-              <FormTextField label={tr('תיאור', 'Description')} value={description} onChangeText={setDescription} />
-
-              {/* Items */}
-              <Pressable
-                onPress={() => { const next = !itemsOpen; setItemsOpen(next); if (next) { setCatalogOpen(true); loadCatalog(); } }}
-                style={{ flexDirection: rowDir, alignItems: 'center', gap: 6, paddingVertical: 6 }}
-              >
-                <MaterialCommunityIcons name="cart-outline" size={18} color={BRAND} />
-                <Text style={{ color: BRAND, fontWeight: '600' }}>
-                  {itemsOpen ? tr('הסתר פריטים', 'Hide items') : tr('הוסף פריטים / מוצרים', 'Add items / products')}
-                  {items.length > 0 ? `  (${items.length})` : ''}
-                </Text>
-              </Pressable>
-              {itemsOpen ? (
-                <View style={{ borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 10, padding: 10, backgroundColor: '#f8fafc', gap: 8 }}>
-                  <View style={{ flexDirection: rowDir, gap: 8 }}>
-                    <Pressable onPress={() => { const n = !catalogOpen; setCatalogOpen(n); if (n) loadCatalog(); }} style={chip(catalogOpen)}>
-                      <Text style={{ fontSize: 13, color: catalogOpen ? BRAND : '#475569' }}>{tr('בחר מהקטלוג', 'From catalog')}</Text>
+              {/* ── Customer ── */}
+              {card(tr('לקוח', 'Customer'), 'account-outline', (
+                <>
+                  {linked ? (
+                    <View style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, padding: 10, borderRadius: 12, borderWidth: 1, borderColor: withAlpha('#16a34a', 0.35), backgroundColor: withAlpha('#16a34a', 0.08), marginBottom: 10 }}>
+                      <MaterialCommunityIcons name="link-variant" size={18} color={BRAND} />
+                      <View style={{ flex: 1 }}>
+                        <Text numberOfLines={1} style={{ fontWeight: '700', color: ink, textAlign: align }}>{linked.name || custName || tr('רשומה ללא שם', 'Unnamed record')}</Text>
+                        <Text numberOfLines={1} style={{ fontSize: 12, color: sub, textAlign: align }}>
+                          {tr('משויך ל', 'Linked to')}{linkTypeLabel(linked.type)}{(linked.phone || custPhone) ? ` • ${linked.phone || custPhone}` : ''}
+                        </Text>
+                      </View>
+                      <Pressable onPress={clearLinked} hitSlop={8}>
+                        <MaterialCommunityIcons name="close-circle" size={20} color={sub} />
+                      </Pressable>
+                    </View>
+                  ) : !pickerOpen ? (
+                    <Pressable onPress={() => setPickerOpen(true)} style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, borderStyle: 'dashed', borderColor: hairline, marginBottom: 10 }}>
+                      <MaterialCommunityIcons name="account-search-outline" size={18} color={sub} />
+                      <Text style={{ color: sub, flex: 1, textAlign: align }}>{tr('שייך לאיש קשר / ליד / הזמנה / פנייה', 'Link to a contact / lead / order / case')}</Text>
                     </Pressable>
-                    <Pressable onPress={() => setItems((p) => [...p, { name: '', unitPrice: 0, quantity: 1 }])} style={chip(false)}>
-                      <Text style={{ fontSize: 13, color: '#475569' }}>{tr('פריט ידני', 'Manual item')}</Text>
-                    </Pressable>
-                  </View>
-                  {catalogOpen ? (
-                    <View style={{ gap: 6 }}>
-                      <FormTextField label={tr('חיפוש מוצר', 'Search product')} value={catalogSearch} onChangeText={setCatalogSearch} />
-                      <View style={{ maxHeight: 170, borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, backgroundColor: '#fff' }}>
-                        {catalogLoading ? (
+                  ) : null}
+                  {!linked && pickerOpen ? (
+                    <View style={{ borderWidth: 1, borderColor: hairline, borderRadius: 12, padding: 10, gap: 8, marginBottom: 10 }}>
+                      <View style={{ flexDirection: rowDir, gap: 6, flexWrap: 'wrap' }}>
+                        {(['contact', 'lead', 'order', 'case'] as LinkType[]).map((lt) => (
+                          <Pressable key={lt} onPress={() => { setLinkType(lt); setLinkSearch(''); setLinkRecords([]); }} style={pill(linkType === lt)}>
+                            <Text style={{ fontSize: 13, color: linkType === lt ? BRAND : sub, fontWeight: linkType === lt ? '700' : '400' }}>{linkTypeLabel(lt)}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                      <FormTextField label={tr('חיפוש לפי שם / טלפון', 'Search by name / phone')} value={linkSearch} onChangeText={setLinkSearch} style={{ marginBottom: 0 }} />
+                      <View style={{ maxHeight: 190, borderWidth: 1, borderColor: hairline, borderRadius: 10 }}>
+                        {linkLoading ? (
                           <View style={{ padding: 14, alignItems: 'center' }}><ActivityIndicator color={BRAND} /></View>
-                        ) : filteredCatalog.length === 0 ? (
-                          <Text style={{ padding: 14, textAlign: 'center', color: '#94a3b8' }}>{tr('לא נמצאו מוצרים בקטלוג', 'No catalog products found')}</Text>
+                        ) : linkRecords.length === 0 ? (
+                          <Text style={{ padding: 14, textAlign: 'center', color: sub }}>{tr('לא נמצאו רשומות', 'No records found')}</Text>
                         ) : (
                           <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                            {filteredCatalog.map((ci, i) => (
-                              <Pressable key={ci.id || i} onPress={() => addCatalogItem(ci)} style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>
-                                <Text numberOfLines={1} style={{ flex: 1, color: '#334155', textAlign: align }}>{ci.name || ci.description}{ci.sku ? ` (${ci.sku})` : ''}</Text>
-                                <Text style={{ color: BRAND, fontWeight: '600' }}>₪{Number(ci.unitPrice) || 0}</Text>
-                                <MaterialCommunityIcons name="plus-circle-outline" size={18} color={BRAND} />
+                            {linkRecords.map((r, i) => (
+                              <Pressable key={`${r.id}_${i}`} onPress={() => pickRecord(r)} style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: hairline }}>
+                                <Text numberOfLines={1} style={{ flex: 1, color: ink, textAlign: align }}>{r.name || tr('(ללא שם)', '(no name)')}</Text>
+                                {r.phone ? <Text style={{ fontSize: 12, color: sub }}>{r.phone}</Text> : null}
                               </Pressable>
                             ))}
                           </ScrollView>
                         )}
                       </View>
+                      <Pressable onPress={() => setPickerOpen(false)}><Text style={{ color: sub, fontSize: 13 }}>{tr('ביטול', 'Cancel')}</Text></Pressable>
                     </View>
                   ) : null}
-                  {items.map((it, idx) => (
-                    <View key={idx} style={{ flexDirection: rowDir, alignItems: 'center', gap: 6 }}>
-                      <View style={{ flex: 1 }}>
-                        <FormTextField label={tr('שם פריט', 'Item name')} value={it.name} onChangeText={(v) => updateItem(idx, { name: v })} />
-                      </View>
-                      <View style={{ width: 78 }}>
-                        <FormTextField label={tr('מחיר', 'Price')} value={it.unitPrice ? String(it.unitPrice) : ''} keyboardType="decimal-pad" onChangeText={(v) => updateItem(idx, { unitPrice: parseFloat(v.replace(',', '.')) || 0 })} />
-                      </View>
-                      <View style={{ width: 56 }}>
-                        <FormTextField label={tr('כמות', 'Qty')} value={String(it.quantity ?? 1)} keyboardType="number-pad" onChangeText={(v) => updateItem(idx, { quantity: parseInt(v, 10) || 1 })} />
-                      </View>
-                      <Pressable onPress={() => removeItem(idx)} hitSlop={8}>
-                        <MaterialCommunityIcons name="trash-can-outline" size={20} color="#ef4444" />
+                  <FormTextField label={tr('שם הלקוח', 'Customer name')} value={custName} onChangeText={setCustName} style={{ marginBottom: 10 }} />
+                  <View style={{ flexDirection: rowDir, gap: 10 }}>
+                    <FormTextField label={tr('טלפון', 'Phone')} value={custPhone} onChangeText={setCustPhone} keyboardType="phone-pad" style={{ flex: 1, marginBottom: 10 }} />
+                    <FormTextField label={tr('אימייל', 'Email')} value={custEmail} onChangeText={setCustEmail} keyboardType="email-address" autoCapitalize="none" style={{ flex: 1.3, marginBottom: 10 }} />
+                  </View>
+                </>
+              ))}
+
+              {/* ── Details ── */}
+              {card(tr('פרטי התשלום', 'Payment details'), 'text-box-outline', (
+                <>
+                  <FormTextField label={tr('תיאור (יופיע ללקוח)', 'Description (shown to the customer)')} value={description} onChangeText={setDescription} style={{ marginBottom: 10 }} />
+                  <FormSectionLabel icon="credit-card-multiple-outline">{tr('מספר תשלומים', 'Installments')}</FormSectionLabel>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, flexDirection: rowDir, paddingBottom: 2 }}>
+                    {['1', '2', '3', '4', '5', '6', '8', '10', '12'].map((n) => (
+                      <Pressable key={n} onPress={() => setInstallments(n)} style={[pill(installments === n), { minWidth: 46, alignItems: 'center' }]}>
+                        <Text style={{ fontSize: 14, color: installments === n ? BRAND : sub, fontWeight: installments === n ? '800' : '500' }}>{n}</Text>
                       </Pressable>
-                    </View>
-                  ))}
-                  {items.length > 0 ? (
-                    <Text style={{ fontWeight: '700', color: '#334155', textAlign: isRTL ? 'left' : 'right' }}>
-                      {tr('סה"כ', 'Total')}: ₪{itemsTotal(items).toFixed(2)}
+                    ))}
+                  </ScrollView>
+                  {parseInt(installments, 10) > 1 && amountWithVat > 0 ? (
+                    <Text style={{ marginTop: 8, fontSize: 12, color: sub, textAlign: align }}>
+                      {`${installments} × ₪${(amountWithVat / parseInt(installments, 10)).toFixed(2)}`}
                     </Text>
                   ) : null}
-                </View>
-              ) : null}
+                </>
+              ))}
 
-              {/* Installments + email */}
-              <FormSectionLabel icon="credit-card-multiple-outline">{tr('מספר תשלומים', 'Installments')}</FormSectionLabel>
-              <ChoiceChips
-                value={installments}
-                onChange={setInstallments}
-                options={['1', '2', '3', '4', '5', '6', '8', '10', '12'].map((n) => ({ key: n, label: n }))}
-              />
-              <FormTextField
-                label={tr('אימייל הלקוח', 'Customer email')}
-                value={custEmail}
-                onChangeText={setCustEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
+              {/* ── Items ── */}
+              {card(`${tr('פריטים', 'Items')}${items.length > 0 ? ` (${items.length})` : ''}`, 'cart-outline', (
+                <>
+                  {!itemsOpen ? (
+                    <Pressable
+                      onPress={() => { setItemsOpen(true); setCatalogOpen(true); loadCatalog(); }}
+                      style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, borderStyle: 'dashed', borderColor: hairline }}
+                    >
+                      <MaterialCommunityIcons name="plus-circle-outline" size={18} color={BRAND} />
+                      <Text style={{ color: BRAND, fontWeight: '600', flex: 1, textAlign: align }}>{tr('הוסף פריטים / מוצרים (הסכום יתעדכן לפי הפריטים)', 'Add items / products (the amount follows them)')}</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={{ gap: 10 }}>
+                      <View style={{ flexDirection: rowDir, gap: 8 }}>
+                        <Pressable onPress={() => { const n = !catalogOpen; setCatalogOpen(n); if (n) loadCatalog(); }} style={pill(catalogOpen)}>
+                          <Text style={{ fontSize: 13, color: catalogOpen ? BRAND : sub, fontWeight: '600' }}>{tr('מהקטלוג', 'From catalog')}</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setItems((p) => [...p, { name: '', unitPrice: 0, quantity: 1 }])} style={pill(false)}>
+                          <Text style={{ fontSize: 13, color: sub, fontWeight: '600' }}>{tr('+ פריט ידני', '+ Manual item')}</Text>
+                        </Pressable>
+                        <View style={{ flex: 1 }} />
+                        <Pressable onPress={() => { setItems([]); setItemsOpen(false); setCatalogOpen(false); }} hitSlop={8} style={{ justifyContent: 'center' }}>
+                          <Text style={{ fontSize: 12, color: sub }}>{tr('הסר פריטים', 'Remove items')}</Text>
+                        </Pressable>
+                      </View>
+                      {catalogOpen ? (
+                        <View style={{ gap: 6 }}>
+                          <FormTextField label={tr('חיפוש מוצר', 'Search product')} value={catalogSearch} onChangeText={setCatalogSearch} style={{ marginBottom: 0 }} />
+                          <View style={{ maxHeight: 180, borderWidth: 1, borderColor: hairline, borderRadius: 12 }}>
+                            {catalogLoading ? (
+                              <View style={{ padding: 14, alignItems: 'center' }}><ActivityIndicator color={BRAND} /></View>
+                            ) : filteredCatalog.length === 0 ? (
+                              <Text style={{ padding: 14, textAlign: 'center', color: sub }}>{tr('לא נמצאו מוצרים בקטלוג', 'No catalog products found')}</Text>
+                            ) : (
+                              <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                                {filteredCatalog.map((ci, i) => (
+                                  <Pressable key={ci.id || i} onPress={() => addCatalogItem(ci)} style={{ flexDirection: rowDir, alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: hairline }}>
+                                    <Text numberOfLines={1} style={{ flex: 1, color: ink, textAlign: align }}>{ci.name || ci.description}{ci.sku ? ` (${ci.sku})` : ''}</Text>
+                                    <Text style={{ color: BRAND, fontWeight: '700' }}>₪{Number(ci.unitPrice) || 0}</Text>
+                                    <MaterialCommunityIcons name="plus-circle-outline" size={18} color={BRAND} />
+                                  </Pressable>
+                                ))}
+                              </ScrollView>
+                            )}
+                          </View>
+                        </View>
+                      ) : null}
+                      {items.map((it, idx) => (
+                        <View key={idx} style={{ borderWidth: 1, borderColor: hairline, borderRadius: 14, padding: 10, backgroundColor: theme.colors.surface }}>
+                          <View style={{ flexDirection: rowDir, alignItems: 'center', gap: 6 }}>
+                            <View style={{ flex: 1 }}>
+                              <FormTextField label={tr('שם פריט', 'Item name')} value={it.name} onChangeText={(v) => updateItem(idx, { name: v })} style={{ marginBottom: 8 }} dense />
+                            </View>
+                            <Pressable onPress={() => removeItem(idx)} hitSlop={8} style={{ marginBottom: 8 }}>
+                              <MaterialCommunityIcons name="trash-can-outline" size={22} color="#ef4444" />
+                            </Pressable>
+                          </View>
+                          <View style={{ flexDirection: rowDir, alignItems: 'center', gap: 8 }}>
+                            <FormTextField label={tr('מחיר ליחידה', 'Unit price')} value={it.unitPrice ? String(it.unitPrice) : ''} keyboardType="decimal-pad" onChangeText={(v) => updateItem(idx, { unitPrice: parseFloat(v.replace(',', '.')) || 0 })} style={{ flex: 1, marginBottom: 0 }} dense />
+                            <FormTextField label={tr('כמות', 'Qty')} value={String(it.quantity ?? 1)} keyboardType="number-pad" onChangeText={(v) => updateItem(idx, { quantity: parseInt(v, 10) || 1 })} style={{ width: 76, marginBottom: 0 }} dense />
+                            <Text style={{ minWidth: 76, textAlign: 'center', fontWeight: '800', color: BRAND, fontSize: 15 }}>
+                              ₪{((Number(it.unitPrice) || 0) * (Number(it.quantity) || 1)).toLocaleString()}
+                            </Text>
+                          </View>
+                        </View>
+                      ))}
+                      {items.length > 0 ? (
+                        <View style={{ flexDirection: rowDir, justifyContent: 'space-between', paddingTop: 4 }}>
+                          <Text style={{ fontWeight: '700', color: sub }}>{tr('סה"כ פריטים', 'Items total')}</Text>
+                          <Text style={{ fontWeight: '800', color: ink, fontSize: 16 }}>₪{itemsTotal(items).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  )}
+                </>
+              ))}
             </>
           )}
         </TaskFormBody>
-        {!result ? <TaskFormSubmitBar label={tr('צור לינק תשלום', 'Create payment link')} onPress={submit} loading={busy} /> : null}
+        {!result ? (
+          <TaskFormSubmitBar
+            label={amountWithVat > 0 ? `${tr('צור לינק תשלום', 'Create payment link')} · ₪${amountWithVat.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : tr('צור לינק תשלום', 'Create payment link')}
+            onPress={submit}
+            loading={busy}
+            accent={BRAND}
+          />
+        ) : null}
       </TaskFormFrame>
     </Modal>
   );

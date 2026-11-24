@@ -6,6 +6,10 @@
   <uses-permission android:name="android.permission.VIBRATE" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+  <!-- IncomingCallActivity is locked to portrait, which Play otherwise reads as "device MUST have a portrait screen"
+       (drops tablets / Desktop / Android XR). Declare it as optional. -->
+  <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
+
   <application>
     <!-- Receives every FCM message instead of expo-notifications' own service (priority -1) and forwards everything that is not a call to it. -->
     <service

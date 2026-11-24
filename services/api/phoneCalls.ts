@@ -63,7 +63,7 @@ export const phoneCallsApi = {
    */
   async getPbxCalls(
     organization: string,
-    options?: { userId?: string; pageSize?: number }
+    options?: { userId?: string; agentId?: string; pageSize?: number; dateFrom?: string; dateTo?: string }
   ): Promise<PhoneCall[]> {
     const response = await axiosInstance.post(ENDPOINTS.GET_PHONE_CALLS, {
       organization,
@@ -74,9 +74,10 @@ export const phoneCallsApi = {
       search: '',
       direction: 'all',
       status: 'all',
-      agentIds: [],
-      dateFrom: '',
-      dateTo: '',
+      // One chosen user (only meaningful when seeing everyone's calls)
+      agentIds: !options?.userId && options?.agentId ? [options.agentId] : [],
+      dateFrom: options?.dateFrom || '',
+      dateTo: options?.dateTo || '',
     });
     const items = response.data?.Data ?? response.data?.data ?? [];
     return (Array.isArray(items) ? items : []).map(mapPbxCall);
@@ -87,6 +88,15 @@ export const phoneCallsApi = {
     const response = await axiosInstance.post(ENDPOINTS.GET_CALLS_BY_CONTACT, { organization, contactPhone });
     const items = response.data?.Data ?? response.data?.data ?? [];
     return (Array.isArray(items) ? items : []).map(mapPbxCall);
+  },
+
+  /** Sends the WhatsApp the AI suggested during a call (server respects the 24h window: closed window -> opening template). */
+  async sendCallSummaryMessage(
+    organization: string,
+    payload: { callId: string; contactPhone: string; text: string; actionIndex: number; userName?: string }
+  ): Promise<{ Success: boolean; Status: string; Result: string }> {
+    const response = await axiosInstance.post(ENDPOINTS.SEND_CALL_SUMMARY_MESSAGE, { organization, ...payload });
+    return response.data;
   },
 
   /** AI summary, transcript and the agent's documentation of a call (same record the web call page shows). */

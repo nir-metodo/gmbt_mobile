@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, Image, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +11,8 @@ import { BRAND } from '../dashboard/ui';
 import { displayValue } from '../../utils/submissionsInsights';
 import { formatDateTime } from '../../utils/formatters';
 import type { SubmissionRecord } from '../../services/api/submissions';
+import { PdfViewerModal } from '../PdfViewerModal';
+import type { PdfViewRequest } from '../../utils/pdfViewer';
 
 interface Props {
   record: SubmissionRecord | null;
@@ -33,6 +35,8 @@ export default function SubmissionDetailSheet({ record, onDismiss, onOpenChat, o
   const dir = useRowDirection();
   const insets = useSafeAreaInsets();
   const [pdfBusy, setPdfBusy] = useState(false);
+  // Shown inside this sheet's own Modal (a second root-level Modal can't open on top of it on iOS).
+  const [pdfView, setPdfView] = useState<PdfViewRequest | null>(null);
 
   const yes = t('submissions.yes');
   const no = t('submissions.no');
@@ -42,7 +46,7 @@ export default function SubmissionDetailSheet({ record, onDismiss, onOpenChat, o
     try {
       setPdfBusy(true);
       const url = record.pdfUrl || (await onResolvePdf(record));
-      if (url) await Linking.openURL(url);
+      if (url) setPdfView({ url, title: record.sourceTitle || record.name || 'PDF' });
       else throw new Error('no url');
     } catch {
       Alert.alert(t('submissions.pdfFailed'));
@@ -134,6 +138,7 @@ export default function SubmissionDetailSheet({ record, onDismiss, onOpenChat, o
           ) : null}
         </Pressable>
       </Pressable>
+      <PdfViewerModal request={pdfView} onClose={() => setPdfView(null)} />
     </Modal>
   );
 }

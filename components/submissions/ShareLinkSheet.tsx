@@ -46,7 +46,7 @@ export default function ShareLinkSheet({ visible, onDismiss, title, kind, makeUr
   const [lookup, setLookup] = useState(false);
   const cache = useRef<Record<string, string>>({});
   // True when the contact picker was opened from the WhatsApp button → send as soon as a contact is picked.
-  const waPending = useRef(false);
+  const waPending = useRef<null | 'auto' | 'template'>(null);
 
   useEffect(() => {
     if (!visible) return;
@@ -101,7 +101,8 @@ export default function ShareLinkSheet({ visible, onDismiss, title, kind, makeUr
     await Share.share({ message: `${title}: ${u}` });
   });
 
-  const sendWhatsApp = (c: ShareContact) => run('wa', async () => {
+  // asTemplate: always the default template (even with an open 24h window); otherwise a regular message when open, template when closed.
+  const sendWhatsApp = (c: ShareContact, asTemplate: boolean) => run('wa', async () => {
     const u = await ensureUrl(c);
     const noun = kind === 'form' ? 'הטופס' : 'המסמך';
     await sendDocAndAlert({
@@ -113,13 +114,27 @@ export default function ShareLinkSheet({ visible, onDismiss, title, kind, makeUr
       docLabel: title,
       url: u,
       liveText: `שלום ${c.name || ''},\nקישור למילוי ${noun} "${title}":`,
+      forceTemplate: asTemplate,
     });
   });
 
-  const onWhatsApp = () => {
-    if (contact) sendWhatsApp(contact);
+  // Confirm before anything leaves the app.
+  const confirmSend = (c: ShareContact, asTemplate: boolean) =>
+    Alert.alert(
+      tr('שליחה בוואטסאפ', 'Send on WhatsApp'),
+      asTemplate
+        ? tr(`לשלוח את "${title}" ל${c.name || c.phone} כתבנית?`, `Send "${title}" to ${c.name || c.phone} as a template?`)
+        : tr(`לשלוח את "${title}" ל${c.name || c.phone}?\nבהודעה רגילה, או בתבנית כשהשיחה סגורה.`, `Send "${title}" to ${c.name || c.phone}?\nAs a regular message, or as a template if the chat is closed.`),
+      [
+        { text: tr('ביטול', 'Cancel'), style: 'cancel' },
+        { text: tr('שלח', 'Send'), onPress: () => sendWhatsApp(c, asTemplate) },
+      ],
+    );
+
+  const onWhatsApp = (asTemplate: boolean) => {
+    if (contact) confirmSend(contact, asTemplate);
     else {
-      waPending.current = true;
+      waPending.current = asTemplate ? 'template' : 'auto';
       setLookup(true);
     }
   };
@@ -142,14 +157,17 @@ export default function ShareLinkSheet({ visible, onDismiss, title, kind, makeUr
             <Text style={{ flex: 1, color: contact ? theme.colors.onSurface : muted, textAlign }} numberOfLines={1}>
               {contact ? `${contact.name || ''} ${contact.phone}`.trim() : tr('נמען (לשליחה בוואטסאפ)', 'Recipient (for WhatsApp)')}
             </Text>
-            <Button compact mode="text" onPress={() => { waPending.current = false; setLookup(true); }}>
+            <Button compact mode="text" onPress={() => { waPending.current = null; setLookup(true); }}>
               {contact ? tr('החלף', 'Change') : tr('בחר איש קשר', 'Pick a contact')}
             </Button>
           </View>
 
           <View style={styles.actions}>
-            <Button mode="contained" icon="whatsapp" buttonColor="#16a34a" loading={busy === 'wa'} disabled={!!busy} onPress={onWhatsApp}>
+            <Button mode="contained" icon="whatsapp" buttonColor="#16a34a" loading={busy === 'wa'} disabled={!!busy} onPress={() => onWhatsApp(false)}>
               {tr('שלח בוואטסאפ', 'Send on WhatsApp')}
+            </Button>
+            <Button mode="outlined" icon="message-text-outline" textColor="#16a34a" disabled={!!busy} onPress={() => onWhatsApp(true)}>
+              {tr('שלח כתבנית', 'Send as template')}
             </Button>
             <View style={[styles.row, { flexDirection }]}>
               <Button style={{ flex: 1 }} mode="outlined" icon="content-copy" loading={busy === 'copy'} disabled={!!busy} onPress={copy}>
@@ -168,14 +186,15 @@ export default function ShareLinkSheet({ visible, onDismiss, title, kind, makeUr
       <ContactLookup
         visible={lookup}
         organization={organization}
-        onDismiss={() => { waPending.current = false; setLookup(false); }}
+        onDismiss={() => { waPending.current = null; setLookup(false); }}
         onSelect={(c) => {
           setLookup(false);
           const picked = { name: c.name, phone: c.phoneNumber };
           setContact(picked);
           if (waPending.current) {
-            waPending.current = false;
-            sendWhatsApp(picked);
+            const asTemplate = waPending.current === 'template';
+            waPending.current = null;
+            confirmSend(picked, asTemplate);
           }
         }}
       />

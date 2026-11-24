@@ -7,7 +7,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { phoneCallsApi } from '../../services/api/phoneCalls';
 import { useActiveCallStore } from '../../stores/activeCallStore';
 import { useSipPhoneStore } from '../../stores/sipPhoneStore';
+import { useAuthStore } from '../../stores/authStore';
+import AddTaskSheet from '../AddTaskSheet';
+import type { Contact } from '../../types';
 import { isSpeakerSupported, resetCallAudio, setCallSpeaker } from '../../utils/callAudio';
+import { startCallProximity } from '../../utils/callProximity';
 import type { AppTheme } from '../../constants/theme';
 import CallTransferSheet from './CallTransferSheet';
 import CallCustomerCard from './CallCustomerCard';
@@ -36,11 +40,15 @@ export default function ActiveCallBar() {
   const clear = useActiveCallStore((s) => s.clear);
   const inCall = useSipPhoneStore((s) => s.inCall);
   const [showKeys, setShowKeys] = useState(false);
+  const [typedDigits, setTypedDigits] = useState(''); // keys pressed on the in-call keypad, shown like a phone's own dialer
   const [busy, setBusy] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [notesSaved, setNotesSaved] = useState(false);
   const [showTransfer, setShowTransfer] = useState(false);
   const [transfer, setTransfer] = useState<TransferState>('');
+  const [showTask, setShowTask] = useState(false);
+  const [contact, setContact] = useState<Contact | null>(null);
+  const user = useAuthStore((s) => s.user);
 
   const callId = call?.callId;
   const organization = call?.organization;
@@ -52,8 +60,6 @@ export default function ActiveCallBar() {
   const latest = useRef<{ callId: string; organization: string; phone: string; notes: string } | null>(null);
   if (call) latest.current = { callId: call.callId, organization: call.organization, phone: call.phoneNumber, notes: call.notes };
   const savedNotes = useRef('');
-  const autoOpened = useRef('');
-
   // Follow the call on the gateway: closes the bar when it ends, shows when the customer answered.
   useEffect(() => {
     if (!callId || !organization) return undefined;
@@ -75,7 +81,7 @@ export default function ActiveCallBar() {
   }, [callId, organization, transfer === 'ringing']);
 
   useEffect(() => {
-    if (!call) { setShowKeys(false); setSeconds(0); return undefined; }
+    if (!call) { setShowKeys(false); setTypedDigits(''); setSeconds(0); return undefined; }
     const id = setInterval(() => {
       const elapsed = Date.now() - call.startedAt;
       if (elapsed > MAX_CALL_MS) { clear(); return; }
@@ -84,13 +90,7 @@ export default function ActiveCallBar() {
     return () => clearInterval(id);
   }, [call?.callId]);
 
-  // The customer picked up: open the call page once (the user can minimize it and it stays minimized).
-  useEffect(() => {
-    if (callId && answered && autoOpened.current !== callId) {
-      autoOpened.current = callId;
-      patch({ expanded: true });
-    }
-  }, [callId, answered]);
+  // The call page opens as soon as dialing starts (activeCallStore.start); if the user minimizes it, it stays minimized.
 
   // Audio route: earpiece by default, loudspeaker on request. Re-applied when the call's audio actually starts, because the
   // phone's call audio can reset the route; restored to normal app audio when the call is over.
@@ -102,6 +102,12 @@ export default function ActiveCallBar() {
     if (!callId) return undefined;
     return () => { resetCallAudio(); };
   }, [callId]);
+
+  // Phone at the ear → screen goes dark and ignores touch (no accidental mute/hang-up). Off while the loudspeaker is on.
+  useEffect(() => {
+    if (!callId || speaker) return undefined;
+    return startCallProximity(() => false);
+  }, [callId, speaker]);
 
   // Call notes: saved while typing, and once more (final) when the call ends so they reach the timeline.
   useEffect(() => {
@@ -118,6 +124,7 @@ export default function ActiveCallBar() {
     if (!callId) return undefined;
     savedNotes.current = '';
     setNotesSaved(false);
+    setContact(null);
     return () => {
       const l = latest.current;
       if (l && l.callId === callId && l.notes.trim()) {
@@ -201,19 +208,29 @@ export default function ActiveCallBar() {
               text={call.held ? t('phoneCalls.resume') : t('phoneCalls.hold')} onPress={() => run(call.held ? 'unhold' : 'hold')} />
             <Round icon="phone-forward" on={transfer === 'ringing'} disabled={!connected || transfer === 'ringing'}
               text={t('phoneCalls.transfer', 'Transfer')} onPress={() => setShowTransfer(true)} />
+            <Round icon="clipboard-plus-outline"
+              text={t('phoneCalls.callTask', 'Task')} onPress={() => setShowTask(true)} />
           </View>
 
           {showKeys && connected ? (
             <View style={styles.keys}>
+              {typedDigits ? (
+                <View style={styles.typedRow}>
+                  <Text style={styles.typedText} numberOfLines={1}>{typedDigits.slice(-18)}</Text>
+                  <Pressable onPress={() => setTypedDigits((v) => v.slice(0, -1))} onLongPress={() => setTypedDigits('')} hitSlop={10}>
+                    <MaterialCommunityIcons name="backspace-outline" size={22} color="#CBD5E1" />
+                  </Pressable>
+                </View>
+              ) : null}
               {KEYS.map((k) => (
-                <Pressable key={k} onPress={() => run('dtmf', k)} style={styles.key}>
+                <Pressable key={k} onPress={() => { setTypedDigits((v) => v + k); run('dtmf', k); }} style={styles.key}>
                   <Text style={styles.keyText}>{k}</Text>
                 </Pressable>
               ))}
             </View>
           ) : null}
 
-          <CallCustomerCard organization={call.organization} phone={call.phoneNumber} onNavigate={() => patch({ expanded: false })} />
+          <CallCustomerCard organization={call.organization} phone={call.phoneNumber} onNavigate={() => patch({ expanded: false })} onContact={setContact} />
 
           <View style={styles.notesBox}>
             <View style={styles.notesHeader}>
@@ -239,6 +256,15 @@ export default function ActiveCallBar() {
         </View>
         {/* Rendered inside the call page's modal: two sibling modals do not stack reliably on iOS. */}
         <CallTransferSheet visible={showTransfer} organization={call.organization} onClose={() => setShowTransfer(false)} onPick={startTransfer} />
+        <AddTaskSheet
+          visible={showTask}
+          onDismiss={() => setShowTask(false)}
+          organization={call.organization}
+          user={user}
+          relatedTo={contact?.id ? { type: 'contact', entityId: contact.id, entityName: contact.name } : undefined}
+          defaultTitle={`${t('phoneCalls.callTaskTitle', 'Call follow-up')} - ${call.name || contact?.name || call.phoneNumber}`}
+          relatedPhone={call.phoneNumber}
+        />
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -297,6 +323,8 @@ const styles = StyleSheet.create({
   roundText: { color: '#E2E8F0', fontSize: 12, marginTop: 6, textAlign: 'center' },
   keys: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', marginTop: 16, width: '100%', maxWidth: 320, direction: 'ltr' },
   key: { width: '30%', margin: '1.5%', height: 52, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' },
+  typedRow: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, minHeight: 40, marginBottom: 6 },
+  typedText: { color: '#FFFFFF', fontSize: 28, fontWeight: '600', letterSpacing: 2, writingDirection: 'ltr', fontVariant: ['tabular-nums'] },
   keyText: { color: '#FFFFFF', fontSize: 22, fontWeight: '600' },
   notesBox: { width: '100%', marginTop: 24, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 14, padding: 12 },
   notesHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },

@@ -212,6 +212,7 @@ export const ENDPOINTS = {
   GET_CALL_BY_ID: '/api/Webhooks/GetCallById',
   GET_CALL_SUMMARY: '/api/Webhooks/GetCallSummary',
   TRIGGER_CALL_SUMMARY: '/api/Webhooks/TriggerCallSummary',
+  SEND_CALL_SUMMARY_MESSAGE: '/api/Webhooks/SendCallSummaryMessage',
   GET_CALLS_BY_CONTACT: '/api/Webhooks/GetCallsByContact',
   SAVE_CALL_NOTES: '/api/webhooks/telnyx/SaveCallNotes',
   GET_CALL_TIMELINE: '/api/Webhooks/GetTimelineByCallId',

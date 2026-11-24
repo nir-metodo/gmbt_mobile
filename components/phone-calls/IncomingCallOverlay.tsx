@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Vibration, View } from 'react-native';
 import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -10,12 +10,27 @@ import { useAuthStore } from '../../stores/authStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { getRingtone } from '../../utils/ringtones';
 import { sipPhone } from '../../services/sip/sipPhone';
+import axiosInstance from '../../services/api/axiosInstance';
 
 /** Full-screen "incoming call" for a call that rings in the app's SIP phone. Answer opens the call (the in-call bar takes over). */
 export default function IncomingCallOverlay() {
   const { t } = useTranslation();
   const incoming = useSipPhoneStore((s) => s.incoming);
   const organization = useAuthStore((s) => s.user?.organization);
+
+  // A few facts about the caller (open lead / case / quote / payment, last note) - shown only when there are any.
+  const [brief, setBrief] = useState<string[]>([]);
+  const callerPhone = incoming?.from || '';
+  useEffect(() => {
+    setBrief([]);
+    if (!callerPhone || !organization) return undefined;
+    let off = false;
+    axiosInstance
+      .post('/api/Webhooks/GetCallBrief', { organization, phoneNumber: callerPhone })
+      .then((res) => { if (!off && Array.isArray(res.data?.lines)) setBrief(res.data.lines.filter((l: any) => !!l)); })
+      .catch(() => {});
+    return () => { off = true; };
+  }, [callerPhone, organization]);
 
   // Ring + vibrate while it is ringing.
   useEffect(() => {
@@ -58,6 +73,13 @@ export default function IncomingCallOverlay() {
           <Text style={styles.label}>{t('phoneCalls.incomingCall', 'Incoming call')}</Text>
           <Text style={styles.name} numberOfLines={2}>{title}</Text>
           {!!incoming.name && !!incoming.from && <Text style={styles.number}>{incoming.from}</Text>}
+          {brief.length > 0 && (
+            <View style={styles.brief}>
+              {brief.slice(0, 5).map((line, i) => (
+                <Text key={i} style={styles.briefLine} numberOfLines={2}>{line}</Text>
+              ))}
+            </View>
+          )}
         </View>
         <View style={styles.actions}>
           <View style={styles.actionCol}>
@@ -84,6 +106,8 @@ const styles = StyleSheet.create({
   label: { color: '#94a3b8', fontSize: 16 },
   name: { color: '#fff', fontSize: 30, fontWeight: '700', textAlign: 'center' },
   number: { color: '#cbd5e1', fontSize: 18, writingDirection: 'ltr' },
+  brief: { alignSelf: 'stretch', marginTop: 16, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 12, gap: 6 },
+  briefLine: { color: '#e2e8f0', fontSize: 15 },
   actions: { flexDirection: 'row', justifyContent: 'space-around' },
   actionCol: { alignItems: 'center', gap: 10 },
   circle: { width: 74, height: 74, borderRadius: 37, alignItems: 'center', justifyContent: 'center' },

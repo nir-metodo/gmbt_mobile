@@ -35,6 +35,7 @@ import { cacheEntity, getCachedEntity } from '../../../../services/entityCache';
 import { contactsApi } from '../../../../services/api/contacts';
 import { quotesApi } from '../../../../services/api/quotes';
 import { formatDate } from '../../../../utils/formatters';
+import { placeSmartCall } from '../../../../utils/phoneCall';
 import { borderRadius } from '../../../../constants/theme';
 import {
   DynamicFieldsSectionView,
@@ -288,6 +289,17 @@ export default function OrderDetailScreen() {
       params: { phoneNumber: phone, returnTo: `/(tabs)/more/orders/${order?.id || id}` },
     } as any);
   }, [formCustomerPhone, isNew, order?.id, id, router]);
+  const handleCallCustomer = useCallback(() => {
+    const phone = formCustomerPhone.trim();
+    if (!phone || isNew) return;
+    placeSmartCall({
+      phoneNumber: phone,
+      organization: user?.organization || '',
+      user,
+      contactId: order?.contactId || undefined,
+      customerName: formCustomerName || order?.customerName,
+    });
+  }, [formCustomerPhone, formCustomerName, isNew, order?.contactId, order?.customerName, user]);
   const handleBack = useCallback(() => {
     if (!hasUnsaved) { leaveScreen(); return; }
     Alert.alert(
@@ -585,6 +597,32 @@ export default function OrderDetailScreen() {
               </ScrollView>
             ) : null}
 
+            {/* ── פעולות מהירות (כמו בליד / פנייה): התקשר, וואטסאפ, משימה, הערה ── */}
+            {!isNew && order ? (
+              <View style={[styles.quickActionsRow, { flexDirection }]}>
+                {formCustomerPhone.trim() ? (
+                  <>
+                    <Pressable style={[styles.quickActionBtn, { backgroundColor: theme.colors.primaryContainer }]} onPress={handleCallCustomer}>
+                      <MaterialCommunityIcons name="phone" size={20} color={theme.colors.primary} />
+                      <Text variant="labelMedium" style={{ color: theme.colors.primary, fontWeight: '600' }}>{t('common.call')}</Text>
+                    </Pressable>
+                    <Pressable style={[styles.quickActionBtn, { backgroundColor: '#25D36620' }]} onPress={handleOpenChat}>
+                      <MaterialCommunityIcons name="whatsapp" size={20} color="#25D366" />
+                      <Text variant="labelMedium" style={{ color: '#25D366', fontWeight: '600' }}>WhatsApp</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+                <Pressable style={[styles.quickActionBtn, { backgroundColor: '#FFF3E0' }]} onPress={() => setAddTaskVisible(true)}>
+                  <MaterialCommunityIcons name="clipboard-check-outline" size={20} color="#FF9800" />
+                  <Text variant="labelMedium" style={{ color: '#FF9800', fontWeight: '600' }}>{t('tasks.taskShort', 'משימה')}</Text>
+                </Pressable>
+                <Pressable style={[styles.quickActionBtn, { backgroundColor: '#9C27B018' }]} onPress={() => setNoteModalVisible(true)}>
+                  <MaterialCommunityIcons name="note-plus-outline" size={20} color="#9C27B0" />
+                  <Text variant="labelMedium" style={{ color: '#9C27B0', fontWeight: '600' }}>{t('phoneCalls.noteShort', 'הערה')}</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
             {/* ── פרטי לקוח ── */}
             <View style={[styles.section, { backgroundColor: theme.colors.surface }]}>
               <Text variant="titleSmall" style={[styles.sectionTitle, { color: theme.colors.onSurface, textAlign }]}>
@@ -659,17 +697,6 @@ export default function OrderDetailScreen() {
               <TextInput label="טלפון" value={formCustomerPhone} onChangeText={setFormCustomerPhone}
                 mode="outlined" keyboardType="phone-pad" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
                 right={<TextInput.Icon icon="phone-outline" />} />
-              {!isNew && formCustomerPhone.trim() ? (
-                <Button
-                  mode="outlined"
-                  icon="whatsapp"
-                  onPress={handleOpenChat}
-                  textColor={BRAND_COLOR}
-                  style={{ marginBottom: 10, borderColor: BRAND_COLOR + '55' }}
-                >
-                  {t('orders.openChat', 'פתח שיחה עם הלקוח')}
-                </Button>
-              ) : null}
               <TextInput label="כתובת משלוח" value={formShippingAddress} onChangeText={setFormShippingAddress}
                 mode="outlined" style={[styles.formInput, { textAlign }]} activeOutlineColor={BRAND_COLOR}
                 right={<TextInput.Icon icon="map-marker-outline" />} />
@@ -1079,6 +1106,8 @@ const styles = StyleSheet.create({
   sectionTitle: { fontWeight: '700', marginBottom: 8 },
   formInput: { marginBottom: 12 },
   statusRow: { gap: 12 },
+  quickActionsRow: { flexWrap: 'wrap', gap: 8 },
+  quickActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: borderRadius.md },
   statusPills: { gap: 8, paddingVertical: 2 },
   statusPill: { borderWidth: 1.5, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 7 },
   statusSelector: {

@@ -1570,11 +1570,6 @@ export default function LeadsListScreen() {
             >
               {sub || ' '}
             </Text>
-            {activity ? (
-              <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant }} numberOfLines={1}>
-                {activity}
-              </Text>
-            ) : null}
           </View>
 
           {/* Row 3: stage pill, signals, owner */}
@@ -1604,6 +1599,12 @@ export default function LeadsListScreen() {
               </Text>
             ) : null}
             <View style={{ flex: 1 }} />
+            {/* Last activity sits right next to the owner avatar (same line) */}
+            {activity ? (
+              <Text style={{ fontSize: 11, color: theme.colors.onSurfaceVariant, flexShrink: 0 }} numberOfLines={1}>
+                {activity}
+              </Text>
+            ) : null}
             <OwnerAvatar name={(item as any).ownerName} theme={theme} />
           </View>
         </View>

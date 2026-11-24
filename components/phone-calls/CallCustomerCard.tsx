@@ -10,10 +10,11 @@ import type { Contact } from '../../types';
 const last9 = (s: string) => (s || '').replace(/\D/g, '').slice(-9);
 
 /** The CRM side of the call: who the customer is (owner, tags, last conversation) with one tap to the contact / chat. */
-export default function CallCustomerCard({ organization, phone, onNavigate }: { organization: string; phone: string; onNavigate?: () => void }) {
+export default function CallCustomerCard({ organization, phone, onNavigate, onContact }: { organization: string; phone: string; onNavigate?: () => void; onContact?: (c: Contact | null) => void }) {
   const { t } = useTranslation();
   const router = useRouter();
   const [contact, setContact] = useState<Contact | null | undefined>(undefined);
+  useEffect(() => { if (contact !== undefined) onContact?.(contact); }, [contact]);
 
   useEffect(() => {
     let off = false;

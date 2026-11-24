@@ -19,6 +19,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../../../stores/authStore';
+import { placeSmartCall } from '../../../../utils/phoneCall';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { catalogApi, CatalogSelection, CatalogSelectionItem, CatalogCustomColumn } from '../../../../services/api/catalog';
@@ -144,8 +145,8 @@ export default function CatalogSelectionDetailScreen() {
 
   const callContact = useCallback(() => {
     const p = cleanPhone(selection?.contactPhone);
-    if (p) Linking.openURL(`tel:${p}`).catch(() => {});
-  }, [selection?.contactPhone]);
+    if (p) placeSmartCall({ phoneNumber: p, organization: user?.organization || '', user, customerName: (selection as any)?.contactName });
+  }, [selection, user]);
 
   const whatsappContact = useCallback(() => {
     // Normalize to a full international number (e.g. a customer-entered "050…" → "972…").

@@ -35,6 +35,7 @@ import { ListToolbar } from '../../../../components/ListToolbar';
 import { StatusFilterBar } from '../../../../components/StatusFilterBar';
 import { DocumentListItem } from '../../../../components/DocumentListItem';
 import { EmptyState } from '../../../../components/EmptyState';
+import { ESignatureRowActions } from '../../../../components/ESignatureRowActions';
 
 const STATUS_FILTERS = ['all', 'pending', 'partiallySigned', 'signed', 'expired', 'cancelled'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
@@ -185,10 +186,11 @@ export default function ESignatureListScreen() {
           date={item.signedAt ? formatDate(item.signedAt) : expiring ? formatDate(item.expiresAt!) : formatDate(item.createdAt)}
           dateWarning={item.status === 'expired'}
           onPress={() => openDocument(item)}
+          actions={<ESignatureRowActions doc={item} user={user} />}
         />
       );
     },
-    [openDocument, t],
+    [openDocument, t, user],
   );
 
   const renderEmpty = useCallback(() => {

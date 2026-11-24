@@ -12,7 +12,7 @@ import { ScreenHeader } from '../../../../components/ScreenHeader';
 import { EmptyState } from '../../../../components/EmptyState';
 import FormsLinksTab from '../../../../components/submissions/FormsLinksTab';
 import DocTemplatesTab from '../../../../components/submissions/DocTemplatesTab';
-import ResponsesView from '../../../../components/submissions/ResponsesView';
+import ResponsesView, { type ResponsesInitialFilter } from '../../../../components/submissions/ResponsesView';
 
 type Tab = 'forms' | 'docs' | 'responses';
 
@@ -38,6 +38,12 @@ export default function FormsAndDocumentsScreen() {
 
   const initial = (tabs.find((x) => x.key === tabParam) || tabs[0]).key;
   const [tab, setTab] = useState<Tab>(initial);
+  const [respFilter, setRespFilter] = useState<ResponsesInitialFilter | null>(null);
+  // "View responses" on a form / document card → the Responses tab, already filtered to it.
+  const viewResponses = (kind: 'form' | 'document', sourceId: string) => {
+    setRespFilter({ kind, sourceId, nonce: Date.now() });
+    setTab('responses');
+  };
 
   if (!canForms && !canDocs) {
     return (
@@ -62,7 +68,7 @@ export default function FormsAndDocumentsScreen() {
           );
         })}
       </View>
-      {tab === 'forms' ? <FormsLinksTab /> : tab === 'docs' ? <DocTemplatesTab /> : <ResponsesView />}
+      {tab === 'forms' ? <FormsLinksTab onViewResponses={(id) => viewResponses('form', id)} /> : tab === 'docs' ? <DocTemplatesTab onViewResponses={(id) => viewResponses('document', id)} /> : <ResponsesView initialFilter={respFilter} />}
     </View>
   );
 }

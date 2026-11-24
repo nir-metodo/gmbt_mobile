@@ -37,6 +37,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { phoneCallsApi } from '../../../../services/api/phoneCalls';
+import { usersApi } from '../../../../services/api/users';
 import { useAppTheme } from '../../../../hooks/useAppTheme';
 import { useRTL } from '../../../../hooks/useRTL';
 import { useDebouncedValue, useWindowedList } from '../../../../hooks/useWindowedList';
@@ -44,7 +45,7 @@ import { ListPaginationFooter } from '../../../../components/ListPaginationFoote
 import { useAuthStore } from '../../../../stores/authStore';
 import { useSettingsStore } from '../../../../stores/settingsStore';
 import { useActiveCallStore } from '../../../../stores/activeCallStore';
-import { makeAppCall, makeGambotCall, tryInAppSipCall } from '../../../../utils/phoneCall';
+import { makeAppCall, makeGambotCall, placeSmartCall, tryInAppSipCall } from '../../../../utils/phoneCall';
 import { sipPhone } from '../../../../services/sip/sipPhone';
 import CallDetailPanel from '../../../../components/phone-calls/CallDetailPanel';
 import { useMissedCallsStore } from '../../../../stores/missedCallsStore';
@@ -65,6 +66,20 @@ const BRAND_COLOR = '#2e6155';
 type TabKey = 'history' | 'rules';
 type FilterKey = 'all' | 'answered' | 'missed';
 type CallsScopeKey = 'my' | 'all';
+type DateRangeKey = 'all' | 'today' | 'yesterday' | '7d' | 'month';
+const DATE_RANGE_KEYS: DateRangeKey[] = ['all', 'today', 'yesterday', '7d', 'month'];
+
+/** Local-day boundaries of a preset range (the phone's own time zone). */
+function rangeBounds(key: DateRangeKey): { from?: Date; to?: Date } {
+  if (key === 'all') return {};
+  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = startOf(new Date());
+  const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  if (key === 'today') return { from: today, to: addDays(today, 1) };
+  if (key === 'yesterday') return { from: addDays(today, -1), to: today };
+  if (key === '7d') return { from: addDays(today, -6), to: addDays(today, 1) };
+  return { from: new Date(today.getFullYear(), today.getMonth(), 1), to: addDays(today, 1) };
+}
 type ConditionType = 'lead_stage' | 'call_duration' | 'call_status';
 type Operator = 'equals' | 'greater_than' | 'less_than';
 type ActionType = 'move_stage' | 'create_task' | 'send_message' | 'update_lead';
@@ -138,41 +153,37 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
         </View>
 
         <View style={[itemStyles.info, { alignItems: 'flex-start' }]}>
-          <Text variant="titleSmall" style={{ color: themeColors.onSurface }} numberOfLines={1}>
+          <Text
+            variant="titleSmall"
+            style={{ color: call.status === 'missed' ? '#E63946' : themeColors.onSurface, fontWeight: '700' }}
+            numberOfLines={1}
+          >
             {call.contactName || formatPhoneNumber(call.phoneNumber) || t('phoneCalls.unknownNumber')}
           </Text>
-          {call.contactName ? (
-            <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }} numberOfLines={1}>
-              {formatPhoneNumber(call.phoneNumber)}
-            </Text>
-          ) : null}
-          <Text variant="bodySmall" style={{ color: themeColors.onSurfaceVariant }}>
-            {formatCallWhen(call.createdAt)}
-            {call.duration > 0 ? ` · ${formatDuration(call.duration)}` : ''}
+          {/* digits only → always left-to-right so numbers and times never come out reversed */}
+          <Text variant="bodySmall" style={[itemStyles.meta, { color: themeColors.onSurfaceVariant }]} numberOfLines={1}>
+            {call.contactName ? `${formatPhoneNumber(call.phoneNumber)}  ·  ` : ''}{formatCallWhen(call.createdAt)}
           </Text>
+        </View>
+
+        <View style={[itemStyles.badges, { flexDirection: 'row' }]}>
+          {call.duration > 0 ? (
+            <View style={[itemStyles.durPill, { backgroundColor: themeColors.surfaceVariant }]}>
+              <MaterialCommunityIcons name="timer-outline" size={12} color={themeColors.onSurfaceVariant} />
+              <Text style={[itemStyles.durText, { color: themeColors.onSurfaceVariant }]}>{formatDuration(call.duration)}</Text>
+            </View>
+          ) : null}
+          {call.recordingUrl ? <MaterialCommunityIcons name="microphone" size={15} color="#FF6B35" /> : null}
+          {call.transcription ? <MaterialCommunityIcons name="brain" size={15} color="#7B2D8E" /> : null}
         </View>
 
         <Pressable
           onPress={() => onDial(call.phoneNumber)}
           hitSlop={8}
-          style={[itemStyles.dialBtn, { backgroundColor: BRAND_COLOR + '15' }]}
+          style={[itemStyles.dialBtn, { backgroundColor: BRAND_COLOR + '18' }]}
         >
-          <MaterialCommunityIcons name="phone" size={18} color={BRAND_COLOR} />
+          <MaterialCommunityIcons name="phone" size={17} color={BRAND_COLOR} />
         </Pressable>
-
-        <View style={[itemStyles.badges, { flexDirection: 'row' }]}>
-          {call.recordingUrl && (
-            <MaterialCommunityIcons name="microphone" size={16} color="#FF6B35" style={{ marginHorizontal: 2 }} />
-          )}
-          {call.transcription && (
-            <MaterialCommunityIcons name="brain" size={16} color="#7B2D8E" style={{ marginHorizontal: 2 }} />
-          )}
-          <MaterialCommunityIcons
-            name={expanded ? 'chevron-up' : 'chevron-down'}
-            size={20}
-            color={themeColors.onSurfaceVariant}
-          />
-        </View>
       </Pressable>
 
       {expanded && (
@@ -251,12 +262,15 @@ function CallHistoryItem({ call, expanded, onPress, isRTL, t, themeColors, onQui
 }
 
 const itemStyles = StyleSheet.create({
-  card: { borderRadius: 14, marginHorizontal: 16, marginVertical: 5, overflow: 'hidden' },
-  row: { padding: 14, alignItems: 'center' },
-  iconWrap: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
-  info: { flex: 1, marginHorizontal: 12 },
-  dialBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginEnd: 8 },
-  badges: { alignItems: 'center', gap: 2 },
+  card: { borderRadius: 12, marginHorizontal: 12, marginVertical: 3, overflow: 'hidden' },
+  row: { paddingVertical: 10, paddingHorizontal: 12, alignItems: 'center' },
+  iconWrap: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  info: { flex: 1, marginHorizontal: 10 },
+  meta: { writingDirection: 'ltr', fontSize: 12, marginTop: 1 },
+  dialBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', marginStart: 8 },
+  badges: { alignItems: 'center', gap: 6 },
+  durPill: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
+  durText: { fontSize: 11, fontWeight: '600', writingDirection: 'ltr' },
   detail: { paddingHorizontal: 14, paddingBottom: 14 },
   detailRow: { alignItems: 'center', marginBottom: 8 },
   actionBtn: { alignSelf: 'flex-start', marginVertical: 8, borderColor: BRAND_COLOR },
@@ -520,6 +534,11 @@ export default function PhoneCallsTabScreen() {
   const [activeTab, setActiveTab] = useState<TabKey>('history');
   const [filter, setFilter] = useState<FilterKey>('all');
   const [callsScope, setCallsScope] = useState<CallsScopeKey>('my');
+  const [scopeMenuVisible, setScopeMenuVisible] = useState(false);
+  const [dateRange, setDateRange] = useState<DateRangeKey>('all');
+  const [agentFilter, setAgentFilter] = useState<string | null>(null);
+  const [filterSheetVisible, setFilterSheetVisible] = useState(false);
+  const [orgUsers, setOrgUsers] = useState<Array<{ id: string; name: string }>>([]);
   const [calls, setCalls] = useState<PhoneCall[]>([]);
   const [rules, setRules] = useState<CallRule[]>([]);
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
@@ -549,24 +568,33 @@ export default function PhoneCallsTabScreen() {
 
   const fetchCalls = useCallback(async () => {
     try {
-      const options: { userId?: string } = {};
+      // my calls -> the signed-in user; all calls -> everyone, or the one user picked in the filter (managers only).
+      const options: { userId?: string; agentId?: string; pageSize: number; dateFrom?: string; dateTo?: string } = { pageSize: 300 };
       if (effectiveScope === 'my') {
         const uid = user?.uID || user?.userId;
         if (uid) options.userId = uid;
+      } else if (agentFilter) {
+        options.agentId = agentFilter;
       }
+      const bounds = rangeBounds(dateRange);
+      if (bounds.from) options.dateFrom = bounds.from.toISOString();
+      if (bounds.to) options.dateTo = new Date(bounds.to.getTime() - 1).toISOString();
       // Office-number call log (same source as the web page: inbound + outbound) merged with calls logged from the phone's own dialer.
       let appError: any = null;
       let pbxFailed = false;
       const [pbx, app] = await Promise.all([
         phoneCallsApi.getPbxCalls(org, options).catch(() => { pbxFailed = true; return [] as PhoneCall[]; }),
-        phoneCallsApi.getAppCalls(org, options).catch((e) => { appError = e; return [] as PhoneCall[]; }),
+        phoneCallsApi.getAppCalls(org, { userId: options.userId || options.agentId, pageSize: options.pageSize }).catch((e) => { appError = e; return [] as PhoneCall[]; }),
       ]);
       if (pbxFailed && appError) throw appError;
       const seen = new Set<string>();
+      const fromMs = bounds.from?.getTime() ?? 0;
+      const toMs = bounds.to?.getTime() ?? Number.MAX_SAFE_INTEGER;
       const merged = [...pbx, ...app.map((c) => ({ ...c, source: 'app' as const }))].filter((c) => {
         if (!c.id || seen.has(c.id)) return false;
         seen.add(c.id);
-        return true;
+        const ts = callTime(c.createdAt);
+        return !bounds.from || (ts >= fromMs && ts < toMs);
       });
       merged.sort((a, b) => callTime(b.createdAt) - callTime(a.createdAt));
       setCalls(merged);
@@ -575,7 +603,15 @@ export default function PhoneCallsTabScreen() {
       setCalls([]);
       setCallsError(err.message || t('errors.generic'));
     }
-  }, [org, effectiveScope, user?.uID, user?.userId, t]);
+  }, [org, effectiveScope, agentFilter, dateRange, user?.uID, user?.userId, t]);
+
+  // The user filter (managers who can see everyone's calls) needs the org's users.
+  useEffect(() => {
+    if (!canSeeAllCalls || !org) return;
+    usersApi.getAll(org)
+      .then((list) => setOrgUsers(list.map((u) => ({ id: u.uID || u.userId || u.id, name: u.fullname || u.userName || u.name || '' })).filter((u) => u.id && u.name)))
+      .catch(() => setOrgUsers([]));
+  }, [canSeeAllCalls, org]);
 
   const fetchRules = useCallback(async () => {
     try {
@@ -694,6 +730,13 @@ export default function PhoneCallsTabScreen() {
     }
   }, [org, user]);
 
+  // The call button on a row of the calls list: same as every other Call button in the app (the user's default dialer: the
+  // organization's line / in-app phone, or the phone's own dialer when chosen in Settings).
+  const handleRowDial = useCallback((phone?: string) => {
+    if (!phone) return;
+    placeSmartCall({ phoneNumber: phone, organization: org, user });
+  }, [org, user]);
+
   const handleGambotDial = useCallback(async (phone?: string) => {
     if (!phone?.trim()) return;
     // Caller IDs come from the settings store, which already drops Twilio numbers for everyone but the master login.
@@ -750,7 +793,7 @@ export default function PhoneCallsTabScreen() {
       fromPhoneNumber: fromNumber,
       allowEmptyFrom: isSip,
       agentId: user?.uID || user?.userId || '',
-      agentName: user?.fullname || user?.FullName || '',
+      agentName: user?.fullname || (user as any)?.FullName || '',
     });
 
     if (result.success) {
@@ -823,11 +866,11 @@ export default function PhoneCallsTabScreen() {
         t={t}
         themeColors={theme.colors}
         onQuickAction={handleQuickAction}
-        onDial={handleDial}
+        onDial={handleRowDial}
         org={org}
       />
     ),
-    [expandedCallId, isRTL, t, theme.colors, handleExpandCall, handleQuickAction, handleDial, org],
+    [expandedCallId, isRTL, t, theme.colors, handleExpandCall, handleQuickAction, handleRowDial, org],
   );
 
   const renderRuleItem = useCallback(
@@ -871,6 +914,12 @@ export default function PhoneCallsTabScreen() {
           <Text style={styles.headerTitle}>{t('phoneCalls.appCalls')}</Text>
           <Text style={styles.headerSubtitle}>{t('phoneCalls.appCallsDescription')}</Text>
         </View>
+        {activeTab === 'history' && (
+          <Pressable onPress={() => setFilterSheetVisible(true)} hitSlop={8} style={{ padding: 4, marginHorizontal: 6 }}>
+            <MaterialCommunityIcons name="filter-variant" size={24} color="#FFF" />
+            {(dateRange !== 'all' || (effectiveScope === 'all' && !!agentFilter)) && <View style={styles.filterDot} />}
+          </Pressable>
+        )}
         <Pressable onPress={() => setSearchVisible(!searchVisible)} hitSlop={8} style={{ padding: 4 }}>
           <MaterialCommunityIcons
             name={searchVisible ? 'close' : 'magnify'}
@@ -894,68 +943,93 @@ export default function PhoneCallsTabScreen() {
         </View>
       )}
 
-      <SegmentedButtons
-        value={activeTab}
-        onValueChange={(v) => setActiveTab(v as TabKey)}
-        buttons={[
-          { value: 'history', label: t('phoneCalls.callHistory'), icon: 'phone-log' },
-          { value: 'rules', label: t('phoneCalls.callRules'), icon: 'auto-fix' },
-        ]}
-        style={styles.tabs}
-        theme={{ colors: { secondaryContainer: BRAND_COLOR + '20', onSecondaryContainer: BRAND_COLOR } }}
-      />
+      <Portal>
+        <Modal
+          visible={filterSheetVisible}
+          onDismiss={() => setFilterSheetVisible(false)}
+          contentContainerStyle={[modalStyles.container, { backgroundColor: theme.colors.surface }]}
+        >
+          <ScrollView keyboardShouldPersistTaps="handled">
+            <Text style={[modalStyles.sectionLabel, { marginTop: 0, textAlign: isRTL ? 'right' : 'left' }]}>{t('phoneCalls.filterByDate')}</Text>
+            <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', flexWrap: 'wrap', gap: 8 }}>
+              {DATE_RANGE_KEYS.map((k) => (
+                <Chip key={k} selected={dateRange === k} showSelectedCheck={false} onPress={() => setDateRange(k)}>
+                  {t(`phoneCalls.range_${k}`)}
+                </Chip>
+              ))}
+            </View>
+            {effectiveScope === 'all' && orgUsers.length > 0 && (
+              <>
+                <Text style={[modalStyles.sectionLabel, { marginTop: 20, textAlign: isRTL ? 'right' : 'left' }]}>{t('phoneCalls.filterByUser')}</Text>
+                <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', flexWrap: 'wrap', gap: 8 }}>
+                  <Chip selected={!agentFilter} showSelectedCheck={false} onPress={() => setAgentFilter(null)}>{t('phoneCalls.allUsers')}</Chip>
+                  {orgUsers.map((u) => (
+                    <Chip key={u.id} selected={agentFilter === u.id} showSelectedCheck={false} onPress={() => setAgentFilter(u.id)}>{u.name}</Chip>
+                  ))}
+                </View>
+              </>
+            )}
+          </ScrollView>
+          <View style={[modalStyles.footer, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Button mode="outlined" style={modalStyles.footerBtn} onPress={() => { setDateRange('all'); setAgentFilter(null); }}>
+              {t('phoneCalls.clearFilters')}
+            </Button>
+            <Button mode="contained" buttonColor={BRAND_COLOR} style={modalStyles.footerBtn} onPress={() => setFilterSheetVisible(false)}>
+              {t('phoneCalls.showResults')}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
 
       {activeTab === 'history' && (
         <>
-          {canSeeAllCalls && (
-            <View style={[styles.scopeRow, { flexDirection: 'row' }]}>
-              <Chip
-                selected={callsScope === 'my'}
-                onPress={() => setCallsScope('my')}
-                mode="flat"
-                compact
-                style={[styles.filterChip, callsScope === 'my' && { backgroundColor: BRAND_COLOR + '20' }]}
-                textStyle={[styles.filterChipText, callsScope === 'my' ? { color: BRAND_COLOR, fontWeight: '600' } : undefined]}
-                showSelectedOverlay={false}
+          {/* One slim row: whose calls (tap to switch) + status segmented control */}
+          <View style={[styles.filterBar, { flexDirection: 'row' }]}>
+            {canSeeAllCalls ? (
+              <Menu
+                visible={scopeMenuVisible}
+                onDismiss={() => setScopeMenuVisible(false)}
+                anchor={
+                  <Pressable
+                    onPress={() => setScopeMenuVisible(true)}
+                    hitSlop={6}
+                    style={[styles.scopePill, { borderColor: theme.colors.outlineVariant }]}
+                  >
+                    <MaterialCommunityIcons name={callsScope === 'my' ? 'account' : 'account-group'} size={15} color={BRAND_COLOR} />
+                    <Text style={styles.scopePillText}>{callsScope === 'my' ? t('phoneCalls.myCalls') : t('phoneCalls.allCalls')}</Text>
+                    <MaterialCommunityIcons name="chevron-down" size={16} color={theme.colors.onSurfaceVariant} />
+                  </Pressable>
+                }
               >
-                {t('phoneCalls.myCalls')}
-              </Chip>
-              <Chip
-                selected={callsScope === 'all'}
-                onPress={() => setCallsScope('all')}
-                mode="flat"
-                compact
-                style={[styles.filterChip, callsScope === 'all' && { backgroundColor: BRAND_COLOR + '20' }]}
-                textStyle={[styles.filterChipText, callsScope === 'all' ? { color: BRAND_COLOR, fontWeight: '600' } : undefined]}
-                showSelectedOverlay={false}
-              >
-                {t('phoneCalls.allCalls')}
-              </Chip>
+                <Menu.Item
+                  leadingIcon="account"
+                  title={t('phoneCalls.myCalls')}
+                  onPress={() => { setCallsScope('my'); setAgentFilter(null); setScopeMenuVisible(false); }}
+                />
+                <Menu.Item
+                  leadingIcon="account-group"
+                  title={t('phoneCalls.allCalls')}
+                  onPress={() => { setCallsScope('all'); setScopeMenuVisible(false); }}
+                />
+              </Menu>
+            ) : <View />}
+            <View style={[styles.seg, { backgroundColor: theme.colors.surface, flexDirection: 'row' }]}>
+              {(['all', 'answered', 'missed'] as FilterKey[]).map((f) => {
+                const on = filter === f;
+                return (
+                  <Pressable
+                    key={f}
+                    onPress={() => setFilter(f)}
+                    style={[styles.segItem, on && { backgroundColor: f === 'missed' ? '#E63946' : BRAND_COLOR }]}
+                  >
+                    <Text style={[styles.segText, { color: on ? '#FFF' : theme.colors.onSurfaceVariant }, on && { fontWeight: '700' }]}>
+                      {t(`phoneCalls.${f === 'all' ? 'all' : f}`)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
-          )}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.filterRow, { flexDirection: 'row' }]}
-          >
-            {(['all', 'answered', 'missed'] as FilterKey[]).map((f) => (
-              <Chip
-                key={f}
-                selected={filter === f}
-                onPress={() => setFilter(f)}
-                mode="flat"
-                compact
-                style={[
-                  styles.filterChip,
-                  filter === f && { backgroundColor: BRAND_COLOR + '20' },
-                ]}
-                textStyle={[styles.filterChipText, filter === f ? { color: BRAND_COLOR, fontWeight: '600' } : undefined]}
-                showSelectedOverlay={false}
-              >
-                {t(`phoneCalls.${f}`)}
-              </Chip>
-            ))}
-          </ScrollView>
+          </View>
 
           <FlatList
             data={visibleCalls}
@@ -984,40 +1058,6 @@ export default function PhoneCallsTabScreen() {
           />
         </>
       )}
-
-      {activeTab === 'rules' && (
-        <FlatList
-          data={rules}
-          renderItem={renderRuleItem}
-          keyExtractor={ruleKeyExtractor}
-          contentContainerStyle={styles.list}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[BRAND_COLOR]} tintColor={BRAND_COLOR} />
-          }
-          ListEmptyComponent={<EmptyState icon="auto-fix" message={t('phoneCalls.noRules')} />}
-          ListFooterComponent={
-            <Button
-              icon="plus"
-              mode="outlined"
-              onPress={openAddRule}
-              style={styles.addRuleBtn}
-              textColor={BRAND_COLOR}
-            >
-              {t('phoneCalls.addRule')}
-            </Button>
-          }
-        />
-      )}
-
-      <RuleEditModal
-        visible={ruleModalVisible}
-        rule={editingRule}
-        onDismiss={() => { setRuleModalVisible(false); setEditingRule(null); }}
-        onSave={handleSaveRule}
-        isRTL={isRTL}
-        t={t}
-        themeColors={theme.colors}
-      />
 
       <FAB
         icon="phone-plus"
@@ -1227,11 +1267,13 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   searchbar: { height: 40, borderRadius: 20, elevation: 0 },
-  tabs: { marginHorizontal: 16, marginTop: 12, marginBottom: 4 },
-  scopeRow: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4, gap: 8 },
-  filterRow: { paddingHorizontal: 16, paddingVertical: 8, gap: 8 },
-  filterChip: { borderRadius: 20, height: 32 },
-  filterChipText: { fontSize: 13 },
+  filterBar: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6, alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  scopePill: { flexDirection: 'row', alignItems: 'center', gap: 5, height: 32, paddingHorizontal: 10, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth },
+  filterDot: { position: 'absolute', top: 2, right: 2, width: 9, height: 9, borderRadius: 5, backgroundColor: '#F4B400', borderWidth: 1, borderColor: BRAND_COLOR },
+  scopePillText: { fontSize: 12.5, fontWeight: '600', color: BRAND_COLOR },
+  seg: { borderRadius: 16, padding: 2 },
+  segItem: { height: 28, paddingHorizontal: 14, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  segText: { fontSize: 12.5 },
   list: { paddingVertical: 8, paddingBottom: 100 },
   addRuleBtn: { marginHorizontal: 16, marginTop: 12, borderColor: BRAND_COLOR, borderRadius: 12 },
   fab: { position: 'absolute', bottom: 24, end: 20, borderRadius: 28 },

@@ -60,6 +60,7 @@ import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { NoteAttachmentRow, type NoteAttachment } from '../../../components/NoteAttachmentRow';
 import ContactInternalMessages from '../../../components/ContactInternalMessages';
 import AddTaskSheet from '../../../components/AddTaskSheet';
+import SendPaymentLinkSheet from '../../../components/SendPaymentLinkSheet';
 import type { Contact, TimelineEvent } from '../../../types';
 
 type DetailTab = 'timeline' | 'internal' | 'related';
@@ -147,6 +148,8 @@ export default function ContactDetailScreen() {
   const [ownerPickerExpanded, setOwnerPickerExpanded] = useState(false);
   const [flagSaving, setFlagSaving] = useState(false);
   const [addTaskVisible, setAddTaskVisible] = useState(false);
+  const [quickActionsVisible, setQuickActionsVisible] = useState(false);
+  const [paymentSheetVisible, setPaymentSheetVisible] = useState(false);
   const [consentModalVisible, setConsentModalVisible] = useState(false);
   const [consentSource, setConsentSource] = useState('manual');
   const [consentCustomSource, setConsentCustomSource] = useState('');
@@ -1140,6 +1143,13 @@ export default function ContactDetailScreen() {
               bg="#FFF3E0"
               onPress={() => setAddTaskVisible(true)}
             />
+            <ActionButton
+              icon="lightning-bolt"
+              label={t('chats.quickActions', 'פעולות מהירות')}
+              color="#2563eb"
+              bg="#DBEAFE"
+              onPress={() => setQuickActionsVisible(true)}
+            />
           </View>
         ) : null}
 
@@ -1558,6 +1568,68 @@ export default function ContactDetailScreen() {
         contactPhone={contact?.phoneNumber || ''}
         organization={organization}
         wabaNumbers={user?.wabaNumbers && user.wabaNumbers.length > 1 ? user.wabaNumbers : undefined}
+      />
+
+      {/* Quick actions — the CRM actions the chat's ⋮ → Quick actions offers that this screen lacked
+          (note / task / media / owner / tags already live on this screen). */}
+      <Modal
+        visible={quickActionsVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setQuickActionsVisible(false)}
+      >
+        <Pressable style={styles.quickOverlay} onPress={() => setQuickActionsVisible(false)}>
+          <Pressable
+            style={[styles.quickSheet, { backgroundColor: theme.colors.surface, paddingBottom: Math.max(insets.bottom, 12) + 12 }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[styles.quickHeader, { flexDirection }]}>
+              <Text variant="titleMedium" style={{ fontWeight: '700', color: theme.colors.onSurface, flex: 1, textAlign }}>
+                {t('chats.quickActions', 'פעולות מהירות')}
+              </Text>
+              <IconButton icon="close" size={20} onPress={() => setQuickActionsVisible(false)} />
+            </View>
+            <View style={styles.quickGrid}>
+              {(() => {
+                const phone = contact?.phoneNumber || '';
+                const prefill = { prefillContactName: contactName };
+                const go = (pathname: string, params: Record<string, any>) => {
+                  setQuickActionsVisible(false);
+                  router.push({ pathname, params } as any);
+                };
+                const items: { icon: string; label: string; color: string; action: () => void }[] = [
+                  { icon: 'account-plus-outline', label: t('leads.createLead', 'צור ליד'), color: '#4CAF50', action: () => go('/(tabs)/leads/[id]', { id: 'new', contactPhone: phone, ...prefill }) },
+                  { icon: 'ticket-outline', label: t('cases.createCase', 'צור פנייה'), color: '#9C27B0', action: () => go('/(tabs)/more/cases/[id]', { id: 'new', contactPhone: phone, ...prefill }) },
+                  { icon: 'file-document-plus-outline', label: isRTL ? 'הצעת מחיר' : 'Quote', color: '#2563eb', action: () => go('/(tabs)/more/quotes/[id]', { id: 'new', prefillContactPhone: phone, ...prefill }) },
+                  { icon: 'cash-fast', label: isRTL ? 'בקשת תשלום' : 'Request payment', color: '#16a34a', action: () => { setQuickActionsVisible(false); setPaymentSheetVisible(true); } },
+                  { icon: 'receipt', label: isRTL ? 'חשבונית' : 'Invoice', color: '#0d9488', action: () => go('/(tabs)/more/invoices/[id]', { id: 'new', prefillContactPhone: phone, ...prefill }) },
+                ];
+                return items.map((item) => (
+                  <Pressable
+                    key={item.label}
+                    onPress={item.action}
+                    style={({ pressed }) => [styles.quickItem, pressed && { opacity: 0.7 }]}
+                  >
+                    <View style={[styles.quickItemIcon, { backgroundColor: `${item.color}22` }]}>
+                      <MaterialCommunityIcons name={item.icon as any} size={26} color={item.color} />
+                    </View>
+                    <Text style={{ color: theme.colors.onSurface, fontSize: 12, textAlign: 'center', marginTop: 6 }} numberOfLines={2}>
+                      {item.label}
+                    </Text>
+                  </Pressable>
+                ));
+              })()}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <SendPaymentLinkSheet
+        visible={paymentSheetVisible}
+        onDismiss={() => setPaymentSheetVisible(false)}
+        user={user}
+        customerName={contactName}
+        customerPhone={contact?.phoneNumber || ''}
       />
 
       <AddTaskSheet
@@ -2327,6 +2399,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.45)',
     justifyContent: 'flex-end' as const,
   },
+  quickOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' as const },
+  quickSheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 16, paddingTop: 8 },
+  quickHeader: { alignItems: 'center' as const, marginBottom: 8 },
+  quickGrid: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 12, justifyContent: 'flex-start' as const },
+  quickItem: { width: 84, alignItems: 'center' as const },
+  quickItemIcon: { width: 56, height: 56, borderRadius: 28, alignItems: 'center' as const, justifyContent: 'center' as const },
   noteSheet: {
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,

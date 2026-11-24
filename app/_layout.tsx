@@ -7,6 +7,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../stores/authStore';
+import { placeSmartCall } from '../utils/phoneCall';
+import { KeyboardDismissRoot } from '../utils/keyboardDismiss';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useChatStore } from '../stores/chatStore';
 import { useAppTheme } from '../hooks/useAppTheme';
@@ -16,6 +18,7 @@ import { ENDPOINTS } from '../constants/api';
 import { getEffectiveLandingRoute, hasPermission } from '../constants/permissions';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { WonDealDialogHost } from '../components/WonDealDialogHost';
+import { PdfViewerHost } from '../components/PdfViewerModal';
 import * as Notifications from 'expo-notifications';
 import { notificationService } from '../services/notifications';
 import { pushNotificationService } from '../services/pushNotifications';
@@ -211,7 +214,9 @@ export default function RootLayout() {
           return;
         }
         if (actionId === 'CALL' && data.phoneNumber) {
-          Linking.openURL(`tel:${data.phoneNumber}`);
+          const me = useAuthStore.getState().user;
+          if (me?.organization) placeSmartCall({ phoneNumber: String(data.phoneNumber), organization: me.organization, user: me });
+          else Linking.openURL(`tel:${data.phoneNumber}`);
           return;
         }
       }
@@ -219,7 +224,7 @@ export default function RootLayout() {
       // Standard navigation on tap
       switch (data.type) {
         case 'incoming_call':
-          router.push('/(tabs)/more/phone-calls');
+          router.push('/(tabs)/calls' as any);
           break;
         case 'incomingMessage':
           if (data.contactPhone) {
@@ -364,8 +369,11 @@ export default function RootLayout() {
         <PaperProvider theme={theme}>
           <ErrorBoundary>
             <StatusBar style={isDark ? 'light' : 'dark'} />
-            <Slot />
-            <WonDealDialogHost />
+            <KeyboardDismissRoot>
+              <Slot />
+              <WonDealDialogHost />
+              <PdfViewerHost />
+            </KeyboardDismissRoot>
           </ErrorBoundary>
         </PaperProvider>
       </SafeAreaProvider>

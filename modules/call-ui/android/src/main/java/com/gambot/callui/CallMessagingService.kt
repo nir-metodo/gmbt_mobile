@@ -9,6 +9,17 @@ import org.json.JSONObject
  * (the app may be closed - the process is started by FCM for the high-priority message); anything else is passed on unchanged.
  */
 class CallMessagingService : ExpoFirebaseMessagingService() {
+  /** "brief" = JSON array of short facts about the caller (open lead / case / quote / payment / last note); empty when none. */
+  private fun parseBrief(raw: String?): List<String> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return try {
+      val arr = org.json.JSONArray(raw)
+      (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+    } catch (e: Exception) {
+      emptyList()
+    }
+  }
+
   override fun onMessageReceived(remoteMessage: RemoteMessage) {
     val data = remoteMessage.data
     // Expo's push service wraps the custom data of a push as a JSON string in "body".
@@ -24,7 +35,8 @@ class CallMessagingService : ExpoFirebaseMessagingService() {
             this,
             payload?.optString("callId") ?: data["callId"] ?: "",
             payload?.optString("name") ?: data["name"] ?: "",
-            payload?.optString("from") ?: data["from"] ?: ""
+            payload?.optString("from") ?: data["from"] ?: "",
+            parseBrief(payload?.optString("brief") ?: data["brief"])
           )
         }
         return

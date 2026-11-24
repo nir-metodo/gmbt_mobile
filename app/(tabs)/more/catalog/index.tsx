@@ -50,6 +50,7 @@ import { appCache } from '../../../../services/cache';
 import axiosInstance from '../../../../services/api/axiosInstance';
 import { ENDPOINTS, WEB_APP_BASE_URL } from '../../../../constants/api';
 import PhoneNumberInput from '../../../../components/PhoneNumberInput';
+import { CatalogWhatsAppSheet, type CatalogShare } from '../../../../components/catalog/CatalogWhatsAppSheet';
 import { cleanPhoneNumber } from '../../../../utils/phoneNumber';
 
 const BRAND_COLOR = '#059669';
@@ -128,6 +129,7 @@ export default function CatalogScreen() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [shareLinkVisible, setShareLinkVisible] = useState(false);
+  const [waShare, setWaShare] = useState<CatalogShare | null>(null);
   const [slName, setSlName] = useState('');
   const [slPhone, setSlPhone] = useState('');
   const [slScope, setSlScope] = useState<'selected' | 'filtered' | 'all'>('selected');
@@ -386,9 +388,11 @@ export default function CatalogScreen() {
         cfg = await catalogApi.enablePublicCatalog(user.organization);
       }
       const url = `${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?t=${cfg.slug}`;
-      await Share.share({
-        message: isRTL ? `הקטלוג שלנו:\n${url}` : `Our catalog:\n${url}`,
+      setWaShare({
+        title: 'שיתוף הקטלוג',
         url,
+        docLabel: 'הקטלוג שלנו',
+        liveText: '{name}הקטלוג שלנו מוכן עבורך 🛍️',
       });
     } catch {
       Alert.alert(t('common.error'), isRTL ? 'שגיאה בשיתוף הקטלוג' : 'Failed to share catalog');
@@ -416,19 +420,23 @@ export default function CatalogScreen() {
       if (item.link) lines.push(item.link);
       if (item.images?.[0]) lines.push(item.images[0]);
 
-      // Append the public catalog link (enabling public sharing on the fly if needed) so the
-      // recipient can browse the full catalog too.
+      // The public catalog link (enabling public sharing on the fly if needed) is the link the customer opens, so they can browse the full catalog too.
+      let catalogUrl = '';
       try {
         let cfg = await catalogApi.getPublicConfig(user.organization);
         if (!cfg?.enabled || !cfg?.slug) cfg = await catalogApi.enablePublicCatalog(user.organization);
-        if (cfg?.slug) {
-          const url = `${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?t=${cfg.slug}`;
-          lines.push('');
-          lines.push(isRTL ? `לצפייה בקטלוג המלא:\n${url}` : `View the full catalog:\n${url}`);
-        }
-      } catch { /* sharing the item details without the link is still useful */ }
+        if (cfg?.slug) catalogUrl = `${WEB_APP_BASE_URL}/catalog/${encodeURIComponent(user.organization)}?t=${cfg.slug}`;
+      } catch { /* fall back to the item's own link */ }
+      const url = catalogUrl || item.link || '';
+      if (!url) throw new Error('no link');
+      if (catalogUrl) { lines.push(''); lines.push('לצפייה בקטלוג המלא:'); }
 
-      await Share.share({ message: lines.join('\n') });
+      setWaShare({
+        title: item.name || 'שיתוף פריט',
+        url,
+        docLabel: item.name || 'פריט מהקטלוג',
+        liveText: lines.join('\n'),
+      });
     } catch {
       Alert.alert(t('common.error'), isRTL ? 'שגיאה בשיתוף הפריט' : 'Failed to share item');
     }
@@ -538,13 +546,16 @@ export default function CatalogScreen() {
   }, [slUrl]);
 
   const sendCustomerLinkWhatsApp = useCallback(() => {
-    // Normalize to a full international number (e.g. "0501234567" → "972501234567"), otherwise
-    // WhatsApp rejects the local-format number and the link "can't be opened".
-    const phone = cleanPhoneNumber(slPhone);
-    const text = `${slName ? slName + ', ' : ''}${isRTL ? 'הכנתי עבורך קטלוג אישי 🛍️' : 'I prepared a personal catalog for you 🛍️'}\n${slUrl}`;
-    const wa = phone ? `whatsapp://send?phone=${phone}&text=${encodeURIComponent(text)}` : `https://wa.me/?text=${encodeURIComponent(text)}`;
-    Linking.openURL(wa).catch(() => { Share.share({ message: text }); });
-  }, [slPhone, slName, slUrl, isRTL]);
+    // Through Gambot's WhatsApp (confirm + send in the share sheet), never the phone's own WhatsApp.
+    setWaShare({
+      title: 'שליחת הקטלוג האישי',
+      url: slUrl,
+      docLabel: 'הקטלוג האישי שהכנו עבורך',
+      liveText: '{name}הכנתי עבורך קטלוג אישי 🛍️',
+      phone: cleanPhoneNumber(slPhone),
+      name: slName.trim(),
+    });
+  }, [slPhone, slName, slUrl]);
 
   const loadSelections = useCallback(async () => {
     if (!user?.organization) return;
@@ -1943,6 +1954,7 @@ export default function CatalogScreen() {
           </Button>
         </Modal>
       </Portal>
+      <CatalogWhatsAppSheet share={waShare} user={user} onClose={() => setWaShare(null)} />
 
       {/* Full-screen image viewer (lightbox) with left/right navigation */}
       {viewerVisible && viewerImages.length > 0 && (

@@ -19,7 +19,14 @@ export function withAlpha(color: string, opacity: number): string {
 }
 import { he, enUS } from 'date-fns/locale';
 
+// Phone numbers must always read left-to-right ("+972 54 ..."), even inside Hebrew (RTL) text - otherwise "+972" jumps to the right end.
+// Wrapped in a Unicode LTR isolate (LRI ... PDI); display-only (never use the result for dialing/comparison).
 export function formatPhoneNumber(phone: string): string {
+  const f = formatPhoneNumberRaw(phone);
+  return f ? `\u2066${f}\u2069` : '';
+}
+
+export function formatPhoneNumberRaw(phone: string): string {
   if (!phone) return '';
   // Same display format as the web app: "+972 50 527 8310" (landline: "+972 3 123 4567"), whatever the stored form.
   let digits = phone.replace(/\D/g, '');

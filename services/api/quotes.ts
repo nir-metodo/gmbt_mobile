@@ -74,10 +74,19 @@ export const quotesApi = {
     userId?: string,
     userName?: string,
   ): Promise<any> {
+    // The server stores quoteData with Overwrite (the web always sends the whole quote). A partial body such as
+    // { id, status } would therefore erase the items, contact, lead link… — so a partial update is merged into
+    // the full stored quote first (this also lets the server move the linked lead / read the quote after a status change).
+    let body: Partial<Quote> & { id: string } = quoteData;
+    if (quoteData.items === undefined && quoteData.title === undefined) {
+      const full = await this.getById(organization, quoteData.id);
+      if (!full || !(full as any).id) throw new Error('Quote not found');
+      body = { ...(full as any), ...quoteData };
+    }
     const response = await axiosInstance.post(ENDPOINTS.UPDATE_QUOTE, {
       organization,
-      quoteId: quoteData.id,
-      quoteData,
+      quoteId: body.id,
+      quoteData: body,
       userId: userId || '',
       userName: userName || '',
     });

@@ -72,6 +72,9 @@ export default function TabsLayout() {
     return () => { appSub.remove(); pushSub.remove(); };
   }, [user?.organization, telephonyEnabled]);
 
+  // Telephony on (and the user may see calls): a "Calls" tab replaces "Contacts" in the bottom bar.
+  const callsTabVisible = !!telephonyEnabled && hasPermission(user?.Permissions, user?.SecurityRole, 'phoneCalls' as any);
+
   const tabs: TabConfig[] = [
     {
       name: 'chats',
@@ -80,6 +83,16 @@ export default function TabsLayout() {
       iconFocused: 'chat',
       permission: 'chats',
       badge: unreadCount,
+    },
+    // Organizations with telephony: "Calls" sits where Contacts was (Contacts moves to More → Contacts).
+    {
+      name: 'calls',
+      titleKey: 'tabs.calls',
+      icon: 'phone-outline',
+      iconFocused: 'phone',
+      permission: 'phoneCalls',
+      requiresTelephony: true,
+      badge: telephonyEnabled ? missedUnseen : 0,
     },
     {
       name: 'contacts',
@@ -108,7 +121,8 @@ export default function TabsLayout() {
       icon: 'dots-grid',
       iconFocused: 'dots-grid',
       permission: null,
-      badge: telephonyEnabled ? missedUnseen : 0,
+      // The missed-calls badge lives on the Calls tab when it exists; otherwise on More (→ Phone calls).
+      badge: telephonyEnabled && !callsTabVisible ? missedUnseen : 0,
     },
   ];
 
@@ -118,6 +132,8 @@ export default function TabsLayout() {
         !hasPermission(user?.Permissions, user?.SecurityRole, tab.permission as any)) {
       return false;
     }
+    // Contacts gives its place to Calls.
+    if (tab.name === 'contacts' && callsTabVisible) return false;
     return true;
   };
 

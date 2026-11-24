@@ -31,6 +31,7 @@ class IncomingCallActivity : Activity() {
   private var callId = ""
   private var from = ""
   private var name = ""
+  private var brief: List<String> = emptyList()
   private val handler = Handler(Looper.getMainLooper())
   private var done = false
   private var answering = false
@@ -74,6 +75,7 @@ class IncomingCallActivity : Activity() {
     callId = i.getStringExtra(CallUi.EXTRA_CALL_ID) ?: ""
     from = i.getStringExtra(CallUi.EXTRA_FROM) ?: ""
     name = i.getStringExtra(CallUi.EXTRA_NAME) ?: ""
+    brief = i.getStringArrayListExtra(CallUi.EXTRA_BRIEF)?.filter { it.isNotBlank() } ?: emptyList()
   }
 
   override fun onDestroy() {
@@ -183,6 +185,29 @@ class IncomingCallActivity : Activity() {
       val numLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
       numLp.topMargin = dp(8)
       column.addView(number, numLp)
+    }
+
+    // A few facts about who is calling (open lead / case, quote, payment, last note) - only what exists, nothing when empty.
+    if (brief.isNotEmpty()) {
+      val card = LinearLayout(this)
+      card.orientation = LinearLayout.VERTICAL
+      card.setPadding(dp(16), dp(12), dp(16), dp(12))
+      card.background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.parseColor("#26ffffff")) }
+      brief.take(5).forEachIndexed { idx, line ->
+        val tv = TextView(this)
+        tv.text = line
+        tv.setTextColor(Color.parseColor("#e6f2ee"))
+        tv.textSize = 15f
+        tv.maxLines = 2
+        tv.ellipsize = android.text.TextUtils.TruncateAt.END
+        tv.textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        if (idx > 0) lp.topMargin = dp(6)
+        card.addView(tv, lp)
+      }
+      val cardLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+      cardLp.topMargin = dp(28)
+      column.addView(card, cardLp)
     }
 
     val spacer = View(this)
