@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+﻿import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -883,7 +883,7 @@ export default function TasksMoreScreen() {
             onChangeText={setSearchQuery}
             returnKeyType="search"
             style={[styles.searchbar, { backgroundColor: theme.colors.surfaceVariant }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
+            inputStyle={{ fontSize: 14, minHeight: 0, textAlign: isRTL ? 'right' : 'left' }}
             iconColor={theme.colors.onSurfaceVariant}
             autoFocus
           />

@@ -470,6 +470,19 @@ export default function SettingsScreen() {
                 right={<Switch value={!!settings.myExtension?.ringMobile} onValueChange={handleRingMobile} color={BRAND_COLOR} />}
               />
               <Divider style={s.divider} />
+              {settings.outboundCallerIdMode !== 'user' ? (
+                // The organization decides what the customer sees on every outgoing call, so there is no personal switch.
+                <SettingRow
+                  icon="phone-outgoing-outline"
+                  iconColor="#2A9D8F"
+                  label={isRTL ? 'מספר מזהה בשיחות יוצאות' : 'Caller ID for outgoing calls'}
+                  description={settings.outboundCallerIdMode === 'fixed' && settings.outboundFixedCallerId
+                    ? (isRTL ? `הארגון קבע שכל השיחות היוצאות יופיעו אצל הלקוח מהמספר ${settings.outboundFixedCallerId}.` : `Your organization set one number for all outgoing calls: ${settings.outboundFixedCallerId}.`)
+                    : (isRTL ? 'הארגון קבע שכל השיחות היוצאות יופיעו אצל הלקוח ממספר הארגון.' : "Your organization set the organization's number for all outgoing calls.")}
+                  isRTL={isRTL}
+                  themeColors={theme.colors}
+                />
+              ) : (
               <SettingRow
                 icon="phone-outgoing-outline"
                 iconColor="#2A9D8F"
@@ -485,6 +498,7 @@ export default function SettingsScreen() {
                 themeColors={theme.colors}
                 right={<Switch value={settings.myExtension?.outboundCallerId === 'mobile'} onValueChange={handleOutboundCallerId} color={BRAND_COLOR} />}
               />
+              )}
             </>
           )}
           {settings.telephonySolutionAvailable && (

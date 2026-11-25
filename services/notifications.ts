@@ -81,6 +81,11 @@ export const notificationService = {
       { identifier: 'CALL', buttonTitle: 'התקשר 📞', options: { opensAppToForeground: true } },
     ]);
 
+    // Missed-call push: the "חזור" button (and a plain tap) dials the customer back.
+    await Notifications.setNotificationCategoryAsync('missedCall', [
+      { identifier: 'CALL_BACK', buttonTitle: 'חזור 📞', options: { opensAppToForeground: true } },
+    ]);
+
     const tokenData = await Notifications.getExpoPushTokenAsync();
     const token = tokenData.data;
 

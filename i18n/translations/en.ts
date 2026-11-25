@@ -226,7 +226,7 @@ export default {
     mediaLibrary: 'Media',
     windowChecking: 'Checking the conversation window...',
     windowClosedExplain: 'The customer has not written in the last 24 hours, so WhatsApp only allows an approved template. Once they reply you can write freely.',
-    chooseTemplate: 'Send template',
+    chooseTemplate: 'Choose template to send',
     sending: 'Sending...',
     defaultTemplateShort: 'Default',
     scheduleShort: 'Schedule',

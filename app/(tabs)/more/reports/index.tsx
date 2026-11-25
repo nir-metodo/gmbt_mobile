@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+﻿import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -1254,7 +1254,7 @@ export default function ReportsScreen() {
           value={searchQuery}
           onChangeText={setSearchQuery}
           style={[styles.searchbar, { backgroundColor: theme.colors.surfaceVariant }]}
-          inputStyle={{ fontSize: 14 }}
+          inputStyle={{ fontSize: 14, minHeight: 0 }}
           iconColor={theme.colors.onSurfaceVariant}
           elevation={0}
         />

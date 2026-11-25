@@ -1,12 +1,15 @@
 import { Audio } from 'expo-av';
 import { Platform, AppState } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import { isCallAudioManaged } from '../utils/callAudio';
 
 let soundInstance: Audio.Sound | null = null;
 let lastPlayedAt = 0;
 const MIN_INTERVAL_MS = 2000;
 
 async function ensureAudioMode() {
+  // During a call the route (headset / earpiece / speaker) is owned by the call - don't touch the phone's audio mode.
+  if (isCallAudioManaged()) return;
   await Audio.setAudioModeAsync({
     playsInSilentModeIOS: true,
     staysActiveInBackground: false,

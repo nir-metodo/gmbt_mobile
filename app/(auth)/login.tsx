@@ -337,7 +337,7 @@ export default function LoginScreen() {
                 mode="outlined"
                 label={t('login.organizationPlaceholder')}
                 value={organization}
-                onChangeText={setOrganization}
+                onChangeText={(v) => setOrganization(v.replace(/[\s\u00A0\u200B-\u200F\u202A-\u202E\uFEFF]+/g, ''))}
                 autoCapitalize="none"
                 returnKeyType="go"
                 onSubmitEditing={handleLogin}

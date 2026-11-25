@@ -2820,6 +2820,9 @@ export default function ChatsListScreen() {
             ]}
             inputStyle={{
               fontSize: 14,
+              paddingVertical: 0,
+              alignSelf: 'center',
+              minHeight: 0, // Paper's bar-mode input is minHeight 56 - taller than this 40px bar, which pushed the text down
               textAlign: isRTL ? 'right' : 'left',
             }}
             iconColor={theme.colors.onSurfaceVariant}

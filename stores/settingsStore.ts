@@ -21,6 +21,9 @@ interface SettingsState {
   /** Numbers the caller may dial from (Twilio-bought numbers are removed for everyone except the master login). */
   usableCallerNumbers: any[];
   defaultCallerId: string;
+  /** Organization-wide caller ID policy for outgoing calls: 'user' = each user chooses (default), 'did' = org number, 'fixed' = one agreed number. */
+  outboundCallerIdMode: 'user' | 'did' | 'fixed';
+  outboundFixedCallerId: string;
   /** The signed-in user's own extension (שלוחה): present only when the org restricts the phone to extensions. */
   myExtension: { extension?: string; enabled?: boolean; ringMobile?: boolean; mobilePhone?: string; outboundCallerId?: 'did' | 'mobile' } | null;
   callAlertSoundEnabled: boolean;
@@ -83,6 +86,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   telephonyProvider: 'twilio',
   usableCallerNumbers: [],
   defaultCallerId: '',
+  outboundCallerIdMode: 'user',
+  outboundFixedCallerId: '',
   myExtension: null,
   callAlertSoundEnabled: true,
   callAlertVibrateEnabled: true,
@@ -184,7 +189,12 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         telephonyProvider: provider,
         usableCallerNumbers: usable,
         defaultCallerId: callerIdOk ? settings.defaultCallerId : (usable[0]?.number || ''),
-        myExtension: mine ? { extension: mine.extension, enabled: !!mine.enabled, ringMobile: mine.ringMobile === true, mobilePhone: mine.mobilePhone || '', outboundCallerId: mine.outboundCallerId === 'did' ? 'did' : 'mobile' } : null, // default = the user's own mobile (only an explicit "did" keeps the org number)
+        // The admin can pin this user to one choice (adminCallerIdMode = did | user | fixed); it wins over the organization-wide mode.
+        outboundCallerIdMode: ['did', 'fixed', 'user'].includes(mine?.adminCallerIdMode)
+          ? mine.adminCallerIdMode
+          : (settings?.outboundCallerIdMode === 'did' || settings?.outboundCallerIdMode === 'fixed' ? settings.outboundCallerIdMode : 'user'),
+        outboundFixedCallerId: mine?.adminCallerIdMode === 'fixed' ? String(mine.adminCallerIdFixed || '') : String(settings?.outboundFixedCallerId || ''),
+        myExtension: mine ? { extension: mine.extension, enabled: !!mine.enabled, ringMobile: mine.ringMobile === true, mobilePhone: mine.mobilePhone || '', outboundCallerId: (mine.adminCallerIdMode === 'user' || mine.outboundCallerId !== 'did') ? 'mobile' : 'did' } : null, // default = the user's own mobile (only an explicit "did" keeps the org number)
         telephonySolutionAvailable: pbxOn && allowedByExtension && (legacyAllowed || provider === 'sip'),
       });
     } catch {

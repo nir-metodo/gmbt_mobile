@@ -11,6 +11,8 @@ function fmt(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+const SPEEDS = [1, 1.5, 2];
+
 // Only one recording plays at a time: starting a new one stops the previous one.
 let activeStop: (() => void) | null = null;
 
@@ -34,6 +36,29 @@ export function RecordingPlayer({ uri, durationSec, autoPlay }: Props) {
   const [totalMs, setTotalMs] = useState((durationSec || 0) * 1000);
   const [failed, setFailed] = useState(false);
   const [barWidth, setBarWidth] = useState(0);
+  const [rate, setRate] = useState(1);
+  const rateRef = useRef(1);
+
+  // Cycle playback speed 1x → 1.5x → 2x → 1x (pitch-corrected so voices don't sound chipmunk-like).
+  const cycleRate = useCallback(async () => {
+    const next = SPEEDS[(SPEEDS.indexOf(rateRef.current) + 1) % SPEEDS.length];
+    rateRef.current = next;
+    setRate(next);
+    try { await soundRef.current?.setRateAsync(next, true); } catch { /* applied on next play */ }
+  }, []);
+
+  // Skip ±10 seconds.
+  const skip = useCallback(async (deltaMs: number) => {
+    const s = soundRef.current;
+    if (!s) return;
+    try {
+      const st = await s.getStatusAsync();
+      if (!st.isLoaded) return;
+      const dur = st.durationMillis || totalMs || 0;
+      const target = Math.max(0, Math.min(dur ? dur - 200 : Number.MAX_SAFE_INTEGER, (st.positionMillis || 0) + deltaMs));
+      await s.setPositionAsync(target);
+    } catch { /* ignore */ }
+  }, [totalMs]);
 
   const onStatus = useCallback((st: AVPlaybackStatus) => {
     if (!st.isLoaded) return;
@@ -68,6 +93,7 @@ export function RecordingPlayer({ uri, durationSec, autoPlay }: Props) {
         await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: false, staysActiveInBackground: false });
         const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: false, progressUpdateIntervalMillis: 250 }, onStatus);
         soundRef.current = sound;
+        if (rateRef.current !== 1) { try { await sound.setRateAsync(rateRef.current, true); } catch { /* ignore */ } }
         setLoading(false);
       }
       const status = await soundRef.current.getStatusAsync();
@@ -121,6 +147,17 @@ export function RecordingPlayer({ uri, durationSec, autoPlay }: Props) {
             : <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>{totalMs ? fmt(totalMs) : '--:--'}</Text>}
         </View>
       </View>
+      <View style={styles.controls}>
+        <Pressable onPress={() => skip(-10000)} hitSlop={6} disabled={loading || !soundRef.current}>
+          <MaterialCommunityIcons name="rewind-10" size={22} color={theme.colors.onSurfaceVariant} />
+        </Pressable>
+        <Pressable onPress={() => skip(10000)} hitSlop={6} disabled={loading || !soundRef.current}>
+          <MaterialCommunityIcons name="fast-forward-10" size={22} color={theme.colors.onSurfaceVariant} />
+        </Pressable>
+        <Pressable onPress={cycleRate} hitSlop={6} style={[styles.rateChip, { borderColor: BRAND, backgroundColor: rate !== 1 ? BRAND : 'transparent' }]}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: rate !== 1 ? '#FFF' : BRAND }}>{`${rate}x`}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -133,4 +170,6 @@ const styles = StyleSheet.create({
   barBg: { height: 5, borderRadius: 3, overflow: 'hidden' },
   barFill: { height: 5, borderRadius: 3 },
   times: { flexDirection: 'row', justifyContent: 'space-between' },
+  controls: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  rateChip: { minWidth: 40, alignItems: 'center', borderWidth: 1.5, borderRadius: 12, paddingHorizontal: 6, paddingVertical: 2 },
 });

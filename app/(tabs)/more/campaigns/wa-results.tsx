@@ -227,7 +227,7 @@ export default function WaResultsScreen() {
               <>
                 <View style={[styles.tiles, { flexDirection }]}>
                   <Tile label={he ? 'נשלחו' : 'Sent'} value={totals.sent} color="#64748b" icon="send" />
-                  <Tile label={he ? 'נמסרו' : 'Delivered'} value={totals.delivered} color="#16a34a" icon="check-all" />
+                  <Tile label={he ? 'נמסרו (כולל נקראו)' : 'Delivered (incl. read)'} value={totals.delivered} color="#16a34a" icon="check-all" />
                   <Tile label={he ? 'נקראו' : 'Read'} value={totals.read} color="#2563eb" icon="eye-outline" />
                   <Tile label={he ? 'נכשלו' : 'Failed'} value={totals.failed} color="#dc2626" icon="alert-circle-outline" />
                 </View>
@@ -239,6 +239,14 @@ export default function WaResultsScreen() {
                   {totals.clicks > 0 ? (he ? ` · ${totals.clicks} לחיצות על כפתור` : ` · ${totals.clicks} button clicks`) : ''}
                   {totals.unsubscribed > 0 ? (he ? ` · ${totals.unsubscribed} הסרות` : ` · ${totals.unsubscribed} unsubscribed`) : ''}
                 </Text>
+                {/* Same non-overlapping breakdown the web shows: sent = not-yet-delivered + delivered-not-read + read */}
+                {totals.sent > 0 && (
+                  <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 11, textAlign }}>
+                    {he
+                      ? `"נמסרו" כולל את מי שגם נקרא, ו"נשלחו" כולל את שניהם. בחלוקה ללא חפיפה: ${totals.sent} נשלחו = ${Math.max(0, totals.sent - totals.delivered)} עדיין לא נמסרו + ${Math.max(0, totals.delivered - totals.read)} נמסרו ולא נקראו + ${totals.read} נקראו.`
+                      : `"Delivered" includes those who also read, and "Sent" includes both. Without overlap: ${totals.sent} sent = ${Math.max(0, totals.sent - totals.delivered)} not yet delivered + ${Math.max(0, totals.delivered - totals.read)} delivered, unread + ${totals.read} read.`}
+                  </Text>
+                )}
               </>
             )}
           </View>
@@ -328,7 +336,7 @@ export default function WaResultsScreen() {
                 </Pressable>
 
                 <Bar label={he ? 'נשלחו' : 'Sent'} value={stats.sent} total={stats.total} color="#64748b" />
-                <Bar label={he ? 'נמסרו' : 'Delivered'} value={stats.delivered} total={stats.total} color="#16a34a" />
+                <Bar label={he ? 'נמסרו (כולל נקראו)' : 'Delivered (incl. read)'} value={stats.delivered} total={stats.total} color="#16a34a" />
                 <Bar label={he ? 'נקראו' : 'Read'} value={stats.read} total={stats.total} color="#2563eb" />
                 {stats.failed > 0 && <Bar label={he ? 'נכשלו' : 'Failed'} value={stats.failed} total={stats.total} color="#dc2626" />}
 

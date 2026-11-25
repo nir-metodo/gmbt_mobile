@@ -227,7 +227,7 @@ export default {
     mediaLibrary: 'מדיה',
     windowChecking: 'בודק את חלון השיחה...',
     windowClosedExplain: 'הלקוח לא כתב ב-24 השעות האחרונות, ולכן WhatsApp מאפשרת לשלוח רק תבנית מאושרת. אחרי שהלקוח יענה - אפשר יהיה לכתוב חופשי.',
-    chooseTemplate: 'שלח תבנית',
+    chooseTemplate: 'בחירת תבנית לשליחה',
     sending: 'שולח...',
     defaultTemplateShort: 'ברירת מחדל',
     scheduleShort: 'תזמן',

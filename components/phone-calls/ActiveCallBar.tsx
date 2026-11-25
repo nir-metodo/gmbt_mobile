@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { AppState, AppStateStatus, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { Text, useTheme } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
@@ -10,8 +10,9 @@ import { useSipPhoneStore } from '../../stores/sipPhoneStore';
 import { useAuthStore } from '../../stores/authStore';
 import AddTaskSheet from '../AddTaskSheet';
 import type { Contact } from '../../types';
-import { isSpeakerSupported, resetCallAudio, setCallSpeaker } from '../../utils/callAudio';
+import { isHeadsetRoute, isSpeakerSupported, resetCallAudio, setCallSpeaker, startCallAudio } from '../../utils/callAudio';
 import { startCallProximity } from '../../utils/callProximity';
+import { dismissOngoingCallNotification, showOngoingCallNotification } from '../../utils/callNotification';
 import type { AppTheme } from '../../constants/theme';
 import CallTransferSheet from './CallTransferSheet';
 import CallCustomerCard from './CallCustomerCard';
@@ -96,7 +97,8 @@ export default function ActiveCallBar() {
   // phone's call audio can reset the route; restored to normal app audio when the call is over.
   useEffect(() => {
     if (!callId) return;
-    setCallSpeaker(speaker);
+    // startCallAudio turns on headset-aware routing (Bluetooth / wired headset) and asks for the Bluetooth permission once.
+    startCallAudio().then(() => setCallSpeaker(speaker));
   }, [callId, speaker, answered, inCall]);
   useEffect(() => {
     if (!callId) return undefined;
@@ -106,8 +108,23 @@ export default function ActiveCallBar() {
   // Phone at the ear → screen goes dark and ignores touch (no accidental mute/hang-up). Off while the loudspeaker is on.
   useEffect(() => {
     if (!callId || speaker) return undefined;
-    return startCallProximity(() => false);
+    // With a Bluetooth / wired headset carrying the call the phone is not at the ear → keep the screen on.
+    return startCallProximity(() => isHeadsetRoute());
   }, [callId, speaker]);
+
+  // Left the app mid-call (home / another app): the call keeps going, so pin an ongoing notification (tap = back to the call,
+  // "נתק" = hang up). Removed when the app is open again or the call ends.
+  useEffect(() => {
+    if (!callId) return undefined;
+    const label = call?.name || call?.phoneNumber || '';
+    const sync = (state: AppStateStatus) => {
+      if (state === 'active') dismissOngoingCallNotification();
+      else showOngoingCallNotification(`📞 ${t('phoneCalls.callInProgress', 'שיחה פעילה')}`, label);
+    };
+    sync(AppState.currentState);
+    const sub = AppState.addEventListener('change', sync);
+    return () => { sub.remove(); dismissOngoingCallNotification(); };
+  }, [callId]);
 
   // Call notes: saved while typing, and once more (final) when the call ends so they reach the timeline.
   useEffect(() => {

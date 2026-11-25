@@ -126,6 +126,8 @@ function MessageBubbleInner({
   const [audioDuration, setAudioDuration] = useState(0);
   const [audioPosition, setAudioPosition] = useState(0);
   const audioRef = useRef<Audio.Sound | null>(null);
+  const [audioRate, setAudioRate] = useState(1);
+  const audioRateRef = useRef(1);
   const durationLoaded = useRef(false);
 
   const translateX = useSharedValue(0);
@@ -137,11 +139,12 @@ function MessageBubbleInner({
   }, [message, onSwipeToReply]);
 
   const isRTL = I18nManager.isRTL;
-  const swipeDirection = isRTL ? -1 : 1;
+  // Like WhatsApp: swipe the bubble to the RIGHT to reply (in Hebrew/RTL too).
+  const swipeDirection = 1;
 
   const panGesture = Gesture.Pan()
-    .activeOffsetX([-20, 20])
-    .failOffsetY([-10, 10])
+    .activeOffsetX([-1000, 15])
+    .failOffsetY([-15, 15])
     .runOnJS(true)
     .onUpdate((e) => {
       const tx = e.translationX * swipeDirection;
@@ -451,11 +454,34 @@ function MessageBubbleInner({
         }
       );
       audioRef.current = sound;
+      if (audioRateRef.current !== 1) { try { await sound.setRateAsync(audioRateRef.current, true); } catch { /* ignore */ } }
       setAudioPlaying(true);
     } catch (err) {
       console.error('[Audio] playback error:', err);
     }
   }, [effectiveMediaUrl, audioPlaying]);
+
+  // Playback speed: tap to cycle 1x → 1.5x → 2x (kept for the next play too).
+  const handleAudioRate = useCallback(async () => {
+    const speeds = [1, 1.5, 2];
+    const next = speeds[(speeds.indexOf(audioRateRef.current) + 1) % speeds.length];
+    audioRateRef.current = next;
+    setAudioRate(next);
+    try { await audioRef.current?.setRateAsync(next, true); } catch { /* applied when playback starts */ }
+  }, []);
+
+  // Skip forward/back (ms). Starts playback context if nothing is loaded yet.
+  const handleAudioSkip = useCallback(async (deltaMs: number) => {
+    const s = audioRef.current;
+    if (!s) return;
+    try {
+      const st = await s.getStatusAsync();
+      if (!st.isLoaded) return;
+      const dur = st.durationMillis || 0;
+      const target = Math.max(0, (st.positionMillis || 0) + deltaMs);
+      await s.setPositionAsync(dur ? Math.min(target, Math.max(0, dur - 200)) : target);
+    } catch { /* ignore */ }
+  }, []);
 
   const renderMedia = () => {
     switch (msgType) {
@@ -642,9 +668,23 @@ function MessageBubbleInner({
                   );
                 })}
               </View>
-              <Text style={[styles.audioDuration, { color: timeColor }]}>
-                {audioPlaying ? formatSec(positionSec) : (durationSec > 0 ? formatSec(durationSec) : '···')}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={[styles.audioDuration, { color: timeColor }]}>
+                  {audioPlaying ? formatSec(positionSec) : (durationSec > 0 ? formatSec(durationSec) : '···')}
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Pressable onPress={() => handleAudioSkip(10000)} hitSlop={8}>
+                    <MaterialCommunityIcons name="fast-forward-10" size={18} color={timeColor} />
+                  </Pressable>
+                  <Pressable
+                    onPress={handleAudioRate}
+                    hitSlop={8}
+                    style={{ borderRadius: 9, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: audioRate !== 1 ? waveActiveColor : 'rgba(128,128,128,0.25)' }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: audioRate !== 1 ? '#fff' : timeColor }}>{`${audioRate}x`}</Text>
+                  </Pressable>
+                </View>
+              </View>
             </View>
           </View>
         );
@@ -1024,7 +1064,7 @@ function MessageBubbleInner({
       ]}
     >
       {/* Reply icon that appears during swipe */}
-      <Animated.View style={[styles.swipeReplyIcon, isRTL ? { right: -30 } : { left: -30 }, replyIconStyle]} pointerEvents="none">
+      <Animated.View style={[styles.swipeReplyIcon, { left: 8 }, replyIconStyle]} pointerEvents="none">
         <MaterialCommunityIcons name="reply" size={20} color={isDark ? '#8696a0' : '#667781'} />
       </Animated.View>
       <Animated.View style={animatedStyle}>

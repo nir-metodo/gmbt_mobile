@@ -3,6 +3,7 @@ import { API_BASE_URL, ENDPOINTS } from '../../constants/api';
 import axiosInstance from './axiosInstance';
 import { secureStorage, appStorage } from '../storage';
 import type { User } from '../../types';
+import i18n from '../../i18n';
 
 interface AuthResponse {
   Success: boolean;
@@ -84,7 +85,12 @@ export const authApi = {
     const response = await axios.post(`${API_BASE_URL}${ENDPOINTS.FORGOT_PASSWORD}`, {
       email,
     });
-    return response.data?.Success === true;
+    if (response.data?.Success === true) return true;
+    // The server answers Success=false (HTTP 200) when the address is not a registered user. Surface it instead of failing silently.
+    if (/does not exist/i.test(String(response.data?.Message || ''))) {
+      throw new Error(i18n.t('login.emailNotFound'));
+    }
+    return false;
   },
 
   async logout(): Promise<void> {

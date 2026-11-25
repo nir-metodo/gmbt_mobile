@@ -63,6 +63,7 @@ import { getCurrentPath } from '../../../utils/navOrigin';
 
 import WebSocketService from '../../../services/websocket';
 import { MessageBubble } from '../../../components/chat/MessageBubble';
+import { ChatWallpaper } from '../../../components/chat/ChatWallpaper';
 import { ChatInput, ChatInputRef, ReplyPreview } from '../../../components/chat/ChatInput';
 import { MediaPanel } from '../../../components/chat/MediaPanel';
 import { MediaTitleSheet } from '../../../components/chat/MediaTitleSheet';
@@ -3441,6 +3442,7 @@ export default function ChatConversationScreen() {
         {/* Messages — wrapped in a flex:1 region so the list (not the input) shrinks when
             the keyboard opens, keeping the send button visible above the keyboard. */}
         <View style={styles.messagesRegion}>
+        <ChatWallpaper dark={theme.dark} />
         {isLoadingMessages && listData.length === 0 ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator
@@ -3614,7 +3616,7 @@ export default function ChatConversationScreen() {
               >
                 <MaterialCommunityIcons name="card-text-outline" size={20} color="#fff" />
                 <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>
-                  {t('chats.chooseTemplate', 'שלח תבנית')}
+                  {t('chats.chooseTemplate', 'בחירת תבנית לשליחה')}
                 </Text>
               </Pressable>
 

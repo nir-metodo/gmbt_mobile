@@ -8,6 +8,9 @@ import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../stores/authStore';
 import { placeSmartCall } from '../utils/phoneCall';
+import { ACTIVE_CALL_HANGUP, ACTIVE_CALL_TYPE } from '../utils/callNotification';
+import { useActiveCallStore } from '../stores/activeCallStore';
+import { phoneCallsApi } from '../services/api/phoneCalls';
 import { KeyboardDismissRoot } from '../utils/keyboardDismiss';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useChatStore } from '../stores/chatStore';
@@ -182,6 +185,21 @@ export default function RootLayout() {
       const data = response.notification.request.content.data;
       if (!data?.type) return;
 
+      // The ongoing "call in progress" notification (same id every call, so it must skip the dedupe below):
+      // "נתק" hangs up, a tap opens the full call page.
+      if (data.type === ACTIVE_CALL_TYPE) {
+        const live = useActiveCallStore.getState().call;
+        if (live) {
+          if (response.actionIdentifier === ACTIVE_CALL_HANGUP) {
+            phoneCallsApi.sipCallControl(live.organization, live.callId, 'hangup').catch(() => {});
+            useActiveCallStore.getState().clear();
+          } else {
+            useActiveCallStore.getState().patch({ expanded: true });
+          }
+        }
+        return;
+      }
+
       // Dedupe: a cold-start tap can surface both via getLastNotificationResponseAsync and the
       // runtime listener. Process each physical notification at most once.
       const notifId = response.notification.request.identifier;
@@ -200,6 +218,14 @@ export default function RootLayout() {
       }
 
       const actionId = response.actionIdentifier;
+
+      // Missed call: tapping the push (or its "חזור" button) dials the customer back.
+      if (data.type === 'missedCall' && data.phone) {
+        const me = useAuthStore.getState().user;
+        if (me?.organization) placeSmartCall({ phoneNumber: String(data.phone), organization: me.organization, user: me, customerName: data.callerName ? String(data.callerName) : undefined });
+        else Linking.openURL(`tel:${data.phone}`);
+        return;
+      }
 
       // Handle task action buttons
       if ((data.type === 'taskAssigned' || data.type === 'taskReminder') && actionId && actionId !== Notifications.DEFAULT_ACTION_IDENTIFIER) {

@@ -170,7 +170,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const result = await authApi.forgotPassword(email);
-      set({ isLoading: false });
+      // A refused request used to return false with no message, so the modal just did nothing.
+      set({ isLoading: false, error: result ? null : i18n.t('login.recoveryError') });
       return result;
     } catch (error: any) {
       set({

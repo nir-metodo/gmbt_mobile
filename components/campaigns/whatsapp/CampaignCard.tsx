@@ -180,6 +180,10 @@ function CampaignCardBase({
                 <Pill color="#2563eb" icon="eye-outline" label={String(summary.read)} />
                 {summary.failed > 0 ? <Pill color="#dc2626" icon="alert-circle-outline" label={String(summary.failed)} /> : null}
               </View>
+              <Text style={[styles.modified, { color: theme.colors.onSurfaceVariant, textAlign }]}>
+                {he ? 'נשלחו · נמסרו · נקראו (מצטבר: נקראו נספרים גם כנמסרו)' : 'Sent · Delivered · Read (cumulative: read also counts as delivered)'}
+                {summary.failed > 0 ? (he ? ' · נכשלו' : ' · Failed') : ''}
+              </Text>
             </>
           )}
         </View>

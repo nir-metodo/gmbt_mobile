@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+﻿import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   FlatList,
@@ -556,7 +556,7 @@ export default function MediaScreen() {
             value={searchQuery}
             onChangeText={setSearchQuery}
             style={[styles.searchbar, { backgroundColor: theme.colors.surfaceVariant }]}
-            inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
+            inputStyle={{ fontSize: 14, minHeight: 0, textAlign: isRTL ? 'right' : 'left' }}
             autoFocus
           />
         </View>

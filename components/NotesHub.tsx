@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+﻿import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -417,7 +417,7 @@ export default function NotesHub({ visible, onClose }: Props) {
               onIconPress={() => { setPage(1); setAppliedSearch(searchInput.trim()); }}
               onClearIconPress={() => { setSearchInput(''); setAppliedSearch(''); setPage(1); }}
               style={[styles.searchbar, { backgroundColor: theme.colors.surface }]}
-              inputStyle={{ fontSize: 14, textAlign: isRTL ? 'right' : 'left' }}
+              inputStyle={{ fontSize: 14, minHeight: 0, textAlign: isRTL ? 'right' : 'left' }}
             />
           </View>
 
