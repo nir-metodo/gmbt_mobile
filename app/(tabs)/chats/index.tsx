@@ -949,9 +949,7 @@ export default function ChatsListScreen() {
   // exactly the key set the web's normalizeFilters() produces — so what is saved here is what the web
   // reads. Mobile-only `activityFilter` is translated to the web's activeWithinDays / inactiveDays.
   const buildCurrentFilters = useCallback((): Record<string, any> => {
-    const ownerId = ownerFilter !== 'all'
-      ? (chats.find((c) => c.ownerName === ownerFilter)?.ownerId || ownerFilter)
-      : '';
+    const ownerId = ownerFilter !== 'all' ? ownerFilter : '';
     const base = viewFilters || normalizeWebFilters({});
     return toPersistableWebFilters(normalizeWebFilters({
       ...base,
@@ -1553,13 +1551,39 @@ export default function ChatsListScreen() {
     return ['all', ...Array.from(cats)];
   }, [chats]);
 
-  const owners = useMemo(() => {
-    const ownerSet = new Set<string>();
-    chats.forEach((c) => {
-      if (c.ownerName) ownerSet.add(c.ownerName);
-    });
-    return ['all', ...Array.from(ownerSet)];
-  }, [chats]);
+  // Owner filter = the organization's USERS that own at least one chat (by ownerId, shown under the user's current name).
+  // It used to list every distinct `ownerName` string stored on the chats, so one person appeared several times
+  // ("Nir" / "Nir Segas" / "ניר סגס", "Gambot Ai" / "Gambot AI") plus users that no longer exist.
+  const [orgOwnerUsers, setOrgOwnerUsers] = useState<any[]>([]);
+  useEffect(() => {
+    if (!user?.organization) return;
+    let cancelled = false;
+    usersApi.getAll(user.organization)
+      .then((u) => { if (!cancelled) setOrgOwnerUsers(Array.isArray(u) ? u : []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [user?.organization]);
+
+  const owners = useMemo<{ id: string; label: string }[]>(() => {
+    const ownerIds = new Set<string>();
+    chats.forEach((c) => { if (c.ownerId) ownerIds.add(c.ownerId); });
+    const byId = new Map<string, string>();
+    if (orgOwnerUsers.length > 0) {
+      orgOwnerUsers.forEach((u: any) => {
+        const id = u.uID || u.userId || u.id || '';
+        if (id && ownerIds.has(id) && !byId.has(id)) byId.set(id, u.fullname || u.userName || u.name || id);
+      });
+    } else {
+      // users list not loaded (offline): fall back to one entry per ownerId
+      chats.forEach((c) => { if (c.ownerId && c.ownerName && !byId.has(c.ownerId)) byId.set(c.ownerId, c.ownerName); });
+    }
+    const list = Array.from(byId, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label));
+    return [{ id: 'all', label: '' }, ...list];
+  }, [chats, orgOwnerUsers]);
+  const ownerFilterLabel = useMemo(
+    () => owners.find((o) => o.id === ownerFilter)?.label || ownerFilter,
+    [owners, ownerFilter],
+  );
 
   const CHATS_PAGE_SIZE = 50;
   const [displayLimit, setDisplayLimit] = useState(CHATS_PAGE_SIZE);
@@ -1619,7 +1643,7 @@ export default function ChatsListScreen() {
     }
 
     if (ownerFilter !== 'all') {
-      result = result.filter((c) => c.ownerName === ownerFilter);
+      result = result.filter((c) => c.ownerId === ownerFilter);
     }
 
     if (groupFilter.length > 0) {
@@ -2995,16 +3019,16 @@ export default function ChatsListScreen() {
                     ownerFilter !== 'all' && { color: theme.colors.primary, fontWeight: '600' },
                   ]}
                 >
-                  {ownerFilter === 'all' ? t('chats.owner') : ownerFilter}
+                  {ownerFilter === 'all' ? t('chats.owner') : ownerFilterLabel}
                 </Chip>
               }
             >
               {owners.map((o) => (
                 <Menu.Item
-                  key={o}
-                  title={o === 'all' ? t('common.all') : o}
-                  onPress={() => { setOwnerFilter(o); setOwnerMenuVisible(false); }}
-                  leadingIcon={ownerFilter === o ? 'check' : undefined}
+                  key={o.id}
+                  title={o.id === 'all' ? t('common.all') : o.label}
+                  onPress={() => { setOwnerFilter(o.id); setOwnerMenuVisible(false); }}
+                  leadingIcon={ownerFilter === o.id ? 'check' : undefined}
                 />
               ))}
             </Menu>
@@ -3441,6 +3465,121 @@ export default function ChatsListScreen() {
           </View>
         </Modal>
 
+        {/* Views Settings — reorder, hide/show, and delete (personal only) */}
+        {/* NOTE: react-native-paper's Modal is not a portal - modals stack by JSX order (later = on top). This one must stay
+            ABOVE the Save/Rename/Per-tab modals in the file so the ⋮ menu and rename dialog opened from here show on top of it. */}
+        <Modal
+          visible={showViewsSettings}
+          onDismiss={() => setShowViewsSettings(false)}
+          contentContainerStyle={[{ backgroundColor: theme.colors.surface, flex: 1, margin: 0, padding: 20, borderRadius: 0 }]}
+        >
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 4, fontWeight: '700', textAlign }}>
+            {t('sidebar.manageViews', 'ניהול תצוגות')}
+          </Text>
+          <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, fontSize: 12, textAlign }}>
+            {vt('שנה סדר, הסתר או הצג תצוגות. ⋮ לפעולות נוספות (שינוי שם, עדכון, ברירת מחדל). מחיקה — רק ליוצר התצוגה או למנהל.', 'Reorder, hide or show views. ⋮ for more actions (rename, update, default). Only the creator or an admin can delete.')}
+          </Text>
+          <ScrollView style={{ flex: 1 }}>
+            {orderedViewTabs.map((tab, idx) => {
+              const hidden = isViewHidden(tab.id);
+              return (
+                <View
+                  key={tab.id}
+                  style={[
+                    { flexDirection, alignItems: 'center', paddingVertical: 8, gap: 4 },
+                    idx > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.outline },
+                  ]}
+                >
+                  <View style={{ flexDirection: 'column' }}>
+                    <IconButton
+                      icon="chevron-up"
+                      size={20}
+                      disabled={idx === 0}
+                      onPress={() => moveViewTab(tab.id, -1)}
+                      style={{ margin: 0, height: 22 }}
+                    />
+                    <IconButton
+                      icon="chevron-down"
+                      size={20}
+                      disabled={idx === orderedViewTabs.length - 1}
+                      onPress={() => moveViewTab(tab.id, 1)}
+                      style={{ margin: 0, height: 22 }}
+                    />
+                  </View>
+                  {/* Tapping the name opens the same actions menu as the ⋮ button */}
+                  <Pressable style={{ flex: 1, paddingVertical: 10 }} onPress={() => setViewMenuTab(tab)}>
+                    <Text
+                      style={{
+                        color: hidden ? theme.colors.onSurfaceVariant : theme.colors.onSurface,
+                        textAlign,
+                        opacity: hidden ? 0.5 : 1,
+                      }}
+                      numberOfLines={2}
+                    >
+                      {(tab.shared ? '👥 ' : '') + tab.label}
+                      {tab.kind === 'builtin' || tab.shared
+                        ? `  ·  ${t('sidebar.organizationView', 'ארגון')}`
+                        : ''}
+                    </Text>
+                  </Pressable>
+                  <IconButton
+                    icon={hidden ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    iconColor={hidden ? theme.colors.onSurfaceVariant : theme.colors.primary}
+                    onPress={() => toggleHideView(tab.id)}
+                    style={{ margin: 0 }}
+                  />
+                  <IconButton
+                    icon="dots-vertical"
+                    size={20}
+                    iconColor={theme.colors.onSurfaceVariant}
+                    onPress={() => setViewMenuTab(tab)}
+                    style={{ margin: 0 }}
+                  />
+                  {tab.deletable && (
+                    <IconButton
+                      icon="trash-can-outline"
+                      size={20}
+                      iconColor={theme.colors.error}
+                      onPress={() => deleteSavedView(tab.id)}
+                      style={{ margin: 0 }}
+                    />
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+          {/* Personal override indicator + reset to the org default order */}
+          {hasPersonalOrder && (
+            <View style={{ flexDirection, alignItems: 'center', marginTop: 8, gap: 6 }}>
+              <MaterialCommunityIcons name="account-cog-outline" size={16} color={theme.colors.onSurfaceVariant} />
+              <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, flex: 1, textAlign }}>
+                {t('sidebar.personalOrderActive', 'הסדר שלך גובר על סדר הארגון')}
+              </Text>
+              <Button mode="text" compact onPress={resetToOrgViewOrder}>
+                {t('sidebar.resetToOrgOrder', 'אפס לסדר הארגון')}
+              </Button>
+            </View>
+          )}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, gap: 8 }}>
+            {userIsAdmin ? (
+              <Button
+                mode="outlined"
+                icon="office-building-outline"
+                loading={savingOrgOrder}
+                disabled={savingOrgOrder}
+                onPress={saveOrgViewOrder}
+                style={{ flex: 1 }}
+              >
+                {t('sidebar.saveForOrg', 'שמור לארגון')}
+              </Button>
+            ) : <View style={{ flex: 1 }} />}
+            <Button mode="contained" onPress={() => setShowViewsSettings(false)}>
+              {t('common.done', 'סיום')}
+            </Button>
+          </View>
+        </Modal>
+
         {/* Save View Modal */}
         <Modal
           visible={showSaveViewModal}
@@ -3631,117 +3770,6 @@ export default function ChatsListScreen() {
               </>
             );
           })()}
-        </Modal>
-
-        {/* Views Settings — reorder, hide/show, and delete (personal only) */}
-        <Modal
-          visible={showViewsSettings}
-          onDismiss={() => setShowViewsSettings(false)}
-          contentContainerStyle={[styles.newChatModal, { backgroundColor: theme.colors.surface, maxHeight: '80%' }]}
-        >
-          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 4, fontWeight: '700', textAlign }}>
-            {t('sidebar.manageViews', 'ניהול תצוגות')}
-          </Text>
-          <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 12, fontSize: 12, textAlign }}>
-            {vt('שנה סדר, הסתר או הצג תצוגות. ⋮ לפעולות נוספות (שינוי שם, עדכון, ברירת מחדל). מחיקה — רק ליוצר התצוגה או למנהל.', 'Reorder, hide or show views. ⋮ for more actions (rename, update, default). Only the creator or an admin can delete.')}
-          </Text>
-          <ScrollView style={{ maxHeight: 420 }}>
-            {orderedViewTabs.map((tab, idx) => {
-              const hidden = isViewHidden(tab.id);
-              return (
-                <View
-                  key={tab.id}
-                  style={[
-                    { flexDirection, alignItems: 'center', paddingVertical: 8, gap: 4 },
-                    idx > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.outline },
-                  ]}
-                >
-                  <View style={{ flexDirection: 'column' }}>
-                    <IconButton
-                      icon="chevron-up"
-                      size={20}
-                      disabled={idx === 0}
-                      onPress={() => moveViewTab(tab.id, -1)}
-                      style={{ margin: 0, height: 22 }}
-                    />
-                    <IconButton
-                      icon="chevron-down"
-                      size={20}
-                      disabled={idx === orderedViewTabs.length - 1}
-                      onPress={() => moveViewTab(tab.id, 1)}
-                      style={{ margin: 0, height: 22 }}
-                    />
-                  </View>
-                  <Text
-                    style={{
-                      flex: 1,
-                      color: hidden ? theme.colors.onSurfaceVariant : theme.colors.onSurface,
-                      textAlign,
-                      opacity: hidden ? 0.5 : 1,
-                    }}
-                    numberOfLines={1}
-                  >
-                    {(tab.shared ? '👥 ' : '') + tab.label}
-                    {tab.kind === 'builtin' || tab.shared
-                      ? `  ·  ${t('sidebar.organizationView', 'ארגון')}`
-                      : ''}
-                  </Text>
-                  <IconButton
-                    icon={hidden ? 'eye-off-outline' : 'eye-outline'}
-                    size={20}
-                    iconColor={hidden ? theme.colors.onSurfaceVariant : theme.colors.primary}
-                    onPress={() => toggleHideView(tab.id)}
-                    style={{ margin: 0 }}
-                  />
-                  <IconButton
-                    icon="dots-vertical"
-                    size={20}
-                    iconColor={theme.colors.onSurfaceVariant}
-                    onPress={() => setViewMenuTab(tab)}
-                    style={{ margin: 0 }}
-                  />
-                  {tab.deletable && (
-                    <IconButton
-                      icon="trash-can-outline"
-                      size={20}
-                      iconColor={theme.colors.error}
-                      onPress={() => deleteSavedView(tab.id)}
-                      style={{ margin: 0 }}
-                    />
-                  )}
-                </View>
-              );
-            })}
-          </ScrollView>
-          {/* Personal override indicator + reset to the org default order */}
-          {hasPersonalOrder && (
-            <View style={{ flexDirection, alignItems: 'center', marginTop: 8, gap: 6 }}>
-              <MaterialCommunityIcons name="account-cog-outline" size={16} color={theme.colors.onSurfaceVariant} />
-              <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 12, flex: 1, textAlign }}>
-                {t('sidebar.personalOrderActive', 'הסדר שלך גובר על סדר הארגון')}
-              </Text>
-              <Button mode="text" compact onPress={resetToOrgViewOrder}>
-                {t('sidebar.resetToOrgOrder', 'אפס לסדר הארגון')}
-              </Button>
-            </View>
-          )}
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, gap: 8 }}>
-            {userIsAdmin ? (
-              <Button
-                mode="outlined"
-                icon="office-building-outline"
-                loading={savingOrgOrder}
-                disabled={savingOrgOrder}
-                onPress={saveOrgViewOrder}
-                style={{ flex: 1 }}
-              >
-                {t('sidebar.saveForOrg', 'שמור לארגון')}
-              </Button>
-            ) : <View style={{ flex: 1 }} />}
-            <Button mode="contained" onPress={() => setShowViewsSettings(false)}>
-              {t('common.done', 'סיום')}
-            </Button>
-          </View>
         </Modal>
 
         {/* Bulk: Assign Owner */}
