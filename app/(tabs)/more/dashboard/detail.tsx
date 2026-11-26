@@ -372,7 +372,8 @@ export default function DashboardDetailScreen() {
             <SectionCard title={`${t('dashboard.newContacts', 'אנשי קשר חדשים')}${d.trendMonthly ? t('dashboard.perMonth', ' לפי חודש') : t('dashboard.perDay', ' לפי יום')}${isRanged ? '' : t('dashboard.last30', ' (30 ימים אחרונים)')}`}>
               <MiniBars
                 data={trend.map((x: any) => ({
-                  label: x.label || (x.date ? `${new Date(x.date).getDate()}/${new Date(x.date).getMonth() + 1}` : String(x.month || '').slice(0, 3)),
+                  // The server sends `key` = "yyyy-MM-dd" (per day) or "yyyy-MM" (per month).
+                  label: x.label || (x.key ? (d.trendMonthly ? `${x.key.slice(5, 7)}/${x.key.slice(2, 4)}` : `${x.key.slice(8, 10)}/${x.key.slice(5, 7)}`) : ''),
                   a: x.count || 0,
                 }))}
                 colorA="#2563eb"

@@ -55,6 +55,7 @@ export const authApi = {
       wabaNumber: userData.wabaNumber || null,
       wabaNumbers: userData.wabaNumbers || undefined,
       assignedWhatsAppNumbers: userData.assignedWhatsAppNumbers || undefined,
+      allowedChannels: userData.allowedChannels || undefined,
       timeZone: userData?.timeZone || null,
       phoneNumber: userData?.PhoneNumber || userData?.phoneNumber || null,
       uID: userData?.uID || null,

@@ -30,6 +30,11 @@ export const ENDPOINTS = {
 
   // Messages / Chats
   GET_MESSAGES: '/api/Webhooks/GetMessagesByPhoneNumber',
+  // Multi-channel chats (Facebook Messenger / Instagram / website chatbot)
+  META_SOCIAL_CHANNELS: '/api/meta-social/channels',
+  META_SOCIAL_SEND: '/api/meta-social/send',
+  WEBCHAT_CHANNELS: '/api/webchat/channels',
+  WEBCHAT_SEND: '/api/webchat/send',
   SEARCH_MESSAGES: '/api/Webhooks/SearchMessages',
   GET_STARRED_MESSAGES: '/api/Webhooks/GetStarredMessages',
   CREATE_OUTBOUND_MESSAGE: '/api/Webhooks/CreateOutboundMessage',

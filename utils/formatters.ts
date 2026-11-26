@@ -1,4 +1,5 @@
 import { format, formatDistanceToNow, isToday, isYesterday, parseISO } from 'date-fns';
+import { channelLabel, channelOfKey, isKeyedChat } from './channels';
 
 /**
  * Safely adds alpha transparency to any color string (hex OR rgb/rgba).
@@ -28,6 +29,8 @@ export function formatPhoneNumber(phone: string): string {
 
 export function formatPhoneNumberRaw(phone: string): string {
   if (!phone) return '';
+  // Messenger / Instagram / website chats are keyed (not a phone number) - show the channel instead of mangled digits.
+  if (isKeyedChat(phone)) return channelLabel(channelOfKey(phone));
   // Same display format as the web app: "+972 50 527 8310" (landline: "+972 3 123 4567"), whatever the stored form.
   let digits = phone.replace(/\D/g, '');
   if (!digits) return phone;

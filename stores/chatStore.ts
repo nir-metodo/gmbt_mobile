@@ -5,6 +5,7 @@ import { chatsApi } from '../services/api/chats';
 import { contactsApi } from '../services/api/contacts';
 import { queryPage, upsertMany } from '../services/db/repository';
 import { MESSAGES_TABLE, makeMessageMapper } from '../services/db/messagesTable';
+import { chatKeyNorm, isKeyedChat } from '../utils/channels';
 
 const CHATS_CACHE_KEY = 'gambot_chats_cache';
 const PAGE_SIZE = 50;
@@ -114,7 +115,7 @@ const messageIdSet = new Set<string>();
 const recentSendSignatures = new Map<string, number>();
 const DUPLICATE_SEND_WINDOW_MS = 1500;
 function isDuplicateSend(to: string, text: string): boolean {
-  const sig = `${(to || '').replace(/\D/g, '')}|${(text || '').trim()}`;
+  const sig = `${chatKeyNorm(to)}|${(text || '').trim()}`;
   const now = Date.now();
   // Opportunistic cleanup so the map can't grow unbounded.
   for (const [k, t] of recentSendSignatures) {
@@ -260,10 +261,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // renders what's visible, so holding the array in memory is cheap.
       const contacts = await contactsApi.getAll(organization, { userId, dataVisibility, pageSize: 9999 });
       const chatList: Chat[] = (contacts || [])
-        .filter((c: any) => c.phoneNumber || c.PhoneNumber)
+        .filter((c: any) => c.phoneNumber || c.PhoneNumber || isKeyedChat(c.id))
         .map((c: any) => ({
           id: c.id || c.Id || c.phoneNumber || c.PhoneNumber,
-          phoneNumber: c.phoneNumber || c.PhoneNumber || '',
+          phoneNumber: c.phoneNumber || c.PhoneNumber || (isKeyedChat(c.id) ? c.id : ''),
           contactName: c.name || c.Name || c.phoneNumber || c.PhoneNumber || '',
           lastMessage: c.lastMessage || c.LastMessage || '',
           lastMessageTime: c.lastMessageTime || c.LastMessageTime || c.time || c.modifiedOn || '',
@@ -315,11 +316,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
       const { addOrUpdateChat } = get();
       (contacts || [])
-        .filter((c: any) => c.phoneNumber || c.PhoneNumber)
+        .filter((c: any) => c.phoneNumber || c.PhoneNumber || isKeyedChat(c.id))
         .forEach((c: any) => {
           addOrUpdateChat({
             id: c.id || c.Id || c.phoneNumber || c.PhoneNumber,
-            phoneNumber: c.phoneNumber || c.PhoneNumber || '',
+            phoneNumber: c.phoneNumber || c.PhoneNumber || (isKeyedChat(c.id) ? c.id : ''),
             contactName: c.name || c.Name || c.phoneNumber || c.PhoneNumber || '',
             lastMessage: c.lastMessage || c.LastMessage || '',
             lastMessageTime: c.lastMessageTime || c.LastMessageTime || c.time || c.modifiedOn || '',
@@ -365,8 +366,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addOrUpdateChat: (chat) => {
     set((state) => {
       // Normalize phone numbers before comparing to handle format differences (0505... vs 972505...)
-      const phoneNorm = (chat.phoneNumber || '').replace(/\D/g, '');
-      const index = state.chats.findIndex((c) => (c.phoneNumber || '').replace(/\D/g, '') === phoneNorm);
+      const phoneNorm = chatKeyNorm(chat.phoneNumber);
+      const index = state.chats.findIndex((c) => chatKeyNorm(c.phoneNumber) === phoneNorm);
       let updatedChat: Chat;
       let newChats: Chat[];
 
@@ -694,8 +695,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Optimistically reflect the sent message in the chats list so it shows immediately when the
       // user navigates back — without waiting for the WS echo / 60s polling. Preserves the existing
       // contact name (falls back to the phone number for a brand-new conversation).
-      const toNorm = (to || '').replace(/\D/g, '');
-      const existingChat = get().chats.find((c) => (c.phoneNumber || '').replace(/\D/g, '') === toNorm);
+      const toNorm = chatKeyNorm(to);
+      const existingChat = get().chats.find((c) => chatKeyNorm(c.phoneNumber) === toNorm);
       get().addOrUpdateChat({
         ...(existingChat || {}),
         phoneNumber: to,
@@ -801,10 +802,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   markAsRead: async (organization, phoneNumber, userId, userName) => {
     // Normalize digits so 050… vs 972… formats still match the list row (otherwise the
     // unread badge wasn't clearing when returning from a chat opened via a different format).
-    const target = (phoneNumber || '').replace(/\D/g, '');
+    const target = chatKeyNorm(phoneNumber);
     const matches = (p?: string) => {
-      const n = (p || '').replace(/\D/g, '');
+      const n = chatKeyNorm(p);
       if (!n || !target) return false;
+      if (isKeyedChat(target) || isKeyedChat(n)) return n === target; // Messenger / Instagram / website keys: exact match only
       const core = (x: string) => (x.startsWith('972') ? x.slice(3) : x.replace(/^0/, ''));
       return n === target || core(n) === core(target);
     };
@@ -869,12 +871,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!message.messageId) return;
     const { currentMessages, allMessages, currentPhoneNumber } = get();
     if (!currentPhoneNumber) return;
-    const normalizePhone = (p: string) => p.replace(/\D/g, '');
+    const normalizePhone = (p: string) => chatKeyNorm(p);
     const samePhone = (a: string, b: string) => {
       const na = normalizePhone(a);
       const nb = normalizePhone(b);
       if (!na || !nb) return false;
       if (na === nb) return true;
+      if (isKeyedChat(na) || isKeyedChat(nb)) return false;
       const core = (n: string) => (n.startsWith('972') ? n.slice(3) : n.replace(/^0/, ''));
       return core(na) === core(nb);
     };

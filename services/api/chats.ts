@@ -1,6 +1,7 @@
 import axiosInstance from './axiosInstance';
 import { ENDPOINTS } from '../../constants/api';
 import type { Message, Template, QuickMessage } from '../../types';
+import { isKeyedChat } from '../../utils/channels';
 
 export const chatsApi = {
   async getMessages(
@@ -29,6 +30,23 @@ export const chatsApi = {
     senderEmail?: string,
     fromNumberId?: string,
   ): Promise<any> {
+    // Facebook Messenger / Instagram (ms_*) and website chatbot (wc_*) chats are keyed, not phone numbers:
+    // they go through their own send endpoints (same contract as the web app).
+    if (isKeyedChat(to)) {
+      const resp = await axiosInstance.post(to.startsWith('wc_') ? ENDPOINTS.WEBCHAT_SEND : ENDPOINTS.META_SOCIAL_SEND, {
+        organization,
+        chatKey: to,
+        text: message,
+        sentByName: senderName || '',
+        sentById: userId || '',
+      });
+      if (!resp.data?.ok) {
+        const err = String(resp.data?.error || '').trim();
+        throw new Error(err === 'channel_not_allowed' ? 'You are not allowed to use this channel' : err || 'Failed to send message');
+      }
+      return resp.data;
+    }
+
     const payload = {
       text: message,
       from: wabaNumber || '',

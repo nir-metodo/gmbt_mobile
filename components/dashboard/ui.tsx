@@ -38,7 +38,7 @@ export function PeriodChips({
   const theme = useAppTheme();
   const dir = useRowDirection();
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.chipsRow, { flexDirection: dir }]}>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll} contentContainerStyle={[styles.chipsRow, { flexDirection: dir }]}>
       {keys.map((k) => {
         const active = k === value;
         return (
@@ -52,7 +52,7 @@ export function PeriodChips({
               { backgroundColor: active ? BRAND : theme.colors.surface, borderColor: active ? BRAND : theme.colors.outlineVariant || '#cbd5e1' },
             ]}
           >
-            <Text style={{ color: active ? '#fff' : theme.colors.onSurface, fontWeight: active ? '700' : '500', fontSize: 13 }}>
+            <Text numberOfLines={1} style={[styles.chipText, { color: active ? '#fff' : theme.colors.onSurface }]}>
               {t(`dashboard.period.${k}`, PERIOD_LABEL_FALLBACK[k])}
             </Text>
           </Pressable>
@@ -75,7 +75,7 @@ export function ChipRow<T extends string>({
   const theme = useAppTheme();
   const dir = useRowDirection();
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.chipsRow, { flexDirection: dir }]}>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll} contentContainerStyle={[styles.chipsRow, { flexDirection: dir }]}>
       {options.map((o) => {
         const active = o.key === value;
         return (
@@ -88,7 +88,7 @@ export function ChipRow<T extends string>({
             ]}
           >
             {o.icon ? <MaterialCommunityIcons name={o.icon as any} size={14} color={active ? '#fff' : theme.colors.onSurfaceVariant} /> : null}
-            <Text style={{ color: active ? '#fff' : theme.colors.onSurface, fontWeight: active ? '700' : '500', fontSize: 13 }}>{o.label}</Text>
+            <Text numberOfLines={1} style={[styles.chipText, { color: active ? '#fff' : theme.colors.onSurface }]}>{o.label}</Text>
           </Pressable>
         );
       })}
@@ -183,8 +183,13 @@ export function ProgressBar({ pct, color = BRAND }: { pct: number; color?: strin
 }
 
 const styles = StyleSheet.create({
-  chipsRow: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-  chip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 18, borderWidth: 1 },
+  // The horizontal ScrollView must never flex-shrink: inside the screen's column it was squeezed to a few
+  // pixels of height and clipped the chip labels. Fixed height + a single font weight keep every chip the
+  // same size whether selected or not.
+  chipsScroll: { flexGrow: 0, flexShrink: 0 },
+  chipsRow: { paddingHorizontal: 12, paddingVertical: 6, gap: 8, alignItems: 'center' },
+  chip: { height: 34, paddingHorizontal: 14, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  chipText: { fontSize: 13, lineHeight: 18, fontWeight: '600', includeFontPadding: false },
   tile: { padding: 12, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, gap: 2 },
   card: { borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, padding: 14, marginHorizontal: 12, marginBottom: 12 },
 });

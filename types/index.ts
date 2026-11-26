@@ -23,6 +23,8 @@ export interface User {
   wabaNumber: string | null;
   wabaNumbers?: WabaNumberInfo[];
   assignedWhatsAppNumbers?: string[];
+  /** Chat channels the user may use (whatsapp | messenger | instagram | website). Empty/absent = all. */
+  allowedChannels?: string[];
   timeZone: string | null;
   phoneNumber: string | null;
   uID: string | null;

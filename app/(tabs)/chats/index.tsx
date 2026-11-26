@@ -41,6 +41,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../../stores/chatStore';
+import { chatKeyNorm, channelOfKey, channelLabel, isChannelAllowed, type ChatChannel } from '../../../utils/channels';
 import { useAuthStore } from '../../../stores/authStore';
 import { useAppTheme } from '../../../hooks/useAppTheme';
 import { useRTL } from '../../../hooks/useRTL';
@@ -496,6 +497,10 @@ export default function ChatsListScreen() {
   const [wabaNumbersList, setWabaNumbersList] = useState<WabaNumberInfo[]>([]);
   const [numberFilter, setNumberFilter] = useState<string>('');
   const [numberMenuVisible, setNumberMenuVisible] = useState(false);
+  // Multi-channel chats: WhatsApp + (when switched on in Settings > Connections) Facebook / Instagram / website chatbot.
+  const [channelFilter, setChannelFilter] = useState<'' | ChatChannel>('');
+  const [channelMenuVisible, setChannelMenuVisible] = useState(false);
+  const [orgChannels, setOrgChannels] = useState({ messenger: false, instagram: false, website: false });
   const [numberSearchQuery, setNumberSearchQuery] = useState('');
 
   // Time filter (סינון לפי זמן) — mirrors the web Sidebar "filter by time" section.
@@ -638,10 +643,14 @@ export default function ChatsListScreen() {
     loadOrgConfig();
   }, [loadOrgConfig]);
 
+  // Pulls my personal view prefs (order / hidden) from the server; assigned further below, once the
+  // persist helpers exist.
+  const pullPersonalPrefsRef = useRef<() => Promise<void>>(async () => {});
+
   // Refetch every view definition (personal + shared + org config). Throttled unless forced.
   const refreshViews = useCallback((force = false) => {
     if (!force && Date.now() - lastViewsFetchRef.current < 10000) return Promise.resolve();
-    return Promise.allSettled([loadSavedViews(), loadOrgConfig()]);
+    return Promise.allSettled([loadSavedViews(), loadOrgConfig(), pullPersonalPrefsRef.current()]);
   }, [loadSavedViews, loadOrgConfig]);
 
   // Always holds the latest fully-ordered tab id list (built-ins + saved). Lets moveViewTab /
@@ -668,6 +677,85 @@ export default function ChatsListScreen() {
     setHiddenViewIds(next);
     AsyncStorage.setItem(hiddenViewsKey, JSON.stringify(next)).catch(() => {});
   }, [hiddenViewsKey]);
+
+  // ── My view prefs (order / hidden tabs / "I reordered" flag) follow the USER, not the device ──
+  // Stored as one personal UserViews doc ('sidebarPersonalPrefs', same as the web) so the order I set
+  // on the web shows up here and vice versa. AsyncStorage stays as the fast local cache.
+  const prefsDocIdRef = useRef('');
+  const prefsSyncedRef = useRef('');
+  const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefsChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [prefsReady, setPrefsReady] = useState(false);
+  const serializePrefs = (order: string[], hidden: string[], personal: boolean) =>
+    JSON.stringify({ order, hidden, personal: !!personal });
+
+  const pullPersonalPrefs = useCallback(async () => {
+    if (!org || !viewsUserId || !viewPrefsLoaded) return;
+    if (prefsTimerRef.current) return; // unsaved local edits: don't overwrite them
+    try {
+      const res = await axiosInstance.post(ENDPOINTS.GET_USER_VIEWS, { organization: org, userId: viewsUserId, viewType: 'sidebarPersonalPrefs' });
+      if (orgRef.current !== org) return;
+      const views: any[] = res?.data?.Data?.views || [];
+      const doc = views.find((v) => (v.UserId || v.userId) === viewsUserId);
+      if (!doc) return;
+      prefsDocIdRef.current = doc.id;
+      const vd = doc.ViewData || doc.viewData || {};
+      const order: string[] = Array.isArray(vd.order) ? vd.order : [];
+      const hidden: string[] = Array.isArray(vd.hidden) ? vd.hidden : [];
+      const personal = vd.personal === true;
+      const ser = serializePrefs(order, hidden, personal);
+      if (ser === prefsSyncedRef.current) return;
+      prefsSyncedRef.current = ser; // set first so the push effect sees no diff
+      persistViewOrder(order);
+      persistHiddenViews(hidden);
+      setHasPersonalOrder(personal);
+      if (personal) AsyncStorage.setItem(personalOrderKey, 'true').catch(() => {});
+      else AsyncStorage.removeItem(personalOrderKey).catch(() => {});
+    } catch { /* keep local prefs */ }
+  }, [org, viewsUserId, viewPrefsLoaded, persistViewOrder, persistHiddenViews, personalOrderKey]);
+  pullPersonalPrefsRef.current = pullPersonalPrefs;
+
+  // First pull per org (after the local cache is loaded), then allow pushing local edits.
+  useEffect(() => {
+    prefsDocIdRef.current = '';
+    prefsSyncedRef.current = '';
+    setPrefsReady(false);
+    if (!org || !viewsUserId || !viewPrefsLoaded) return;
+    let cancelled = false;
+    pullPersonalPrefsRef.current().finally(() => { if (!cancelled) setPrefsReady(true); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [org, viewsUserId, viewPrefsLoaded]);
+
+  // Push local changes (debounced, serialized so a doc is never created twice).
+  useEffect(() => {
+    if (!prefsReady || !org || !viewsUserId) return;
+    const ser = serializePrefs(viewOrder, hiddenViewIds, hasPersonalOrder);
+    if (ser === prefsSyncedRef.current) return;
+    if (!prefsDocIdRef.current && viewOrder.length === 0 && hiddenViewIds.length === 0 && !hasPersonalOrder) return;
+    if (prefsTimerRef.current) clearTimeout(prefsTimerRef.current);
+    prefsTimerRef.current = setTimeout(() => {
+      prefsTimerRef.current = null;
+      prefsChainRef.current = prefsChainRef.current.then(async () => {
+        try {
+          const res = await axiosInstance.post(ENDPOINTS.SAVE_USER_VIEW, {
+            organization: org,
+            userId: viewsUserId,
+            viewType: 'sidebarPersonalPrefs',
+            name: 'personalPrefs',
+            isPinned: false,
+            viewData: { order: viewOrder, hidden: hiddenViewIds, personal: !!hasPersonalOrder },
+            visibility: 'personal',
+            ...(prefsDocIdRef.current ? { existingId: prefsDocIdRef.current } : {}),
+          });
+          if (res?.data?.Success && res.data?.Data?.id) {
+            prefsDocIdRef.current = res.data.Data.id;
+            prefsSyncedRef.current = ser;
+          }
+        } catch { /* retried on the next change */ }
+      });
+    }, 1500);
+  }, [prefsReady, org, viewsUserId, viewOrder, hiddenViewIds, hasPersonalOrder]);
 
   // Swap a tab one slot up (-1) or down (+1). Mirrors the web ▲/▼ arrows. Reordering creates a
   // PERSONAL override that wins over the org default order until the user resets it. We reorder
@@ -772,7 +860,7 @@ export default function ChatsListScreen() {
             stageArr.forEach((s: any) => { stageMap[s.id || s.Id] = s; });
             const map: Record<string, { stageName: string; stageColor: string; stageId: string }> = {};
             leads.forEach((lead: any) => {
-              const phone = (lead.contactPhone || lead.phoneNumber || '').replace(/\D/g, '');
+              const phone = chatKeyNorm(lead.contactPhone || lead.phoneNumber || '');
               if (phone && lead.stageId) {
                 const stageInfo = stageMap[lead.stageId];
                 const name = stageInfo?.name || stageInfo?.Name || lead.stageName;
@@ -822,7 +910,7 @@ export default function ChatsListScreen() {
             if (!Array.isArray(cases)) return;
             const map: Record<string, { stageName: string; stageColor: string; stageId: string }[]> = {};
             cases.forEach((c: any) => {
-              const phone = (c.contactPhone || c.phoneNumber || '').replace(/\D/g, '');
+              const phone = chatKeyNorm(c.contactPhone || c.phoneNumber || '');
               if (phone && c.stageId) {
                 const stageInfo = stageMap[c.stageId];
                 const name = stageInfo?.name || stageInfo?.Name || c.stageName;
@@ -839,6 +927,36 @@ export default function ChatsListScreen() {
     });
     return () => task.cancel();
   }, [user?.organization]);
+
+  // Which extra channels are switched on for the org. Gambot owner only for now (same gate as the web app, Meta App Review).
+  const canUseMetaSocial = ((user as any)?.email || (user as any)?.Email || '').toLowerCase() === 'info@gambot.co.il';
+  useEffect(() => {
+    if (!canUseMetaSocial || !user?.organization) return;
+    let cancelled = false;
+    Promise.all([
+      axiosInstance.get(ENDPOINTS.META_SOCIAL_CHANNELS, { params: { organization: user.organization } }).catch(() => null),
+      axiosInstance.get(ENDPOINTS.WEBCHAT_CHANNELS, { params: { organization: user.organization } }).catch(() => null),
+    ]).then(([r, w]) => {
+      if (cancelled) return;
+      const next = {
+        messenger: !!(r?.data?.ok && r.data.messenger),
+        instagram: !!(r?.data?.ok && r.data.instagram),
+        website: !!(w?.data?.ok && w.data.website),
+      };
+      setOrgChannels(next);
+      setChannelFilter((prev) => (prev && prev !== 'whatsapp' && !next[prev as 'messenger' | 'instagram' | 'website'] ? '' : prev));
+    });
+    return () => { cancelled = true; };
+  }, [canUseMetaSocial, user?.organization]);
+
+  // Channels this user can actually see = configured for the org AND permitted for the user (allowedChannels empty = all).
+  const availableChannels = useMemo(() => {
+    const list: ChatChannel[] = ['whatsapp'];
+    if (orgChannels.messenger) list.push('messenger');
+    if (orgChannels.instagram) list.push('instagram');
+    if (orgChannels.website) list.push('website');
+    return list.filter((ch) => isChannelAllowed(user?.allowedChannels, ch));
+  }, [orgChannels, user?.allowedChannels]);
 
   // Fetch WhatsApp numbers for the organization
   useEffect(() => {
@@ -900,6 +1018,7 @@ export default function ChatsListScreen() {
     setLeadStageFilter([]);
     setCaseStageFilter([]);
     setNumberFilter('');
+    setChannelFilter('');
     setActivityFilter('');
     setSearchInput('');
     setDebouncedSearch('');
@@ -1591,12 +1710,22 @@ export default function ChatsListScreen() {
   const filteredChats = useMemo(() => {
     let result = chats;
 
+    // Channel scoping: a Messenger / Instagram / website chat shows only when its channel is switched on for the org
+    // and permitted for this user; the channel chip then narrows the list to one channel.
+    result = result.filter((c) => {
+      const ch = channelOfKey(c.phoneNumber, (c as any).channel);
+      if (ch !== 'whatsapp' && !availableChannels.includes(ch)) return false;
+      if (ch === 'whatsapp' && !isChannelAllowed(user?.allowedChannels, 'whatsapp')) return false;
+      return !channelFilter || channelFilter === ch;
+    });
+
     // Auto-filter by assignedWhatsAppNumbers when DataVisibility is 'byPhone' or user has assigned numbers
     const assignedNums = user?.assignedWhatsAppNumbers || [];
     if (assignedNums.length > 0 && !numberFilter) {
       // Same semantics as the web sidebar: a conversation with an unknown/missing number tag counts
       // as the PRIMARY line, and a contact that chatted with several numbers matches any of them.
       result = result.filter((c) => {
+        if (channelOfKey(c.phoneNumber, (c as any).channel) !== 'whatsapp') return true; // no WhatsApp number on these chats
         const eff = effectiveChatNumberIds(c, wabaNumbersList);
         if (eff.length === 0) return true;
         return eff.some((id) => assignedNums.includes(id));
@@ -1655,7 +1784,7 @@ export default function ChatsListScreen() {
 
     if (leadStageFilter.length > 0) {
       result = result.filter((c) => {
-        const phoneNorm = (c.phoneNumber || '').replace(/\D/g, '');
+        const phoneNorm = chatKeyNorm(c.phoneNumber);
         const leadInfo = contactLeadMap[phoneNorm];
         const stageId = (c as any).leadStageId || (c as any).leadStage || leadInfo?.stageId || '';
         return stageId ? leadStageFilter.includes(stageId) : false;
@@ -1664,7 +1793,7 @@ export default function ChatsListScreen() {
 
     if (caseStageFilter.length > 0) {
       result = result.filter((c) => {
-        const phoneNorm = (c.phoneNumber || '').replace(/\D/g, '');
+        const phoneNorm = chatKeyNorm(c.phoneNumber);
         const caseInfoArr = contactCaseMap[phoneNorm];
         if (!caseInfoArr || caseInfoArr.length === 0) return false;
         return caseInfoArr.some(ci => caseStageFilter.includes(ci.stageId));
@@ -1673,6 +1802,7 @@ export default function ChatsListScreen() {
 
     if (numberFilter) {
       result = result.filter((c) => {
+        if (channelOfKey(c.phoneNumber, (c as any).channel) !== 'whatsapp') return true;
         const eff = effectiveChatNumberIds(c, wabaNumbersList);
         if (eff.length === 0) return true;
         return eff.includes(numberFilter);
@@ -1714,7 +1844,7 @@ export default function ChatsListScreen() {
     // "list re-sorts wrong after entering a chat and coming back" report. Sorting the (already
     // filtered) copy here makes the displayed order correct no matter what.
     return [...result].sort((a, b) => chatActivityMs(b) - chatActivityMs(a));
-  }, [chats, filter, viewFilters, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages, messageSla, wabaNumbersList]);
+  }, [chats, filter, viewFilters, debouncedSearch, categoryFilter, ownerFilter, groupFilter, leadStageFilter, caseStageFilter, numberFilter, activityFilter, user, contactLeadMap, contactCaseMap, leadStages, messageSla, wabaNumbersList, channelFilter, availableChannels]);
 
   // When searching, show all results; otherwise paginate for smooth scrolling
   const displayedChats = useMemo(() => {
@@ -1735,6 +1865,7 @@ export default function ChatsListScreen() {
     leadStageFilter.length > 0 ||
     caseStageFilter.length > 0 ||
     !!numberFilter ||
+    !!channelFilter ||
     !!activityFilter ||
     !!debouncedSearch.trim();
 
@@ -2243,7 +2374,7 @@ export default function ChatsListScreen() {
     if (!user?.organization || !rowActionChat) return;
     setRowActionBusy(true);
     try {
-      const digits = String(rowActionChat.phoneNumber).replace(/\D/g, '');
+      const digits = chatKeyNorm(String(rowActionChat.phoneNumber));
       const [leadsRes] = await Promise.allSettled([
         axiosInstance.post(ENDPOINTS.GET_LEADS_BY_CONTACT, { organization: user.organization, contactPhone: digits, phoneNumber: digits }),
       ]);
@@ -2289,7 +2420,7 @@ export default function ChatsListScreen() {
         organization: user.organization, leadId: rowLead.id || rowLead.Id, stageId, stageName, ...(deal || {}),
       });
       // Reflect the new stage in the row badge immediately.
-      const digits = String(rowActionChat?.phoneNumber || '').replace(/\D/g, '');
+      const digits = chatKeyNorm(String(rowActionChat?.phoneNumber || ''));
       if (digits) {
         setContactLeadMap((prev: any) => ({
           ...prev,
@@ -2306,7 +2437,7 @@ export default function ChatsListScreen() {
   // A contact's case = the first one returned by GetCasesByContact (same rule as the chat screen).
   const fetchContactRecords = useCallback(async (kind: 'lead' | 'case', phone: string): Promise<any[]> => {
     if (!user?.organization) return [];
-    const digits = String(phone).replace(/\D/g, '');
+    const digits = chatKeyNorm(String(phone));
     try {
       const res = await axiosInstance.post(
         kind === 'lead' ? ENDPOINTS.GET_LEADS_BY_CONTACT : ENDPOINTS.GET_CASES_BY_CONTACT,
@@ -2401,7 +2532,7 @@ export default function ChatsListScreen() {
         try {
           if (kind === 'lead') {
             await axiosInstance.post(ENDPOINTS.MOVE_LEAD_STAGE, { organization: user.organization, leadId: record.id || record.Id, stageId, stageName });
-            const digits = String(phone).replace(/\D/g, '');
+            const digits = chatKeyNorm(String(phone));
             if (digits) setContactLeadMap((prev: any) => ({ ...prev, [digits]: { stageName, stageColor: stageColor || prev?.[digits]?.stageColor || '#7c3aed', stageId } }));
             addOrUpdateChat({ phoneNumber: phone, leadStageName: stageName, ...(stageColor ? { leadStageColor: stageColor } : {}) } as any);
           } else {
@@ -2462,7 +2593,7 @@ export default function ChatsListScreen() {
       // Unread INTERNAL message (@-mention) directed at me — shown as a distinct purple badge,
       // separate from the regular red WhatsApp unread badge/bold.
       const hasUnreadInternal = !!currentUserId && (item.usersWithUnreadInternalMessages || []).includes(currentUserId);
-      const phoneNorm = (item.phoneNumber || '').replace(/\D/g, '');
+      const phoneNorm = chatKeyNorm(item.phoneNumber);
       const leadInfo = contactLeadMap[phoneNorm];
       const displayLeadStage = item.leadStageName || leadInfo?.stageName || '';
       const displayLeadColor = item.leadStageColor || leadInfo?.stageColor || '#7c3aed';
@@ -3197,6 +3328,46 @@ export default function ChatsListScreen() {
               />
             ))}
           </Menu>
+
+          {availableChannels.length > 1 && (
+            <Menu
+              visible={channelMenuVisible}
+              onDismiss={() => setChannelMenuVisible(false)}
+              anchor={
+                <Chip
+                  icon="message-text-outline"
+                  onPress={() => setChannelMenuVisible(true)}
+                  compact
+                  style={[
+                    styles.filterChip,
+                    channelFilter
+                      ? { backgroundColor: theme.colors.primaryContainer }
+                      : { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    channelFilter ? { color: theme.colors.primary, fontWeight: '600' } : undefined,
+                  ]}
+                >
+                  {channelFilter ? channelLabel(channelFilter, lang) : t('chats.channel', 'ערוץ')}
+                </Chip>
+              }
+            >
+              <Menu.Item
+                title={t('common.all', 'הכל')}
+                onPress={() => { setChannelFilter(''); setChannelMenuVisible(false); }}
+                leadingIcon={!channelFilter ? 'check' : undefined}
+              />
+              {availableChannels.map((ch) => (
+                <Menu.Item
+                  key={ch}
+                  title={channelLabel(ch, lang)}
+                  onPress={() => { setChannelFilter(ch); setChannelMenuVisible(false); }}
+                  leadingIcon={channelFilter === ch ? 'check' : undefined}
+                />
+              ))}
+            </Menu>
+          )}
 
           {availableNumbers.length > 1 && (
             <Menu

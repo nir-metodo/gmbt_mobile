@@ -43,6 +43,7 @@ import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
 import GambotDateTimePicker from '../../../components/GambotDateTimePicker';
 import { useChatStore } from '../../../stores/chatStore';
+import { chatKeyNorm, isKeyedChat } from '../../../utils/channels';
 import { useAuthStore } from '../../../stores/authStore';
 import { useContactStore } from '../../../stores/contactStore';
 import { useLeadStore } from '../../../stores/leadStore';
@@ -322,7 +323,7 @@ export default function ChatConversationScreen() {
 
   const user = useAuthStore((s) => s.user);
   const chat = useChatStore((s) =>
-    s.chats.find((c) => (c.phoneNumber || '').replace(/\D/g, '') === (String(phoneNumber || '')).replace(/\D/g, '')),
+    s.chats.find((c) => chatKeyNorm(c.phoneNumber) === chatKeyNorm(String(phoneNumber || ''))),
   );
   const currentMessages = useChatStore((s) => s.currentMessages);
   const isLoadingMessages = useChatStore((s) => s.isLoadingMessages);
@@ -556,7 +557,7 @@ export default function ChatConversationScreen() {
 
   const phoneDigits = String(phoneNumber || '').replace(/\D/g, '');
   const storeContactName =
-    chat?.contactName && chat.contactName.replace(/\D/g, '') !== phoneDigits
+    chat?.contactName && (isKeyedChat(String(phoneNumber || '')) ? chat.contactName !== String(phoneNumber) : chat.contactName.replace(/\D/g, '') !== phoneDigits)
       ? chat.contactName
       : '';
   const contactName = storeContactName || resolvedContactName || phoneNumber || '';
@@ -1010,7 +1011,7 @@ export default function ChatConversationScreen() {
     const organization = user.organization;
     // Backend GetLeadsByContact requires `contactPhone` (digits only). Send both keys + the
     // digits-only number so the lookup works regardless of which field the endpoint reads.
-    const digits = String(phoneNumber).replace(/\D/g, '');
+    const digits = chatKeyNorm(String(phoneNumber)); // Messenger / Instagram / website chats keep their raw key
     const [leadsRes, stagesRes, casesRes, caseSettingsRes] = await Promise.allSettled([
       axiosInstance.post(ENDPOINTS.GET_LEADS_BY_CONTACT, { organization, contactPhone: digits, phoneNumber: digits }),
       axiosInstance.post(ENDPOINTS.GET_PIPELINE_SETTINGS, { organization }),
@@ -1327,11 +1328,12 @@ export default function ChatConversationScreen() {
   // (No message-derived heuristics here; the backend flags are the single source of truth,
   // identical to the web, which the user confirmed works correctly.)
   const canSendFreeText = useMemo(() => {
+    if (isKeyedChat(String(phoneNumber || ''))) return true; // Messenger / Instagram / website: no WhatsApp template window
     if (isStatusLoading) return false;
     const expiresAt = conversationExpiresAt ? new Date(conversationExpiresAt).getTime() : null;
     const isWindowOpen = expiresAt != null && countdownNow < expiresAt;
     return recipientReplied24h === true && isWindowOpen && conversationLive === true;
-  }, [isStatusLoading, recipientReplied24h, conversationExpiresAt, conversationLive, countdownNow]);
+  }, [phoneNumber, isStatusLoading, recipientReplied24h, conversationExpiresAt, conversationLive, countdownNow]);
 
   const isFreeWindowActive = useMemo(() => {
     if (!freeWindowExpiresAt) return false;
@@ -1626,7 +1628,7 @@ export default function ChatConversationScreen() {
   // messages = previous chat).
   const storeShowsThisChat = useCallback(() => {
     const cur = useChatStore.getState().currentPhoneNumber;
-    return !cur || cur.replace(/\D/g, '') === String(phoneNumber || '').replace(/\D/g, '');
+    return !cur || chatKeyNorm(cur) === chatKeyNorm(String(phoneNumber || ''));
   }, [phoneNumber]);
 
   // Reload messages + conversation status when app returns from background
@@ -1738,8 +1740,9 @@ export default function ChatConversationScreen() {
           // a bare `dir === 'inbound'` could mark the wrong conversation live.
           const fromNorm = String(msg.from || '').replace(/\D/g, '');
           const phoneNorm = String(phoneNumber || '').replace(/\D/g, '');
-          const fromMatches = !!fromNorm && !!phoneNorm &&
-            (fromNorm === phoneNorm || fromNorm.endsWith(phoneNorm.slice(-9)) || phoneNorm.endsWith(fromNorm.slice(-9)));
+          // Messenger / Instagram / website chat = a single customer, so any inbound message is theirs.
+          const fromMatches = isKeyedChat(String(phoneNumber || '')) ? true : (!!fromNorm && !!phoneNorm &&
+            (fromNorm === phoneNorm || fromNorm.endsWith(phoneNorm.slice(-9)) || phoneNorm.endsWith(fromNorm.slice(-9))));
           if (dir === 'inbound' && fromMatches && isRecentInbound) {
             hasInbound = true;
             if (msgTime > latestInboundTime) latestInboundTime = msgTime;

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -6,6 +6,7 @@ import {
   RefreshControl,
   Share,
   I18nManager,
+  Pressable,
 } from 'react-native';
 import {
   Appbar,
@@ -308,13 +309,14 @@ export default function ReportsScreen() {
       }
       if (cat === 'ctwa') {
         const res = await axiosInstance.post(ENDPOINTS.GET_CONTACTS_PAGINATED || ENDPOINTS.GET_CONTACTS, {
-          organization: org, pageNumber: 1, pageSize: 5000,
+          // The paginated-contacts endpoint reads `organizationiD` (not `organization`).
+          organizationiD: org, pageNumber: 1, pageSize: 5000,
           userId, dataVisibility: 'seeAll',
         });
         const raw = res.data;
         const contacts = raw?.Contacts || raw?.contacts || raw?.Data || raw?.data || (Array.isArray(raw) ? raw : []);
         const ctwaContacts = (Array.isArray(contacts) ? contacts : []).filter(
-          (c: any) => c.isCTWA || c.referralSourceId || c.referralPlatform || c.ctwaClid
+          (c: any) => c.isCTWA || c.referralSourceId || c.referralPlatform || c.ctwaClid || c.referralCTWAClid || c.adSourceId
         );
         setRawData(ctwaContacts);
         setLoading(false);
@@ -358,6 +360,7 @@ export default function ReportsScreen() {
         delete payload.pageNumber;
         delete payload.pageSize;
       } else if (cat === 'contacts') {
+        payload.organizationiD = org; // the paginated-contacts endpoint reads `organizationiD`
         payload.userId = userId;
         payload.dataVisibility = dataScope === 'my' ? 'own' : 'seeAll';
       } else if (cat === 'whatsapp') {
@@ -1181,25 +1184,27 @@ export default function ReportsScreen() {
       />
 
       {/* Topics + period stay pinned: one tap to switch topic, one tap to change the period */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll} contentContainerStyle={{ paddingHorizontal: spacing.sm }}>
-        {CATEGORIES.map((cat) => (
-          <Chip
-            key={cat.key}
-            selected={category === cat.key}
-            onPress={() => { setCategory(cat.key); setSearchQuery(''); }}
-            style={[styles.chip, category === cat.key && { backgroundColor: cat.color + '20', borderColor: cat.color, borderWidth: 1 }]}
-            textStyle={category === cat.key ? { color: cat.color, fontWeight: '700' } : { color: theme.colors.onSurfaceVariant }}
-            icon={() => (
-              <MaterialCommunityIcons
-                name={cat.icon as any}
-                size={16}
-                color={category === cat.key ? cat.color : theme.colors.onSurfaceVariant}
-              />
-            )}
-          >
-            {cat.label}
-          </Chip>
-        ))}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll} contentContainerStyle={styles.categoryRow}>
+        {CATEGORIES.map((cat) => {
+          const active = category === cat.key;
+          return (
+            <Pressable
+              key={cat.key}
+              onPress={() => { setCategory(cat.key); setSearchQuery(''); }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              style={[
+                styles.categoryPill,
+                { backgroundColor: active ? cat.color + '20' : theme.colors.surface, borderColor: active ? cat.color : theme.colors.outlineVariant || '#cbd5e1' },
+              ]}
+            >
+              <MaterialCommunityIcons name={cat.icon as any} size={16} color={active ? cat.color : theme.colors.onSurfaceVariant} />
+              <Text numberOfLines={1} style={[styles.categoryPillText, { color: active ? cat.color : theme.colors.onSurfaceVariant }]}>
+                {cat.label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </ScrollView>
       {category !== 'ai' ? <PeriodChips value={datePreset} onChange={setDatePreset} /> : null}
 
@@ -1367,7 +1372,11 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   headerTitle: { color: '#fff', fontWeight: '700', fontSize: fontSize.xl },
   content: { padding: spacing.md, paddingBottom: spacing.xxl },
-  categoryScroll: { marginBottom: spacing.sm },
+  // Fixed-size pills; the ScrollView must not flex-shrink (it was squeezed and clipped the labels).
+  categoryScroll: { flexGrow: 0, flexShrink: 0 },
+  categoryRow: { paddingHorizontal: 12, paddingVertical: 6, gap: 8, alignItems: 'center' },
+  categoryPill: { height: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 14, borderRadius: 17, borderWidth: 1 },
+  categoryPillText: { fontSize: 13, lineHeight: 18, fontWeight: '600', includeFontPadding: false },
   chip: { marginRight: spacing.sm, borderRadius: borderRadius.full },
   filterRow: { marginBottom: spacing.sm },
   dateChip: { marginRight: spacing.xs, borderRadius: borderRadius.full, height: 32 },
